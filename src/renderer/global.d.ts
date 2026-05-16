@@ -85,7 +85,7 @@ type WorkshopSkillInstallStatus = {
 
 type WorkshopAgentConsoleApi = {
   startAgentConsole: (args: { agent?: "codex" | "claude"; outputDir?: string; cols?: number; rows?: number }) => Promise<WorkshopAgentConsoleResult>;
-  sendAgentConsoleInput: (data: string) => Promise<{ ok: boolean; message?: string }>;
+  sendAgentConsoleInput: (data: string) => Promise<{ ok: boolean; message?: string; promptPath?: string }>;
   writeAgentConsoleInput: (data: string) => Promise<{ ok: boolean; message?: string }>;
   clearAgentConsoleOutput: () => Promise<{ ok: boolean; message?: string }>;
   resizeAgentConsole: (args: { cols?: number; rows?: number }) => Promise<{ ok: boolean; message?: string }>;

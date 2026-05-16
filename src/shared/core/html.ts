@@ -177,6 +177,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     agentLaunched: "Agent \u5df2\u542f\u52a8",
     agentLaunchFailed: "Agent \u542f\u52a8\u5931\u8d25",
     promptSentToAgent: "\u63d0\u793a\u8bcd\u5df2\u53d1\u9001\u5230 Agent",
+    promptSentViaFile: "\u63d0\u793a\u8bcd\u8f83\u957f\uff0c\u5df2\u4fdd\u5b58\u4e3a\u6587\u4ef6\u5e76\u53d1\u9001\u6587\u4ef6\u5f15\u7528",
     agentConsoleNeedsApp: "\u53d1\u9001\u5230 Agent \u9700\u8981\u5728 translation-workshop \u5e94\u7528\u5185\u6253\u5f00\u6b64 HTML",
     agentConsoleNeedsOutput: "\u5f53\u524d HTML \u6ca1\u6709\u7ed1\u5b9a\u8f93\u51fa\u6587\u4ef6\u5939\uff0c\u65e0\u6cd5\u542f\u52a8 Agent",
     glossaryTitle: "\u672f\u8bed\u66ff\u6362",
@@ -284,6 +285,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     agentLaunched: "Agent launched",
     agentLaunchFailed: "Agent launch failed",
     promptSentToAgent: "Prompt sent to Agent",
+    promptSentViaFile: "Prompt is long, so it was saved to a file and sent as a file reference",
     agentConsoleNeedsApp: "Sending to Agent requires opening this HTML inside translation-workshop.",
     agentConsoleNeedsOutput: "This HTML has no bound output folder, so Agent cannot be started.",
     glossaryTitle: "Glossary replacement",
@@ -1468,7 +1470,11 @@ async function sendInteractiveAgentMessage() {
       if (agentMessageInput) agentMessageInput.value = promptText;
       promptPreview.value = promptText;
     }
-    setAiStatus(result?.ok ? (data.labels.promptSentToAgent || "Prompt sent to Agent") : (result?.message || data.labels.agentLaunchFailed || "Agent launch failed"));
+    setAiStatus(result?.ok
+      ? result.promptPath
+        ? (data.labels.promptSentViaFile || "Prompt saved to file") + ": " + result.promptPath
+        : (data.labels.promptSentToAgent || "Prompt sent to Agent")
+      : (result?.message || data.labels.agentLaunchFailed || "Agent launch failed"));
   } catch (error) {
     setAiStatus((data.labels.agentLaunchFailed || "Agent launch failed") + ": " + (error?.message || String(error)));
   }

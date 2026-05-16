@@ -103,6 +103,7 @@
   "stopAgentConsole": "Stop",
   "sendConsoleInput": "Send",
   "promptSentToAgent": "Prompt sent to the Agent Console.",
+  "promptSentViaFile": "Prompt is long, so it was saved to a file and sent as a file reference:",
   "htmlGenerated": "HTML generated.",
   "projectOpened": "Project opened.",
   "projectOpenedNoHtml": "Project folder selected, but no recent HTML was found. Open an HTML file manually or generate one.",

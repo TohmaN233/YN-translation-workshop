@@ -678,7 +678,11 @@ function App() {
       setStatus(result.message || t.agentUnavailable);
       return;
     }
-    setStatus(result.ok ? t.promptSentToAgent : (result.message || t.agentUnavailable));
+    setStatus(result.ok
+      ? result.promptPath
+        ? `${t.promptSentViaFile} ${result.promptPath}`
+        : t.promptSentToAgent
+      : (result.message || t.agentUnavailable));
   }
 
   async function stopAgentConsole() {

@@ -103,6 +103,7 @@
   "stopAgentConsole": "停止",
   "sendConsoleInput": "发送",
   "promptSentToAgent": "提示词已发送到 Agent 控制台。",
+  "promptSentViaFile": "提示词较长，已保存为文件并发送文件引用：",
   "htmlGenerated": "HTML 已生成。",
   "projectOpened": "项目已打开。",
   "projectOpenedNoHtml": "已选择项目文件夹，但没有找到最近生成的 HTML；可以手动打开 HTML 或重新生成。",

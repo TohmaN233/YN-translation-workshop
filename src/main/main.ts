@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { CODEX_DISABLE_SUPERPOWERS_CONFIG } from "../shared/core/agentInvoke.ts";
 import { formatInteractiveAgentMessage } from "../shared/core/agentConsoleInput.ts";
 import { buildTimestampedBackupPath } from "../shared/core/backups.ts";
+import { buildAgentPromptFileMessage, shouldSendAgentPromptViaFile } from "../shared/core/agentPromptTransport.ts";
 import { parseBilingualPairs } from "../shared/core/bilingualPairs.ts";
 import { resolveCliFromPath } from "../shared/core/cliResolver.ts";
 import { matchFolderFiles, type FolderLineFile } from "../shared/core/folderMatch.ts";
@@ -88,6 +89,12 @@ interface AgentConsoleStartArgs {
 
 interface AgentConsoleInputArgs {
   data?: string;
+}
+
+interface AgentConsoleInputResult {
+  ok: boolean;
+  message?: string;
+  promptPath?: string;
 }
 
 interface AgentConsoleResizeArgs {
@@ -692,11 +699,38 @@ function interactiveConsoleSnapshot() {
     : { running: false };
 }
 
-function submitInteractiveAgentInput(session: InteractiveAgentSession, text: string): void {
-  session.pty.write(formatInteractiveAgentMessage(session.agent, text));
+function toAgentRelativePath(outputDir: string, filePath: string): string {
+  return path.relative(outputDir, filePath).split(path.sep).join("/");
+}
+
+async function spoolAgentPrompt(session: InteractiveAgentSession, text: string): Promise<{ text: string; promptPath: string }> {
+  const workspaceDir = await ensureWorkspace(session.outputDir);
+  const promptDir = path.join(workspaceDir, "agent-prompts");
+  await mkdir(promptDir, { recursive: true });
+  const promptPath = path.join(promptDir, `agent-prompt-${timestamp()}.md`);
+  await writeFile(promptPath, text, "utf8");
+  const relativePath = toAgentRelativePath(session.outputDir, promptPath);
+  return {
+    promptPath,
+    text: buildAgentPromptFileMessage(relativePath, promptPath)
+  };
+}
+
+async function submitInteractiveAgentInput(session: InteractiveAgentSession, text: string): Promise<AgentConsoleInputResult> {
+  const prepared = shouldSendAgentPromptViaFile(text)
+    ? await spoolAgentPrompt(session, text)
+    : { text, promptPath: undefined };
+  session.pty.write(formatInteractiveAgentMessage(session.agent, prepared.text));
   setTimeout(() => {
     session.pty.write("\r");
   }, session.agent === "codex" ? 80 : 120);
+  return {
+    ok: true,
+    promptPath: prepared.promptPath,
+    message: prepared.promptPath
+      ? `Prompt saved to file and sent as a file reference: ${prepared.promptPath}`
+      : undefined
+  };
 }
 
 async function collectLineFiles(folderPath: string, fileType: GenerateLineHtmlArgs["fileType"], workspaceDir: string): Promise<FolderLineFile[]> {
@@ -1517,8 +1551,7 @@ ipcMain.handle("agent-console:input", async (_event, args: AgentConsoleInputArgs
   if (!interactiveAgentSession) {
     return { ok: false, message: "No interactive Agent Console is running." };
   }
-  submitInteractiveAgentInput(interactiveAgentSession, args.data ?? "");
-  return { ok: true };
+  return submitInteractiveAgentInput(interactiveAgentSession, args.data ?? "");
 });
 
 ipcMain.handle("agent-console:write", async (_event, args: AgentConsoleInputArgs) => {

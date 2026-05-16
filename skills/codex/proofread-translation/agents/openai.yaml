@@ -1,0 +1,4 @@
+interface:
+  display_name: "Proofread Translation"
+  short_description: "Review multilingual translations with Monte Carlo or split workflows."
+  default_prompt: "Use $proofread-translation to review a source file and translation for the requested language pair."

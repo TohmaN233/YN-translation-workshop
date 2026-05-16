@@ -1,0 +1,182 @@
+export interface ReviewProposal {
+  id: string;
+  line?: number;
+  src: string;
+  current: string;
+  problemType: string;
+  problem: string;
+  suggestion: string;
+  status: "unreviewed" | "accepted" | "rejected" | "manual";
+}
+
+type ProposalField = keyof Omit<ReviewProposal, "id" | "status">;
+
+const fieldAliases: Record<string, ProposalField> = {
+  "行号": "line",
+  "琛屽彿": "line",
+  "line": "line",
+  "原文": "src",
+  "源文": "src",
+  "鍘熸枃": "src",
+  "婧愭枃": "src",
+  "source": "src",
+  "source text": "src",
+  "当前译文": "current",
+  "现译": "current",
+  "译文": "current",
+  "褰撳墠璇戞枃": "current",
+  "鐜拌瘧": "current",
+  "璇戞枃": "current",
+  "current": "current",
+  "current translation": "current",
+  "问题类型": "problemType",
+  "类型": "problemType",
+  "严重度": "problemType",
+  "闂绫诲瀷": "problemType",
+  "绫诲瀷": "problemType",
+  "issue type": "problemType",
+  "severity": "problemType",
+  "问题说明": "problem",
+  "问题": "problem",
+  "说明": "problem",
+  "闂璇存槑": "problem",
+  "闂": "problem",
+  "璇存槑": "problem",
+  "explanation": "problem",
+  "issue": "problem",
+  "建议": "suggestion",
+  "建议译文": "suggestion",
+  "修正译文": "suggestion",
+  "可替换译文": "suggestion",
+  "替换译文": "suggestion",
+  "寤鸿": "suggestion",
+  "寤鸿璇戞枃": "suggestion",
+  "淇璇戞枃": "suggestion",
+  "鍙浛鎹㈣瘧鏂囷細": "suggestion",
+  "鍙浛鎹㈣瘧鏂�": "suggestion",
+  "鏇挎崲璇戞枃": "suggestion",
+  "suggestion": "suggestion",
+  "suggested translation": "suggestion",
+  "suggested fix": "suggestion",
+  "replacement": "suggestion"
+};
+
+function normalizeLabel(raw: string): string {
+  return raw
+    .replace(/\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function toFieldName(raw: string): ProposalField | undefined {
+  const label = normalizeLabel(raw);
+  return fieldAliases[label] ?? fieldAliases[raw.trim()];
+}
+
+function cleanValue(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^\*\*/, "")
+    .replace(/\*\*$/, "")
+    .trim()
+    .replace(/^`+|`+$/g, "")
+    .trim();
+}
+
+function headingInfo(lines: string[]): { id?: string; problemType?: string; line?: number } {
+  const heading = lines.find((line) => /^\s{0,3}#{1,6}\s+\S/.test(line));
+  if (!heading) {
+    return {};
+  }
+  const text = heading.replace(/^\s{0,3}#{1,6}\s+/, "").trim();
+  const bracketId = text.match(/\[((?:H[1-9]|M[1-5]|L[1-4]|[HML])-?\d{1,4})\]/i)?.[1];
+  const plainId = text.match(/\b((?:H[1-9]|M[1-5]|L[1-4]|[HML])-?\d{1,4})\b/i)?.[1];
+  const line = Number.parseInt(text.match(/\bL(\d+)\b/i)?.[1] ?? "", 10);
+  return {
+    id: (bracketId ?? plainId)?.toUpperCase(),
+    line: Number.isFinite(line) ? line : undefined,
+    problemType: text.replace(/^\[[^\]]+]\s*/, "")
+  };
+}
+
+function parseFieldLine(line: string): { field: ProposalField; value: string } | undefined {
+  const match = line.match(/^\s*(?:[-*]\s*)?(?:\*\*)?\s*(?<label>[^:：锛歖*]{1,40})\s*(?:\*\*)?\s*[:：锛歖]\s*(?<value>.*)$/u);
+  if (!match?.groups) {
+    return undefined;
+  }
+  const field = toFieldName(match.groups.label);
+  if (!field) {
+    return undefined;
+  }
+  return { field, value: cleanValue(match.groups.value) };
+}
+
+function parseBlock(lines: string[], index: number): ReviewProposal | undefined {
+  const data: Partial<ReviewProposal> = {};
+  const heading = headingInfo(lines);
+  if (heading.problemType) {
+    data.problemType = heading.problemType;
+  }
+  if (heading.line !== undefined) {
+    data.line = heading.line;
+  }
+
+  for (const line of lines) {
+    const parsed = parseFieldLine(line);
+    if (!parsed) {
+      continue;
+    }
+    if (parsed.field === "line") {
+      const parsedLine = Number.parseInt(parsed.value, 10);
+      if (Number.isFinite(parsedLine)) {
+        data.line = parsedLine;
+      }
+    } else {
+      data[parsed.field] = parsed.value;
+    }
+  }
+
+  if (!data.suggestion || !(data.src || data.current || data.problem)) {
+    return undefined;
+  }
+
+  const id = heading.id
+    ?? data.problemType?.match(/[HML]-?\d{1,4}/i)?.[0]?.toUpperCase()
+    ?? `P-${String(index + 1).padStart(4, "0")}`;
+  return {
+    id,
+    line: data.line,
+    src: data.src ?? "",
+    current: data.current ?? "",
+    problemType: data.problemType ?? "",
+    problem: data.problem ?? "",
+    suggestion: data.suggestion,
+    status: "unreviewed"
+  };
+}
+
+export function parseProofreadMarkdown(markdown: string): ReviewProposal[] {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: string[][] = [];
+  let current: string[] = [];
+
+  for (const line of lines) {
+    const startsBlock = /^\s{0,3}#{1,6}\s+\S/.test(line)
+      || /^\s*(?:[-*]\s*)?(?:ID|Finding|Issue|问题|闂)\b/i.test(line);
+    if (startsBlock && current.length > 0) {
+      blocks.push(current);
+      current = [];
+    }
+    if (line.trim() !== "" || current.length > 0) {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) {
+    blocks.push(current);
+  }
+
+  return blocks
+    .map((block, index) => parseBlock(block, index))
+    .filter((proposal): proposal is ReviewProposal => Boolean(proposal));
+}

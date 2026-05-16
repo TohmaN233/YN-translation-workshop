@@ -1,0 +1,15 @@
+node_modules/
+dist/
+out/
+release/
+.cache/
+.vite/
+*.log
+.DS_Store
+Thumbs.db
+.translation-workshop/
+.translation-workshop/backups/
+.translation-workshop/reports/
+.translation-workshop/html/
+.translation-workshop/cache/
+测试用/

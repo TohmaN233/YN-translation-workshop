@@ -9,7 +9,7 @@
   },
   "scripts": {
     "prepare:xterm-assets": "node scripts/prepare-xterm-assets.mjs",
-    "test": "npm run prepare:xterm-assets && node --experimental-strip-types --test tests/*.test.ts",
+    "test": "npm run typecheck",
     "typecheck": "tsc --noEmit",
     "build:main": "npm run prepare:xterm-assets && esbuild src/main/main.ts --bundle --platform=node --format=esm --outfile=dist/main/main.js --external:electron --external:extract-zip --external:node-pty && npm run build:preload",
     "build:preload": "esbuild src/main/preload.ts --bundle --platform=node --format=cjs --outfile=dist/main/preload.cjs --external:electron",

@@ -174,7 +174,12 @@ export function needsLegacyLineReviewUpgrade(html: string): boolean {
 export function needsLegacyProposalReviewUpgrade(html: string): boolean {
   return html.includes('id="proposalData"')
     && html.includes("proposal-review")
-    && (!html.includes("persistLineReviewState") || !html.includes("proposalSafetyCheck"));
+    && (
+      !html.includes("persistLineReviewState")
+      || !html.includes("proposalSafetyCheck")
+      || html.includes("current-mismatch")
+      || html.includes("currentScore")
+    );
 }
 
 export function upgradeLegacyLineReviewHtmlContent(html: string, fallbackTitle: string): string | undefined {

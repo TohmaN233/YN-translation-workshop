@@ -1270,9 +1270,9 @@ async function buildPromptFromSettings() {
         kind: activePromptKind,
         agent: agentSelect?.value || workflow.defaultAgent || "codex",
         sourcePath: workflow.paths?.promptSourcePath || workflow.paths?.sourcePath || "",
-        translationPath: workflow.paths?.promptTranslationPath || workflow.paths?.translationPath || "",
+        translationPath: boundPromptTranslationPath(),
         outputDir: workflow.paths?.outputDir || "",
-        glossaryPath: workflow.paths?.glossaryPath || "",
+        glossaryPath: boundGlossaryPath(),
         inputMode: workflow.promptInputMode || workflow.inputMode || "separate",
         advanced: settings
       });
@@ -1635,14 +1635,42 @@ function openTranslationFilePicker() {
   input.value = "";
   input.click();
 }
+const translationFileFilters = [
+  { name: "Text files", extensions: ["txt"] },
+  { name: "All files", extensions: ["*"] }
+];
+const glossaryFileFilters = [
+  { name: "Glossary files", extensions: ["json", "tsv", "txt", "csv"] },
+  { name: "All files", extensions: ["*"] }
+];
+async function chooseTranslationFile() {
+  const bridge = writeBridge();
+  if (!bridge?.openFile || !bridge?.readTextFile) {
+    openTranslationFilePicker();
+    return;
+  }
+  const filePath = await bridge.openFile(translationFileFilters);
+  if (!filePath) return;
+  try {
+    const result = await bridge.readTextFile({ path: filePath });
+    if (typeof result?.text !== "string") return;
+    const nextPath = result?.path || filePath;
+    setBoundTranslationPath(nextPath, nextPath);
+    await syncLines(splitSyncedText(result.text), nextPath);
+  } catch (error) {
+    setAiStatus((data.labels.syncFailed || "Translation sync failed") + ": " + (error?.message || String(error)));
+  }
+}
 async function syncFromBoundTranslationFile() {
-  const translationPath = workflow.paths?.translationPath || "";
+  const translationPath = boundTranslationPath();
   const bridge = writeBridge();
   if (!translationPath || !bridge?.readTextFile) return false;
   try {
     const result = await bridge.readTextFile({ path: translationPath });
     if (typeof result?.text !== "string") return false;
-    await syncLines(splitSyncedText(result.text), result?.path || translationPath);
+    const nextPath = result?.path || translationPath;
+    setBoundTranslationPath(nextPath, nextPath);
+    await syncLines(splitSyncedText(result.text), nextPath);
     return true;
   } catch (error) {
     setAiStatus((data.labels.syncFailed || "Translation sync failed") + ": " + (error?.message || String(error)));
@@ -1674,7 +1702,7 @@ async function syncFromInitialTranslation() {
     openTranslationFilePicker();
     return;
   }
-  syncLines(lines, workflow.paths?.translationPath || "embedded translation");
+  syncLines(lines, boundTranslationPath() || "embedded translation");
 }
 function currentTargetLines() {
   return data.rows.map((row) => rowValue(row));
@@ -1700,7 +1728,7 @@ function currentTxtExportText() {
   return exportTxtMode() === "bilingual" ? currentBilingualTxtText() : currentTargetText();
 }
 function suggestedTxtName() {
-  const raw = workflow.paths?.translationPath || "translation-workshop-output.txt";
+  const raw = boundTranslationPath() || "translation-workshop-output.txt";
   return raw.split(/[\\/]/).pop() || "translation-workshop-output.txt";
 }
 function suggestedTxtDownloadName() {
@@ -1716,7 +1744,25 @@ function downloadTxt() {
   URL.revokeObjectURL(a.href);
 }
 function boundTranslationPath() {
-  return workflow.paths?.translationPath || "";
+  return state.translationPath || workflow.paths?.translationPath || "";
+}
+function boundPromptTranslationPath() {
+  return state.translationPromptPath || workflow.paths?.promptTranslationPath || boundTranslationPath();
+}
+function workflowPaths() {
+  workflow.paths ||= {};
+  return workflow.paths;
+}
+function setBoundTranslationPath(path, promptPath) {
+  const value = String(path || "").trim();
+  if (!value) return;
+  const promptValue = String(promptPath || value).trim();
+  state.translationPath = value;
+  state.translationPromptPath = promptValue;
+  const paths = workflowPaths();
+  paths.translationPath = value;
+  paths.promptTranslationPath = promptValue;
+  save();
 }
 function writeBridge() {
   return window.workshopHtml || window.parent?.workshopHtml;
@@ -1736,6 +1782,7 @@ async function writeCurrentTranslationFile() {
     const result = await bridge.writeTextFile({ path: targetPath, text: currentTargetText(), outputDir: workflow.paths?.outputDir });
     state.savedTxtFile = result?.path || targetPath;
     state.savedTxtAt = new Date().toISOString();
+    setBoundTranslationPath(state.savedTxtFile, state.savedTxtFile);
     save();
     setAiStatus((data.labels.txtWritten || "TXT written") + ": " + state.savedTxtFile);
   } catch (error) {
@@ -1765,7 +1812,7 @@ async function writeCurrentEpubCopy() {
 }
 document.getElementById("syncTranslation")?.addEventListener("click", syncFromInitialTranslation);
 document.getElementById("chooseTranslationFile")?.addEventListener("click", () => {
-  openTranslationFilePicker();
+  void chooseTranslationFile();
 });
 document.getElementById("syncTranslationInput")?.addEventListener("change", async (event) => {
   const input = event.target;
@@ -1774,8 +1821,8 @@ document.getElementById("syncTranslationInput")?.addEventListener("change", asyn
   try {
     const text = await file.text();
     const filePath = file.path || "";
-    if (filePath && workflow.paths) {
-      workflow.paths.translationPath = filePath;
+    if (filePath) {
+      setBoundTranslationPath(filePath, filePath);
     }
     await syncLines(splitSyncedText(text), filePath || file.name);
   } finally {
@@ -1833,7 +1880,7 @@ function setBoundGlossaryPath(path) {
   const value = String(path || "").trim();
   if (!value) return;
   state.glossaryPath = value;
-  if (workflow.paths) workflow.paths.glossaryPath = value;
+  workflowPaths().glossaryPath = value;
   save();
 }
 function renderGlossaryEntries() {
@@ -2166,13 +2213,31 @@ async function syncGlossaryFromBoundFile() {
   }
   try {
     const result = await bridge.readTextFile({ path: glossaryPath });
-    syncGlossaryFromText(result?.text || "", result?.path || glossaryPath);
+    const nextPath = result?.path || glossaryPath;
+    if (syncGlossaryFromText(result?.text || "", nextPath)) {
+      setBoundGlossaryPath(nextPath);
+    }
   } catch (error) {
     setAiStatus((data.labels.glossaryReadFailed || "Glossary sync failed") + ": " + (error?.message || String(error)));
   }
 }
-function importGlossaryFromFile() {
-  document.getElementById("syncGlossaryInput")?.click();
+async function importGlossaryFromFile() {
+  const bridge = writeBridge();
+  if (!bridge?.openFile || !bridge?.readTextFile) {
+    document.getElementById("syncGlossaryInput")?.click();
+    return;
+  }
+  const filePath = await bridge.openFile(glossaryFileFilters);
+  if (!filePath) return;
+  try {
+    const result = await bridge.readTextFile({ path: filePath });
+    const nextPath = result?.path || filePath;
+    if (syncGlossaryFromText(result?.text || "", nextPath)) {
+      setBoundGlossaryPath(nextPath);
+    }
+  } catch (error) {
+    setAiStatus((data.labels.glossaryReadFailed || "Glossary sync failed") + ": " + (error?.message || String(error)));
+  }
 }
 function glossaryFileText() {
   const entries = currentGlossaryEntries();
@@ -2208,6 +2273,7 @@ async function writeCurrentGlossaryFile() {
   }
   try {
     const result = await bridge.writeGlossaryFile({ path: glossaryPath, text: glossaryFileText(), outputDir: workflow.paths?.outputDir });
+    setBoundGlossaryPath(result?.path || glossaryPath);
     setAiStatus((data.labels.glossaryWritten || "Glossary written") + ": " + (result?.path || glossaryPath));
   } catch (error) {
     setAiStatus((data.labels.glossaryWriteFailed || "Glossary write failed") + ": " + (error?.message || String(error)));
@@ -2243,7 +2309,9 @@ glossaryListEl?.addEventListener("keydown", (event) => {
 renderGlossaryEntries();
 document.getElementById("applyGlossaryCurrent")?.addEventListener("click", () => applyGlossaryReplacements("page"));
 document.getElementById("applyGlossaryAll")?.addEventListener("click", () => applyGlossaryReplacements("all"));
-document.getElementById("importGlossary")?.addEventListener("click", importGlossaryFromFile);
+document.getElementById("importGlossary")?.addEventListener("click", () => {
+  void importGlossaryFromFile();
+});
 document.getElementById("syncGlossary")?.addEventListener("click", syncGlossaryFromBoundFile);
 document.getElementById("exportGlossary")?.addEventListener("click", downloadGlossary);
 document.getElementById("writeGlossary")?.addEventListener("click", writeCurrentGlossaryFile);

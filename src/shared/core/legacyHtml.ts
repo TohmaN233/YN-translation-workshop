@@ -148,6 +148,7 @@ export function needsLegacyLineReviewUpgrade(html: string): boolean {
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("glossarySyncMissingTarget"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("sourceCount <= targetCount"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("function glossaryTermKey"))
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("function boundPromptTranslationPath"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("function lineReviewStorageKey"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("let restoringPosition = true"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("searchMatches = needle ? data.rows.filter"))

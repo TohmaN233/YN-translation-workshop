@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld("workshop", {
 });
 
 contextBridge.exposeInMainWorld("workshopHtml", {
+  openFile: (filters?: Electron.FileFilter[]) => ipcRenderer.invoke("dialog:openFile", filters),
   readTextFile: (args: { path: string }) => ipcRenderer.invoke("files:readTextFile", args),
   writeTextFile: (args: { path: string; text: string; outputDir?: string }) => ipcRenderer.invoke("files:writeTextFile", args),
   writeGlossaryFile: (args: { path: string; text: string; outputDir?: string }) => ipcRenderer.invoke("files:writeGlossaryFile", args),

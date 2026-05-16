@@ -114,6 +114,7 @@ declare global {
       skillInstallStatus: (args: { agent?: WorkshopSkillInstallAgent }) => Promise<WorkshopSkillInstallStatus>;
     };
     workshopHtml?: WorkshopAgentConsoleApi & {
+      openFile: (filters?: Array<{ name: string; extensions: string[] }>) => Promise<string | undefined>;
       readTextFile: (args: { path: string }) => Promise<{ ok: boolean; path: string; text: string }>;
       writeTextFile: (args: { path: string; text: string; outputDir?: string }) => Promise<{ ok: boolean; path: string; backupPath?: string }>;
       writeGlossaryFile: (args: { path: string; text: string; outputDir?: string }) => Promise<{ ok: boolean; path: string; backupPath?: string }>;

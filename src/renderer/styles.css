@@ -86,6 +86,13 @@ textarea {
   min-height: 40px;
 }
 
+.topConsoleStatus {
+  align-self: center;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: 420px minmax(0, 1fr);
@@ -336,6 +343,10 @@ code {
   overflow: auto;
   background: rgba(246, 251, 255, .97);
   box-shadow: 0 22px 60px rgba(30, 54, 105, .28);
+}
+
+.agentConsole[hidden] {
+  display: none;
 }
 
 .agentConsoleHeader {

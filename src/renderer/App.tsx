@@ -1,6 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
-import { Clipboard, ExternalLink, FileSearch, FileText, FolderOpen, Languages, Minus, Play, RefreshCw, Send, ShieldCheck, Square, Terminal as TerminalIcon, Trash2 } from "lucide-react";
+import { Clipboard, ExternalLink, FileSearch, FileText, FolderOpen, Languages, Minus, RefreshCw, Send, ShieldCheck, Square, Terminal as TerminalIcon, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -219,7 +219,7 @@ function App() {
   }, [form.agent]);
 
   useEffect(() => {
-    if (!callAgentPanelOpen || !agentTerminalElement.current) {
+    if (!agentTerminalElement.current || agentTerminal.current) {
       return undefined;
     }
     const terminal = new XTerm({
@@ -271,7 +271,7 @@ function App() {
       agentTerminal.current = undefined;
       terminal.dispose();
     };
-  }, [callAgentPanelOpen]);
+  }, []);
 
   useEffect(() => {
     const stopData = window.workshop.onAgentConsoleData((payload) => {
@@ -624,6 +624,10 @@ function App() {
   function openCallAgentPanel() {
     setCallAgentPanelOpen(true);
     setActiveAgentPrompt(ensureActiveAgentPrompt());
+    window.requestAnimationFrame(() => {
+      fitAgentTerminal();
+      agentTerminal.current?.focus();
+    });
   }
 
   async function startAgentConsole() {
@@ -634,7 +638,7 @@ function App() {
     const wasRunning = agentConsoleRunning;
     setCallAgentPanelOpen(true);
     agentConsoleAgent.current = form.agent;
-    fitAgentTerminal();
+    window.requestAnimationFrame(() => fitAgentTerminal());
     const result = await window.workshop.startAgentConsole({
       agent: form.agent,
       outputDir: form.outputDir,
@@ -778,6 +782,12 @@ function App() {
           </div>
         </div>
         <div className="topActions">
+          <IconButton icon={<TerminalIcon size={18} />} label={t.callAgent} onClick={openCallAgentPanel} primary={callAgentPanelOpen || agentConsoleRunning} />
+          {agentConsoleRunning && (
+            <span className={agentConsolePhase === "streaming" || agentConsolePhase === "waiting" ? "consoleLive topConsoleStatus" : "consoleIdle topConsoleStatus"}>
+              {agentConsolePhaseLabel()}
+            </span>
+          )}
           <IconButton icon={<FolderOpen size={18} />} label={t.openProject} onClick={openProject} />
           <IconButton icon={<ExternalLink size={18} />} label={t.openHtml} onClick={openExistingHtml} />
           <div className="segmented">
@@ -943,7 +953,6 @@ function App() {
             <IconButton icon={<Languages size={18} />} label={t.generateTranslatePrompt} onClick={generateTranslatePrompt} />
             <IconButton icon={<ShieldCheck size={18} />} label={t.generateProofreadPrompt} onClick={generateProofreadPrompt} />
             <IconButton icon={<Clipboard size={18} />} label={t.copyPrompt} onClick={copyPrompt} disabled={!prompt && !activeAgentPrompt} />
-            <IconButton icon={<Play size={18} />} label={t.callAgent} onClick={openCallAgentPanel} />
             <IconButton icon={<RefreshCw size={18} />} label={t.syncTranslation} onClick={syncTranslations} />
             <IconButton icon={<ExternalLink size={18} />} label={t.openOutput} onClick={() => form.outputDir && window.workshop.openPath(form.outputDir)} disabled={!form.outputDir} />
           </div>
@@ -962,8 +971,7 @@ function App() {
             }} />
           </label>
 
-          {callAgentPanelOpen && (
-            <section className="agentConsole agentConsoleFloating">
+          <section className="agentConsole agentConsoleFloating" hidden={!callAgentPanelOpen}>
               <header className="agentConsoleHeader">
                 <strong>{t.agentTool}</strong>
                 <span className={agentConsolePhase === "streaming" || agentConsolePhase === "waiting" ? "consoleLive" : "consoleIdle"}>
@@ -998,7 +1006,6 @@ function App() {
                 />
               </label>
             </section>
-          )}
 
           <div className="statusBar">
             <strong>{t.status}</strong>

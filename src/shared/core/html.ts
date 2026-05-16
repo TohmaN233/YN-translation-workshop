@@ -578,7 +578,6 @@ function aiToolsHtml(t: Record<string, string>, workflow: ReturnType<typeof work
           <button id="proofreadPrompt" type="button">${t.generateProofreadPrompt ?? "Generate proofread prompt"}</button>
           <button id="generateReviewHtml" type="button">${t.generateReviewHtml ?? "Generate review HTML"}</button>
           <button id="copyPrompt" type="button" class="primary">${t.copyPrompt ?? "Copy prompt"}</button>
-          <button id="callAgent" type="button">${t.callAgent ?? "Call Agent"}</button>
           <button id="syncTranslation" type="button">${t.syncTranslation ?? "Sync translation"}</button>
           <button id="chooseTranslationFile" type="button">${t.chooseTranslationFile ?? "Choose other file"}</button>
           <label class="compact-select">${t.exportTxtMode ?? "TXT"} <select id="exportTxtMode"><option value="translation">${t.exportTxtMono ?? "Mono"}</option><option value="bilingual">${t.exportTxtBilingual ?? "Bilingual"}</option></select></label>
@@ -770,6 +769,7 @@ export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
       <button id="next">${t.next}</button>
       <button id="restore">${t.restore}</button>
       <button id="export" class="primary">${t.exportJson}</button>
+      <button id="callAgent" type="button">${t.callAgent ?? "Call Agent"}</button>
       <button id="glossaryDrawerToggle" type="button">${t.glossaryOpen ?? "Glossary"}</button>
       ${themeControlsHtml(t)}
     </div>

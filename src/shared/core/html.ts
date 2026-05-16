@@ -176,6 +176,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     lineReviewLinked: "\u5df2\u6807\u8bb0\u6b63\u6587 HTML",
     proposalChangesApplied: "\u5df2\u5e94\u7528\u5efa\u8bae",
     proposalApplySkipped: "\u8df3\u8fc7",
+    proposalSafetySkipped: "安全检查未通过",
     proposalOpenFailed: "\u6253\u5f00\u6b63\u6587 HTML \u5931\u8d25",
     reviewGenerated: "\u5df2\u751f\u6210\u5ba1\u9605 HTML",
     reviewGenerationFailed: "\u751f\u6210\u5ba1\u9605 HTML \u5931\u8d25",
@@ -287,6 +288,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     lineReviewLinked: "Line review HTML marked",
     proposalChangesApplied: "Proposals applied",
     proposalApplySkipped: "skipped",
+    proposalSafetySkipped: "failed safety check",
     proposalOpenFailed: "Failed to open line HTML",
     reviewGenerated: "Review HTML generated",
     reviewGenerationFailed: "Review HTML generation failed",
@@ -2494,6 +2496,86 @@ function lineReviewFileUrl(line) {
   const normalized = pathPart.replace(/\\/g, "/");
   return "file:///" + normalized.replace(/^\/+/, "") + hash;
 }
+function lineReviewFilePath() {
+  const raw = String(data.lineReviewPath || "").trim().replace(/#.*$/, "");
+  if (!raw) return "";
+  if (/^file:/i.test(raw)) {
+    try {
+      const url = new URL(raw);
+      const pathname = decodeURIComponent(url.pathname || "");
+      return /^\/[A-Za-z]:\//.test(pathname) ? pathname.slice(1) : pathname;
+    } catch {
+      return "";
+    }
+  }
+  return raw;
+}
+let linkedLineReviewRowsPromise = null;
+function parseLineReviewRowsFromHtml(html) {
+  const match = String(html || "").match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/i);
+  if (!match) return [];
+  try {
+    const parsed = JSON.parse(match[1]);
+    return Array.isArray(parsed?.rows) ? parsed.rows : [];
+  } catch {
+    return [];
+  }
+}
+async function readLinkedLineReviewRows() {
+  if (linkedLineReviewRowsPromise) return linkedLineReviewRowsPromise;
+  linkedLineReviewRowsPromise = (async () => {
+    const bridge = htmlBridge();
+    const targetPath = lineReviewFilePath();
+    if (!targetPath || !bridge?.readTextFile) return [];
+    try {
+      const result = await bridge.readTextFile({ path: targetPath });
+      return parseLineReviewRowsFromHtml(result?.text || "");
+    } catch {
+      return [];
+    }
+  })();
+  return linkedLineReviewRowsPromise;
+}
+function comparableText(value) {
+  return String(value || "").normalize("NFKC").replace(/\s+/g, "").trim().toLowerCase();
+}
+function textSimilarity(left, right) {
+  const a = comparableText(left);
+  const b = comparableText(right);
+  if (!a && !b) return 1;
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) {
+    return Math.min(a.length, b.length) / Math.max(a.length, b.length);
+  }
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = new Array(b.length + 1);
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j += 1) previous[j] = current[j];
+  }
+  return 1 - previous[b.length] / Math.max(a.length, b.length);
+}
+function lineReviewRowFor(rows, line) {
+  const numericLine = Number(line || 0);
+  if (!Number.isInteger(numericLine) || numericLine <= 0) return undefined;
+  return rows.find(row => Number(row.line) === numericLine) || rows[numericLine - 1];
+}
+function proposalSafetyCheck(item, lineState, rows) {
+  const line = Number(item.line);
+  const row = lineReviewRowFor(rows, line);
+  if (!row) return { ok: false, reason: "missing-line" };
+  const sourceScore = item.src ? textSimilarity(item.src, row.source) : 1;
+  if (sourceScore < 0.8) return { ok: false, reason: "source-mismatch" };
+  const currentText = lineState.edits?.[line] ?? row.translation ?? "";
+  const currentScore = item.current ? textSimilarity(item.current, currentText) : 1;
+  if (currentScore < 0.8) return { ok: false, reason: "current-mismatch" };
+  return { ok: true, reason: "" };
+}
 function readLineReviewState() {
   const storageKey = lineReviewStorageKey();
   if (!storageKey) {
@@ -2661,9 +2743,11 @@ function proposalReplacementText(item, decision) {
 async function applyProposalChanges() {
   const target = readLineReviewState();
   if (!target) return;
+  const lineRows = await readLinkedLineReviewRows();
   target.lineState.auditVisible = true;
   let applied = 0;
   let skipped = 0;
+  let safetySkipped = 0;
   let firstAppliedLine = 0;
   for (const item of data.proposals) {
     const line = Number(item.line);
@@ -2671,6 +2755,12 @@ async function applyProposalChanges() {
     const text = proposalReplacementText(item, decision);
     if (!Number.isInteger(line) || line <= 0 || !text) {
       skipped += 1;
+      continue;
+    }
+    const safety = proposalSafetyCheck(item, target.lineState, lineRows);
+    if (!safety.ok) {
+      skipped += 1;
+      safetySkipped += 1;
       continue;
     }
     target.lineState.edits[line] = text;
@@ -2685,7 +2775,8 @@ async function applyProposalChanges() {
   const persisted = await persistLineReviewState(target, firstAppliedLine || undefined);
   save();
   render();
-  setProposalStatus((data.labels.proposalChangesApplied || "Proposals applied") + ": " + applied + " / " + (data.labels.proposalApplySkipped || "skipped") + ": " + skipped);
+  const safetyNote = safetySkipped > 0 ? " / " + (data.labels.proposalSafetySkipped || "failed safety check") + ": " + safetySkipped : "";
+  setProposalStatus((data.labels.proposalChangesApplied || "Proposals applied") + ": " + applied + " / " + (data.labels.proposalApplySkipped || "skipped") + ": " + skipped + safetyNote);
   if (!persisted) {
     await openLinkedLineReview(firstAppliedLine);
   }

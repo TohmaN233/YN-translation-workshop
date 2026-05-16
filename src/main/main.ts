@@ -983,8 +983,10 @@ async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promi
   const lineJson = JSON.stringify(line);
   await tab.view.webContents.executeJavaScript(
     `(() => {
-      const key = "translation-workshop:line:" + location.pathname;
-      const existingState = JSON.parse(localStorage.getItem(key) || "{}") || {};
+      const legacyKey = "translation-workshop:line:" + location.pathname;
+      const primaryKey = typeof lineReviewStorageKey === "function" ? lineReviewStorageKey() : legacyKey;
+      const storageKeys = [...new Set([primaryKey, legacyKey].filter(Boolean))];
+      const existingState = JSON.parse(localStorage.getItem(primaryKey) || localStorage.getItem(legacyKey) || "{}") || {};
       const incomingState = ${stateJson};
       const mergedState = {
         ...existingState,
@@ -995,7 +997,9 @@ async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promi
         auditWhitelist: { ...(existingState.auditWhitelist || {}), ...(incomingState.auditWhitelist || {}) },
         theme: { ...(existingState.theme || {}), ...(incomingState.theme || {}) }
       };
-      localStorage.setItem("translation-workshop:line:" + location.pathname, JSON.stringify(mergedState));
+      for (const storageKey of storageKeys) {
+        localStorage.setItem(storageKey, JSON.stringify(mergedState));
+      }
       if (typeof state === "object" && state) {
         Object.assign(state, mergedState);
         state.edits = mergedState.edits;

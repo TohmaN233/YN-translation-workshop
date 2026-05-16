@@ -84,6 +84,27 @@ function cleanValue(raw: string): string {
     .trim();
 }
 
+function lineNumberFromIssueId(id: string | undefined): number | undefined {
+  const match = id?.match(/^[HML](?:[1-9])?-(\d{1,7})$/i);
+  const line = Number.parseInt(match?.[1] ?? "", 10);
+  return Number.isFinite(line) && line > 0 ? line : undefined;
+}
+
+function lineNumberFromText(text: string): number | undefined {
+  const patterns = [
+    /(?:^|[\s([（【])(?:line|row)\s*[:#：]?\s*(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
+    /(?:^|[\s([（【])(?:行号|行)\s*[:#：]?\s*(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
+    /第\s*(\d{1,7})\s*行/i
+  ];
+  for (const pattern of patterns) {
+    const line = Number.parseInt(text.match(pattern)?.[1] ?? "", 10);
+    if (Number.isFinite(line) && line > 0) {
+      return line;
+    }
+  }
+  return undefined;
+}
+
 function headingInfo(lines: string[]): { id?: string; problemType?: string; line?: number } {
   const heading = lines.find((line) => /^\s{0,3}#{1,6}\s+\S/.test(line));
   if (!heading) {
@@ -92,10 +113,10 @@ function headingInfo(lines: string[]): { id?: string; problemType?: string; line
   const text = heading.replace(/^\s{0,3}#{1,6}\s+/, "").trim();
   const bracketId = text.match(/\[((?:H[1-9]|M[1-5]|L[1-4]|[HML])-?\d{1,4})\]/i)?.[1];
   const plainId = text.match(/\b((?:H[1-9]|M[1-5]|L[1-4]|[HML])-?\d{1,4})\b/i)?.[1];
-  const line = Number.parseInt(text.match(/\bL(\d+)\b/i)?.[1] ?? "", 10);
+  const id = (bracketId ?? plainId)?.toUpperCase();
   return {
-    id: (bracketId ?? plainId)?.toUpperCase(),
-    line: Number.isFinite(line) ? line : undefined,
+    id,
+    line: lineNumberFromIssueId(id) ?? lineNumberFromText(text),
     problemType: text.replace(/^\[[^\]]+]\s*/, "")
   };
 }
@@ -128,8 +149,8 @@ function parseBlock(lines: string[], index: number): ReviewProposal | undefined 
       continue;
     }
     if (parsed.field === "line") {
-      const parsedLine = Number.parseInt(parsed.value, 10);
-      if (Number.isFinite(parsedLine)) {
+      const parsedLine = lineNumberFromText("line " + parsed.value) ?? Number.parseInt(parsed.value, 10);
+      if (Number.isFinite(parsedLine) && parsedLine > 0) {
         data.line = parsedLine;
       }
     } else {

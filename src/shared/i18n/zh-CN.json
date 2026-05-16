@@ -7,7 +7,7 @@
   "setup": "安装 / 配置提示",
   "bundledSkills": "内置 skill / command",
   "copyInstallCommand": "复制安装命令",
-  "installCommand": "本地 Node 安装命令",
+  "installCommand": "推荐 GitHub 安装命令",
   "skillLayoutCodex": "Codex 使用目录型 skill：每个 skill 是 ~/.codex/skills/<name>/ 目录，入口文件是 SKILL.md。",
   "skillLayoutClaude": "Claude Code 使用 slash command：每个 command 是 ~/.claude/commands/<name>.md 文件。",
   "skillStatusCodexReady": "Codex CLI 已检测到；Codex skills 已安装。",

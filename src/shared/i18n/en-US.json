@@ -7,7 +7,7 @@
   "setup": "Install / setup notes",
   "bundledSkills": "Bundled skill / command",
   "copyInstallCommand": "Copy install command",
-  "installCommand": "Local Node install command",
+  "installCommand": "Recommended GitHub install command",
   "skillLayoutCodex": "Codex uses directory skills: each skill is a ~/.codex/skills/<name>/ folder with SKILL.md as the entry file.",
   "skillLayoutClaude": "Claude Code uses slash commands: each command is a ~/.claude/commands/<name>.md file.",
   "skillStatusCodexReady": "Codex CLI was detected; Codex skills are installed.",

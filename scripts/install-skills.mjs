@@ -1,10 +1,31 @@
 #!/usr/bin/env node
-import { cp, lstat, mkdir } from "node:fs/promises";
+import { cp, lstat, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const codexSkills = ["translate-text", "proofread-translation"];
 const claudeCommands = ["translate-text.md", "proofread-translation.md"];
+const githubRawBase = "https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main";
+const codexSkillFiles = {
+  "translate-text": [
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/translation-workflow.md"
+  ],
+  "proofread-translation": [
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/proofread-workflow.md"
+  ]
+};
+
+function defaultRepoPath() {
+  try {
+    return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  } catch {
+    return process.cwd();
+  }
+}
 
 export function parseArgs(argv) {
   const options = {
@@ -12,7 +33,9 @@ export function parseArgs(argv) {
     global: false,
     replace: false,
     home: process.env.HOME || process.env.USERPROFILE || "",
-    repo: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
+    repo: "",
+    source: "local",
+    rawBase: githubRawBase
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -26,11 +49,18 @@ export function parseArgs(argv) {
       options.home = argv[++index] || "";
     } else if (arg === "--repo") {
       options.repo = path.resolve(argv[++index] || "");
+    } else if (arg === "--github") {
+      options.source = "github";
+    } else if (arg === "--raw-base") {
+      options.rawBase = (argv[++index] || "").replace(/\/+$/, "");
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
+  }
+  if (!options.repo) {
+    options.repo = defaultRepoPath();
   }
   return options;
 }
@@ -45,13 +75,17 @@ function usage() {
     "  node /path/to/translation-workshop/scripts/install-skills.mjs --agent all --global",
     "  node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global",
     "  node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global",
+    "  irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global",
+    "  curl -fsSL https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global",
     "",
     "Options:",
     "  --agent codex|claude|all",
     "  --global, -g",
+    "  --github       Download skill files from the GitHub repository instead of a local checkout.",
     "  --replace      Back up then update existing bundled skill targets. Default: skip existing targets.",
     "  --home <path>   Test/install into a custom home directory.",
-    "  --repo <path>   Use a custom translation-workshop repository path."
+    "  --repo <path>   Use a custom translation-workshop repository path.",
+    "  --raw-base <url> Override the GitHub raw base URL used with --github."
   ].join("\n");
 }
 
@@ -124,6 +158,28 @@ async function copyFile(source, destination, options) {
   return { status: existing ? "updated" : "installed", backupPath, reason: "" };
 }
 
+function rawUrl(rawBase, ...parts) {
+  return `${rawBase.replace(/\/+$/, "")}/${parts.map((part) => encodeURIComponent(part).replace(/%2F/g, "/")).join("/")}`;
+}
+
+async function copyRemoteFile(source, destination, options) {
+  const existing = await pathInfo(destination);
+  if (existing && !options.replace) {
+    return { status: "skipped", backupPath: "", reason: "target already exists" };
+  }
+  if (typeof fetch !== "function") {
+    throw new Error("GitHub install requires Node.js 18 or newer.");
+  }
+  const response = await fetch(source);
+  if (!response.ok) {
+    throw new Error(`Failed to download ${source}: ${response.status} ${response.statusText}`);
+  }
+  const backupPath = existing ? await backupExistingTarget(options.home, destination, options.backupId) : "";
+  await mkdir(path.dirname(destination), { recursive: true });
+  await writeFile(destination, Buffer.from(await response.arrayBuffer()));
+  return { status: existing ? "updated" : "installed", backupPath, reason: "" };
+}
+
 export function installPlan({ repo, home, agent }) {
   const normalizedAgent = agent === "codex" || agent === "claude" || agent === "all" ? agent : "";
   if (!normalizedAgent) {
@@ -154,8 +210,40 @@ export function installPlan({ repo, home, agent }) {
   return operations;
 }
 
+export function githubInstallPlan({ rawBase, home, agent }) {
+  const normalizedAgent = agent === "codex" || agent === "claude" || agent === "all" ? agent : "";
+  if (!normalizedAgent) {
+    throw new Error(`Invalid agent "${agent}". Expected codex, claude, or all.`);
+  }
+  if (!home) {
+    throw new Error("A home directory is required. Set HOME/USERPROFILE or pass --home.");
+  }
+  const operations = [];
+  if (normalizedAgent === "codex" || normalizedAgent === "all") {
+    for (const [skillName, files] of Object.entries(codexSkillFiles)) {
+      for (const file of files) {
+        operations.push({
+          kind: "remote-file",
+          source: rawUrl(rawBase, "skills", "codex", skillName, file),
+          destination: path.join(home, ".codex", "skills", skillName, ...file.split("/"))
+        });
+      }
+    }
+  }
+  if (normalizedAgent === "claude" || normalizedAgent === "all") {
+    for (const name of claudeCommands) {
+      operations.push({
+        kind: "remote-file",
+        source: rawUrl(rawBase, "skills", "claude", "commands", name),
+        destination: path.join(home, ".claude", "commands", name)
+      });
+    }
+  }
+  return operations;
+}
+
 export async function installSkills(options) {
-  const operations = installPlan(options);
+  const operations = options.source === "github" ? githubInstallPlan(options) : installPlan(options);
   const copyOptions = {
     home: options.home,
     replace: Boolean(options.replace),
@@ -166,6 +254,8 @@ export async function installSkills(options) {
     let result;
     if (operation.kind === "directory") {
       result = await copyDirectory(operation.source, operation.destination, copyOptions);
+    } else if (operation.kind === "remote-file") {
+      result = await copyRemoteFile(operation.source, operation.destination, copyOptions);
     } else {
       result = await copyFile(operation.source, operation.destination, copyOptions);
     }
@@ -192,7 +282,7 @@ async function main() {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] === "-" || (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

@@ -59,6 +59,7 @@ type WorkshopPromptBuildArgs = {
 type WorkshopSkillInstallDetails = {
   repoRoot: string;
   command: string;
+  githubCommand: string;
   args: string[];
 };
 

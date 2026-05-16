@@ -202,7 +202,7 @@ function App() {
           window.workshop.skillInstallStatus({ agent: form.agent })
         ]);
         if (!stopped) {
-          setSkillInstallCommand(details.command);
+          setSkillInstallCommand(details.githubCommand || details.command);
           setSkillInstallStatus(installStatus);
         }
       } catch {
@@ -584,8 +584,9 @@ function App() {
 
   async function copySkillInstallCommand() {
     const details = await window.workshop.skillInstallCommand({ agent: form.agent });
-    setSkillInstallCommand(details.command);
-    await window.workshop.copyText(details.command);
+    const command = details.githubCommand || details.command;
+    setSkillInstallCommand(command);
+    await window.workshop.copyText(command);
     setStatus(t.copied);
   }
 

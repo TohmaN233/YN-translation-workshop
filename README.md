@@ -119,7 +119,13 @@ macOS / Linux / Git Bash:
 - 翻译：`skills/codex/translate-text`
 - 校对：`skills/codex/proofread-translation`
 
-应用只复制安装命令，不会自动写入你的全局 Codex 配置：
+应用只复制安装命令，不会自动写入你的全局 Codex 配置。推荐使用 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用：
+
+```powershell
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global
+```
+
+如果你已经 clone 了仓库，也可以用本地路径安装：
 
 ```bash
 node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global
@@ -139,7 +145,13 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --gl
 - 翻译：`skills/claude/commands/translate-text.md`
 - 校对：`skills/claude/commands/proofread-translation.md`
 
-应用只复制安装命令，不会自动写入你的全局 Claude Code 配置：
+应用只复制安装命令，不会自动写入你的全局 Claude Code 配置。推荐使用 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用：
+
+```powershell
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global
+```
+
+如果你已经 clone 了仓库，也可以用本地路径安装：
 
 ```bash
 node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global

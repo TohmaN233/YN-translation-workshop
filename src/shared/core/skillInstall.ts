@@ -1,5 +1,7 @@
 export type SkillInstallAgent = "codex" | "claude" | "all";
 
+export const githubSkillInstallScriptUrl = "https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs";
+
 export const bundledSkillPaths = {
   codex: {
     translate: "skills/codex/translate-text",
@@ -38,4 +40,18 @@ export function buildLocalSkillInstallArgs(repoRoot: string, agent: SkillInstall
 
 export function buildLocalSkillInstallCommand(repoRoot: string, agent: SkillInstallAgent): string {
   return ["node", ...buildLocalSkillInstallArgs(repoRoot, agent)].map(quoteShellArg).join(" ");
+}
+
+export function buildGithubSkillInstallCommand(agent: SkillInstallAgent, platform: NodeJS.Platform | string): string {
+  if (platform === "win32") {
+    return [
+      "powershell",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      `"irm '${githubSkillInstallScriptUrl}' | node - --github --agent ${agent} --global"`
+    ].join(" ");
+  }
+  return `curl -fsSL ${quoteShellArg(githubSkillInstallScriptUrl)} | node - --github --agent ${agent} --global`;
 }

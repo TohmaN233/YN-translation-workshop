@@ -16,7 +16,7 @@ import { renderBatchLineReviewIndexHtml, renderLineReviewHtml, renderProposalRev
 import { upgradeLegacyLineReviewHtmlContent, upgradeLegacyProposalReviewHtmlContent } from "../shared/core/legacyHtml.ts";
 import { rankProofreadReportCandidates, type ProofreadReportCandidate } from "../shared/core/reportDiscovery.ts";
 import { parseProofreadMarkdown } from "../shared/core/reviewReport.ts";
-import { buildLocalSkillInstallArgs, buildLocalSkillInstallCommand, type SkillInstallAgent } from "../shared/core/skillInstall.ts";
+import { buildGithubSkillInstallCommand, buildLocalSkillInstallArgs, buildLocalSkillInstallCommand, type SkillInstallAgent } from "../shared/core/skillInstall.ts";
 import { buildPrompt, type PromptAdvancedOptions, type PromptBuildOptions } from "../shared/core/prompts.ts";
 import { readEpubText } from "./epubReader.ts";
 import { createTranslatedEpub } from "./epubWriter.ts";
@@ -524,21 +524,30 @@ function normalizeSkillInstallAgent(value: unknown): SkillInstallAgent {
   return value === "codex" || value === "claude" || value === "all" ? value : "all";
 }
 
+function isSkillInstallRoot(candidate: string): boolean {
+  return existsSync(path.join(candidate, "scripts", "install-skills.mjs")) && existsSync(path.join(candidate, "skills"));
+}
+
 function localPackageRoot(): string {
-  const candidates = [app.getAppPath(), process.cwd()];
+  const candidates = [
+    ...(app.isPackaged ? [path.join(process.resourcesPath, "app.asar.unpacked")] : []),
+    app.getAppPath(),
+    process.cwd()
+  ];
   for (const candidate of candidates) {
-    if (existsSync(path.join(candidate, "package.json")) && existsSync(path.join(candidate, "skills"))) {
+    if (isSkillInstallRoot(candidate)) {
       return candidate;
     }
   }
   return app.getAppPath();
 }
 
-function localSkillInstallDetails(agent: SkillInstallAgent): { repoRoot: string; command: string; args: string[] } {
+function localSkillInstallDetails(agent: SkillInstallAgent): { repoRoot: string; command: string; githubCommand: string; args: string[] } {
   const repoRoot = localPackageRoot();
   return {
     repoRoot,
     command: buildLocalSkillInstallCommand(repoRoot, agent),
+    githubCommand: buildGithubSkillInstallCommand(agent, process.platform),
     args: buildLocalSkillInstallArgs(repoRoot, agent)
   };
 }

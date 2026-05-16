@@ -2571,9 +2571,6 @@ function proposalSafetyCheck(item, lineState, rows) {
   if (!row) return { ok: false, reason: "missing-line" };
   const sourceScore = item.src ? textSimilarity(item.src, row.source) : 1;
   if (sourceScore < 0.8) return { ok: false, reason: "source-mismatch" };
-  const currentText = lineState.edits?.[line] ?? row.translation ?? "";
-  const currentScore = item.current ? textSimilarity(item.current, currentText) : 1;
-  if (currentScore < 0.8) return { ok: false, reason: "current-mismatch" };
   return { ok: true, reason: "" };
 }
 function readLineReviewState() {

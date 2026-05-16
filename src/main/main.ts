@@ -1,4 +1,4 @@
-import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, type MenuItemConstructorOptions } from "electron";
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -167,12 +167,85 @@ interface HtmlCandidate {
 type BilingualFileKind = "txt" | "epub";
 
 const isDev = process.env.TRANSLATION_WORKSHOP_DEV === "1";
+const repositoryUrl = "https://github.com/TohmaN233/YN-translation-workshop";
 const require = createRequire(import.meta.url);
 const htmlViewerTabs = new Map<string, { filePath: string; hash: string; title: string; view: BrowserView }>();
 let htmlViewerWindow: BrowserWindow | undefined;
 let activeHtmlViewerTab = "";
 const htmlViewerTabBarHeight = 44;
 let interactiveAgentSession: InteractiveAgentSession | undefined;
+
+function configureApplicationMenu(): void {
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: "File",
+      submenu: process.platform === "darwin" ? [{ role: "close" }] : [{ role: "quit" }]
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" }
+      ]
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" }
+      ]
+    },
+    {
+      label: "Window",
+      submenu: [
+        { role: "minimize" },
+        { role: "close" }
+      ]
+    },
+    {
+      label: "Help",
+      submenu: [
+        {
+          label: "GitHub Repository",
+          click: () => {
+            void shell.openExternal(repositoryUrl);
+          }
+        }
+      ]
+    }
+  ];
+
+  if (process.platform === "darwin") {
+    template.unshift({
+      label: app.name,
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" }
+      ]
+    });
+  }
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 function timestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
@@ -1480,7 +1553,10 @@ ipcMain.handle("agent-console:status", async () => {
   return interactiveConsoleSnapshot();
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  configureApplicationMenu();
+  await createWindow();
+});
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();

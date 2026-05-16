@@ -128,7 +128,7 @@ Bundled paths:
 - Translate: `skills/codex/translate-text`
 - Proofread: `skills/codex/proofread-translation`
 
-The app only copies the install command. It does not automatically write to your global Codex configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups:
+The app only copies the install command. It does not automatically write to your global Codex configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups. It requires Node.js 18 or newer:
 
 ```powershell
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global
@@ -154,7 +154,7 @@ Bundled paths:
 - Translate: `skills/claude/commands/translate-text.md`
 - Proofread: `skills/claude/commands/proofread-translation.md`
 
-The app only copies the install command. It does not automatically write to your global Claude Code configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups:
+The app only copies the install command. It does not automatically write to your global Claude Code configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups. It requires Node.js 18 or newer:
 
 ```powershell
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global

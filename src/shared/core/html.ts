@@ -1908,13 +1908,20 @@ function countLongestGlossaryMatches(text, items) {
   }
   return counts;
 }
+function glossaryTermKey(term) {
+  return String(term || "").trim().toLocaleLowerCase();
+}
 function auditGlossaryTermCountsLocal(sourceText, translationText) {
   const entries = currentGlossaryEntries().filter(entry => entry.source && entry.target && entry.source !== entry.target);
   const sourceCounts = countLongestGlossaryMatches(sourceText, entries.map((entry, index) => ({ key: index, candidates: [entry.source] })));
-  const targetCounts = countLongestGlossaryMatches(translationText, entries.map((entry, index) => ({ key: index, candidates: [entry.target] })));
+  const uniqueTargets = uniqueGlossaryTerms(entries.map(entry => entry.target));
+  const targetCounts = countLongestGlossaryMatches(
+    translationText,
+    uniqueTargets.map(target => ({ key: glossaryTermKey(target), candidates: [target] }))
+  );
   return entries.flatMap((entry, index) => {
     const sourceCount = sourceCounts[index] || 0;
-    const targetCount = targetCounts[index] || 0;
+    const targetCount = targetCounts[glossaryTermKey(entry.target)] || 0;
     if (sourceCount <= targetCount) return [];
     return [{
       code: "H3",

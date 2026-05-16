@@ -130,6 +130,7 @@ declare global {
     };
     workshopTabs?: {
       activate: (key: string) => Promise<boolean>;
+      close: (key: string) => Promise<boolean>;
     };
   }
 }

@@ -852,19 +852,36 @@ function renderHtmlTabShell(): string {
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; height: 100vh; overflow: hidden; background: #eaf6ff; color: #25304a; font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif; }
-    #tabs { height: ${htmlViewerTabBarHeight}px; display: flex; align-items: end; gap: 6px; padding: 7px 10px 0; background: linear-gradient(100deg, #2d5d9f, #344b9a 48%, #72d3ff); border-bottom: 1px solid rgba(255,255,255,.55); }
-    button { min-width: 140px; max-width: 280px; height: 34px; padding: 0 12px; border: 1px solid rgba(255,255,255,.6); border-bottom: 0; border-radius: 8px 8px 0 0; background: rgba(255,255,255,.72); color: #26324d; font: inherit; font-weight: 700; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-    button.active { background: #fff; color: #17345f; }
+    #tabs { height: ${htmlViewerTabBarHeight}px; display: flex; align-items: end; gap: 6px; padding: 7px 10px 0; overflow-x: auto; background: linear-gradient(100deg, #2d5d9f, #344b9a 48%, #72d3ff); border-bottom: 1px solid rgba(255,255,255,.55); }
+    .tab { flex: 0 0 auto; min-width: 140px; max-width: 280px; height: 34px; display: inline-flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; border: 1px solid rgba(255,255,255,.6); border-bottom: 0; border-radius: 8px 8px 0 0; background: rgba(255,255,255,.72); color: #26324d; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+    .tab.active { background: #fff; color: #17345f; }
+    .tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tab-close { flex: 0 0 auto; width: 22px; height: 22px; display: inline-grid; place-items: center; border-radius: 999px; color: #52617f; font-size: 18px; line-height: 1; }
+    .tab-close:hover { background: rgba(42,63,103,.12); color: #17233c; }
   </style>
 </head>
 <body>
   <nav id="tabs"></nav>
   <script>
+    function escapeHtml(value) {
+      return String(value || "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
     window.renderTabs = function(tabs) {
       const root = document.getElementById("tabs");
-      root.innerHTML = tabs.map(tab => '<button title="' + tab.title.replace(/"/g, '&quot;') + '" class="' + (tab.active ? 'active' : '') + '" data-key="' + tab.key + '">' + tab.title + '</button>').join("");
+      root.innerHTML = tabs.map(tab =>
+        '<button title="' + escapeHtml(tab.title) + '" class="tab ' + (tab.active ? 'active' : '') + '" data-key="' + escapeHtml(tab.key) + '">' +
+        '<span class="tab-title">' + escapeHtml(tab.title) + '</span>' +
+        '<span class="tab-close" title="Close" aria-label="Close" data-close-key="' + escapeHtml(tab.key) + '">×</span>' +
+        '</button>'
+      ).join("");
     };
     document.getElementById("tabs").addEventListener("click", event => {
+      const close = event.target.closest("[data-close-key]");
+      if (close && window.workshopTabs) {
+        event.stopPropagation();
+        window.workshopTabs.close(close.dataset.closeKey);
+        return;
+      }
       const button = event.target.closest("button[data-key]");
       if (button && window.workshopTabs) window.workshopTabs.activate(button.dataset.key);
     });
@@ -933,6 +950,32 @@ function activateHtmlViewerTab(key: string): boolean {
   htmlViewerWindow.setTitle(tab.title);
   htmlViewerWindow.show();
   htmlViewerWindow.focus();
+  updateHtmlViewerTabs();
+  return true;
+}
+
+function closeHtmlViewerTab(key: string): boolean {
+  const tab = htmlViewerTabs.get(key);
+  if (!tab || !htmlViewerWindow || htmlViewerWindow.isDestroyed()) {
+    return false;
+  }
+  const keys = Array.from(htmlViewerTabs.keys());
+  const closedIndex = keys.indexOf(key);
+  htmlViewerWindow.removeBrowserView(tab.view);
+  htmlViewerTabs.delete(key);
+  if (htmlViewerTabs.size === 0) {
+    activeHtmlViewerTab = "";
+    updateHtmlViewerTabs();
+    htmlViewerWindow.close();
+    return true;
+  }
+  if (activeHtmlViewerTab === key) {
+    const nextKeys = Array.from(htmlViewerTabs.keys());
+    const nextKey = nextKeys[Math.min(Math.max(closedIndex, 0), nextKeys.length - 1)];
+    if (nextKey) {
+      return activateHtmlViewerTab(nextKey);
+    }
+  }
   updateHtmlViewerTabs();
   return true;
 }
@@ -1559,6 +1602,10 @@ ipcMain.handle("skills:status", async (_event, args: SkillInstallArgs) => {
 
 ipcMain.handle("html-tabs:activate", async (_event, key: string) => {
   return activateHtmlViewerTab(key);
+});
+
+ipcMain.handle("html-tabs:close", async (_event, key: string) => {
+  return closeHtmlViewerTab(key);
 });
 
 ipcMain.handle("agent-console:start", async (_event, args: AgentConsoleStartArgs) => {

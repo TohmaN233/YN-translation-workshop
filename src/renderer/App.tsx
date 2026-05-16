@@ -408,6 +408,20 @@ function App() {
     await window.workshop.openPath(selected);
   }
 
+  async function openReviewHtml() {
+    const selected = await window.workshop.openFile([
+      { name: "Review HTML", extensions: ["html", "htm"] },
+      { name: "All files", extensions: ["*"] }
+    ]);
+    if (!selected) {
+      return;
+    }
+    setLastOutput(selected);
+    setStatus(t.reviewHtmlOpened ?? t.htmlOpened);
+    await saveProject(selected);
+    await window.workshop.openPath(selected);
+  }
+
   async function pickFile(key: keyof Pick<FormState, "sourcePath" | "translationPath" | "glossaryPath" | "reportPath">) {
     const filters = key === "glossaryPath" ? glossaryFileFilters : documentFileFilters;
     const selected = await window.workshop.openFile(filters);
@@ -961,6 +975,7 @@ function App() {
           <div className="actions compact">
             <IconButton icon={<FileSearch size={18} />} label={t.findProofreadReport} onClick={findProofreadReport} />
             <IconButton icon={<FileText size={18} />} label={t.generateReviewHtml} onClick={() => generateReviewHtml()} primary />
+            <IconButton icon={<ExternalLink size={18} />} label={t.openReviewHtml} onClick={openReviewHtml} />
           </div>
 
           <label className="field promptBox">

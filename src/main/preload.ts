@@ -60,5 +60,6 @@ contextBridge.exposeInMainWorld("workshopHtml", {
 });
 
 contextBridge.exposeInMainWorld("workshopTabs", {
-  activate: (key: string) => ipcRenderer.invoke("html-tabs:activate", key)
+  activate: (key: string) => ipcRenderer.invoke("html-tabs:activate", key),
+  close: (key: string) => ipcRenderer.invoke("html-tabs:close", key)
 });

@@ -758,7 +758,7 @@ async function spoolAgentPrompt(session: InteractiveAgentSession, text: string):
   const relativePath = toAgentRelativePath(session.outputDir, promptPath);
   return {
     promptPath,
-    text: buildAgentPromptFileMessage(relativePath, promptPath)
+    text: buildAgentPromptFileMessage(relativePath, promptPath, text)
   };
 }
 
@@ -774,7 +774,7 @@ async function submitInteractiveAgentInput(session: InteractiveAgentSession, tex
     ok: true,
     promptPath: prepared.promptPath,
     message: prepared.promptPath
-      ? `Prompt saved to file and sent as a file reference: ${prepared.promptPath}`
+      ? `Prompt saved to file; skill invocation was sent with a details reference: ${prepared.promptPath}`
       : undefined
   };
 }

@@ -107,7 +107,7 @@ function bracketedPath(pathValue: string): string {
 }
 
 function skillInvocation(agent: AgentType, skillName: "translate-text" | "proofread-translation"): string {
-  return agent === "claude" ? `/${skillName}` : `Use $${skillName}`;
+  return agent === "claude" ? `/${skillName}` : `$${skillName}`;
 }
 
 export function promptParameterDefaults(projectDir: string, advanced: PromptAdvancedOptions = {}) {

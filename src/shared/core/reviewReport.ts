@@ -84,16 +84,12 @@ function cleanValue(raw: string): string {
     .trim();
 }
 
-function lineNumberFromIssueId(id: string | undefined): number | undefined {
-  const match = id?.match(/^[HML](?:[1-9])?-(\d{1,7})$/i);
-  const line = Number.parseInt(match?.[1] ?? "", 10);
-  return Number.isFinite(line) && line > 0 ? line : undefined;
-}
-
 function lineNumberFromText(text: string): number | undefined {
   const patterns = [
-    /(?:^|[\s([（【])(?:line|row)\s*[:#：]?\s*(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
-    /(?:^|[\s([（【])(?:行号|行)\s*[:#：]?\s*(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
+    /\b(?:MC|Chunk|Region|Split|Part|Sample|Round)\b[^\n|#]*\bL(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
+    /\|\s*[^\n#]*\bL(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
+    /(?:^|[\s([（【])(?:line|row)\s*[:#：]?\s*L?(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
+    /(?:^|[\s([（【])(?:行号|行)\s*[:#：]?\s*L?(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
     /第\s*(\d{1,7})\s*行/i
   ];
   for (const pattern of patterns) {
@@ -116,7 +112,7 @@ function headingInfo(lines: string[]): { id?: string; problemType?: string; line
   const id = (bracketId ?? plainId)?.toUpperCase();
   return {
     id,
-    line: lineNumberFromIssueId(id) ?? lineNumberFromText(text),
+    line: lineNumberFromText(text),
     problemType: text.replace(/^\[[^\]]+]\s*/, "")
   };
 }

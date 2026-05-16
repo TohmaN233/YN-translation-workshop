@@ -75,6 +75,8 @@ const labels = {
     jump: "跳转",
     total: "总数",
     changed: "人工改写",
+    searchMatches: "匹配",
+    searchNoMatches: "无匹配",
     exportJson: "导出状态 JSON",
     restore: "还原当前行",
     reviewTitle: "校对建议审阅",
@@ -96,6 +98,8 @@ const labels = {
     jump: "Go",
     total: "Total",
     changed: "Manual edits",
+    searchMatches: "matches",
+    searchNoMatches: "No matches",
     exportJson: "Export state JSON",
     restore: "Restore current row",
     reviewTitle: "Proposal Review",
@@ -426,6 +430,7 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .audit-marker.severity-L { color:#2d6e9f; border-color:#a9ddff; background:#f4fbff; }
     .audit-marker.whitelisted { color:#1a6f55; border-color:#9de3cd; background:#effdf9; }
     .row.match { background:rgba(185,225,255,.35); outline:1px solid #8bc8f3; border-radius:8px; }
+    .row.match .cell { background:#fffbe6; border-color:#f3ca62; box-shadow:inset 0 0 0 1px rgba(243,202,98,.35); }
     .row.jump-target { background:rgba(255,229,138,.34); outline:2px solid #ffc764; border-radius:8px; }
     @media (max-width: 900px) { header { grid-template-columns:1fr; } .toolbar { justify-content:start; } .row, body.audit-visible .row { grid-template-columns:42px 1fr 42px; } .source,.target { grid-column:2; } .audit-marker { grid-column:3; grid-row:2 / span 2; } }`
     : `
@@ -801,8 +806,27 @@ export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
 function lineReviewScript(): string {
   return String.raw`
 const data = JSON.parse(document.getElementById("reviewData").textContent);
-const key = "translation-workshop:line:" + location.pathname;
-const state = JSON.parse(localStorage.getItem(key) || "{}");
+const workflow = data.workflow || {};
+const legacyKey = "translation-workshop:line:" + location.pathname;
+function lineReviewStorageKey() {
+  const sourcePath = workflow.paths?.sourcePath || "";
+  const translationPath = workflow.paths?.translationPath || "";
+  return sourcePath && !sourcePath.startsWith("[") ? "translation-workshop:line:" + sourcePath + "::" + translationPath : legacyKey;
+}
+const key = lineReviewStorageKey();
+function readLineReviewState() {
+  for (const candidate of [key, legacyKey]) {
+    if (!candidate) continue;
+    try {
+      const value = localStorage.getItem(candidate);
+      if (value) return JSON.parse(value) || {};
+    } catch {
+      // Try the next storage key.
+    }
+  }
+  return {};
+}
+const state = readLineReviewState();
 state.edits ||= {};
 state.status ||= {};
 for (const line in state.status) {
@@ -813,10 +837,12 @@ state.theme ||= {};
 state.auditIssues ||= {};
 state.auditWhitelist ||= {};
 state.auditVisible ||= false;
-const workflow = data.workflow || {};
 let syncedLines = workflow.hasInitialTranslation ? (workflow.initialTranslationLines || []) : [];
 let page = state.page || data.startPage || 1;
 let activeLine = state.activeLine || null;
+let restoringPosition = true;
+let searchTerm = "";
+let searchMatches = [];
 const pageSize = data.pageSize || 1000;
 const rowsEl = document.getElementById("rows");
 const pageInput = document.getElementById("pageInput");
@@ -824,10 +850,12 @@ const pageInfo = document.getElementById("pageInfo");
 const changedCount = document.getElementById("changedCount");
 function save() {
   state.page = page;
-  state.scrollY = scrollY;
+  if (!restoringPosition) state.scrollY = scrollY;
   state.activeLine = activeLine;
   try {
-    localStorage.setItem(key, JSON.stringify(state));
+    const serialized = JSON.stringify(state);
+    localStorage.setItem(key, serialized);
+    if (key !== legacyKey) localStorage.setItem(legacyKey, serialized);
   } catch (error) {
     console.warn("translation-workshop could not persist small UI state", error);
   }
@@ -837,12 +865,28 @@ function rowValue(row) {
   return state.edits[row.line] ?? (syncedValue !== undefined ? syncedValue : row.translation ?? "");
 }
 function pageRows() { return data.rows.slice((page - 1) * pageSize, page * pageSize); }
+function rowSearchText(row) {
+  return [row.line, row.source, rowValue(row)].join("\n").toLowerCase();
+}
+function updateSearchMatches() {
+  const needle = searchTerm.trim().toLowerCase();
+  searchMatches = needle ? data.rows.filter(row => rowSearchText(row).includes(needle)) : [];
+}
+function rowIsSearchMatch(line) {
+  return Boolean(searchTerm && searchMatches.some(row => String(row.line) === String(line)));
+}
+function searchSummary() {
+  if (!searchTerm) return "";
+  const label = data.labels.searchMatches || "matches";
+  const empty = data.labels.searchNoMatches || "No matches";
+  return " · " + (searchMatches.length > 0 ? label + " " + searchMatches.length : empty);
+}
 function render() {
   const totalPages = Math.max(1, Math.ceil(data.rows.length / pageSize));
   page = Math.min(Math.max(1, page), totalPages);
   document.body.classList.toggle("audit-visible", Boolean(state.auditVisible));
   pageInput.value = page;
-  pageInfo.textContent = data.labels.page + " " + page + " / " + totalPages;
+  pageInfo.textContent = data.labels.page + " " + page + " / " + totalPages + searchSummary();
   changedCount.textContent = Object.keys(state.edits).length;
   rowsEl.innerHTML = pageRows().map(row => {
     const status = state.status[row.line] || row.status;
@@ -850,11 +894,12 @@ function render() {
     const auditIssue = firstAuditIssue(row.line);
     const auditClass = auditIssue ? " audit-" + auditIssue.severity : "";
     const jumpClass = String(row.line) === String(activeLine || "") ? " jump-target" : "";
+    const matchClass = rowIsSearchMatch(row.line) ? " match" : "";
     const whitelist = auditLineWhitelisted(row.line);
     const markerText = whitelist ? "✓" : (auditIssue?.code || auditIssue?.severity || "");
     const markerTitle = whitelist ? "whitelisted; click to remove" : (auditIssue ? auditIssue.code + ": " + auditIssue.message : "add to audit whitelist");
     const markerClass = whitelist ? " whitelisted" : (auditIssue ? " severity-" + auditIssue.severity : "");
-    return '<article class="row ' + statusClass + auditClass + jumpClass + '" data-line="' + row.line + '">' +
+    return '<article class="row ' + statusClass + auditClass + jumpClass + matchClass + '" data-line="' + row.line + '">' +
       '<div class="line">' + row.line + '</div>' +
       '<div class="cell source">' + escapeHtml(row.source) + '</div>' +
       '<div class="cell target" contenteditable="true" spellcheck="false">' + escapeHtml(rowValue(row)) + '</div>' +
@@ -917,11 +962,37 @@ document.getElementById("export").onclick = () => {
   a.click();
   URL.revokeObjectURL(a.href);
 };
-document.getElementById("search").addEventListener("input", (event) => {
-  const needle = event.target.value.trim().toLowerCase();
-  document.querySelectorAll(".row").forEach(row => {
-    row.classList.toggle("match", needle && row.textContent.toLowerCase().includes(needle));
-  });
+function jumpToSearchMatch(row) {
+  if (!row) {
+    render();
+    return;
+  }
+  page = Math.ceil(Number(row.line) / pageSize);
+  activeLine = String(row.line);
+  render();
+  requestAnimationFrame(scrollToActiveLine);
+}
+function moveSearchSelection(direction) {
+  if (!searchMatches.length) {
+    render();
+    return;
+  }
+  const currentIndex = searchMatches.findIndex(row => String(row.line) === String(activeLine || ""));
+  const nextIndex = currentIndex >= 0
+    ? (currentIndex + direction + searchMatches.length) % searchMatches.length
+    : (direction > 0 ? 0 : searchMatches.length - 1);
+  jumpToSearchMatch(searchMatches[nextIndex]);
+}
+const searchInput = document.getElementById("search");
+searchInput.addEventListener("input", (event) => {
+  searchTerm = event.target.value;
+  updateSearchMatches();
+  jumpToSearchMatch(searchMatches[0]);
+});
+searchInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  moveSearchSelection(event.shiftKey ? -1 : 1);
 });
 function lineFromLocationHash() {
   const hash = decodeURIComponent(location.hash || "");
@@ -2210,7 +2281,12 @@ restoreSyncedText();
 requestAnimationFrame(() => {
   const line = lineFromLocationHash();
   if (line) jumpToLine(line);
+  else if (activeLine) jumpToLine(activeLine);
   else scrollTo(0, state.scrollY || 0);
+  requestAnimationFrame(() => {
+    restoringPosition = false;
+    save();
+  });
 });
 `;
 }

@@ -189,6 +189,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossaryCurrent: "\u66ff\u6362\u5f53\u524d\u9875",
     glossaryAll: "\u66ff\u6362\u5168\u6587",
     syncGlossary: "\u540c\u6b65\u672f\u8bed",
+    importGlossary: "\u5bfc\u5165\u672f\u8bed\u6587\u4ef6",
     exportGlossary: "\u5bfc\u51fa\u672f\u8bed",
     writeGlossary: "\u5199\u5165\u672f\u8bed",
     toggleAuditMarkers: "审计标记",
@@ -200,6 +201,8 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     auditH3: "H3 术语数量不匹配",
     auditGlossaryFinished: "术语审计完成",
     glossaryEmpty: "\u672a\u52a0\u8f7d glossary",
+    glossaryNoEntries: "\u672f\u8bed\u6587\u4ef6\u5df2\u8bfb\u53d6\uff0c\u4f46\u6ca1\u6709\u89e3\u6790\u5230\u672f\u8bed\u6761\u76ee",
+    glossarySyncMissingTarget: "\u5f53\u524d HTML \u6ca1\u6709\u7ed1\u5b9a glossary \u6587\u4ef6\uff0c\u8bf7\u5148\u5bfc\u5165\u672f\u8bed\u3002",
     glossaryConfirm: "\u786e\u8ba4\u6267\u884c\u672f\u8bed\u66ff\u6362\uff1f\u4f1a\u5c06\u65e7\u8bd1\u540d\u3001\u522b\u540d\u548c\u6b8b\u7559\u539f\u6587\u66ff\u6362\u4e3a\u53f3\u4fa7\u8bd1\u540d\uff0c\u4eba\u5de5\u6539\u5199\u884c\u4f1a\u8df3\u8fc7\u3002",
     glossaryApplied: "\u672f\u8bed\u66ff\u6362\u5df2\u5e94\u7528",
     glossaryEditHelp: "\u53f3\u4fa7\u8bd1\u540d\u53ef\u7f16\u8f91\u3002\u4fee\u6539\u540e\u53ef\u786e\u8ba4\u628a\u65e7\u8bd1\u540d\u81ea\u52a8\u66ff\u6362\u4e3a\u65b0\u8bd1\u540d\uff1b\u5de6\u4fa7\u539f\u6587\u4e0d\u4f1a\u88ab\u4fee\u6539\u3002",
@@ -297,6 +300,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossaryCurrent: "Replace current page",
     glossaryAll: "Replace all",
     syncGlossary: "Sync glossary",
+    importGlossary: "Import glossary file",
     exportGlossary: "Export glossary",
     writeGlossary: "Write glossary",
     toggleAuditMarkers: "Audit marks",
@@ -308,6 +312,8 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     auditH3: "H3 glossary term count mismatch",
     auditGlossaryFinished: "Term audit finished",
     glossaryEmpty: "No glossary loaded",
+    glossaryNoEntries: "Glossary file was read, but no entries were parsed",
+    glossarySyncMissingTarget: "This HTML has no bound glossary file. Import a glossary first.",
     glossaryConfirm: "Apply glossary replacements? Old translations, aliases, and remaining source terms will be replaced with the right-side term. Manual rows will be skipped.",
     glossaryApplied: "Glossary replacements applied",
     glossaryEditHelp: "Edit the right-side term. After a change, you can confirm replacing old translations with the new term; source text is never modified.",
@@ -611,10 +617,11 @@ function aiToolsHtml(t: Record<string, string>, workflow: ReturnType<typeof work
 
 function glossaryToolsHtml(t: Record<string, string>, entries: GlossaryEntry[]): string {
   const visibleEntries = entries.slice(0, 120);
-  const body = entries.length === 0
-    ? `<p class="ai-status">${t.glossaryEmpty ?? "No glossary loaded"}</p><div id="glossaryList" class="glossary-list"></div>`
-    : `<p class="ai-status">${t.glossaryEditHelp ?? "Edit the right-side term. Source text is never modified."}</p>
-      <div id="glossaryList" class="glossary-list">${visibleEntries.map((entry, index) => `<div class="glossary-entry" data-glossary-index="${index}">
+  const helpText = entries.length === 0
+    ? (t.glossaryEmpty ?? "No glossary loaded")
+    : (t.glossaryEditHelp ?? "Edit the right-side term. Source text is never modified.");
+  const body = `<p id="glossaryHelp" class="ai-status">${helpText}</p>
+      <div id="glossaryList" class="glossary-list">${entries.length === 0 ? "" : visibleEntries.map((entry, index) => `<div class="glossary-entry" data-glossary-index="${index}">
         <input class="glossary-source" data-glossary-index="${index}" value="${escapeHtml(entry.source)}" readonly title="source term">
         <b>→</b>
         <input class="glossary-target" data-glossary-index="${index}" value="${escapeHtml(entry.target)}" data-original-target="${escapeHtml(entry.target)}" title="translation term">
@@ -625,14 +632,15 @@ function glossaryToolsHtml(t: Record<string, string>, entries: GlossaryEntry[]):
         <strong>${t.glossaryTitle ?? "Glossary replacement"} (<span id="glossaryCount">${entries.length}</span>)</strong>
         <div class="glossary-actions">
           <button id="glossaryDrawerClose" type="button">${t.glossaryClose ?? "Close"}</button>
-          <button id="applyGlossaryCurrent" type="button">${t.glossaryCurrent ?? "Replace current page"}</button>
-          <button id="applyGlossaryAll" type="button">${t.glossaryAll ?? "Replace all"}</button>
+          <button id="importGlossary" type="button">${t.importGlossary ?? "Import glossary file"}</button>
           <button id="syncGlossary" type="button">${t.syncGlossary ?? "Sync glossary"}</button>
           <button id="exportGlossary" type="button">${t.exportGlossary ?? "Export glossary"}</button>
           <button id="writeGlossary" type="button">${t.writeGlossary ?? "Write glossary"}</button>
+          <button id="applyGlossaryCurrent" type="button">${t.glossaryCurrent ?? "Replace current page"}</button>
+          <button id="applyGlossaryAll" type="button">${t.glossaryAll ?? "Replace all"}</button>
           <button id="toggleAuditMarkers" type="button">${t.toggleAuditMarkers ?? "Audit marks"}</button>
           <button id="runGlossaryAudit" type="button">${t.runGlossaryAudit ?? "Term audit H3"}</button>
-          <input id="syncGlossaryInput" type="file" accept=".txt,.json,.tsv,.csv,text/plain,application/json" hidden>
+          <input id="syncGlossaryInput" type="file" accept=".txt,.json,.tsv,.csv,.md,text/plain,application/json,text/markdown" hidden>
         </div>
       </header>
       <p id="auditStatus" class="ai-status">${t.auditHint ?? ""}</p>
@@ -1709,10 +1717,12 @@ document.getElementById("exportEpub")?.addEventListener("click", writeCurrentEpu
 let glossaryEntries = workflow.glossaryEntries || [];
 state.glossaryTargets ||= {};
 state.glossaryAliases ||= {};
+state.glossaryPath ||= workflow.paths?.glossaryPath || "";
 const glossaryDrawer = document.getElementById("glossaryTools");
 const glossaryBackdrop = document.getElementById("glossaryBackdrop");
 const glossaryListEl = document.getElementById("glossaryList");
 const glossaryCountEl = document.getElementById("glossaryCount");
+const glossaryHelpEl = document.getElementById("glossaryHelp");
 function setGlossaryDrawer(open) {
   glossaryDrawer?.classList.toggle("open", open);
   glossaryBackdrop?.classList.toggle("open", open);
@@ -1745,13 +1755,25 @@ function currentGlossaryEntries() {
   return glossaryEntries.map((entry, index) => ({ source: entry.source, target: glossaryTarget(index) }))
     .filter(entry => entry.source && entry.target);
 }
+function boundGlossaryPath() {
+  return state.glossaryPath || workflow.paths?.glossaryPath || "";
+}
+function setBoundGlossaryPath(path) {
+  const value = String(path || "").trim();
+  if (!value) return;
+  state.glossaryPath = value;
+  if (workflow.paths) workflow.paths.glossaryPath = value;
+  save();
+}
 function renderGlossaryEntries() {
   if (glossaryCountEl) glossaryCountEl.textContent = String(glossaryEntries.length);
   if (!glossaryListEl) return;
   if (glossaryEntries.length === 0) {
-    glossaryListEl.innerHTML = '<p class="ai-status">' + escapeHtml(data.labels.glossaryEmpty || "No glossary loaded") + '</p>';
+    if (glossaryHelpEl) glossaryHelpEl.textContent = data.labels.glossaryEmpty || "No glossary loaded";
+    glossaryListEl.innerHTML = "";
     return;
   }
+  if (glossaryHelpEl) glossaryHelpEl.textContent = data.labels.glossaryEditHelp || "Edit the right-side term. Source text is never modified.";
   glossaryListEl.innerHTML = glossaryEntries.slice(0, 120).map((entry, index) => {
     const target = glossaryTarget(index);
     return '<div class="glossary-entry" data-glossary-index="' + index + '">' +
@@ -1982,16 +2004,17 @@ function cleanGlossaryTerm(value) {
   return String(value ?? "").trim().replace(/^["']+|["']+$/g, "").trim();
 }
 function entryFromGlossaryObject(value) {
-  const source = cleanGlossaryTerm(value.source ?? value.src ?? value.original ?? value.term);
-  const target = cleanGlossaryTerm(value.target ?? value.dst ?? value.translation ?? value.translated);
+  const source = cleanGlossaryTerm(value.source ?? value.src ?? value.original ?? value.term ?? value.from ?? value.ja ?? value.jp ?? value.key);
+  const target = cleanGlossaryTerm(value.target ?? value.dst ?? value.translation ?? value.translated ?? value.to ?? value.zh ?? value.cn ?? value.value);
   return source && target ? { source, target } : undefined;
 }
 function parseGlossaryTextLocal(text) {
   try {
     const parsed = JSON.parse(text);
     const entries = [];
-    if (Array.isArray(parsed)) {
-      for (const item of parsed) {
+    const arrayCandidate = Array.isArray(parsed) ? parsed : (parsed?.entries ?? parsed?.glossary ?? parsed?.terms);
+    if (Array.isArray(arrayCandidate)) {
+      for (const item of arrayCandidate) {
         if (Array.isArray(item)) {
           const source = cleanGlossaryTerm(item[0]);
           const target = cleanGlossaryTerm(item[1]);
@@ -2015,7 +2038,7 @@ function parseGlossaryTextLocal(text) {
   } catch {
     // Fall back to line based glossary.
   }
-  const separators = ["\t", "=>", "->", "=", ","];
+  const separators = ["\t", "=>", "->", "=", ",", "\uff1a", ":"];
   const entries = [];
   for (const line of String(text || "").replace(/\r\n/g, "\n").split("\n")) {
     const trimmed = line.trim();
@@ -2040,8 +2063,9 @@ function parseGlossaryTextLocal(text) {
 function syncGlossaryFromText(text, label) {
   const parsed = parseGlossaryTextLocal(text);
   if (parsed.length === 0) {
-    setAiStatus(data.labels.glossaryEmpty || "No glossary loaded");
-    return;
+    if (glossaryHelpEl) glossaryHelpEl.textContent = data.labels.glossaryEmpty || "No glossary loaded";
+    setAiStatus((data.labels.glossaryNoEntries || "No glossary entries parsed") + ": " + label);
+    return false;
   }
   glossaryEntries = parsed;
   state.glossaryTargets = {};
@@ -2049,31 +2073,39 @@ function syncGlossaryFromText(text, label) {
   save();
   renderGlossaryEntries();
   setAiStatus((data.labels.glossarySynced || "Glossary synced") + ": " + label + " (" + parsed.length + ")");
+  return true;
 }
 async function syncGlossaryFromBoundFile() {
-  const glossaryPath = workflow.paths?.glossaryPath || "";
+  const glossaryPath = boundGlossaryPath();
   const bridge = writeBridge();
-  if (glossaryPath && bridge?.readTextFile) {
-    try {
-      const result = await bridge.readTextFile({ path: glossaryPath });
-      syncGlossaryFromText(result?.text || "", result?.path || glossaryPath);
-      return;
-    } catch (error) {
-      setAiStatus((data.labels.glossaryReadFailed || "Glossary sync failed") + ": " + (error?.message || String(error)));
-    }
+  if (!glossaryPath) {
+    setAiStatus(data.labels.glossarySyncMissingTarget || "This HTML has no bound glossary file. Import a glossary first.");
+    return;
   }
+  if (!bridge?.readTextFile) {
+    setAiStatus((data.labels.glossaryWriteNeedsApp || "Open this HTML in translation-workshop to write glossary.") + ": " + glossaryPath);
+    return;
+  }
+  try {
+    const result = await bridge.readTextFile({ path: glossaryPath });
+    syncGlossaryFromText(result?.text || "", result?.path || glossaryPath);
+  } catch (error) {
+    setAiStatus((data.labels.glossaryReadFailed || "Glossary sync failed") + ": " + (error?.message || String(error)));
+  }
+}
+function importGlossaryFromFile() {
   document.getElementById("syncGlossaryInput")?.click();
 }
 function glossaryFileText() {
   const entries = currentGlossaryEntries();
-  const glossaryPath = workflow.paths?.glossaryPath || "";
+  const glossaryPath = boundGlossaryPath();
   if (/\.json$/i.test(glossaryPath)) {
     return JSON.stringify(entries, null, 2);
   }
   return entries.map(entry => entry.source + "\t" + entry.target).join("\n");
 }
 function suggestedGlossaryName() {
-  const raw = workflow.paths?.glossaryPath || "translation-workshop-glossary.tsv";
+  const raw = boundGlossaryPath() || "translation-workshop-glossary.tsv";
   const name = raw.split(/[\\/]/).pop() || "translation-workshop-glossary.tsv";
   return /\.[a-z0-9]+$/i.test(name) ? name : name + ".tsv";
 }
@@ -2086,7 +2118,7 @@ function downloadGlossary() {
   URL.revokeObjectURL(a.href);
 }
 async function writeCurrentGlossaryFile() {
-  const glossaryPath = workflow.paths?.glossaryPath || "";
+  const glossaryPath = boundGlossaryPath();
   if (!glossaryPath) {
     setAiStatus(data.labels.glossaryWriteMissingTarget || "No glossary file is bound to this HTML.");
     return;
@@ -2133,6 +2165,7 @@ glossaryListEl?.addEventListener("keydown", (event) => {
 renderGlossaryEntries();
 document.getElementById("applyGlossaryCurrent")?.addEventListener("click", () => applyGlossaryReplacements("page"));
 document.getElementById("applyGlossaryAll")?.addEventListener("click", () => applyGlossaryReplacements("all"));
+document.getElementById("importGlossary")?.addEventListener("click", importGlossaryFromFile);
 document.getElementById("syncGlossary")?.addEventListener("click", syncGlossaryFromBoundFile);
 document.getElementById("exportGlossary")?.addEventListener("click", downloadGlossary);
 document.getElementById("writeGlossary")?.addEventListener("click", writeCurrentGlossaryFile);
@@ -2147,8 +2180,8 @@ document.getElementById("syncGlossaryInput")?.addEventListener("change", async (
   const file = input.files?.[0];
   if (!file) return;
   try {
-    syncGlossaryFromText(await file.text(), file.path || file.name);
-    if (file.path && workflow.paths) workflow.paths.glossaryPath = file.path;
+    const ok = syncGlossaryFromText(await file.text(), file.path || file.name);
+    if (ok && file.path) setBoundGlossaryPath(file.path);
   } finally {
     input.value = "";
   }

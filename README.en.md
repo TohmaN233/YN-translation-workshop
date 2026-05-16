@@ -1,96 +1,120 @@
 # translation-workshop
 
+> A local translation / proofreading workbench.  
+> Built for human-review-first translation workflows, with optional Codex / Claude Code Agent assistance.
+
 [中文 README](README.md)
 
-translation-workshop is a local translation / proofreading workbench. It pairs source text and translated text line by line, generates editable review HTML for human revision, helps generate Codex / Claude Code translation and proofreading prompts, and converts proofreading Markdown reports into reviewable HTML.
+translation-workshop pairs source text and translated text line by line, generates editable review HTML for human revision, helps generate Codex / Claude Code translation and proofreading prompts, and converts proofreading Markdown reports into item-by-item review HTML.
 
-The motivation is simple: as someone who has participated in fan translation work, I find most AI translation tools unfriendly to actual translation workflows. No matter how impressive AI output looks, it still needs human review before it can reach commercial quality. A comfortable frontend for translation and proofreading is therefore not optional; it is a major missing piece.
+The motivation is simple: many AI translation tools look powerful, but they are not friendly to real translation or fan-translation workflows. No matter how impressive AI output looks, it still needs human review before it can reach stable production quality. A comfortable, visible, and traceable frontend is a major missing piece.
 
-This project aims to build:
+This project is designed for three kinds of users:
 
-1. A frontend tool that is comfortable even for translators who do not use AI.
-2. A workflow where translators who do use AI can lean on Agent translation / proofreading while keeping the review process convenient and visible.
-3. A path for users who do not know the source language to still use AI for translation, proofreading, and visual result review.
+- Translators who do not use AI: a comfortable line-by-line translation and proofreading interface.
+- Translators who do use AI: Agent-assisted translation / proofreading while keeping human review in control.
+- Users who do not know the source language: an AI-assisted path for translation, proofreading, and visual result review.
 
-The project bundles Codex and Claude Code versions of the skills. It currently supports Agent-based translation, not direct API-only translation through prompt engineering.
+## Download
+
+Recommended for Windows users:
+
+**`translation-workshop.Setup.0.1.0.exe`**
+
+If you do not want to install it, use the portable build:
+
+**`translation-workshop.0.1.0.exe`**
+
+Release page:  
+<https://github.com/TohmaN233/YN-translation-workshop/releases>
+
+## Bundled Skills
+
+The project bundles Codex and Claude Code versions of the skills. It currently supports Agent-based translation workflows, not direct API-only translation through prompt engineering.
 
 - [translate-text guide](skills/translate-text.README.md): batch translation, glossary handling, and character notes.
 - [proofread-translation guide](skills/proofread-translation.README.md): line-by-line proofreading, Monte Carlo sampling, and fix proposal reports.
 
-- Codex directory skill: `skills/codex/<skill-name>/SKILL.md`
-- Claude Code slash command: `skills/claude/commands/<skill-name>.md`
+Layout:
 
-## Current Features
+- Codex skill: `skills/codex/<skill-name>/SKILL.md`
+- Claude Code command: `skills/claude/commands/<skill-name>.md`
 
-- Electron + React + TypeScript desktop app
-- Chinese / English bilingual UI
-
-<p align="center">
-  <img src="graph_for_intro/face_ch.png" alt="Chinese UI" width="420">
-  <img src="graph_for_intro/face_en.png" alt="English UI" width="420">
-</p>
-
-- Line-by-line review HTML generation
-- Separate-file and bilingual-file modes
-
-TXT and EPUB are supported.
-
-Basic usage:
-
-Select the source file, select the translation file, select the output folder, then generate the line-review HTML.
-
-For bilingual files, choose which adjacent line position is the source text.
-
-You can also provide only a source file and leave translation blank for translation-only work.
-
-- Folder input is supported.
-- HTML pagination, page jumping, scroll position memory, and manual-edit state.
-
-Manually edited rows are highlighted, and reopening the HTML can return to the last active row with a yellow outline.
+## UI Preview
 
 <p align="center">
-  <img src="graph_for_intro/t1.png" alt="Line-by-line review HTML" width="920">
+  <img src="graph_for_intro/face_ch.png" alt="Chinese UI" width="340">
+  <img src="graph_for_intro/face_en.png" alt="English UI" width="340">
 </p>
 
-- TXT / EPUB files can be exported at any time. TXT files can also be written back to the bound TXT file or synced from external edits. A timestamped backup is created before TXT overwrite.
-- The glossary can be browsed while translating. Term translations can be edited and applied to the current page or the whole text. Missing glossary terms in the target side are also highlighted, with longer terms taking priority over shorter contained terms.
+The UI supports Chinese / English switching. The main screen includes file selection, output directory, format options, input mode, skill setup hints, and generation actions.
+
+## Key Features
+
+### Line-Review HTML
+
+Select a source file, a translation file, and an output folder to generate line-review HTML. The translation file is optional; leaving it empty starts translation-only mode.
+
+Supported:
+
+- TXT / EPUB
+- Separate-file mode
+- Bilingual TXT / bilingual EPUB adjacent-line splitting
+- Folder input
+- Pagination, page jump, search, and scroll-position memory
+- Manual-edit state marking
+- Reopen to the last edited location; the yellow outline marks the last / active row
 
 <p align="center">
-  <img src="graph_for_intro/t2.png" alt="Glossary tools and term replacement" width="920">
+  <img src="graph_for_intro/t1.png" alt="Line-review HTML" width="860">
 </p>
 
----
+TXT / EPUB can be exported at any time. TXT can also be written back to the bound translation file, with a timestamped backup before overwrite.
 
-Agent workflow:
+### Glossary And Replacement
 
-- Translation prompt parameter window and prompt generation.
+You can browse the glossary while translating, edit term translations, and apply replacements to the current page or the full text.
+
+Glossary checking also highlights terms that appear in the source but are missing from the target. Longer terms take priority over shorter contained terms. Missing glossary translations are marked as H3 and highlighted.
 
 <p align="center">
-  <img src="graph_for_intro/t3.png" alt="Translation prompt parameter window" width="920">
+  <img src="graph_for_intro/t2.png" alt="Glossary tools and term replacement" width="860">
 </p>
 
-- Proofreading prompt parameter window and prompt generation.
-- Interactive Codex / Claude Code terminal console. Make sure the CLI is installed and logged in.
+### Agent Prompts And Interactive Console
+
+Translation and proofreading both provide parameter dialogs. You can set language pair, genre, output directory, split / subagent options, and then generate the prompt.
 
 <p align="center">
-  <img src="graph_for_intro/t4.png" alt="Interactive Agent Console" width="920">
+  <img src="graph_for_intro/t3.png" alt="Translation prompt parameter window" width="860">
 </p>
 
-- Proofreading Markdown report discovery, parsing, and review HTML generation.
+The app includes a real terminal console for interacting with Codex / Claude Code. Install and log in to the corresponding CLI before use.
 
 <p align="center">
-  <img src="graph_for_intro/t5.png" alt="Proofreading report review HTML" width="920">
+  <img src="graph_for_intro/t4.png" alt="Interactive Agent Console" width="860">
 </p>
 
-  - Can bind to the line-review HTML and mark corresponding lines with issues found in the proofreading report.
-  - Can jump back to the source review page to inspect context.
-  - Can apply AI-suggested translations or manual rewrites back to the main text.
+### Proofreading Report Review HTML
+
+After proofreading finishes, select or auto-discover the Markdown report and generate fix-proposal review HTML.
 
 <p align="center">
-  <img src="graph_for_intro/t6.png" alt="Line review and proofreading report linkage" width="920">
+  <img src="graph_for_intro/t5.png" alt="Proofreading report review HTML" width="860">
 </p>
 
-- Project state is saved under `.translation-workshop/` in the selected output folder, so the project folder can be reopened later.
+The review HTML can be linked back to the line-review HTML:
+
+- Mark report issues on the corresponding source rows.
+- Jump back to the main review page for context.
+- Accept AI-suggested translations with one click.
+- Manually rewrite and mark human-handled status.
+
+<p align="center">
+  <img src="graph_for_intro/t6.png" alt="Line review and proofreading report linkage" width="860">
+</p>
+
+Project state is saved under `.translation-workshop/` in the selected output folder, so the same project folder can be reopened later.
 
 ## Launch Like An App
 
@@ -111,15 +135,17 @@ The launch scripts install dependencies when `node_modules` is missing, build wh
 ## Basic Workflow
 
 1. Choose Codex or Claude Code on first launch.
-2. Check the bundled skill / command path and local install status. You can copy the install command and run it in a console such as PowerShell.
-3. Select a source TXT / EPUB file or a source folder.
-4. Optionally select a translation TXT / EPUB file or a translation folder.
+2. Check the bundled skill / command paths and install status, then copy the install command if needed.
+3. Select a source TXT / EPUB file, or a source folder.
+4. Optionally select a translation TXT / EPUB file, or a translation folder.
 5. Select an output folder.
 6. Generate line-review HTML.
-7. In the HTML, translate or revise target text manually, jump pages, search, replace glossary terms, or generate a translation prompt when there is no translation yet. Open the Agent Console for AI translation, then import the translated TXT when finished.
-8. Generate a proofreading prompt, then copy it or send it to the interactive Agent Console.
-9. After proofreading finishes, select or auto-discover the Markdown report and generate the fix-proposal review HTML.
-10. After review, use `Save TXT` to overwrite the bound translation TXT, or `Export TXT` to save a separate copy.
+7. In the HTML, translate or revise target text manually, jump pages, search, and replace glossary terms.
+8. When AI translation is needed, generate a translation prompt and open the Agent Console.
+9. After translation finishes, import or sync the translated TXT.
+10. Generate a proofreading prompt, then copy it or send it to the interactive Agent Console.
+11. After proofreading finishes, select or auto-discover the Markdown report and generate fix-proposal review HTML.
+12. After review, use `Save TXT` to overwrite the bound translation TXT, or `Export TXT` to save a separate copy.
 
 ## Codex Skill Setup
 
@@ -193,9 +219,10 @@ The installer skips existing commands by default. Add `--replace` only when you 
 - `Save TXT` writes to the bound translation path only when the HTML is opened from the Electron app.
 - The Agent Console is a real interactive terminal. The app does not run hidden background jobs or pretend to know completion. Sync translations or discover reports manually after the agent finishes.
 
-## Extra
+## Advanced: Monte Carlo Stress-Test Prompt
 
-For stress testing near the final stage, you can run the following proofreading mode in your own client.
+<details>
+<summary>Expand prompt template</summary>
 
 ```text
 You are a Translation Project Manager. please ask 3 (or any number, larger is harder to pass the test) sub-agents to do the following job, start at different seeds.
@@ -250,3 +277,5 @@ Final response:
 - Summarize false-positive candidates.
 - List excluded known-issue lines.
 ```
+
+</details>

@@ -1,87 +1,120 @@
 # translation-workshop
 
+> 本地翻译 / 校对工作台。  
+> 面向人工审阅优先的翻译流程，也可以配合 Codex / Claude Code Agent 提高效率。
+
 [English README](README.en.md)
 
-translation-workshop 是一个本地翻译 / 校对工作台。它用于把源文与译文按行配对，生成可人工改写的校对 HTML，辅助生成 Codex / Claude Code 的翻译与校对提示词，并把校对报告 Markdown 转换为可逐条审阅的 HTML。
+translation-workshop 用于把源文与译文按行配对，生成可人工改写的校对 HTML；也可以生成 Codex / Claude Code 的翻译与校对提示词，并把校对报告 Markdown 转换为逐条审阅用 HTML。
 
-动机在于市面上大多AI翻译工具我个人作为曾经参与过一些汉化项目的人来说，觉得对于翻译其实并不友好。AI目前的成品无论吹得再怎么天花乱坠也必须经过人工审核才有可能达到商业级的水平。因此缺乏翻译工作舒适/易于审校的前端本就是很大的致命伤。
+我做这个项目的动机很简单：很多 AI 翻译工具看起来很强，但对真正的翻译/汉化流程并不友好。AI 输出无论多漂亮，想达到稳定的商业质量，最终仍然需要人工审核。缺少一个舒服、清晰、可回溯的前端，本身就是翻译工作流里的大问题。
 
-所以这个项目旨在打造
-1：不用AI的翻译人员也能用得舒服的前端工具。
-2：使用AI的翻译人员能用Agent的AI翻译/校对能力极大提高效率，同时保证审阅过程的舒适便捷。
-3：对于不懂对应语言的只是想翻译的同学，也是能纯靠AI进行翻译/校对/可视化结果。
+这个项目希望同时照顾三类使用者：
 
-项目内置Codex与Claude Code版本的 skills; 目前只支持Agent翻译，不支持单独调用API通过提示词工程翻译。
+- 不使用 AI 的翻译者：也能获得舒服的行对行翻译与校对界面。
+- 使用 AI 的翻译者：能借助 Agent 做翻译/校对，同时保留人工审阅的可控性。
+- 不熟悉源语言的用户：也能通过 AI 翻译、AI 校对和可视化报告完成基本翻译流程。
+
+## 下载
+
+Windows 用户推荐下载：
+
+**`translation-workshop.Setup.0.1.0.exe`**
+
+不想安装时，可以下载便携版：
+
+**`translation-workshop.0.1.0.exe`**
+
+Release 页面：  
+<https://github.com/TohmaN233/YN-translation-workshop/releases>
+
+## 内置 Skills
+
+项目内置 Codex 与 Claude Code 两套 skill / command。目前支持 Agent 翻译流程，不支持单独调用 API 做提示词工程翻译。
 
 - [translate-text 说明](skills/translate-text.README.md)：批量翻译、术语表、角色设定。
 - [proofread-translation 说明](skills/proofread-translation.README.md)：逐行校对、Monte Carlo 抽样校对和修正建议报告。
 
-- Codex skill 目录版：`skills/codex/<skill-name>/SKILL.md`
-- Claude Code slash command 版：`skills/claude/commands/<skill-name>.md`
+目录结构：
 
-## 当前功能
+- Codex skill：`skills/codex/<skill-name>/SKILL.md`
+- Claude Code command：`skills/claude/commands/<skill-name>.md`
 
-- Electron + React + TypeScript 桌面应用
-- 中文 / English 双语 UI
-
-<p align="center">
-  <img src="graph_for_intro/face_ch.png" alt="中文界面" width="420">
-  <img src="graph_for_intro/face_en.png" alt="English UI" width="420">
-</p>
-
-- 行对行校对 HTML 生成
-- 双语文件模式和分离文件模式
-
-支持txt和epub
-基本使用方式：
-选择源文件，选择翻译文件，选择输出文件夹，然后点击生成行对行html
-输入双语翻译文件时需要选择哪一行为源语言
-可只输入源文件，译文为空白进行单纯翻译工作
--支持输入文件夹
-- HTML 分页、跳页、滚动位置记忆、人工改写状态
-人工改写过的行标记颜色，下次启动自动定位位置（黄框）
+## 界面预览
 
 <p align="center">
-  <img src="graph_for_intro/t1.png" alt="行对行校对 HTML" width="920">
+  <img src="graph_for_intro/face_ch.png" alt="中文界面" width="340">
+  <img src="graph_for_intro/face_en.png" alt="English UI" width="340">
 </p>
 
-- txt/epub文件支持随时导出，txt文件额外支持随时写入修改到读取的txt文件本身或同步外部修改。(TXT 覆盖前自动时间戳备份)
-- 可在翻译中随时浏览术语表，支持修改译名当页/全文替换，且自动标注与源语言对应缺失术语翻译（长名词覆盖短名词原则）（H3错误|句子变红）
+UI 支持中文 / English 双语切换。主界面提供文件选择、输出目录、格式选项、输入模式、skill 安装提示和生成入口。
+
+## 主要功能
+
+### 行对行校对 HTML
+
+选择源文件、译文文件和输出文件夹后，即可生成行对行 HTML。译文文件可为空，此时进入单纯翻译模式。
+
+支持：
+
+- TXT / EPUB
+- 分离文件模式
+- 双语 TXT / 双语 EPUB 的相邻行拆分
+- 文件夹批量输入
+- 分页、跳页、搜索、滚动位置记忆
+- 人工改写状态标记
+- 重新打开后定位到上次编辑位置，黄框表示上次离开/当前关注行
 
 <p align="center">
-  <img src="graph_for_intro/t2.png" alt="术语表与术语替换" width="920">
+  <img src="graph_for_intro/t1.png" alt="行对行校对 HTML" width="860">
 </p>
 
--------------------------------
-Agent运用部分
-- 翻译提示词参数窗口与提示词生成
+TXT / EPUB 可以随时导出。TXT 还支持写回绑定的译文文件，覆盖前会自动创建时间戳备份。
+
+### 术语表与替换
+
+翻译过程中可以随时浏览术语表、修改译名，并对当前页或全文执行术语替换。
+
+术语检查会自动标注源语言中出现、但译文侧缺失的术语；长名词优先覆盖短名词。缺失术语会以 H3 标记并高亮对应行。
 
 <p align="center">
-  <img src="graph_for_intro/t3.png" alt="翻译提示词参数窗口" width="920">
+  <img src="graph_for_intro/t2.png" alt="术语表与术语替换" width="860">
 </p>
 
-- 校对提示词参数窗口与提示词生成
-- Codex / Claude Code 交互式终端控制台（确保已安装CLI且已登录）
+### Agent 提示词与交互控制台
+
+翻译和校对都提供参数窗口。你可以先设置语言方向、文本类型、输出目录、split / subagent 等参数，再生成提示词。
 
 <p align="center">
-  <img src="graph_for_intro/t4.png" alt="交互式 Agent 控制台" width="920">
+  <img src="graph_for_intro/t3.png" alt="翻译提示词参数窗口" width="860">
 </p>
 
-- 校对 Markdown 报告识别、解析并生成审阅 HTML
+应用内置真实终端控制台，可与 Codex / Claude Code 交互。使用前请先安装对应 CLI，并完成登录。
 
 <p align="center">
-  <img src="graph_for_intro/t5.png" alt="校对报告审阅 HTML" width="920">
+  <img src="graph_for_intro/t4.png" alt="交互式 Agent 控制台" width="860">
 </p>
 
-  -可与正文绑定，给正文所有对应行的内容标记校对文件发现的错误。
-  -可直接跳转正文方便观察上下文。
-  -可直接将AI建议翻译或者人工修正一键应用到正文。
+### 校对报告审阅 HTML
+
+校对完成后，选择或自动查找 Markdown 报告，即可生成修正建议审阅 HTML。
 
 <p align="center">
-  <img src="graph_for_intro/t6.png" alt="正文与校对报告联动" width="920">
+  <img src="graph_for_intro/t5.png" alt="校对报告审阅 HTML" width="860">
 </p>
 
-- 项目状态保存到输出目录下的 `.translation-workshop/` 随时可通过打开文件夹再次开启。
+审阅 HTML 可以和正文绑定：
+
+- 将报告发现的问题标记回正文对应行。
+- 跳转到正文上下文。
+- 一键接受 AI 建议译文。
+- 手动改写并标记人工处理状态。
+
+<p align="center">
+  <img src="graph_for_intro/t6.png" alt="正文与校对报告联动" width="860">
+</p>
+
+项目状态会保存到输出目录下的 `.translation-workshop/`，之后可以通过打开同一输出文件夹继续工作。
 
 ## 像软件一样启动
 
@@ -102,15 +135,17 @@ macOS / Linux / Git Bash:
 ## 基本流程
 
 1. 首次使用时选择 Codex 或 Claude Code。
-2. 查看内置 skill / command 路径和本地安装状态。可在控制台如powershell复制指令安装skill。
+2. 查看内置 skill / command 路径和安装状态，按需复制安装命令。
 3. 选择源文 TXT / EPUB 文件，或选择源文件夹。
 4. 可选选择译文 TXT / EPUB 文件，或选择译文文件夹。
 5. 选择输出文件夹。
 6. 生成行对行 HTML。
-7. 在 HTML 中人工翻译/修改译文、跳页、搜索、替换术语/无译文时生成翻译提示词，打开agent让AI翻译，结束后导入翻译的TXT。
-8. 生成校对提示词，复制或发送到交互式 Agent 控制台。
-9. 校对完成后选择或自动查找 Markdown 报告，生成修正建议审阅 HTML。
-10. 完成校对时使用 `写入 TXT` 覆盖绑定的译文 TXT，或使用 `导出 TXT` 另存一份。
+7. 在 HTML 中人工翻译/修改、跳页、搜索、替换术语。
+8. 需要 AI 翻译时生成翻译提示词，打开 Agent 控制台。
+9. 翻译完成后导入或同步译文 TXT。
+10. 生成校对提示词，复制或发送到交互式 Agent 控制台。
+11. 校对完成后选择或自动查找 Markdown 报告，生成修正建议审阅 HTML。
+12. 完成校对后使用 `写入 TXT` 覆盖绑定译文，或使用 `导出 TXT` 另存。
 
 ## Codex Skill 配置
 
@@ -125,7 +160,7 @@ macOS / Linux / Git Bash:
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global
 ```
 
-如果你已经 clone 了仓库，也可以用本地路径安装：
+如果已经 clone 仓库，也可以用本地路径安装：
 
 ```bash
 node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global
@@ -151,7 +186,7 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --gl
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global
 ```
 
-如果你已经 clone 了仓库，也可以用本地路径安装：
+如果已经 clone 仓库，也可以用本地路径安装：
 
 ```bash
 node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global
@@ -184,10 +219,12 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --g
 - `写入 TXT` 只有在 HTML 从 Electron 应用打开时才会写入绑定译文路径。
 - Agent 控制台是真实终端交互；应用不会隐藏后台调用，也不会假装判断 Agent 已完成。完成后请手动同步译文或查找报告。
 
-## 其他
+## 高级：Monte Carlo 压力测试提示词
 
-压力测试：最后阶段可以考虑在自己的客户端使用以下提示词进行以下校对模式
+<details>
+<summary>展开提示词模板</summary>
 
+```text
 You are a Translation Project Manager. please ask 3 (or any number, larger is harder to pass the test) sub-agents to do the following job, start at different seeds.
 
 Please use the proofread-translation skill to run a Monte Carlo translation-quality stress test on the following source/translation pair.
@@ -239,3 +276,6 @@ Final response:
 - List any new true issues found.
 - Summarize false-positive candidates.
 - List excluded known-issue lines.
+```
+
+</details>

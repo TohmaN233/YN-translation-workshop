@@ -47,11 +47,14 @@ export interface BatchLineReviewIndexOptions {
 export interface HtmlWorkflowOptions {
   sourcePath?: string;
   translationPath?: string;
+  sourcePromptPath?: string;
+  translationPromptPath?: string;
   outputDir?: string;
   glossaryPath?: string;
   glossaryEntries?: GlossaryEntry[];
   agent?: AgentType;
   inputMode?: "separate" | "bilingual";
+  promptInputMode?: "separate" | "bilingual";
   advanced?: PromptAdvancedOptions;
   bilingualPair?: {
     sourcePosition: number;
@@ -344,18 +347,25 @@ function fallbackPath(value: string | undefined, label: string): string {
 function workflowData(workflow: HtmlWorkflowOptions | undefined, initialTranslationLines: string[] = []) {
   const sourcePath = fallbackPath(workflow?.sourcePath, "source path");
   const translationPath = fallbackPath(workflow?.translationPath, "sync translation file first");
+  const promptSourcePath = fallbackPath(workflow?.sourcePromptPath ?? workflow?.sourcePath, "source path");
+  const promptTranslationPath = workflow?.translationPromptPath ?? workflow?.translationPath;
+  const promptTranslationPathFallback = fallbackPath(promptTranslationPath, "sync translation file first");
   const outputDir = fallbackPath(workflow?.outputDir, "output folder");
   const glossaryPath = workflow?.glossaryPath;
   const advanced = workflow?.advanced;
   const inputMode = workflow?.inputMode ?? "separate";
+  const promptInputMode = workflow?.promptInputMode ?? inputMode;
   const promptDefaults = promptParameterDefaults(outputDir, advanced);
 
   return {
     defaultAgent: workflow?.agent ?? "codex",
     inputMode,
+    promptInputMode,
     paths: {
       sourcePath,
       translationPath: workflow?.translationPath ?? "",
+      promptSourcePath,
+      promptTranslationPath: promptTranslationPath ?? "",
       outputDir,
       glossaryPath: glossaryPath ?? ""
     },
@@ -367,12 +377,12 @@ function workflowData(workflow: HtmlWorkflowOptions | undefined, initialTranslat
     hasInitialTranslation: initialTranslationLines.some((line) => line.trim() !== ""),
     prompts: {
       codex: {
-        translate: buildPrompt({ kind: "translate", agent: "codex", sourcePath, translationPath: workflow?.translationPath, outputDir, glossaryPath, inputMode, advanced }),
-        proofread: buildPrompt({ kind: "proofread", agent: "codex", sourcePath, translationPath, glossaryPath, outputDir, inputMode, advanced })
+        translate: buildPrompt({ kind: "translate", agent: "codex", sourcePath: promptSourcePath, translationPath: promptTranslationPath, outputDir, glossaryPath, inputMode: promptInputMode, advanced }),
+        proofread: buildPrompt({ kind: "proofread", agent: "codex", sourcePath: promptSourcePath, translationPath: promptTranslationPathFallback, glossaryPath, outputDir, inputMode: promptInputMode, advanced })
       },
       claude: {
-        translate: buildPrompt({ kind: "translate", agent: "claude", sourcePath, translationPath: workflow?.translationPath, outputDir, glossaryPath, inputMode, advanced }),
-        proofread: buildPrompt({ kind: "proofread", agent: "claude", sourcePath, translationPath, glossaryPath, outputDir, inputMode, advanced })
+        translate: buildPrompt({ kind: "translate", agent: "claude", sourcePath: promptSourcePath, translationPath: promptTranslationPath, outputDir, glossaryPath, inputMode: promptInputMode, advanced }),
+        proofread: buildPrompt({ kind: "proofread", agent: "claude", sourcePath: promptSourcePath, translationPath: promptTranslationPathFallback, glossaryPath, outputDir, inputMode: promptInputMode, advanced })
       }
     }
   };
@@ -1180,11 +1190,11 @@ async function buildPromptFromSettings() {
       generated = await bridge.buildPrompt({
         kind: activePromptKind,
         agent: agentSelect?.value || workflow.defaultAgent || "codex",
-        sourcePath: workflow.paths?.sourcePath || "",
-        translationPath: workflow.paths?.translationPath || "",
+        sourcePath: workflow.paths?.promptSourcePath || workflow.paths?.sourcePath || "",
+        translationPath: workflow.paths?.promptTranslationPath || workflow.paths?.translationPath || "",
         outputDir: workflow.paths?.outputDir || "",
         glossaryPath: workflow.paths?.glossaryPath || "",
-        inputMode: workflow.inputMode || "separate",
+        inputMode: workflow.promptInputMode || workflow.inputMode || "separate",
         advanced: settings
       });
     } catch (error) {

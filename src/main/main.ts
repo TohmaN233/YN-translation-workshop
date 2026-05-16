@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/pro
 import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 
 import { CODEX_DISABLE_SUPERPOWERS_CONFIG } from "../shared/core/agentInvoke.ts";
@@ -422,6 +423,25 @@ function splitLines(text: string | undefined): string[] {
   return text.replace(/\r\n/g, "\n").replace(/\r$/, "").replace(/\n$/, "").split("\n");
 }
 
+function safeExtractedTextBaseName(filePath: string): string {
+  const baseName = path.basename(filePath).replace(/\.[^.]+$/, "") || "document";
+  return baseName.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 80) || "document";
+}
+
+async function writeExtractedPromptText(
+  workspaceDir: string,
+  filePath: string,
+  role: "source" | "translation",
+  text: string
+): Promise<string> {
+  const digest = createHash("sha1").update(path.resolve(filePath).toLowerCase()).digest("hex").slice(0, 10);
+  const extractedDir = path.join(workspaceDir, "extracted-text", digest, role);
+  await mkdir(extractedDir, { recursive: true });
+  const extractedPath = path.join(extractedDir, `${safeExtractedTextBaseName(filePath)}.txt`);
+  await writeFile(extractedPath, text, "utf8");
+  return extractedPath;
+}
+
 function assertLineFolderMode(fileType: GenerateLineHtmlArgs["fileType"]): void {
   if (fileType !== "auto" && fileType !== "txt" && fileType !== "epub") {
     throw new Error(`Folder generation supports txt and epub files. ${fileType} is not supported here.`);
@@ -470,17 +490,43 @@ async function readLineDocument(filePath: string, fileType: GenerateLineHtmlArgs
   return readEpubText(filePath, workspaceDir, `${timestamp()}-${path.basename(filePath)}`);
 }
 
+async function readLineDocumentForWorkflow(
+  filePath: string,
+  fileType: GenerateLineHtmlArgs["fileType"],
+  workspaceDir: string,
+  role: "source" | "translation"
+): Promise<{ text: string; kind: "txt" | "epub"; promptPath?: string }> {
+  const kind = resolveLineFileType(filePath, fileType);
+  const text = await readLineDocument(filePath, kind, workspaceDir);
+  const promptPath = kind === "epub" ? await writeExtractedPromptText(workspaceDir, filePath, role, text) : undefined;
+  return { text, kind, promptPath };
+}
+
 async function parseBilingualDocument(
   filePath: string,
   fileType: GenerateLineHtmlArgs["fileType"],
   workspaceDir: string,
   sourcePosition: number,
   translationPosition: number
-): Promise<{ sourceText: string; translationText: string; rowCount: number; kind: BilingualFileKind }> {
+): Promise<{
+  sourceText: string;
+  translationText: string;
+  rowCount: number;
+  kind: BilingualFileKind;
+  sourcePromptPath?: string;
+  translationPromptPath?: string;
+}> {
   const kind = resolveBilingualFileKind(filePath, fileType);
   const text = await readLineDocument(filePath, kind, workspaceDir);
   const parsed = parseBilingualPairs(text, { sourcePosition, translationPosition });
-  return { ...parsed, kind };
+  if (kind !== "epub") {
+    return { ...parsed, kind };
+  }
+  const [sourcePromptPath, translationPromptPath] = await Promise.all([
+    writeExtractedPromptText(workspaceDir, filePath, "source", parsed.sourceText),
+    writeExtractedPromptText(workspaceDir, filePath, "translation", parsed.translationText)
+  ]);
+  return { ...parsed, kind, sourcePromptPath, translationPromptPath };
 }
 
 async function loadGlossaryEntries(glossaryPath: string | undefined): Promise<GlossaryEntry[]> {
@@ -1143,10 +1189,13 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
           workflow: {
             sourcePath: file.path,
             translationPath: file.path,
+            sourcePromptPath: parsed.sourcePromptPath,
+            translationPromptPath: parsed.translationPromptPath,
             outputDir: args.outputDir,
             glossaryPath: args.glossaryPath,
             glossaryEntries,
             inputMode: "bilingual",
+            promptInputMode: parsed.kind === "epub" ? "separate" : "bilingual",
             advanced: args.advanced,
             bilingualPair: { sourcePosition, translationPosition, pairSize: 2 },
             epubExport: parsed.kind === "epub" ? { mode: "pair-position", replacePosition: translationPosition, pairSize: 2 } : undefined
@@ -1203,10 +1252,13 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
       workflow: {
         sourcePath: args.sourcePath,
         translationPath: args.sourcePath,
+        sourcePromptPath: parsed.sourcePromptPath,
+        translationPromptPath: parsed.translationPromptPath,
         outputDir: args.outputDir,
         glossaryPath: args.glossaryPath,
         glossaryEntries,
         inputMode: "bilingual",
+        promptInputMode: parsed.kind === "epub" ? "separate" : "bilingual",
         advanced: args.advanced,
         bilingualPair: { sourcePosition, translationPosition, pairSize: 2 },
         epubExport: parsed.kind === "epub" ? { mode: "pair-position", replacePosition: translationPosition, pairSize: 2 } : undefined
@@ -1239,20 +1291,24 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
     const matches = matchFolderFiles(sourceFiles, translationFiles);
     const indexFiles: BatchLineReviewIndexFile[] = [];
     for (const [index, match] of matches.entries()) {
-      const sourceText = await readLineDocument(match.sourcePath, args.fileType, workspaceDir);
-      const translationText = match.status === "matched" && match.translationPath ? await readLineDocument(match.translationPath, args.fileType, workspaceDir) : undefined;
+      const sourceDocument = await readLineDocumentForWorkflow(match.sourcePath, args.fileType, workspaceDir, "source");
+      const translationDocument = match.status === "matched" && match.translationPath
+        ? await readLineDocumentForWorkflow(match.translationPath, args.fileType, workspaceDir, "translation")
+        : undefined;
       const childName = htmlSafeName(match.sourceName, index);
       const childPath = path.join(batchDir, childName);
       const html = renderLineReviewHtml({
         title: `${match.sourceName} line review`,
-        sourceText,
-        translationText,
+        sourceText: sourceDocument.text,
+        translationText: translationDocument?.text,
         pageSize: args.pageSize,
         startPage: args.startPage,
         locale: args.locale,
         workflow: {
           sourcePath: match.sourcePath,
           translationPath: match.status === "matched" ? match.translationPath : undefined,
+          sourcePromptPath: sourceDocument.promptPath,
+          translationPromptPath: translationDocument?.promptPath,
           outputDir: args.outputDir,
           glossaryPath: args.glossaryPath,
           glossaryEntries,
@@ -1302,19 +1358,23 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
       warningCount: indexFiles.filter((file) => file.status !== "matched").length
     };
   }
-  const sourceText = await readLineDocument(args.sourcePath, args.fileType, workspaceDir);
-  const translationText = args.translationPath ? await readLineDocument(args.translationPath, args.fileType, workspaceDir) : undefined;
+  const sourceDocument = await readLineDocumentForWorkflow(args.sourcePath, args.fileType, workspaceDir, "source");
+  const translationDocument = args.translationPath
+    ? await readLineDocumentForWorkflow(args.translationPath, args.fileType, workspaceDir, "translation")
+    : undefined;
   const title = `${path.basename(args.sourcePath)} line review`;
   const html = renderLineReviewHtml({
     title,
-    sourceText,
-    translationText,
+    sourceText: sourceDocument.text,
+    translationText: translationDocument?.text,
     pageSize: args.pageSize,
     startPage: args.startPage,
     locale: args.locale,
     workflow: {
       sourcePath: args.sourcePath,
       translationPath: args.translationPath,
+      sourcePromptPath: sourceDocument.promptPath,
+      translationPromptPath: translationDocument?.promptPath,
       outputDir: args.outputDir,
       glossaryPath: args.glossaryPath,
       glossaryEntries,

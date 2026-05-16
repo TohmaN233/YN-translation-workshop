@@ -1844,7 +1844,7 @@ function auditGlossaryTermCountsLocal(sourceText, translationText) {
   return entries.flatMap((entry, index) => {
     const sourceCount = sourceCounts[index] || 0;
     const targetCount = targetCounts[index] || 0;
-    if (sourceCount === targetCount) return [];
+    if (sourceCount <= targetCount) return [];
     return [{
       code: "H3",
       severity: "H",

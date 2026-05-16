@@ -39,6 +39,7 @@
     },
     "electronDist": "node_modules/electron/dist",
     "npmRebuild": false,
+    "afterPack": "scripts/after-pack-win.cjs",
     "files": [
       "dist/**/*",
       "assets/**/*",

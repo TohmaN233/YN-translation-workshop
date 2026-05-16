@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 interface XtermBrowserAssets {
   css: string;
@@ -7,11 +9,29 @@ interface XtermBrowserAssets {
   fitJs: string;
 }
 
-const require = createRequire(import.meta.url);
 let cachedAssets: XtermBrowserAssets | undefined;
 
-function readPackageFile(packagePath: string): string {
-  return readFileSync(require.resolve(packagePath), "utf8");
+function assetRoots(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : undefined;
+  return [
+    ...(resourcesPath ? [path.join(resourcesPath, "assets", "vendor", "xterm")] : []),
+    path.resolve(moduleDir, "../../assets/vendor/xterm"),
+    path.resolve(moduleDir, "../../../assets/vendor/xterm"),
+    path.resolve(process.cwd(), "assets/vendor/xterm")
+  ];
+}
+
+function readBundledAsset(fileName: string): string {
+  const tried: string[] = [];
+  for (const root of assetRoots()) {
+    const assetPath = path.join(root, fileName);
+    tried.push(assetPath);
+    if (existsSync(assetPath)) {
+      return readFileSync(assetPath, "utf8");
+    }
+  }
+  throw new Error(`Bundled xterm asset is missing: ${fileName}. Tried: ${tried.join(", ")}. Run npm run prepare:xterm-assets before building.`);
 }
 
 function safeInlineScript(source: string): string {
@@ -20,9 +40,9 @@ function safeInlineScript(source: string): string {
 
 export function xtermBrowserAssets(): XtermBrowserAssets {
   cachedAssets ??= {
-    css: readPackageFile("@xterm/xterm/css/xterm.css"),
-    xtermJs: safeInlineScript(readPackageFile("@xterm/xterm/lib/xterm.js")),
-    fitJs: safeInlineScript(readPackageFile("@xterm/addon-fit/lib/addon-fit.js"))
+    css: readBundledAsset("xterm.css"),
+    xtermJs: safeInlineScript(readBundledAsset("xterm.js")),
+    fitJs: safeInlineScript(readBundledAsset("addon-fit.js"))
   };
   return cachedAssets;
 }

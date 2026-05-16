@@ -4,6 +4,7 @@ out/
 release/
 .cache/
 .vite/
+assets/vendor/xterm/
 *.log
 .DS_Store
 Thumbs.db

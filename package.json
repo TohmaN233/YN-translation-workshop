@@ -8,9 +8,10 @@
     "translation-workshop-skills": "scripts/install-skills.mjs"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "prepare:xterm-assets": "node scripts/prepare-xterm-assets.mjs",
+    "test": "npm run prepare:xterm-assets && node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=esm --outfile=dist/main/main.js --external:electron --external:extract-zip --external:node-pty && npm run build:preload",
+    "build:main": "npm run prepare:xterm-assets && esbuild src/main/main.ts --bundle --platform=node --format=esm --outfile=dist/main/main.js --external:electron --external:extract-zip --external:node-pty && npm run build:preload",
     "build:preload": "esbuild src/main/preload.ts --bundle --platform=node --format=cjs --outfile=dist/main/preload.cjs --external:electron",
     "dev": "concurrently -k -n renderer,electron \"npm run dev:renderer\" \"npm run dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1",
@@ -49,6 +50,15 @@
       "README.en.md",
       "LICENSE",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "assets/vendor/xterm",
+        "to": "assets/vendor/xterm",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "asarUnpack": [
       "node_modules/node-pty/**/*",

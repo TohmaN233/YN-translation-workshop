@@ -105,7 +105,8 @@ declare global {
       saveProject: (outputDir: string, state: unknown) => Promise<boolean>;
       buildPrompt: (args: WorkshopPromptBuildArgs) => Promise<string>;
       generateLineReview: (args: unknown) => Promise<{ outputPath: string; fileCount?: number; matchedCount?: number; warningCount?: number }>;
-      generateProposalReview: (args: unknown) => Promise<{ outputPath: string; proposalCount: number; reportPath?: string }>;
+      generateProposalReview: (args: unknown) => Promise<{ outputPath: string; proposalCount: number; reportPath?: string; lineReviewPath?: string }>;
+      openReviewHtml: (args: { htmlPath: string; outputDir?: string }) => Promise<{ ok: boolean }>;
       findProofreadReport: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedMs: number; score: number; reasons: string[] }>>;
       scanTranslations: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedAt: string }>>;
       copyText: (text: string) => Promise<boolean>;
@@ -120,7 +121,7 @@ declare global {
       writeGlossaryFile: (args: { path: string; text: string; outputDir?: string }) => Promise<{ ok: boolean; path: string; backupPath?: string }>;
       writeAuditWhitelistFile: (args: { outputDir?: string; sourcePath?: string; lines?: number[] }) => Promise<{ ok: boolean; path: string; backupPath?: string; lineCount: number }>;
       writeEpubFile: (args: { templatePath: string; lines: string[]; outputDir?: string; mode?: "all" | "pair-position"; replacePosition?: number; pairSize?: number }) => Promise<{ ok: boolean; path: string; changedDocuments: number }>;
-      generateProposalReview: (args: unknown) => Promise<{ outputPath: string; proposalCount: number; reportPath?: string }>;
+      generateProposalReview: (args: unknown) => Promise<{ outputPath: string; proposalCount: number; reportPath?: string; lineReviewPath?: string }>;
       buildPrompt: (args: WorkshopPromptBuildArgs) => Promise<string>;
       applyLineReviewState: (args: { lineReviewPath?: string; lineState?: unknown; line?: number }) => Promise<{ ok: boolean }>;
       findProofreadReport: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedMs: number; score: number; reasons: string[] }>>;

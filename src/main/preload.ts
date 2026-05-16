@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld("workshop", {
   buildPrompt: (args: unknown) => ipcRenderer.invoke("prompts:build", args),
   generateLineReview: (args: unknown) => ipcRenderer.invoke("html:generateLineReview", args),
   generateProposalReview: (args: unknown) => ipcRenderer.invoke("html:generateProposalReview", args),
+  openReviewHtml: (args: unknown) => ipcRenderer.invoke("html:openReviewHtml", args),
   findProofreadReport: (outputDir: string) => ipcRenderer.invoke("reports:findProofreadReport", outputDir),
   scanTranslations: (outputDir: string) => ipcRenderer.invoke("files:scanTranslations", outputDir),
   copyText: (text: string) => ipcRenderer.invoke("clipboard:writeText", text),

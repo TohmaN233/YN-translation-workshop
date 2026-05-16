@@ -15,7 +15,12 @@ import { resolveCliFromPath } from "../shared/core/cliResolver.ts";
 import { matchFolderFiles, type FolderLineFile } from "../shared/core/folderMatch.ts";
 import { parseGlossaryText, type GlossaryEntry } from "../shared/core/glossary.ts";
 import { renderBatchLineReviewIndexHtml, renderLineReviewHtml, renderProposalReviewHtml, type BatchLineReviewIndexFile, type UiLocale } from "../shared/core/html.ts";
-import { upgradeLegacyLineReviewHtmlContent, upgradeLegacyProposalReviewHtmlContent } from "../shared/core/legacyHtml.ts";
+import {
+  embeddedProposalLinks,
+  rewriteProposalReviewLineReviewPathContent,
+  upgradeLegacyLineReviewHtmlContent,
+  upgradeLegacyProposalReviewHtmlContent
+} from "../shared/core/legacyHtml.ts";
 import { rankProofreadReportCandidates, type ProofreadReportCandidate } from "../shared/core/reportDiscovery.ts";
 import { parseProofreadMarkdown } from "../shared/core/reviewReport.ts";
 import { buildGithubSkillInstallCommand, buildLocalSkillInstallArgs, buildLocalSkillInstallCommand, type SkillInstallAgent } from "../shared/core/skillInstall.ts";
@@ -48,6 +53,11 @@ interface GenerateReviewHtmlArgs {
   pageSize: number;
   startPage?: number;
   locale: UiLocale;
+}
+
+interface OpenReviewHtmlArgs {
+  htmlPath?: string;
+  outputDir?: string;
 }
 
 interface WriteTextFileArgs {
@@ -372,6 +382,113 @@ async function findLinkedLineReviewHtml(outputDir: string, explicitPath?: string
     }
   }
   return undefined;
+}
+
+function stripHtmlHash(value: string): string {
+  const htmlHashIndex = value.toLowerCase().indexOf(".html#");
+  if (htmlHashIndex >= 0) {
+    return value.slice(0, htmlHashIndex + ".html".length);
+  }
+  return value.replace(/#.*$/, "");
+}
+
+function filePathFromPathLike(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  const raw = stripHtmlHash(value.trim());
+  if (/^file:/i.test(raw)) {
+    try {
+      const url = new URL(raw);
+      const pathname = decodeURIComponent(url.pathname || "");
+      return /^\/[A-Za-z]:\//.test(pathname) ? pathname.slice(1) : pathname;
+    } catch {
+      return undefined;
+    }
+  }
+  return raw;
+}
+
+function workspaceDirFromKnownPath(value: string | undefined): string | undefined {
+  const filePath = filePathFromPathLike(value);
+  if (!filePath) {
+    return undefined;
+  }
+  const parts = path.resolve(filePath).split(/[\\/]+/);
+  const workspaceIndex = parts.map((part) => part.toLowerCase()).lastIndexOf(".translation-workshop");
+  return workspaceIndex >= 0 ? parts.slice(0, workspaceIndex + 1).join(path.sep) : undefined;
+}
+
+function isSameOrInside(parentPath: string, childPath: string): boolean {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function sameFilePath(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) {
+    return false;
+  }
+  return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+}
+
+async function lineReviewCandidateInWorkspace(candidate: string | undefined, workspaceDir: string | undefined): Promise<string | undefined> {
+  const filePath = filePathFromPathLike(candidate);
+  if (!filePath || !(await isLineReviewHtml(filePath))) {
+    return undefined;
+  }
+  return workspaceDir && !isSameOrInside(workspaceDir, filePath) ? undefined : filePath;
+}
+
+async function findLineReviewForProposalHtml(
+  targetPath: string,
+  links: { reportPath?: string; lineReviewPath?: string },
+  outputDir?: string
+): Promise<string | undefined> {
+  const explicitWorkspace = outputDir?.trim() ? normalizeProjectFolder(outputDir).workspaceDir : undefined;
+  const workspaceHints = [
+    explicitWorkspace,
+    workspaceDirFromKnownPath(targetPath),
+    workspaceDirFromKnownPath(links.reportPath),
+    workspaceDirFromKnownPath(links.lineReviewPath)
+  ].filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
+
+  for (const workspaceDir of workspaceHints) {
+    const existing = await lineReviewCandidateInWorkspace(links.lineReviewPath, workspaceDir);
+    if (existing) {
+      return existing;
+    }
+    const linked = await findLinkedLineReviewHtml(workspaceDir, undefined);
+    if (linked) {
+      return linked;
+    }
+  }
+
+  return lineReviewCandidateInWorkspace(links.lineReviewPath, undefined);
+}
+
+async function repairProposalReviewHtmlLineReviewPath(targetPath: string, outputDir?: string): Promise<void> {
+  const filePath = filePathFromPathLike(targetPath);
+  if (!filePath) {
+    return;
+  }
+  let html = "";
+  try {
+    html = await readFile(filePath, "utf8");
+  } catch {
+    return;
+  }
+  const links = embeddedProposalLinks(html);
+  if (!links) {
+    return;
+  }
+  const lineReviewPath = await findLineReviewForProposalHtml(filePath, links, outputDir);
+  if (!lineReviewPath || sameFilePath(filePathFromPathLike(links.lineReviewPath), lineReviewPath)) {
+    return;
+  }
+  const rewritten = rewriteProposalReviewLineReviewPathContent(html, path.basename(filePath), lineReviewPath);
+  if (rewritten) {
+    await writeFile(filePath, rewritten, "utf8");
+  }
 }
 
 async function findProofreadReportCandidates(outputDir: string): Promise<ProofreadReportCandidate[]> {
@@ -983,6 +1100,7 @@ function closeHtmlViewerTab(key: string): boolean {
 async function loadHtmlViewerTab(targetPath: string): Promise<{ filePath: string; hash: string; key: string; tab: { filePath: string; hash: string; title: string; view: BrowserView } }> {
   const { filePath, hash, key } = splitHtmlOpenTarget(targetPath);
   await upgradeLegacyReviewHtmlTree(filePath);
+  await repairProposalReviewHtmlLineReviewPath(filePath);
   const win = await ensureHtmlViewerWindow();
   let tab = htmlViewerTabs.get(key);
   if (!tab) {
@@ -1466,7 +1584,16 @@ ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateRevie
   });
   const outputPath = path.join(workspaceDir, "html", `proposal-review-${timestamp()}.html`);
   await writeFile(outputPath, html, "utf8");
-  return { outputPath, proposalCount: proposals.length, reportPath };
+  return { outputPath, proposalCount: proposals.length, reportPath, lineReviewPath };
+});
+
+ipcMain.handle("html:openReviewHtml", async (_event, args: OpenReviewHtmlArgs) => {
+  if (!args.htmlPath) {
+    throw new Error("Review HTML path is required.");
+  }
+  await repairProposalReviewHtmlLineReviewPath(args.htmlPath, args.outputDir);
+  await openHtmlWindow(args.htmlPath);
+  return { ok: true };
 });
 
 ipcMain.handle("html:applyLineReviewState", async (_event, args: ApplyLineReviewStateArgs) => {

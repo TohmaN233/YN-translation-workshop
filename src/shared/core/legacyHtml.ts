@@ -22,6 +22,11 @@ interface EmbeddedProposalData {
   lineReviewPath?: unknown;
 }
 
+export interface EmbeddedProposalLinks {
+  reportPath?: string;
+  lineReviewPath?: string;
+}
+
 function htmlLocale(html: string): UiLocale {
   return /<html\s+lang="en-US"/i.test(html) ? "en-US" : "zh-CN";
 }
@@ -63,6 +68,17 @@ function embeddedProposalData(html: string): EmbeddedProposalData | undefined {
   } catch {
     return undefined;
   }
+}
+
+export function embeddedProposalLinks(html: string): EmbeddedProposalLinks | undefined {
+  const data = embeddedProposalData(html);
+  if (!data) {
+    return undefined;
+  }
+  return {
+    reportPath: typeof data.reportPath === "string" ? data.reportPath : undefined,
+    lineReviewPath: typeof data.lineReviewPath === "string" ? data.lineReviewPath : undefined
+  };
 }
 
 function workflowOptions(data: EmbeddedReviewData): HtmlWorkflowOptions {
@@ -197,5 +213,26 @@ export function upgradeLegacyProposalReviewHtmlContent(html: string, fallbackTit
     locale: htmlLocale(html),
     reportPath: typeof data.reportPath === "string" ? data.reportPath : undefined,
     lineReviewPath: typeof data.lineReviewPath === "string" ? data.lineReviewPath : undefined
+  });
+}
+
+export function rewriteProposalReviewLineReviewPathContent(
+  html: string,
+  fallbackTitle: string,
+  lineReviewPath: string
+): string | undefined {
+  const data = embeddedProposalData(html);
+  const proposals = proposalItems(data?.proposals);
+  if (!data || !proposals) {
+    return undefined;
+  }
+  return renderProposalReviewHtml({
+    title: htmlTitle(html, fallbackTitle),
+    proposals,
+    pageSize: positiveNumber(data.pageSize, 1000),
+    startPage: positiveNumber(data.startPage, 1),
+    locale: htmlLocale(html),
+    reportPath: typeof data.reportPath === "string" ? data.reportPath : undefined,
+    lineReviewPath
   });
 }

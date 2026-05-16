@@ -72,6 +72,9 @@ interface FormState {
 type LoadedProjectState = Partial<FormState> & {
   lastHtml?: string;
   lastOutput?: string;
+  lastLineReviewHtml?: string;
+  lineReviewPath?: string;
+  lastProposalReviewHtml?: string;
   sourceColumn?: number;
   translationColumn?: number;
 };
@@ -155,6 +158,8 @@ function App() {
   const agentConsoleAgent = useRef<AgentType>("codex");
   const agentConsoleSessionId = useRef("");
   const agentConsoleQuietTimer = useRef<number | undefined>(undefined);
+  const lastLineReviewHtml = useRef("");
+  const lastProposalReviewHtml = useRef("");
 
   function fitAgentTerminal() {
     const terminal = agentTerminal.current;
@@ -344,10 +349,14 @@ function App() {
     if (!loaded) {
       patch({ outputDir });
       setLastOutput("");
+      lastLineReviewHtml.current = "";
+      lastProposalReviewHtml.current = "";
       setStatus(t.projectOpenedNoHtml);
       return;
     }
     const lastHtml = projectLastHtml(loaded);
+    lastLineReviewHtml.current = loaded.lastLineReviewHtml || loaded.lineReviewPath || "";
+    lastProposalReviewHtml.current = loaded.lastProposalReviewHtml || "";
     const projectOutputDir = typeof loaded.outputDir === "string" && loaded.outputDir ? loaded.outputDir : outputDir;
     setForm((current) => ({
       ...current,
@@ -418,8 +427,8 @@ function App() {
     }
     setLastOutput(selected);
     setStatus(t.reviewHtmlOpened ?? t.htmlOpened);
-    await saveProject(selected);
-    await window.workshop.openPath(selected);
+    await saveProject(selected, "proposal");
+    await window.workshop.openReviewHtml({ htmlPath: selected, outputDir: form.outputDir || undefined });
   }
 
   async function pickFile(key: keyof Pick<FormState, "sourcePath" | "translationPath" | "glossaryPath" | "reportPath">) {
@@ -524,14 +533,22 @@ function App() {
     });
   }
 
-  async function saveProject(nextLastOutput = lastOutput) {
+  async function saveProject(nextLastOutput = lastOutput, outputKind?: "line" | "proposal") {
     if (!form.outputDir) {
       return;
+    }
+    if (outputKind === "line") {
+      lastLineReviewHtml.current = nextLastOutput;
+    }
+    if (outputKind === "proposal") {
+      lastProposalReviewHtml.current = nextLastOutput;
     }
     await window.workshop.saveProject(form.outputDir, {
       ...form,
       lastHtml: nextLastOutput,
       lastOutput: nextLastOutput,
+      ...(lastLineReviewHtml.current ? { lastLineReviewHtml: lastLineReviewHtml.current, lineReviewPath: lastLineReviewHtml.current } : {}),
+      ...(lastProposalReviewHtml.current ? { lastProposalReviewHtml: lastProposalReviewHtml.current } : {}),
       updatedAt: new Date().toISOString()
     });
   }
@@ -566,7 +583,7 @@ function App() {
       } else {
         setStatus(t.htmlGenerated);
       }
-      await saveProject(result.outputPath);
+      await saveProject(result.outputPath, "line");
       await window.workshop.openPath(result.outputPath);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -777,8 +794,11 @@ function App() {
       if (result.reportPath) {
         patch({ reportPath: result.reportPath });
       }
+      if (result.lineReviewPath) {
+        lastLineReviewHtml.current = result.lineReviewPath;
+      }
       setStatus(`${t.reviewGenerated} (${result.proposalCount})`);
-      await saveProject(result.outputPath);
+      await saveProject(result.outputPath, "proposal");
       await window.workshop.openPath(result.outputPath);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));

@@ -19,11 +19,11 @@ This project is designed for three kinds of users:
 
 Recommended for Windows users:
 
-**`translation-workshop.Setup.0.1.0.exe`**
+**`translation-workshop.Setup.exe`**
 
 If you do not want to install it, use the portable build:
 
-**`translation-workshop.0.1.0.exe`**
+**`translation-workshop.exe`**
 
 Release page:  
 <https://github.com/TohmaN233/YN-translation-workshop/releases>

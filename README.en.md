@@ -217,7 +217,7 @@ The installer skips existing commands by default. Add `--replace` only when you 
 
 ## Acknowledgements
 
-Special thanks to OpenAI Codex for its long-running help with architecture, implementation, debugging, documentation, and release preparation. From the first workflow sketches to the current usable app, most of the code and engineering details were built with Codex's assistance; the maintainer provided the requirements, review, testing, product judgment, and final release decisions.
+Special thanks to OpenAI Codex for all the help with engineering and design. As a great person once said, a project is made of 99% tokens and 1% inspiration.
 
 ## Advanced: Monte Carlo Stress-Test Prompt
 

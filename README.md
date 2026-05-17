@@ -217,7 +217,7 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --g
 
 ## 致谢
 
-特别感谢 OpenAI Codex 同学在架构设计、功能实现、调试、文档整理和发布准备中的持续协作。这个项目从最初的工作流想法到现在可用的软件形态，绝大多数代码和工程细节都由 Codex 辅助完成；维护者负责需求、审阅、测试、取舍和最终发布。
+特别感谢 OpenAI Codex 同学在工程和设计上提供了诸多帮助。某位伟人曾经说过，一个项目是由 99% 的 token 与 1% 的灵感组成的。
 
 ## 高级：Monte Carlo 压力测试提示词
 

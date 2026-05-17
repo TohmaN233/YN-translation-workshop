@@ -113,6 +113,7 @@
   "batchMatched": "matched",
   "batchWarnings": "warnings",
   "reviewGenerated": "Review HTML generated.",
+  "reviewFormatFallback": "The AI report failed format validation. A repair prompt was generated.",
   "reviewHtmlOpened": "Review HTML opened inside the app.",
   "reportFound": "Proofread report found:",
   "noReports": "No proofread report candidates found.",

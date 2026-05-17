@@ -38,11 +38,9 @@ If a required input is missing, ask only for that item. If the language pair is 
 
 ## Reporting Rules
 
-- Use two separate output-language settings:
-  - `report_language`: the language the user is using to communicate in this request or conversation, unless they explicitly request another report language.
-  - `target_language`: the language of the translation being reviewed.
-- Write report headings, explanations, issue descriptions, confidence notes, summaries, and handling options in `report_language`.
-- Write every `Suggested fix` value only in `target_language`; never translate that field into `report_language` unless the two are the same.
+- Use `target_language`: the language of the translation being reviewed.
+- Write report headings, summaries, explanations, issue descriptions, confidence notes, handling options, and every `Suggested fix` value in `target_language`.
+- Keep parser-required fixed field labels in English, including `Source`, `Current translation`, `Issue`, `Suggested fix`, and `Accept suggestion`.
 - Include global line numbers, source text, current translation, issue code, severity, explanation, and `Suggested fix` for every finding.
 - Before writing each finding, verify the global `L<N>` line number by re-reading that exact source/translation line pair from the input files. Do not infer line numbers from chunk-local, batch-local, sampled, displayed, or approximate positions.
 - The `L<N>` line number must point to the source line whose text exactly matches the reported `Source` field. If uncertain, include the candidate in the summary only, not in `[basename]_fix_proposal.md`.
@@ -65,7 +63,7 @@ Write final proofreading output as two Markdown files with the same basename in 
 
 The summary is for human reading and dashboards. The fix proposal file is for translation-workshop parsing and review HTML generation. Do not mix summary prose into the fix proposal file.
 
-The fix proposal file must start with this line-based header shape:
+The fix proposal file starts with metadata only. Metadata lines contain only paths, timestamp, mode, and summary path; never put issue text, source text, translations, explanations, or findings in metadata lines.
 
 ```markdown
 # Fix Proposals - <basename>
@@ -77,13 +75,15 @@ Mode:          <montecarlo | split N>
 Summary:       ./<basename>_proofread_summary.md
 ```
 
+Finding blocks start after this metadata header.
+
 Every finding in `[basename]_fix_proposal.md` must use this block shape:
 
 ```markdown
 ### H1-001 | MC L123
 **Source**: `<source text verbatim>`
 **Current translation**: `<current translation verbatim>`
-**Issue**: <brief explanation in report_language>
+**Issue**: <brief explanation in target_language>
 **Suggested fix**: `<complete replacement in target_language>`
 - [ ] Accept suggestion
 ```

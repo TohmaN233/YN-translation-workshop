@@ -146,7 +146,10 @@ export function scoreProofreadReportCandidate(candidate: ProofreadReportCandidat
     reasons.push("substantial-size");
     score += Math.min(18, Math.floor(Math.log10(candidate.size) * 5));
   }
-  if (/proofread|review|proposal|fix_proposal/i.test(candidate.path)) {
+  if (/(?:fix[_ -]?proposal|proposal)/i.test(candidate.path)) {
+    reasons.push("fix-proposal-name-hint");
+    score += 40;
+  } else if (/proofread|review/i.test(candidate.path)) {
     reasons.push("name-hint");
     score += 8;
   }

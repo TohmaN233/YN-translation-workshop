@@ -790,13 +790,28 @@ function App() {
         startPage: form.startPage ? Number(form.startPage) : undefined,
         locale: form.locale
       });
-      setLastOutput(result.outputPath);
       if (result.reportPath) {
         patch({ reportPath: result.reportPath });
       }
       if (result.lineReviewPath) {
         lastLineReviewHtml.current = result.lineReviewPath;
       }
+      if (result.fallbackPrompt) {
+        setPromptKind("proofread");
+        setPrompt(result.fallbackPrompt);
+        setActiveAgentPrompt(result.fallbackPrompt);
+        setCallAgentPanelOpen(true);
+        if (result.reportPath) {
+          patch({ reportPath: result.reportPath });
+        }
+        setStatus(t.reviewFormatFallback ?? "AI report failed format validation. A repair prompt was generated.");
+        return;
+      }
+      if (!result.outputPath) {
+        setStatus("Review HTML generation failed.");
+        return;
+      }
+      setLastOutput(result.outputPath);
       setStatus(`${t.reviewGenerated} (${result.proposalCount})`);
       await saveProject(result.outputPath, "proposal");
       await window.workshop.openPath(result.outputPath);

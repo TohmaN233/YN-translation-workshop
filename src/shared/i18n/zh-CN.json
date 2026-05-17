@@ -113,6 +113,7 @@
   "batchMatched": "已匹配",
   "batchWarnings": "个警告",
   "reviewGenerated": "审阅 HTML 已生成。",
+  "reviewFormatFallback": "AI 报告未通过格式审核，已生成格式修复提示词。",
   "reviewHtmlOpened": "审阅 HTML 已在应用内打开。",
   "reportFound": "已找到校对报告：",
   "noReports": "没有找到校对报告候选。",

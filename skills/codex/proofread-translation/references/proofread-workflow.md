@@ -53,7 +53,6 @@ Before review, set a lightweight language profile:
 
 - `source_language`: infer from user request, file names, content, or glossary.
 - `target_language`: infer the same way; ask only if the replacement translation language is unclear.
-- `report_language`: default to the user's language unless they request otherwise.
 - `target_conventions`: punctuation, quotes, pronouns, register, capitalization, spacing, and sentence rhythm for the target language.
 
 Use target-language conventions for LOW issues. Do not apply Chinese-specific rules to English targets. Examples:
@@ -66,27 +65,16 @@ Use target-language conventions for LOW issues. Do not apply Chinese-specific ru
 
 ### Output Language Contract
 
-All Markdown reports must obey this split:
+Write all Markdown report prose in `target_language`, including headings, summaries, issue explanations, confidence notes, and handling options. Keep parser-required fixed labels in English, especially `Source`, `Current translation`, `Issue`, `Suggested fix`, and `Accept suggestion`.
 
-| Part | Language |
-|------|----------|
-| Headings, summaries, issue explanations, confidence notes, handling options | `report_language` |
-| Template labels such as position/source/current translation/problem | localize to `report_language` |
-| Raw source text | unchanged source text |
-| Current translation quote | unchanged target text from file |
-| `Suggested fix` field label | keep this exact stable key unless the user asks for localized labels |
-| `Suggested fix` field value | `target_language` only |
-| Glossary terms | preserve glossary spelling unless explaining in `report_language` |
-
-Default `report_language` is the language the user is using to talk to Codex in the current request or conversation. If the user asks in Chinese to proofread an English translation, write the report in Chinese and put English only in `Suggested fix`. If the user asks in English to proofread a Chinese translation, write the report in English and put Chinese only in `Suggested fix`.
+Raw source text stays unchanged. Current translation quotes stay unchanged from the translation file. Glossary terms keep their glossary spelling.
 
 Before finalizing a `.md` report, run a language consistency pass:
 
-1. Confirm every explanation and summary follows `report_language`.
+1. Confirm explanations, summaries, and handling options use `target_language`.
 2. Confirm every `Suggested fix` is a complete replacement in `target_language`.
-3. Confirm no stock phrases from another language leaked into headings, labels, or handling options unless quoted from the source/translation.
-4. Confirm template labels are localized to `report_language`, except the stable `Suggested fix` key when parsability matters.
-5. If either language is ambiguous, ask before producing the report.
+3. Confirm fixed parser labels remain in English.
+4. If `target_language` is ambiguous, ask before producing the report.
 Genre？
   1. game    / 游戏    （RPG/视觉小说/剧情游戏）
   2. novel   / 小说    （文学/轻小说/同人文）
@@ -616,9 +604,9 @@ After all chunks are reviewed, write the final two-file output required by the F
 ## Key Rules
 
 ### 通用规则
-- **报告语言固定**：整份 `.md` 报告的标题、摘要、问题解释、置信度说明和处理选项必须使用 `report_language`；不要因为目标语是英文就把中文用户的报告写成英文，反之亦然
-- **模板标签要本地化**：示例模板中的 `位置/原文/译文/问题` 等标签只是中文示例；如果 `report_language` 是英文，应改成 `Location/Source/Current translation/Issue` 等对应标签
-- **替换译文语言固定**：`Suggested fix` 字段必须使用 `target_language`，即使报告语言不同；这是写回文件的文本，不是说明文字
+- **报告语言固定**：整份 `.md` 报告的标题、摘要、问题解释、置信度说明和处理选项必须使用 `target_language`
+- **固定字段名保持英文**：结构化报告中用于程序解析的字段名保持英文，例如 `Source`、`Current translation`、`Issue`、`Suggested fix` 和 `Accept suggestion`
+- **替换译文语言固定**：`Suggested fix` 字段必须使用 `target_language`；这是写回文件的文本，不是说明文字
 - **给出位置**：每条标注必须包含行号（全局行号，非片段内行号），如L1234，后续程序处理需要；不要输出内部 batch/chunk 编号，例如 `B12 raw345`。如果中间过程产生了 `raw345`，最终报告只写全局行号 `L345`
 - **提供原文对照**：每条标注同时显示原文和译文，不要只描述问题
 - **`Suggested fix` 只写译文本体**：该字段必须包含将要写回的完整目标行译文本身，不写"建议改为"、"译文为"、"可翻译成"、"应译作"等元说明，也不要把解释、理由、引号或"把X改为Y"这类局部替换指令混进该字段

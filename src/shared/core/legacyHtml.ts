@@ -157,7 +157,7 @@ export function needsLegacyLineReviewUpgrade(html: string): boolean {
     || (html.includes('id="reviewData"') && html.includes("line-review") && html.includes('id="agentModeBackground"'))
     || (html.includes('id="reviewData"') && html.includes("line-review") && html.includes('id="startBackgroundAgent"'))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes('id="promptSettingsPanel"'))
-    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("promptSettingsVersion = 2"))
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("promptSettingsVersion = 5"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("createAgentTerminal"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("writeAgentConsoleInput"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes('id="importGlossary"'))
@@ -168,7 +168,11 @@ export function needsLegacyLineReviewUpgrade(html: string): boolean {
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("function lineReviewStorageKey"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("let restoringPosition = true"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("searchMatches = needle ? data.rows.filter"))
-    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes(".row.match .cell"));
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes(".row.match .cell"))
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes('id="glossarySearch"'))
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("glossaryRenderBatchSize"))
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("reviewFormatFallback"))
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("Output language: write all report prose in the target language"));
 }
 
 export function needsLegacyProposalReviewUpgrade(html: string): boolean {
@@ -177,6 +181,8 @@ export function needsLegacyProposalReviewUpgrade(html: string): boolean {
     && (
       !html.includes("persistLineReviewState")
       || !html.includes("proposalSafetyCheck")
+      || !html.includes('id="issueFilter"')
+      || !html.includes("function issueTypeOptions")
       || html.includes("current-mismatch")
       || html.includes("currentScore")
     );

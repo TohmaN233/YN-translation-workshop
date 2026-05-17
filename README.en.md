@@ -28,6 +28,15 @@ If you do not want to install it, use the portable build:
 Release page:  
 <https://github.com/TohmaN233/YN-translation-workshop/releases>
 
+## Update Info
+
+### v1.0.5
+
+- **Codex proofread skill**: simplified the proofreading report prompt; report prose now uses the target language, parser-required labels stay fixed in English, and fix proposal line / field constraints are stricter.
+- **Prompts sent to AI**: translation and proofreading prompts both emphasize target-language output; fixed labels such as `Suggested fix` must stay unchanged.
+- **Glossary UI**: enlarged the glossary panel, added search across source terms, target terms, and current translations, and switched glossary entries to dynamic rendering.
+- **Fallback report repair prompt**: when a likely fix proposal cannot be parsed into review HTML, the app generates a localized repair prompt and opens the Agent panel for direct sending.
+
 ## Bundled Skills
 
 The project bundles Codex and Claude Code versions of the skills. It currently supports Agent-based translation workflows, not direct API-only translation through prompt engineering.
@@ -156,6 +165,12 @@ The app only copies the install command. It does not automatically write to your
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global
 ```
 
+To update existing Codex skills, add `--replace` to the same command:
+
+```powershell
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global --replace
+```
+
 If you have cloned the repository, you can also install from the local path:
 
 ```bash
@@ -180,6 +195,12 @@ The app only copies the install command. It does not automatically write to your
 
 ```powershell
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global
+```
+
+To update existing Claude Code commands, add `--replace` to the same command:
+
+```powershell
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global --replace
 ```
 
 If you have cloned the repository, you can also install from the local path:

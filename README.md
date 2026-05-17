@@ -28,6 +28,15 @@ Windows 用户推荐下载：
 Release 页面：  
 <https://github.com/TohmaN233/YN-translation-workshop/releases>
 
+## 更新说明
+
+### v1.0.5
+
+- **Codex proofread skill**：精简校对报告提示词，报告正文统一使用目标语言，程序解析必需字段保持固定英文；强化 fix proposal 的行号与字段格式约束。
+- **发送给 AI 的提示词**：翻译和校对提示词都强调输出内容使用目标语言；`Suggested fix` 等固定字段名必须保持原样。
+- **术语表体验**：术语表面板显示区域扩大，支持按原文、译文、当前译文搜索；术语列表改为动态渲染。
+- **兜底报告提示词**：当检测到 AI 生成了疑似 fix proposal，但格式不符合审阅 HTML 解析要求时，自动生成中英双语对应的格式修复提示词，并打开 Agent 窗口方便直接发送。
+
 ## 内置 Skills
 
 项目内置 Codex 与 Claude Code 两套 skill / command。目前支持 Agent 翻译流程，不支持单独调用 API 做提示词工程翻译。
@@ -156,6 +165,12 @@ macOS / Linux / Git Bash:
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global
 ```
 
+更新已有 Codex skill 时，在同一条命令末尾加 `--replace`：
+
+```powershell
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global --replace
+```
+
 如果已经 clone 仓库，也可以用本地路径安装：
 
 ```bash
@@ -180,6 +195,12 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --gl
 
 ```powershell
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global
+```
+
+更新已有 Claude Code command 时，在同一条命令末尾加 `--replace`：
+
+```powershell
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global --replace
 ```
 
 如果已经 clone 仓库，也可以用本地路径安装：

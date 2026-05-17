@@ -77,6 +77,8 @@ const labels = {
     changed: "人工改写",
     searchMatches: "匹配",
     searchNoMatches: "无匹配",
+    issueFilter: "问题分类",
+    allIssueTypes: "全部分类",
     exportJson: "导出状态 JSON",
     restore: "还原当前行",
     reviewTitle: "校对建议审阅",
@@ -100,6 +102,8 @@ const labels = {
     changed: "Manual edits",
     searchMatches: "matches",
     searchNoMatches: "No matches",
+    issueFilter: "Issue type",
+    allIssueTypes: "All issue types",
     exportJson: "Export state JSON",
     restore: "Restore current row",
     reviewTitle: "Proposal Review",
@@ -180,6 +184,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     proposalOpenFailed: "\u6253\u5f00\u6b63\u6587 HTML \u5931\u8d25",
     reviewGenerated: "\u5df2\u751f\u6210\u5ba1\u9605 HTML",
     reviewGenerationFailed: "\u751f\u6210\u5ba1\u9605 HTML \u5931\u8d25",
+    reviewFormatFallback: "AI 报告未通过格式审核，已生成格式修复提示词。",
     reviewHtmlNeedsApp: "\u751f\u6210\u5ba1\u9605 HTML \u9700\u8981\u5728 translation-workshop \u5e94\u7528\u5185\u6253\u5f00\u6b64 HTML",
     reviewReportFound: "\u5df2\u627e\u5230\u6821\u5bf9\u62a5\u544a",
     agentLaunched: "Agent \u5df2\u542f\u52a8",
@@ -191,6 +196,8 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossaryTitle: "\u672f\u8bed\u66ff\u6362",
     glossaryOpen: "\u672f\u8bed\u8868",
     glossaryClose: "\u5173\u95ed",
+    glossarySearchPlaceholder: "搜索术语 / 译名",
+    glossarySearchNoMatches: "没有匹配的术语",
     glossaryCurrent: "\u66ff\u6362\u5f53\u524d\u9875",
     glossaryAll: "\u66ff\u6362\u5168\u6587",
     syncGlossary: "\u540c\u6b65\u672f\u8bed",
@@ -292,6 +299,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     proposalOpenFailed: "Failed to open line HTML",
     reviewGenerated: "Review HTML generated",
     reviewGenerationFailed: "Review HTML generation failed",
+    reviewFormatFallback: "The AI report failed format validation. A repair prompt was generated.",
     reviewHtmlNeedsApp: "Open this HTML in translation-workshop to generate review HTML.",
     reviewReportFound: "Report found",
     agentLaunched: "Agent launched",
@@ -303,6 +311,8 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossaryTitle: "Glossary replacement",
     glossaryOpen: "Glossary",
     glossaryClose: "Close",
+    glossarySearchPlaceholder: "Search source / translation",
+    glossarySearchNoMatches: "No matching terms",
     glossaryCurrent: "Replace current page",
     glossaryAll: "Replace all",
     syncGlossary: "Sync glossary",
@@ -512,7 +522,11 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .glossary-tools header { position:static; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:0; color:var(--ink); background:none; box-shadow:none; border:0; }
     .glossary-tools header::after { content:none; }
     .glossary-actions { display:flex; flex-wrap:wrap; gap:8px; }
-    .glossary-list { display:grid; gap:6px; max-height:170px; overflow:auto; }
+    .glossary-search { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; }
+    .glossary-search input { width:100%; min-width:0; }
+    .glossary-search span { color:var(--muted); font-size:12px; white-space:nowrap; }
+    .glossary-help { margin:0; min-height:auto; line-height:1.35; }
+    .glossary-list { display:grid; gap:6px; max-height:min(72vh,calc(100vh - 220px)); overflow:auto; }
     .glossary-entry { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:8px; align-items:center; font-size:13px; }
     .glossary-entry span,.glossary-entry input { min-width:0; width:100%; overflow-wrap:anywhere; padding:5px 8px; border:1px solid var(--line); border-radius:8px; background:#fff; }
     .glossary-source { color:var(--muted); background:var(--source-bg); }
@@ -521,7 +535,7 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .glossary-entry b { color:var(--muted); }
     .glossary-backdrop { position:fixed; inset:0; z-index:29; background:rgba(31,45,78,.24); opacity:0; pointer-events:none; transition:opacity .16s ease; }
     .glossary-backdrop.open { opacity:1; pointer-events:auto; }
-    .glossary-drawer { position:fixed; z-index:30; inset:0 auto 0 0; width:min(560px,calc(100vw - 22px)); max-width:100vw; margin:0; border-radius:0 8px 8px 0; overflow:auto; transform:translateX(-105%); transition:transform .18s ease; }
+    .glossary-drawer { position:fixed; z-index:30; inset:0 auto 0 0; width:min(700px,calc(100vw - 22px)); max-width:100vw; margin:0; border-radius:0 8px 8px 0; overflow:auto; transform:translateX(-105%); transition:transform .18s ease; }
     .glossary-drawer.open { transform:translateX(0); }
     .glossary-drawer header strong { display:flex; align-items:center; gap:4px; }
     .glossary-drawer .glossary-actions { justify-content:flex-start; }
@@ -627,7 +641,11 @@ function glossaryToolsHtml(t: Record<string, string>, entries: GlossaryEntry[]):
   const helpText = entries.length === 0
     ? (t.glossaryEmpty ?? "No glossary loaded")
     : (t.glossaryEditHelp ?? "Edit the right-side term. Source text is never modified.");
-  const body = `<p id="glossaryHelp" class="ai-status">${helpText}</p>
+  const body = `<div class="glossary-search">
+        <input id="glossarySearch" type="search" placeholder="${escapeHtml(t.glossarySearchPlaceholder ?? "Search source / translation")}" autocomplete="off">
+        <span id="glossarySearchMeta"></span>
+      </div>
+      <p id="glossaryHelp" class="ai-status glossary-help">${helpText}</p>
       <div id="glossaryList" class="glossary-list">${entries.length === 0 ? "" : visibleEntries.map((entry, index) => `<div class="glossary-entry" data-glossary-index="${index}">
         <input class="glossary-source" data-glossary-index="${index}" value="${escapeHtml(entry.source)}" readonly title="source term">
         <b>→</b>
@@ -1338,7 +1356,8 @@ function promptWithAuditWhitelist(prompt) {
 const syncDbName = "translation-workshop-html-cache";
 const syncStoreName = "line-sync-v1";
 const syncTextKey = key + ":translation-text";
-const promptSettingsVersion = 2;
+// Bump when embedded prompts or prompt-related HTML behavior changes; old HTML will auto-upgrade.
+const promptSettingsVersion = 5;
 function splitSyncedText(text) {
   return String(text ?? "").replace(/\r\n/g, "\n").replace(/\r$/, "").replace(/\n$/, "").split("\n");
 }
@@ -1452,6 +1471,13 @@ async function generateReviewHtmlFromReport(preferredReportPath) {
       locale: document.documentElement.lang === "en-US" ? "en-US" : "zh-CN",
       lineReviewPath: currentLineReviewPath()
     });
+    if (result?.fallbackPrompt) {
+      setPromptText(result.fallbackPrompt);
+      openAgentPanel();
+      agentMessageInput?.focus();
+      setAiStatus(data.labels.reviewFormatFallback || "The AI report failed format validation. A repair prompt was generated.");
+      return;
+    }
     setAiStatus((data.labels.reviewGenerated || "Review HTML generated") + ": " + (result?.outputPath || "") + " (" + (result?.proposalCount || 0) + ")");
     if (result?.outputPath && bridge.openPath) {
       await bridge.openPath(result.outputPath);
@@ -1843,6 +1869,10 @@ const glossaryBackdrop = document.getElementById("glossaryBackdrop");
 const glossaryListEl = document.getElementById("glossaryList");
 const glossaryCountEl = document.getElementById("glossaryCount");
 const glossaryHelpEl = document.getElementById("glossaryHelp");
+const glossarySearchEl = document.getElementById("glossarySearch");
+const glossarySearchMetaEl = document.getElementById("glossarySearchMeta");
+const glossaryRenderBatchSize = 120;
+let glossaryVisibleCount = glossaryRenderBatchSize;
 function setGlossaryDrawer(open) {
   glossaryDrawer?.classList.toggle("open", open);
   glossaryBackdrop?.classList.toggle("open", open);
@@ -1885,23 +1915,63 @@ function setBoundGlossaryPath(path) {
   workflowPaths().glossaryPath = value;
   save();
 }
+function glossarySearchQuery() {
+  return String(glossarySearchEl?.value || "").trim().toLocaleLowerCase();
+}
+function glossaryEntryMatches(entry, index, query) {
+  if (!query) return true;
+  return [entry.source, entry.target, glossaryTarget(index), ...glossaryAliases(index)]
+    .some(value => String(value || "").toLocaleLowerCase().includes(query));
+}
+function matchingGlossaryEntries() {
+  const query = glossarySearchQuery();
+  return glossaryEntries
+    .map((entry, index) => ({ entry, index }))
+    .filter(item => glossaryEntryMatches(item.entry, item.index, query));
+}
+function glossaryEntryHtml(entry, index) {
+  const target = glossaryTarget(index);
+  return '<div class="glossary-entry" data-glossary-index="' + index + '">' +
+    '<input class="glossary-source" data-glossary-index="' + index + '" value="' + escapeHtml(entry.source) + '" readonly title="source term">' +
+    '<b>→</b>' +
+    '<input class="glossary-target" data-glossary-index="' + index + '" value="' + escapeHtml(target) + '" data-original-target="' + escapeHtml(entry.target) + '" data-current-target="' + escapeHtml(target) + '" title="translation term">' +
+    '</div>';
+}
 function renderGlossaryEntries() {
-  if (glossaryCountEl) glossaryCountEl.textContent = String(glossaryEntries.length);
   if (!glossaryListEl) return;
   if (glossaryEntries.length === 0) {
+    if (glossaryCountEl) glossaryCountEl.textContent = "0";
+    if (glossarySearchMetaEl) glossarySearchMetaEl.textContent = "";
     if (glossaryHelpEl) glossaryHelpEl.textContent = data.labels.glossaryEmpty || "No glossary loaded";
     glossaryListEl.innerHTML = "";
     return;
   }
+  const query = glossarySearchQuery();
+  const matchingEntries = matchingGlossaryEntries();
+  glossaryVisibleCount = Math.min(Math.max(glossaryRenderBatchSize, glossaryVisibleCount), matchingEntries.length);
+  const visibleEntries = matchingEntries.slice(0, glossaryVisibleCount);
+  if (glossaryCountEl) glossaryCountEl.textContent = query ? (matchingEntries.length + "/" + glossaryEntries.length) : String(glossaryEntries.length);
+  if (glossarySearchMetaEl) glossarySearchMetaEl.textContent = visibleEntries.length + "/" + matchingEntries.length;
   if (glossaryHelpEl) glossaryHelpEl.textContent = data.labels.glossaryEditHelp || "Edit the right-side term. Source text is never modified.";
-  glossaryListEl.innerHTML = glossaryEntries.slice(0, 120).map((entry, index) => {
-    const target = glossaryTarget(index);
-    return '<div class="glossary-entry" data-glossary-index="' + index + '">' +
-      '<input class="glossary-source" data-glossary-index="' + index + '" value="' + escapeHtml(entry.source) + '" readonly title="source term">' +
-      '<b>→</b>' +
-      '<input class="glossary-target" data-glossary-index="' + index + '" value="' + escapeHtml(target) + '" data-original-target="' + escapeHtml(entry.target) + '" data-current-target="' + escapeHtml(target) + '" title="translation term">' +
-      '</div>';
-  }).join("");
+  if (visibleEntries.length === 0) {
+    glossaryListEl.innerHTML = '<p class="ai-status">' + escapeHtml(data.labels.glossarySearchNoMatches || "No matching terms") + '</p>';
+    return;
+  }
+  glossaryListEl.innerHTML = visibleEntries.map(({ entry, index }) => glossaryEntryHtml(entry, index)).join("");
+}
+function loadMoreGlossaryEntries() {
+  const matchingEntries = matchingGlossaryEntries();
+  if (glossaryVisibleCount >= matchingEntries.length) return;
+  const previousCount = glossaryVisibleCount;
+  glossaryVisibleCount = Math.min(glossaryVisibleCount + glossaryRenderBatchSize, matchingEntries.length);
+  glossaryListEl?.insertAdjacentHTML(
+    "beforeend",
+    matchingEntries
+      .slice(previousCount, glossaryVisibleCount)
+      .map(({ entry, index }) => glossaryEntryHtml(entry, index))
+      .join("")
+  );
+  if (glossarySearchMetaEl) glossarySearchMetaEl.textContent = glossaryVisibleCount + "/" + matchingEntries.length;
 }
 function replacementCandidatesForEntry(entry, index, targetOverride, extraCandidates) {
   const target = targetOverride ?? glossaryTarget(index);
@@ -2308,6 +2378,14 @@ glossaryListEl?.addEventListener("keydown", (event) => {
   event.preventDefault();
   input.blur();
 });
+glossarySearchEl?.addEventListener("input", () => {
+  glossaryVisibleCount = glossaryRenderBatchSize;
+  renderGlossaryEntries();
+});
+glossaryListEl?.addEventListener("scroll", () => {
+  if (!glossaryListEl || glossaryListEl.scrollTop + glossaryListEl.clientHeight < glossaryListEl.scrollHeight - 80) return;
+  loadMoreGlossaryEntries();
+});
 renderGlossaryEntries();
 document.getElementById("applyGlossaryCurrent")?.addEventListener("click", () => applyGlossaryReplacements("page"));
 document.getElementById("applyGlossaryAll")?.addEventListener("click", () => applyGlossaryReplacements("all"));
@@ -2387,6 +2465,7 @@ export function renderProposalReviewHtml(options: ProposalReviewHtmlOptions): st
       <p class="subtle">${escapeHtml(options.title)}</p>
       ${themeControlsHtml(t)}
       <label>${t.search}</label><input id="search" type="search">
+      <label>${t.issueFilter}</label><select id="issueFilter"></select>
       <label>${t.page}</label><input id="pageInput" type="number" min="1" value="${firstPage.page}">
       <div class="toolbar">
         <button class="btn" id="prev">${t.previous}</button>
@@ -2423,17 +2502,82 @@ const cards = document.getElementById("cards");
 const pageInput = document.getElementById("pageInput");
 const pageInfo = document.getElementById("pageInfo");
 const proposalStatus = document.getElementById("proposalStatus");
+const searchInput = document.getElementById("search");
+const issueFilter = document.getElementById("issueFilter");
 function escapeHtml(text) { return String(text ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])); }
-function save() { state.page = page; state.scrollY = scrollY; localStorage.setItem(key, JSON.stringify(state)); }
-function pageItems() { return data.proposals.slice((page - 1) * pageSize, page * pageSize); }
+function save() {
+  state.page = page;
+  state.scrollY = scrollY;
+  state.issueFilter = activeIssueFilter();
+  localStorage.setItem(key, JSON.stringify(state));
+}
 function setProposalStatus(text) { if (proposalStatus) proposalStatus.textContent = text; }
+function proposalCode(item) {
+  const text = [item.id, item.problemType].filter(Boolean).join(" ");
+  const exact = text.match(/\b([HML])[-\s]?(\d{1,4})\b/i);
+  if (exact) return exact[1].toUpperCase() + exact[2];
+  const severity = text.match(/\b([HML])\b/i);
+  return severity ? severity[1].toUpperCase() : "M";
+}
+function proposalSeverity(item) {
+  const code = proposalCode(item).charAt(0).toUpperCase();
+  return ["H", "M", "L"].includes(code) ? code : "M";
+}
+function issueTypeOptions() {
+  const exactCodes = [...new Set(data.proposals.map(proposalCode))].sort((left, right) => {
+    const order = { H: 0, M: 1, L: 2 };
+    const leftPrefix = left.charAt(0);
+    const rightPrefix = right.charAt(0);
+    const prefixDiff = (order[leftPrefix] ?? 9) - (order[rightPrefix] ?? 9);
+    if (prefixDiff !== 0) return prefixDiff;
+    return Number(left.slice(1) || 0) - Number(right.slice(1) || 0) || left.localeCompare(right);
+  });
+  const severities = ["H", "M", "L"].filter(prefix => exactCodes.some(code => code.startsWith(prefix)));
+  return [...new Set(["", ...severities, ...exactCodes])];
+}
+function renderIssueFilterOptions() {
+  if (!issueFilter) return;
+  const selected = state.issueFilter || "";
+  issueFilter.innerHTML = issueTypeOptions().map(value => {
+    const label = value || (data.labels.allIssueTypes || "All issue types");
+    return '<option value="' + escapeHtml(value) + '"' + (value === selected ? " selected" : "") + '>' + escapeHtml(label) + '</option>';
+  }).join("");
+  if (![...issueFilter.options].some(option => option.value === selected)) {
+    issueFilter.value = "";
+    state.issueFilter = "";
+  }
+}
+function activeIssueFilter() {
+  return String(issueFilter?.value || state.issueFilter || "").trim().toUpperCase();
+}
+function proposalSearchText(item) {
+  return JSON.stringify(item).toLowerCase();
+}
+function filteredItems() {
+  const q = String(searchInput?.value || "").trim().toLowerCase();
+  const type = activeIssueFilter();
+  return data.proposals.filter(item => {
+    const code = proposalCode(item);
+    const severity = proposalSeverity(item);
+    const typeMatches = !type || code === type || severity === type;
+    const searchMatches = !q || proposalSearchText(item).includes(q);
+    return typeMatches && searchMatches;
+  });
+}
+function pageItems(items) { return items.slice((page - 1) * pageSize, page * pageSize); }
 function render() {
-  const totalPages = Math.max(1, Math.ceil(data.proposals.length / pageSize));
+  const visibleItems = filteredItems();
+  const totalPages = Math.max(1, Math.ceil(visibleItems.length / pageSize));
   page = Math.min(Math.max(1, page), totalPages);
   pageInput.value = page;
-  pageInfo.textContent = data.labels.page + " " + page + " / " + totalPages;
-  const q = document.getElementById("search").value.trim().toLowerCase();
-  cards.innerHTML = pageItems().filter(item => !q || JSON.stringify(item).toLowerCase().includes(q)).map(item => {
+  pageInfo.textContent = data.labels.page + " " + page + " / " + totalPages + " · " + data.labels.total + ": " + visibleItems.length + " / " + data.proposals.length;
+  const visiblePageItems = pageItems(visibleItems);
+  if (visiblePageItems.length === 0) {
+    cards.innerHTML = '<p class="subtle">' + escapeHtml(data.labels.searchNoMatches || "No matches") + '</p>';
+    save();
+    return;
+  }
+  cards.innerHTML = visiblePageItems.map(item => {
     const decision = effectiveProposalDecision(item);
     const lineLabel = item.line ? (data.labels.lineNumber || "Line") + " " + item.line : (data.labels.lineNumber || "Line") + " ?";
     return '<article class="card" data-id="' + escapeHtml(item.id) + '" data-line="' + escapeHtml(item.line || "") + '">' +
@@ -2638,17 +2782,6 @@ function applyDecisionVisual(card, decision) {
     button.classList.toggle("active", button.dataset.action === decision.status);
   });
 }
-function proposalCode(item) {
-  const text = [item.id, item.problemType].filter(Boolean).join(" ");
-  const exact = text.match(/\b([HML])[-\s]?(\d{1,4})\b/i);
-  if (exact) return exact[1].toUpperCase() + exact[2];
-  const severity = text.match(/\b([HML])\b/i);
-  return severity ? severity[1].toUpperCase() : "M";
-}
-function proposalSeverity(item) {
-  const code = proposalCode(item).charAt(0).toUpperCase();
-  return ["H", "M", "L"].includes(code) ? code : "M";
-}
 function issueFromProposal(item) {
   return {
     code: proposalCode(item),
@@ -2811,7 +2944,8 @@ cards.addEventListener("input", event => {
 document.getElementById("prev").onclick = () => { page -= 1; render(); scrollTo(0, 0); };
 document.getElementById("next").onclick = () => { page += 1; render(); scrollTo(0, 0); };
 document.getElementById("jump").onclick = () => { page = Number(pageInput.value || 1); render(); scrollTo(0, 0); };
-document.getElementById("search").oninput = render;
+searchInput.oninput = () => { page = 1; render(); scrollTo(0, 0); };
+issueFilter.onchange = () => { page = 1; state.issueFilter = activeIssueFilter(); render(); scrollTo(0, 0); };
 document.getElementById("connectLineReview")?.addEventListener("click", connectLineReview);
 document.getElementById("applyProposalChanges")?.addEventListener("click", applyProposalChanges);
 document.getElementById("export").onclick = () => {
@@ -2841,6 +2975,7 @@ document.getElementById("customThemeColor")?.addEventListener("input", (event) =
   applyTheme({ ...(state.theme || themePalettes.sky), "--sakura": event.target.value, "--surface-a": event.target.value + "22" });
 });
 addEventListener("beforeunload", save);
+renderIssueFilterOptions();
 render();
 requestAnimationFrame(() => scrollTo(0, state.scrollY || 0));
 `;

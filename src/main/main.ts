@@ -55,6 +55,12 @@ interface GenerateReviewHtmlArgs {
   locale: UiLocale;
 }
 
+interface ProposalReviewFallbackResult {
+  fallbackPrompt: string;
+  reportPath: string;
+  proposalCount: 0;
+}
+
 interface OpenReviewHtmlArgs {
   htmlPath?: string;
   outputDir?: string;
@@ -522,6 +528,60 @@ async function findProofreadReportCandidates(outputDir: string): Promise<Proofre
   }
   await visit(outputDir, 0);
   return rankProofreadReportCandidates(candidates).filter((candidate) => candidate.score >= 40).slice(0, 20);
+}
+
+function buildReportFormatRepairPrompt(reportPath: string, locale: UiLocale): string {
+  if (locale === "en-US") {
+    return [
+      "Please reorganize this proofreading report file in place:",
+      reportPath,
+      "",
+      "This file looks like a proofreading / fix proposal report, but its finding blocks do not match the structured fix_proposal format required by the proofread-translation skill, so translation-workshop cannot parse it.",
+      "",
+      "Do not proofread the translation again. Only reorganize the existing report content.",
+      "Do not omit any reported issue.",
+      "Directly overwrite the same Markdown file after fixing the format.",
+      "Every issue must use a global source line number L<N>.",
+      "If the report contains chunk-local, batch-local, Bxxx, rawxxx, or similar internal IDs, convert them to global source line numbers L<N>.",
+      "",
+      "Each finding must use this structure:",
+      "",
+      "### H1-001 | MC L123",
+      "**Source**: `<source text verbatim>`",
+      "**Current translation**: `<current translation verbatim>`",
+      "**Issue**: <brief explanation>",
+      "**Suggested fix**: `<complete replacement in target language>`",
+      "- [ ] Accept suggestion",
+      "",
+      "Use `Chunk 001 L123` for split mode and `MC L123` for montecarlo mode.",
+      "Write all report prose in the target language; keep fixed parser labels in the required format."
+    ].join("\n");
+  }
+
+  return [
+    "请就地重新整理这个校对报告文件：",
+    reportPath,
+    "",
+    "该文件看起来像 proofreading / fix proposal 报告，但问题条目的 block 格式与 proofread-translation skill 要求的结构化 fix_proposal 格式不符，translation-workshop 无法解析。",
+    "",
+    "请不要重新校对译文，只基于现有报告内容重排格式。",
+    "不要遗漏任何已报告的问题。",
+    "修正格式后直接覆盖同一个 Markdown 文件。",
+    "每条问题都必须使用全局源文行号 L<N>。",
+    "如果报告里出现 chunk-local、batch-local、Bxxx、rawxxx 等内部编号，请换算为全局源文行号 L<N>。",
+    "",
+    "每条 finding 必须使用这种结构：",
+    "",
+    "### H1-001 | MC L123",
+    "**Source**: `<source text verbatim>`",
+    "**Current translation**: `<current translation verbatim>`",
+    "**Issue**: <brief explanation>",
+    "**Suggested fix**: `<complete replacement in target language>`",
+    "- [ ] Accept suggestion",
+    "",
+    "split 模式使用 `Chunk 001 L123`，montecarlo 模式使用 `MC L123`。",
+    "所有报告正文使用目标语言书写；固定字段名保持格式要求。"
+  ].join("\n");
 }
 
 function resolveLineFileType(filePath: string, fileType: GenerateLineHtmlArgs["fileType"]): "txt" | "epub" {
@@ -1570,7 +1630,11 @@ ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateRevie
   const reportText = await readFile(reportPath, "utf8");
   const proposals = parseProofreadMarkdown(reportText);
   if (proposals.length === 0) {
-    throw new Error("No replacement proposals were found in the Markdown report.");
+    return {
+      fallbackPrompt: buildReportFormatRepairPrompt(reportPath, args.locale),
+      reportPath,
+      proposalCount: 0
+    } satisfies ProposalReviewFallbackResult;
   }
   const lineReviewPath = await findLinkedLineReviewHtml(args.outputDir, args.lineReviewPath);
   const html = renderProposalReviewHtml({

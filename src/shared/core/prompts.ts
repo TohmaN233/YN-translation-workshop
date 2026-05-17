@@ -216,10 +216,10 @@ export function buildTranslatePrompt(options: TranslatePromptOptions): string {
     translateCommandLine(options, defaults),
     ...subagentLines,
     "",
-    "Safety requirements:",
+    "Output contract:",
+    "- Write the final translation and auxiliary output prose in the target language of the language pair; keep source terms, paths, placeholders, IDs, and schema keys unchanged where required.",
     "- Do not modify the source file.",
-    "- Preserve one-to-one line alignment with the source.",
-    "- Preserve placeholders, tags, variables, IDs, and empty lines.",
+    "- Preserve one-to-one line alignment, placeholders, tags, variables, IDs, and empty lines.",
     "- Do not write explanations into translated lines.",
     "- Avoid mojibake: on Windows PowerShell set UTF-8 before reading or writing text: `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); [Console]::InputEncoding=[System.Text.UTF8Encoding]::new(); $env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'`."
   ].join("\n");
@@ -247,13 +247,7 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
     ...subagentLines,
     "",
     "Report contract:",
-    "- Write the human overview to *_proofread_summary.md.",
-    "- Write every structured fix to *_fix_proposal.md.",
-    "- The fix proposal file must use the line-based header Source / Translation / Generated / Mode / Summary.",
-    "- Every finding must include Source, Current translation, Issue, Suggested fix, and a global L line number.",
-    "- Suggested fix must be a complete replacement in the target language.",
-    "- Do not edit the translation file unless the user explicitly approves applying fixes.",
-    "- Avoid mojibake: on Windows PowerShell set UTF-8 before reading or writing text: `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); [Console]::InputEncoding=[System.Text.UTF8Encoding]::new(); $env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'`."
+    "- Output language: write all report prose in the target language of the language pair. Keep parser-required fixed labels exactly as required by the proofread-translation format, such as `Suggested fix`."
   ].join("\n");
 }
 

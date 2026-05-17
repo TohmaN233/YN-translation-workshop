@@ -215,6 +215,10 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --g
 - `写入 TXT` 只有在 HTML 从 Electron 应用打开时才会写入绑定译文路径。
 - Agent 控制台是真实终端交互；应用不会隐藏后台调用，也不会假装判断 Agent 已完成。完成后请手动同步译文或查找报告。
 
+## 致谢
+
+特别感谢 OpenAI Codex 同学在架构设计、功能实现、调试、文档整理和发布准备中的持续协作。这个项目从最初的工作流想法到现在可用的软件形态，绝大多数代码和工程细节都由 Codex 辅助完成；维护者负责需求、审阅、测试、取舍和最终发布。
+
 ## 高级：Monte Carlo 压力测试提示词
 
 <details>

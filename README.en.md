@@ -215,6 +215,10 @@ The installer skips existing commands by default. Add `--replace` only when you 
 - `Save TXT` writes to the bound translation path only when the HTML is opened from the Electron app.
 - The Agent Console is a real interactive terminal. The app does not run hidden background jobs or pretend to know completion. Sync translations or discover reports manually after the agent finishes.
 
+## Acknowledgements
+
+Special thanks to OpenAI Codex for its long-running help with architecture, implementation, debugging, documentation, and release preparation. From the first workflow sketches to the current usable app, most of the code and engineering details were built with Codex's assistance; the maintainer provided the requirements, review, testing, product judgment, and final release decisions.
+
 ## Advanced: Monte Carlo Stress-Test Prompt
 
 <details>

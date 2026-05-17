@@ -15,9 +15,9 @@ function isSkillInvocationLine(line: string): boolean {
 
 export function buildAgentPromptFileMessage(relativePath: string, absolutePath: string, promptText = ""): string {
   const invocation = firstNonEmptyLine(promptText);
-  const detailReference = `Detailed requirements and output contract are saved at @${relativePath}. If the file reference is not expanded automatically, read this absolute path: ${absolutePath}. Read that details file before executing the invoked skill.`;
+  const detailReference = `Detailed requirements and output contract are saved at @${absolutePath}. Read that details file before executing the invoked skill.`;
   if (isSkillInvocationLine(invocation)) {
     return `${invocation} ${detailReference}`;
   }
-  return `Read and execute the complete prompt file @${relativePath}. If the file reference is not expanded automatically, read this absolute path: ${absolutePath}. The file content is the task; do not answer this short wrapper alone.`;
+  return `Read and execute the complete prompt file @${absolutePath}. The file content is the task; do not answer this short wrapper alone.`;
 }

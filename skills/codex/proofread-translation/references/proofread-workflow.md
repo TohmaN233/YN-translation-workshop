@@ -74,22 +74,22 @@ All Markdown reports must obey this split:
 | Template labels such as position/source/current translation/problem | localize to `report_language` |
 | Raw source text | unchanged source text |
 | Current translation quote | unchanged target text from file |
-| `Suggested translation` field label | keep this exact stable key unless the user asks for localized labels |
-| `Suggested translation` field value | `target_language` only |
+| `Suggested fix` field label | keep this exact stable key unless the user asks for localized labels |
+| `Suggested fix` field value | `target_language` only |
 | Glossary terms | preserve glossary spelling unless explaining in `report_language` |
 
-Default `report_language` is the language the user is using to talk to Codex in the current request or conversation. If the user asks in Chinese to proofread an English translation, write the report in Chinese and put English only in `Suggested translation`. If the user asks in English to proofread a Chinese translation, write the report in English and put Chinese only in `Suggested translation`.
+Default `report_language` is the language the user is using to talk to Codex in the current request or conversation. If the user asks in Chinese to proofread an English translation, write the report in Chinese and put English only in `Suggested fix`. If the user asks in English to proofread a Chinese translation, write the report in English and put Chinese only in `Suggested fix`.
 
 Before finalizing a `.md` report, run a language consistency pass:
 
 1. Confirm every explanation and summary follows `report_language`.
-2. Confirm every `Suggested translation` is a complete replacement in `target_language`.
+2. Confirm every `Suggested fix` is a complete replacement in `target_language`.
 3. Confirm no stock phrases from another language leaked into headings, labels, or handling options unless quoted from the source/translation.
-4. Confirm template labels are localized to `report_language`, except the stable `Suggested translation` key when parsability matters.
+4. Confirm template labels are localized to `report_language`, except the stable `Suggested fix` key when parsability matters.
 5. If either language is ambiguous, ask before producing the report.
 Genre？
-  1. game    / 游戏    （RPG/视觉小说）
-  2. novel   / 小说    （文学/轻小说）
+  1. game    / 游戏    （RPG/视觉小说/剧情游戏）
+  2. novel   / 小说    （文学/轻小说/同人文）
   3. technical / 技术  （技术文档/说明书）
   4. subtitle / 字幕  （影视字幕/配音脚本）
   5. academic / 学术  （论文/研究报告）
@@ -300,99 +300,7 @@ def get_longest_matching_terms(src_text, glossary):
 
 ### Step 3.5: 长度异常预扫描（H9 预处理）
 
-**在校对之前，先执行全量长度异常扫描。** AI翻译最常见的严重故障模式是"膨胀"——译文比原文长出一大截，原因包括：
-- **AI加戏**：凭空补充原文没有的解释、背景、心理描写
-- **串行/错位**：把其他行的译文混入当前行
-- **幻觉/胡言乱语**：AI输出与原文完全无关的内容
-- **元数据泄漏**：混入翻译说明、思考过程等非译文内容
-
-#### 宽度计算
-
-对于CJK语言对（如日->中），使用**显示宽度**而非字符数：
-```python
-import unicodedata
-
-def display_width(s):
-    """计算字符串的显示宽度（CJK字符算2，其他算1）。"""
-    w = 0
-    for ch in s:
-        if unicodedata.east_asian_width(ch) in ('W', 'F'):
-            w += 2
-        else:
-            w += 1
-    return w
-```
-
-#### 两级筛选策略
-
-为控制假阳性（短句天然波动大），采用分级阈值：
-
-先按语言对选择阈值。中文目标语沿用日->中优化值；英文目标语默认允许更长的目标文本，宽筛比值放宽到 `1.8`。
-
-```python
-def normalize_language_name(name):
-    aliases = {
-        "zh": "Chinese", "zho": "Chinese", "中文": "Chinese", "汉语": "Chinese",
-        "en": "English", "eng": "English", "英文": "English", "英语": "English",
-        "ja": "Japanese", "jpn": "Japanese", "日文": "Japanese", "日语": "Japanese",
-    }
-    return aliases.get(str(name).strip(), str(name).strip())
-
-target_lang = normalize_language_name(target_language)
-
-LENGTH_PROFILES = {
-    "Chinese": {
-        "candidate_ratio": 1.5,
-        "candidate_min_src_width": 20,
-        "priority_min_src_width": 40,
-        "priority_min_excess": 32,
-    },
-    "English": {
-        "candidate_ratio": 1.8,
-        "candidate_min_src_width": 24,
-        "priority_min_src_width": 40,
-        "priority_min_excess": 48,
-    },
-    "default": {
-        "candidate_ratio": 1.7,
-        "candidate_min_src_width": 24,
-        "priority_min_src_width": 40,
-        "priority_min_excess": 40,
-    },
-}
-
-profile = LENGTH_PROFILES.get(target_lang, LENGTH_PROFILES["default"])
-```
-
-**第一级：宽筛（发现异常候选）**
-```python
-for i, (src, tgt) in enumerate(aligned_pairs):
-    src_w = display_width(src)
-    tgt_w = display_width(tgt)
-    ratio = tgt_w / max(src_w, 1)
-    if (
-        ratio >= profile["candidate_ratio"]
-        and src_w >= profile["candidate_min_src_width"]
-    ):
-        candidates.append((i, src, tgt, ratio))
-```
-
-**第二级：精筛（高置信度，直接标H9）**
-```python
-for i, src, tgt, ratio in candidates:
-    src_w = display_width(src)
-    tgt_w = display_width(tgt)
-    excess = tgt_w - src_w
-    if (
-        src_w >= profile["priority_min_src_width"]
-        and excess >= profile["priority_min_excess"]
-    ):
-        flag(H9, line=i+1, src=src, tgt=tgt,
-             note=f"译文异常膨胀：原文宽度{src_w}，译文宽度{tgt_w}，"
-                   f"膨胀比{ratio:.2f}，超出{excess}")
-```
-
-#### 阈值说明
+Before semantic review, scan all aligned pairs for abnormal expansion: AI-added content, line bleed, hallucination, or leaked meta-language. Use display width for CJK text when possible.
 
 | 语言配置 | 宽筛 `ratio` | 精筛超出宽度 | 说明 |
 |----------|---------------|--------------|------|
@@ -400,17 +308,7 @@ for i, src, tgt, ratio in candidates:
 | `target:English` | 1.8 | 48 | 英文译文通常比日文/中文源文更长，默认放宽 |
 | `default` | 1.7 | 40 | 其他语言对的保守初始值，按实际文本调整 |
 
-> **为什么不直接用比值？** 短句（如3字->8字）比值可达2.6但完全正常；长句（如50字->75字）比值仅1.5却可能已经加戏。绝对差值+最小源文长度的组合比纯比值更稳健。
-
-#### 与 H6/H7 的区分
-
-| 代码 | 检测方式 | 典型表现 |
-|------|---------|---------|
-| H6 增译 | 语义审查 | 译文多了一句解释但长度差距不大 |
-| H7 AI污染 | 正则模式 | 开头有"好的，以下是翻译："等元语言 |
-| H9 AI膨胀 | 长度异常 | 译文比原文长出一大截，内容可能完全无关 |
-
-三者可能同时命中（如一行既有元语言前缀又异常膨胀），此时分别标注，不合并。
+Flag H9 only when the source line is long enough and the target exceeds both the ratio and absolute-width threshold. H9 may overlap with H6/H7; report each applicable issue separately.
 
 ---
 
@@ -570,121 +468,29 @@ if pronouns:
 
 ### A-Step 2: 区域重要性分类
 
-将全文划分为等长区域（每区域约 500-1000 行），按自动化检查的命中密度分级：
+Split the full file into 500-1000 line regions and classify by automated finding density:
 
-```python
-REGION_SIZE = 500  # 每区域行数，可根据文件大小调整
-regions = []
-for start in range(0, total_pairs, REGION_SIZE):
-    end = min(start + REGION_SIZE, total_pairs)
-    hits = count_auto_findings_in_range(start, end)
-    density = hits / (end - start)
-    if density > 0.05:
-        priority = 'HOT'     # 问题热点，重点抽样
-    elif density > 0.01:
-        priority = 'WARM'    # 有少量问题，正常抽样
-    else:
-        priority = 'COLD'    # 几乎无自动检查命中，轻抽样
-    regions.append((start, end, priority, hits))
-```
+- `HOT`: density > 0.05
+- `WARM`: density > 0.01
+- `COLD`: otherwise
 
-输出区域热力图：
-```
-区域热力图（每区域 500 行）：
-  [    0 -   499] COLD   (0 hits)
-  [  500 -   999] WARM   (3 hits)
-  [ 1000 -  1499] HOT    (12 hits)  <-- 重点区域
-  [ 1500 -  1999] COLD   (0 hits)
-  ...
-```
+Keep a compact heat map in the summary, but do not mix heat-map prose into `fix_proposal.md`.
 
 ### A-Step 3: 分层随机抽样
 
-按区域优先级分配抽样配额：
+Sampling quotas: `HOT` 30%, `WARM` 15%, `COLD` 5%. Sample only lines that have not been semantically reviewed in previous Monte Carlo rounds.
 
-```
-抽样配额：
-  HOT  区域：抽取 30% 的行（语义审查 H1/H2/H5/H6/M*）
-  WARM 区域：抽取 15% 的行
-  COLD 区域：抽取  5% 的行
-```
+Required bookkeeping:
 
-对抽中的每一行，执行完整的语义/语用层检查（H1/H2/H5/H6/M1-M5/L1-L4），这些是自动化检查无法覆盖的。
-
-**每轮抽样流程**：
-1. 从各区域按配额随机抽取行；每轮只能从尚未抽过的行中抽取
-2. 对抽中行执行语义审查
-3. 记录发现的问题到 `sample_findings`
-4. 更新区域密度（合并 auto_findings + sample_findings）
-5. 重新分类区域优先级
-
-**Non-repeating sample pool (required)**:
-
-- Maintain `sampled_set` as the cumulative set of all sampled line numbers across all Monte Carlo rounds.
-- Each round must draw only from `available = all_lines - sampled_set`; never sample a line that has already been semantically reviewed in a previous round.
-- This applies to both clean lines and lines with findings. A finding line is still removed from future sampling once reviewed.
-- If a region has already sampled at least 80% of its lines, mark that region `FULLY_SAMPLED`, remove it from future sampling pools, and reallocate its quota to remaining non-exhausted regions.
-- When merging `auto_findings` and `sample_findings`, deduplicate defensively by `(line_num, issue_code)` even though repeated sampling is forbidden.
+- Maintain `sampled_set` across all rounds.
+- Draw from `available = all_lines - sampled_set`.
+- Remove both clean lines and finding lines from future sampling once reviewed.
+- Mark a region `FULLY_SAMPLED` after at least 80% coverage and reallocate its quota.
+- Deduplicate final findings by `(line_num, issue_code)`.
 
 ### A-Step 4: 收敛迭代
 
-```python
-MIN_ROUNDS = 2
-MAX_ROUNDS = 5
-CLEAN_NEEDED = 2
-FULLY_SAMPLED_THRESHOLD = 0.80
-
-sampled_set = set()
-finding_index = {(f.line_num, f.issue_code) for f in auto_findings}
-consecutive_clean = 0
-converged = False
-
-for round_num in range(1, MAX_ROUNDS + 1):
-    for region in regions:
-        if region.sampled_count / region.line_count >= FULLY_SAMPLED_THRESHOLD:
-            region.priority = "FULLY_SAMPLED"
-
-    available_by_region = {
-        region.id: [line for line in region.lines if line not in sampled_set]
-        for region in regions
-        if region.priority != "FULLY_SAMPLED"
-    }
-    drawn = stratified_sample(available_by_region, quotas)
-    sampled_set.update(drawn)
-
-    raw_findings = semantic_review(drawn)
-    new_findings = []
-    for finding in raw_findings:
-        key = (finding.line_num, finding.issue_code)
-        if key in finding_index:
-            continue
-        finding_index.add(key)
-        new_findings.append(finding)
-
-    sample_findings.extend(new_findings)
-    new_issues = len(new_findings)
-
-    if new_issues == 0:
-        consecutive_clean += 1
-        print(f"Round {round_num}: no new findings ({consecutive_clean}/{CLEAN_NEEDED} clean)")
-    else:
-        consecutive_clean = 0
-        print(f"Round {round_num}: {new_issues} new findings; reclassify regions")
-        reclassify_regions()
-
-    if round_num >= MIN_ROUNDS and consecutive_clean >= CLEAN_NEEDED:
-        converged = True
-        break
-
-if converged:
-    print("Converged: minimum rounds satisfied and two consecutive clean rounds")
-else:
-    print(f"Reached MAX_ROUNDS={MAX_ROUNDS} without convergence")
-```
-
-**收敛条件**：连续 2 轮抽样未发现新问题 → 认为该文件在当前精度下已充分审查。
-
-**Minimum round requirement**: Do not declare convergence before `MIN_ROUNDS` is reached, even if early rounds are clean.
+Default convergence: `MIN_ROUNDS=2`, `MAX_ROUNDS=5`, `CLEAN_NEEDED=2`. Do not declare convergence before `MIN_ROUNDS`; converge only after two consecutive clean rounds with no new deduplicated findings.
 
 **未收敛处理**：若达到最大轮数仍未收敛，不要直接硬停。先向用户报告当前状态并请求下一步决定：
 ```
@@ -702,96 +508,7 @@ Choose next step:
 
 ### A-Step 5: 生成审查报告
 
-**输出路径**：`[translation_file的目录]/[basename]_mc_review.md`
-
-报告结构：
-
-```markdown
-# 翻译校对报告（Monte Carlo 模式）
-
-**原文**：[SOURCE_FILE]
-**译文**：[TRANSLATION_FILE]
-**术语表**：[GLOSSARY_FILE 或 "未提供"]
-**翻译类型**：[type]
-**语言对**：[source_language] -> [target_language]
-**报告语言**：[report_language]
-**校对时间**：[timestamp]
-**总行数**：[N]
-**抽样轮数**：[R]
-**收敛状态**：[已收敛 / 未收敛]
-
----
-
-## 区域热力图
-
-| 区域 | 行范围 | 优先级 | 自动命中 | 抽样命中 | 合计 |
-|------|--------|--------|---------|---------|------|
-| R01  | 0-499  | COLD   | 0       | 0       | 0    |
-| R02  | 500-999| WARM   | 3       | 1       | 4    |
-| R03  | 1000-1499| HOT  | 12      | 5       | 17   |
-
----
-
-## 术语矛盾预扫描
-（同通用格式）
-
----
-
-## 发现汇总
-
-| 严重度 | 数量 | 建议 |
-|--------|------|------|
-| HIGH   | [N]  | 必须审查 |
-| MEDIUM | [N]  | 建议审查 |
-| LOW    | [N]  | 酌情处理 |
-
----
-
-## HIGH — 必须审查
-
-### [H-001] H9 AI膨胀/幻觉
-**位置**：行 [N]
-**原文**：`...`
-**译文**：`...`
-**问题**：译文异常膨胀（原文宽度X，译文宽度Y）
-**Suggested translation**：`[根据原文重新翻译后的完整目标语译文]`
-
-**处理选项**：
-- [x] 采纳 Suggested translation（默认）-> 将当前译文替换为该字段内容
-- [ ] 自行修改 -> _______________
-- [ ] 忽略 -> 理由：_______________
-
-（...更多条目...）
-
----
-
-## 抽样覆盖统计
-
-| 轮次 | HOT抽样 | WARM抽样 | COLD抽样 | 新发现 |
-|------|---------|---------|---------|--------|
-| 1    | 150     | 75      | 25      | 12     |
-| 2    | 150     | 75      | 25      | 3      |
-| 3    | 150     | 75      | 25      | 0      |
-| 4    | 150     | 75      | 25      | 0      |
-
-收敛于第 4 轮。总抽样行数：1000 / 5000（20%覆盖）
-```
-
-### A-Step 6: 摘要输出
-
-```
-校对完成（Monte Carlo）：[TRANSLATION_FILE]
-
-抽样轮数：[R]    收敛状态：[已收敛/未收敛]
-覆盖率：[X]%    总抽样行：[N]
-
-H: [N] 处  M: [N] 处  L: [N] 处
-
-审查文件：[path]_mc_review.md
-
-未修改原译文。请审阅报告后自行决定修改方案。
-如有 HOT 区域未收敛，建议对该区域使用 split 模式精审。
-```
+Write the final two-file output required by the Final Output Contract: `[basename]_proofread_summary.md` for human status and `[basename]_fix_proposal.md` for structured findings. Do not edit the translation file in Monte Carlo mode.
 
 ---
 
@@ -860,108 +577,15 @@ for i in range(num_chunks):
 
 #### 2c. 片段审查报告
 
-每片审查完成后，立即输出该片段的发现：
-
-```markdown
-## 片段 [K]/[N] 审查结果（行 [start]-[end]）
-
-发现 [X] 个问题：HIGH [a], MEDIUM [b], LOW [c]
-
-### [H-001] H1 错译
-**位置**：行 [N]（全局行号）
-**原文**：`...`
-**译文**：`...`
-**问题**：...
-**Suggested translation**：`...`
-```
-
-> **输出语言规则**：除原文、当前译文和 `Suggested translation` 外，报告文字使用 `report_language`。`Suggested translation` 必须只写 `target_language` 的最终可替换译文，不得混入解释、标签、引号或局部替换说明。
+Record findings using the final block format in "标注格式（两种模式通用）". Use global line numbers only. Do not create a separate chunk-report format unless the user explicitly asks for one.
 
 ### B-Step 3: 修复与写回
 
-每片审查报告输出后，进入**修复确认环节**：
-
-```
-片段 [K] 审查完成，发现 [X] 个问题。
-
-修复方式：
-  1. 批量采纳所有 `Suggested translation`（仅对有明确完整替换译文的条目）
-  2. 逐条确认（显示每条问题，你决定采纳/修改/忽略）
-  3. 跳过修复，继续下一片
-  4. 导出为 review 文件，稍后手动处理
-```
-
-#### 批量替换执行
-
-当用户选择修复时，**修改在主文件上执行**（不是拆分文件）：
-
-```python
-# 批量替换示例
-replacements = [
-    (line_number, old_text, new_text),
-    ...
-]
-
-# 读取主译文文件
-lines = pathlib.Path(TRANSLATION_FILE).read_text(encoding="utf-8").splitlines()
-
-# 执行替换
-for line_num, old, new in replacements:
-    if lines[line_num] == old:  # 安全检查：确保行内容未变
-        lines[line_num] = new
-    else:
-        print(f"跳过行 {line_num}：文件内容已变化，无法安全替换")
-
-# 写回
-pathlib.Path(TRANSLATION_FILE).write_text(
-    "\n".join(lines) + "\n", encoding="utf-8"
-)
-```
-
-**安全机制**：
-- 替换前验证目标行内容与预期一致（防止并发修改冲突）
-- 每次写回后报告修改数量
-- 保留修改日志
-
-#### 片段推进
-
-修复完成（或跳过）后，自动推进到下一片：
-
-```
-片段 [K] 修复完成：[M] 处已修改，[S] 处已跳过。
-继续片段 [K+1]/[N]...
-```
+Do not edit the translation file unless the user explicitly approves fixes. If writing fixes, modify the main translation file, not temporary chunk files, and verify the target line still matches the expected old translation before replacing it. Report applied/skipped counts.
 
 ### B-Step 4: 全局摘要
 
-所有片段处理完成后，输出全局统计：
-
-```
-分片逐行审查完成：[TRANSLATION_FILE]
-
-总片段：[N]    每片：[CHUNK_SIZE] 行
-总发现：[X] 处    已修复：[Y] 处    已跳过/忽略：[Z] 处
-
-各类型统计：
-  H: [N] 处（已修复 [a]）
-  M: [N] 处（已修复 [b]）
-  L: [N] 处（已修复 [c]）
-
-未修复条目汇总：[path]_remaining_review.md
-```
-
-若有未修复的条目，将其汇总写入 `[basename]_remaining_review.md`。
-
-### B-Step 5: 断点续查
-
-若审查中途中断（上下文溢出、用户暂停等），记录进度：
-
-```
-进度保存：已完成 [K]/[N] 片段
-恢复命令：proofread-translation split [CHUNK_SIZE]; [type]; [source]; [translation]; --resume=[K+1]
-```
-
-下次调用时，若检测到 `--resume` 参数，从指定片段继续，跳过已完成的片段。
+After all chunks are reviewed, write the final two-file output required by the Final Output Contract. The summary records chunk coverage and counts; the fix proposal contains only remaining structured findings.
 
 ---
 
@@ -970,21 +594,20 @@ pathlib.Path(TRANSLATION_FILE).write_text(
 **每条标注必须包含以下结构**：
 
 ```markdown
-### [X-NNN] Hx/Mx/Lx 类型名称
-**位置**：行 [N]
+### [X-NNN] Hx/Mx/Lx | **位置** L[N]
 **原文**：`[源文本]`
 **译文**：`[当前译文]`
 **问题**：[问题描述；若有不确定性加注"（待核查）"]
-**Suggested translation**：`[修正后的完整目标语译文]`（所有严重级别都必须给整行可替换译文）
+**Suggested fix**：`[修正后的完整目标语译文]`（所有严重级别都必须给整行可替换译文）
 
 **处理选项**（请选一项后删除其余）：
-- [x] 采纳 Suggested translation（默认）-> 将当前译文替换为该字段内容
+- [x] 采纳 Suggested fix（默认）-> 将当前译文替换为该字段内容
 - [ ] 自行修改 -> _______________
 - [ ] 忽略 -> 理由：_______________
 ```
 
 > **默认操作规则**：
-> - 所有严重级别（HIGH/MEDIUM/LOW）都必须提供完整 `Suggested translation`
+> - 所有严重级别（HIGH/MEDIUM/LOW）都必须提供完整 `Suggested fix`
 > - H9 膨胀/幻觉也必须根据原文重译一遍，给出完整目标语译文
 > - 是否采纳由用户决定；不得因为默认忽略或等待人工判断而省略替换译文
 
@@ -995,10 +618,10 @@ pathlib.Path(TRANSLATION_FILE).write_text(
 ### 通用规则
 - **报告语言固定**：整份 `.md` 报告的标题、摘要、问题解释、置信度说明和处理选项必须使用 `report_language`；不要因为目标语是英文就把中文用户的报告写成英文，反之亦然
 - **模板标签要本地化**：示例模板中的 `位置/原文/译文/问题` 等标签只是中文示例；如果 `report_language` 是英文，应改成 `Location/Source/Current translation/Issue` 等对应标签
-- **替换译文语言固定**：`Suggested translation` 字段必须使用 `target_language`，即使报告语言不同；这是写回文件的文本，不是说明文字
-- **给出位置**：每条标注必须包含行号（全局行号，非片段内行号），方便人工定位
+- **替换译文语言固定**：`Suggested fix` 字段必须使用 `target_language`，即使报告语言不同；这是写回文件的文本，不是说明文字
+- **给出位置**：每条标注必须包含行号（全局行号，非片段内行号），如L1234，后续程序处理需要；不要输出内部 batch/chunk 编号，例如 `B12 raw345`。如果中间过程产生了 `raw345`，最终报告只写全局行号 `L345`
 - **提供原文对照**：每条标注同时显示原文和译文，不要只描述问题
-- **`Suggested translation` 只写译文本体**：该字段必须包含将要写回的完整目标行译文本身，不写"建议改为"、"译文为"、"可翻译成"、"应译作"等元说明，也不要把解释、理由、引号或"把X改为Y"这类局部替换指令混进该字段
+- **`Suggested fix` 只写译文本体**：该字段必须包含将要写回的完整目标行译文本身，不写"建议改为"、"译文为"、"可翻译成"、"应译作"等元说明，也不要把解释、理由、引号或"把X改为Y"这类局部替换指令混进该字段
 - **所有级别都给完整修正译文**：发现 HIGH、MEDIUM 或 LOW 问题时，都必须直接重写整行译文，避免只描述问题、只给方向或只给局部替换；这能让后续批量写回无需再次定位和人工重译
 - **区分确信度**：对于有一定不确定性的标注，在"问题"字段加注"（待核查）"
 - **术语过滤优先**：H3 标注必须经过假阳性过滤，不能将短术语子串命中当作真实问题
@@ -1022,5 +645,5 @@ pathlib.Path(TRANSLATION_FILE).write_text(
 
 ### Split-Review 模式特有规则
 - **不跳行**：逐行审查意味着片段内每一行都要过目，不允许只看"可疑行"
-- **保留进度**：每完成一个片段就记录进度，支持断点续查
+- **记录覆盖**：每完成一个片段就在 summary 中记录覆盖范围和统计
 - **片段间保持上下文**：切换片段时，新片段的开头几行要读取前一片段的末尾几行作为上下文

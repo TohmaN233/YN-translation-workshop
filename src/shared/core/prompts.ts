@@ -185,7 +185,7 @@ function proofreadCommandLine(options: ProofreadPromptOptions, defaults: ReturnT
   const sourcePart = options.inputMode === "bilingual"
     ? `bilingual file:${options.sourcePath}; translation:${options.translationPath}`
     : `source:${options.sourcePath}; translation:${options.translationPath}`;
-  return `${skillInvocation(options.agent, "proofread-translation")} ${proofreadModeText(defaults)}; ${defaults.languagePair}; Genre: ${defaults.style}; ${sourcePart}; glossary: ${bracketedPath(options.glossaryPath || "")}; Work description: ${bracketedPath(defaults.workDescription)}`;
+  return `${skillInvocation(options.agent, "proofread-translation")} Mode: ${proofreadModeText(defaults)}; ${defaults.languagePair}; Genre: ${defaults.style}; ${sourcePart}; glossary: ${bracketedPath(options.glossaryPath || "")}; Work description: ${bracketedPath(defaults.workDescription)}`;
 }
 
 export function buildTranslatePrompt(options: TranslatePromptOptions): string {
@@ -220,7 +220,8 @@ export function buildTranslatePrompt(options: TranslatePromptOptions): string {
     "- Do not modify the source file.",
     "- Preserve one-to-one line alignment with the source.",
     "- Preserve placeholders, tags, variables, IDs, and empty lines.",
-    "- Do not write explanations into translated lines."
+    "- Do not write explanations into translated lines.",
+    "- Avoid mojibake: on Windows PowerShell set UTF-8 before reading or writing text: `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); [Console]::InputEncoding=[System.Text.UTF8Encoding]::new(); $env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'`."
   ].join("\n");
 }
 
@@ -251,7 +252,8 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
     "- The fix proposal file must use the line-based header Source / Translation / Generated / Mode / Summary.",
     "- Every finding must include Source, Current translation, Issue, Suggested fix, and a global L line number.",
     "- Suggested fix must be a complete replacement in the target language.",
-    "- Do not edit the translation file unless the user explicitly approves applying fixes."
+    "- Do not edit the translation file unless the user explicitly approves applying fixes.",
+    "- Avoid mojibake: on Windows PowerShell set UTF-8 before reading or writing text: `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); [Console]::InputEncoding=[System.Text.UTF8Encoding]::new(); $env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'`."
   ].join("\n");
 }
 

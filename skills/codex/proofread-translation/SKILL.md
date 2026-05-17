@@ -42,11 +42,13 @@ If a required input is missing, ask only for that item. If the language pair is 
   - `report_language`: the language the user is using to communicate in this request or conversation, unless they explicitly request another report language.
   - `target_language`: the language of the translation being reviewed.
 - Write report headings, explanations, issue descriptions, confidence notes, summaries, and handling options in `report_language`.
-- Write every `Suggested translation` value only in `target_language`; never translate that field into `report_language` unless the two are the same.
-- Include global line numbers, source text, current translation, issue code, severity, explanation, and `Suggested translation` for every finding.
-- For every severity level (HIGH, MEDIUM, and LOW), provide a concrete `Suggested translation` that can directly replace the current target line.
-- For H9 expansion/hallucination findings, retranslate the source line and put the full corrected target-language text in `Suggested translation`.
-- The `Suggested translation` field must contain only the final target-language text to write back. Do not include meta phrases, explanations, labels, quotes, or search/replace instructions inside that field.
+- Write every `Suggested fix` value only in `target_language`; never translate that field into `report_language` unless the two are the same.
+- Include global line numbers, source text, current translation, issue code, severity, explanation, and `Suggested fix` for every finding.
+- Before writing each finding, verify the global `L<N>` line number by re-reading that exact source/translation line pair from the input files. Do not infer line numbers from chunk-local, batch-local, sampled, displayed, or approximate positions.
+- The `L<N>` line number must point to the source line whose text exactly matches the reported `Source` field. If uncertain, include the candidate in the summary only, not in `[basename]_fix_proposal.md`.
+- For every severity level (HIGH, MEDIUM, and LOW), provide a concrete `Suggested fix` that can directly replace the current target line.
+- For H9 expansion/hallucination findings, retranslate the source line and put the full corrected target-language text in `Suggested fix`.
+- The `Suggested fix` field must contain only the final target-language text to write back. Do not include meta phrases, explanations, labels, quotes, or search/replace instructions inside that field.
 - Mark uncertain findings with a "needs verification" note instead of overstating confidence.
 - Include exactly one default handling option per finding.
 - Treat confirmed glossary mismatches as H3.

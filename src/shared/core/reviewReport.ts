@@ -13,8 +13,10 @@ type ProposalField = keyof Omit<ReviewProposal, "id" | "status">;
 
 const fieldAliases: Record<string, ProposalField> = {
   "行号": "line",
+  "位置": "line",
   "琛屽彿": "line",
   "line": "line",
+  "location": "line",
   "原文": "src",
   "源文": "src",
   "鍘熸枃": "src",
@@ -86,6 +88,8 @@ function cleanValue(raw: string): string {
 
 function lineNumberFromText(text: string): number | undefined {
   const patterns = [
+    /\braw(?:\s*(?:line|row))?\s*[:#=：]?\s*L?(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
+    /\bglobal(?:\s*(?:line|row))?\s*[:#=：]?\s*L?(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
     /\b(?:MC|Chunk|Region|Split|Part|Sample|Round)\b[^\n|#]*\bL(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
     /\|\s*[^\n#]*\bL(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,
     /(?:^|[\s([（【])(?:line|row)\s*[:#：]?\s*L?(\d{1,7})(?=$|[\s)\]）】,，.;；:：])/i,

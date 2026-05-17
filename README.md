@@ -91,10 +91,6 @@ TXT / EPUB 可以随时导出。TXT 还支持写回绑定的译文文件，覆�
 
 应用内置真实终端控制台，可与 Codex / Claude Code 交互。使用前请先安装对应 CLI，并完成登录。
 
-<p align="center">
-  <img src="graph_for_intro/t4.png" alt="交互式 Agent 控制台" width="860">
-</p>
-
 ### 校对报告审阅 HTML
 
 校对完成后，选择或自动查找 Markdown 报告，即可生成修正建议审阅 HTML。

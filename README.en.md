@@ -91,10 +91,6 @@ Translation and proofreading both provide parameter dialogs. You can set languag
 
 The app includes a real terminal console for interacting with Codex / Claude Code. Install and log in to the corresponding CLI before use.
 
-<p align="center">
-  <img src="graph_for_intro/t4.png" alt="Interactive Agent Console" width="860">
-</p>
-
 ### Proofreading Report Review HTML
 
 After proofreading finishes, select or auto-discover the Markdown report and generate fix-proposal review HTML.

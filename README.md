@@ -19,11 +19,11 @@ translation-workshop 用于把源文与译文按行配对，生成可人工改�
 
 Windows 用户推荐下载：
 
-**`translation-workshop.Setup.0.1.0.exe`**
+**`translation-workshop.Setup.exe`**
 
 不想安装时，可以下载便携版：
 
-**`translation-workshop.0.1.0.exe`**
+**`translation-workshop.exe`**
 
 Release 页面：  
 <https://github.com/TohmaN233/YN-translation-workshop/releases>

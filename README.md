@@ -239,6 +239,7 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --g
 ## 致谢
 
 特别感谢 OpenAI Codex 同学在工程和设计上提供了诸多帮助。某位伟人曾经说过，一个项目是由 99% 的 token 与 1% 的灵感组成的。
+觉得本项目有启发性或者本工具好用的话麻烦给个⭐支持。
 
 ## 高级：Monte Carlo 压力测试提示词
 

@@ -30,6 +30,13 @@ Release 页面：
 
 ## 更新说明
 
+### v1.10.0
+
+- **提示词与 skill 更新**：Codex / Claude Code 校对 skill 强化报告契约，要求报告正文使用目标语言、`Source` / `Current translation` 使用完整原行、`Suggested fix` 给出完整替换译文；生成给 Agent 的提示词也补充并行合并与固定字段要求。
+- **审阅报告解析**：生成审阅 HTML 前会严格处理重复编号；若 AI 报告里出现重复的 `H1-001`、`M2-004`、`L1-003` 等 ID，会接在该分类当前最大编号后重新编号，避免查找、跳转和一键替换互相覆盖。
+- **Agent 启动上下文**：软件内启动 Codex / Claude Code CLI 时，默认只开放 translation-workshop 的翻译 / 校对 skill，减少其他全局 skill 对当前任务的上下文污染；安装命令默认带 `--replace`，覆盖前会备份旧目标。
+- **局域网与公网访问**：HTML 支持启动 6 位 PIN 保护的共享工作区，手机、平板或远程设备可以访问正在打开的软件，进行正文校对、审阅建议处理和 Agent 交互；局域网地址也可通过 Cloudflare Tunnel / ngrok 等外部工具穿透到公网。
+
 ### v1.0.5
 
 - **Codex proofread skill**：精简校对报告提示词，报告正文统一使用目标语言，程序解析必需字段保持固定英文；强化 fix proposal 的行号与字段格式约束。
@@ -79,6 +86,34 @@ UI 支持中文 / English 双语切换。主界面提供文件选择、输出目
 </p>
 
 TXT / EPUB 可以随时导出。TXT 还支持写回绑定的译文文件，覆盖前会自动创建时间戳备份。
+
+### 局域网同步
+
+HTML 在 Electron 内打开时，可以启动局域网同步。启动时设置一个固定 6 位 PIN，手机或平板访问应用生成的局域网地址后输入 PIN，即可进入共享工作区。
+
+共享工作区支持正文校对和审阅建议两个标签页。若从审阅 HTML 启动同步，且已绑定正文 HTML，同一个链接会同时显示审阅建议与正文行；移动端改写会同步回电脑端 HTML 缓存。
+
+外部穿透：translation-workshop 不内置公网穿透工具。如果你使用 Cloudflare Tunnel、ngrok 等工具，可将它们指向本地同步端口。
+
+例如桌面端显示：
+
+```text
+http://127.0.0.1:54321/s/abcdef...
+```
+
+则 Cloudflare Tunnel 可以运行：
+
+```powershell
+cloudflared tunnel --url http://127.0.0.1:54321
+```
+
+ngrok 可以运行：
+
+```powershell
+ngrok http 54321
+```
+
+打开公网地址后输入软件里设置的 6 位 PIN。新版在只有一个同步会话时会从穿透根地址自动跳转到当前会话；如果没有跳转，请把本地链接里的 `/s/...` 路径接到公网域名后面。
 
 ### 术语表与替换
 
@@ -159,13 +194,7 @@ macOS / Linux / Git Bash:
 - 翻译：`skills/codex/translate-text`
 - 校对：`skills/codex/proofread-translation`
 
-应用只复制安装命令，不会自动写入你的全局 Codex 配置。推荐使用 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用。该命令需要 Node.js 18 或更新版本：
-
-```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global
-```
-
-更新已有 Codex skill 时，在同一条命令末尾加 `--replace`：
+应用只复制安装命令，不会自动写入你的全局 Codex 配置。推荐使用 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用。该命令需要 Node.js 18 或更新版本，并默认使用 `--replace` 更新已有 skill；旧目标会先备份到 `~/.translation-workshop/skill-backups/`：
 
 ```powershell
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global --replace
@@ -174,7 +203,7 @@ irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scr
 如果已经 clone 仓库，也可以用本地路径安装：
 
 ```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global --replace
 ```
 
 安装目标：
@@ -182,7 +211,7 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --gl
 - `~/.codex/skills/translate-text/SKILL.md`
 - `~/.codex/skills/proofread-translation/SKILL.md`
 
-安装脚本默认不覆盖已有 skill。需要更新时可加 `--replace`，脚本会先把旧目标备份到 `~/.translation-workshop/skill-backups/`。
+推荐命令会更新已有 skill，并在覆盖前备份旧目标。
 
 ## Claude Code Skill 配置
 
@@ -191,13 +220,7 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --gl
 - 翻译：`skills/claude/commands/translate-text.md`
 - 校对：`skills/claude/commands/proofread-translation.md`
 
-应用只复制安装命令，不会自动写入你的全局 Claude Code 配置。推荐使用 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用。该命令需要 Node.js 18 或更新版本：
-
-```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global
-```
-
-更新已有 Claude Code command 时，在同一条命令末尾加 `--replace`：
+应用只复制安装命令，不会自动写入你的全局 Claude Code 配置。推荐使用 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用。该命令需要 Node.js 18 或更新版本，并默认使用 `--replace` 更新已有 command；旧目标会先备份到 `~/.translation-workshop/skill-backups/`：
 
 ```powershell
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global --replace
@@ -206,7 +229,7 @@ irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scr
 如果已经 clone 仓库，也可以用本地路径安装：
 
 ```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global --replace
 ```
 
 安装目标：
@@ -214,7 +237,7 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --g
 - `~/.claude/commands/translate-text.md`
 - `~/.claude/commands/proofread-translation.md`
 
-安装脚本默认不覆盖已有 command。需要更新时可加 `--replace`，脚本会先把旧目标备份到 `~/.translation-workshop/skill-backups/`。
+推荐命令会更新已有 command，并在覆盖前备份旧目标。
 
 ## 文件支持
 
@@ -231,10 +254,10 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --g
 
 - 源文件永远只读，不会被修改。
 - 应用不会自动安装全局 Codex / Claude Code skill，只做只读检测并复制安装命令。
-- 安装脚本默认跳过已有全局目标。
-- `--replace` 会先备份具体目标文件 / 目录，再更新。
+- 推荐安装命令带 `--replace`，会先备份具体目标文件 / 目录，再更新。
 - `写入 TXT` 只有在 HTML 从 Electron 应用打开时才会写入绑定译文路径。
 - Agent 控制台是真实终端交互；应用不会隐藏后台调用，也不会假装判断 Agent 已完成。完成后请手动同步译文或查找报告。
+- 局域网同步只暴露当前共享会话，不提供任意文件读取或目录浏览；访问需要 6 位 PIN，停止同步后会话链接失效。若你在共享页启用 Agent 控制台，PIN 访问者可以和当前 Agent 交互，因此不要把链接或 PIN 发给不可信的人。
 
 ## 致谢
 

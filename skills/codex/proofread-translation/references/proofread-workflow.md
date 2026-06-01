@@ -74,7 +74,8 @@ Before finalizing a `.md` report, run a language consistency pass:
 1. Confirm explanations, summaries, and handling options use `target_language`.
 2. Confirm every `Suggested fix` is a complete replacement in `target_language`.
 3. Confirm fixed parser labels remain in English.
-4. If `target_language` is ambiguous, ask before producing the report.
+4. Confirm `Source` and `Current translation` quote the full exact row text, not fragments or explanations.
+5. If `target_language` is ambiguous, ask before producing the report.
 Genre？
   1. game    / 游戏    （RPG/视觉小说/剧情游戏）
   2. novel   / 小说    （文学/轻小说/同人文）
@@ -608,9 +609,10 @@ After all chunks are reviewed, write the final two-file output required by the F
 - **固定字段名保持英文**：结构化报告中用于程序解析的字段名保持英文，例如 `Source`、`Current translation`、`Issue`、`Suggested fix` 和 `Accept suggestion`
 - **替换译文语言固定**：`Suggested fix` 字段必须使用 `target_language`；这是写回文件的文本，不是说明文字
 - **给出位置**：每条标注必须包含行号（全局行号，非片段内行号），如L1234，后续程序处理需要；不要输出内部 batch/chunk 编号，例如 `B12 raw345`。如果中间过程产生了 `raw345`，最终报告只写全局行号 `L345`
-- **提供原文对照**：每条标注同时显示原文和译文，不要只描述问题
+- **提供完整原文对照**：每条标注同时显示该行完整原文和完整当前译文，不要只截取片段或只描述问题
 - **`Suggested fix` 只写译文本体**：该字段必须包含将要写回的完整目标行译文本身，不写"建议改为"、"译文为"、"可翻译成"、"应译作"等元说明，也不要把解释、理由、引号或"把X改为Y"这类局部替换指令混进该字段
 - **所有级别都给完整修正译文**：发现 HIGH、MEDIUM 或 LOW 问题时，都必须直接重写整行译文，避免只描述问题、只给方向或只给局部替换；这能让后续批量写回无需再次定位和人工重译
+- **并行合并编号唯一**：如果使用 subagent、chunk 或其他并行流程，最终 fix proposal 里的 `H1-001` / `M2-004` / `L1-003` 等编号必须全局唯一；发现重复编号时，按对应 Hx/Mx/Lx 当前最大编号继续递增后再写入最终报告
 - **区分确信度**：对于有一定不确定性的标注，在"问题"字段加注"（待核查）"
 - **术语过滤优先**：H3 标注必须经过假阳性过滤，不能将短术语子串命中当作真实问题
 - **性别/代词检查上下文**：H8 仅在该行有该角色名出现时触发；英文目标语默认检查 he/she/they 系列代词，多角色同行或 singular they 判断不明确时加注"（待核查）"

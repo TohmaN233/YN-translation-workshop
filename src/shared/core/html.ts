@@ -23,6 +23,7 @@ export interface ProposalReviewHtmlOptions {
   pageSize?: number;
   startPage?: number;
   locale?: UiLocale;
+  outputDir?: string;
   reportPath?: string;
   lineReviewPath?: string;
 }
@@ -193,6 +194,20 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     promptSentViaFile: "\u63d0\u793a\u8bcd\u8f83\u957f\uff0c\u5df2\u4fdd\u5b58\u4e3a\u6587\u4ef6\u5e76\u53d1\u9001\u6587\u4ef6\u5f15\u7528",
     agentConsoleNeedsApp: "\u53d1\u9001\u5230 Agent \u9700\u8981\u5728 translation-workshop \u5e94\u7528\u5185\u6253\u5f00\u6b64 HTML",
     agentConsoleNeedsOutput: "\u5f53\u524d HTML \u6ca1\u6709\u7ed1\u5b9a\u8f93\u51fa\u6587\u4ef6\u5939\uff0c\u65e0\u6cd5\u542f\u52a8 Agent",
+    lanSync: "局域网同步",
+    lanSyncStop: "停止同步",
+    lanSyncCopy: "复制链接",
+    lanSyncNeedsApp: "局域网同步需要在 translation-workshop 应用内打开此 HTML。",
+    lanSyncStarted: "局域网同步已启动",
+    lanSyncStopped: "局域网同步已停止",
+    lanSyncFailed: "局域网同步失败",
+    lanSyncLanUrl: "局域网地址",
+    lanSyncLocalUrl: "本地地址",
+    lanSyncPin: "6 位 PIN",
+    lanSyncPinHelp: "手机或其他设备打开链接后需要输入这个 PIN。",
+    lanSyncPinInvalid: "请输入 6 位数字 PIN。",
+    lanSyncExternal: "外部穿透",
+    lanSyncExternalNote: "translation-workshop 不内置公网穿透工具。如果你使用 Cloudflare Tunnel、ngrok 等工具，可将它们指向本地同步地址。",
     glossaryTitle: "\u672f\u8bed\u66ff\u6362",
     glossaryOpen: "\u672f\u8bed\u8868",
     glossaryClose: "\u5173\u95ed",
@@ -308,6 +323,20 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     promptSentViaFile: "Prompt is long, so it was saved to a file and sent as a file reference",
     agentConsoleNeedsApp: "Sending to Agent requires opening this HTML inside translation-workshop.",
     agentConsoleNeedsOutput: "This HTML has no bound output folder, so Agent cannot be started.",
+    lanSync: "LAN sync",
+    lanSyncStop: "Stop sync",
+    lanSyncCopy: "Copy link",
+    lanSyncNeedsApp: "LAN sync requires opening this HTML inside the translation-workshop app.",
+    lanSyncStarted: "LAN sync started",
+    lanSyncStopped: "LAN sync stopped",
+    lanSyncFailed: "LAN sync failed",
+    lanSyncLanUrl: "LAN address",
+    lanSyncLocalUrl: "Local address",
+    lanSyncPin: "6-digit PIN",
+    lanSyncPinHelp: "Phones and other devices must enter this PIN after opening the link.",
+    lanSyncPinInvalid: "Enter a 6-digit numeric PIN.",
+    lanSyncExternal: "External tunnel",
+    lanSyncExternalNote: "translation-workshop does not bundle public tunneling tools. If you use Cloudflare Tunnel, ngrok, or similar tools, point them to the local sync address.",
     glossaryTitle: "Glossary replacement",
     glossaryOpen: "Glossary",
     glossaryClose: "Close",
@@ -496,6 +525,12 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .compact-select { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; }
     .ai-tools textarea { width:100%; min-height:120px; resize:vertical; font:12px/1.5 Consolas,"Courier New",monospace; }
     .ai-status { color:var(--muted); font-size:12px; min-height:18px; }
+    .lan-sync-panel { display:grid; gap:8px; padding:10px; border:1px solid #b9d8f4; border-radius:8px; background:rgba(246,251,255,.94); color:var(--ink); }
+    .lan-sync-panel[hidden] { display:none; }
+    .lan-sync-links { display:grid; gap:4px; font:12px/1.5 Consolas,"Courier New",monospace; }
+    .lan-sync-links a { color:#1f5b91; overflow-wrap:anywhere; }
+    .lan-sync-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .lan-sync-panel p { margin:0; color:var(--muted); font-size:12px; }
     .prompt-settings { display:grid; gap:12px; padding:12px; border:1px solid #c4d9f5; border-radius:8px; background:rgba(250,253,255,.94); }
     .prompt-settings[hidden] { display:none; }
     .prompt-settings header { position:static; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:0; color:var(--ink); background:none; box-shadow:none; border:0; }
@@ -515,9 +550,9 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .agent-panel-head,.agent-pane-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
     .agent-panel-head strong { margin-right:auto; }
     .agent-pane { display:grid; gap:8px; }
-    .agent-log { height:320px; min-height:180px; overflow:hidden; margin:0; padding:10px; border:1px solid #244b70; border-radius:8px; background:#071523; color:#dbeafe; font:12px/1.45 Consolas,"Courier New",monospace; }
+    .agent-log { height:min(46vh,360px); min-height:180px; overflow:auto; margin:0; padding:10px; border:1px solid #244b70; border-radius:8px; background:#071523; color:#dbeafe; font:12px/1.45 Consolas,"Courier New",monospace; overscroll-behavior:contain; }
     .agent-log .xterm { height:100%; padding:0; }
-    .agent-log .xterm-viewport { border-radius:6px; }
+    .agent-log .xterm-viewport { border-radius:6px; overflow-y:auto !important; }
     .glossary-tools { display:grid; gap:10px; margin:0 0 16px; padding:14px; border:1px solid var(--line); border-radius:8px; background:var(--panel-bg); box-shadow:0 10px 26px rgba(95,111,191,.08); }
     .glossary-tools header { position:static; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:0; color:var(--ink); background:none; box-shadow:none; border:0; }
     .glossary-tools header::after { content:none; }
@@ -611,11 +646,23 @@ function aiToolsHtml(t: Record<string, string>, workflow: ReturnType<typeof work
           <button id="exportTxt" type="button">${t.exportTxt ?? "Export TXT"}</button>
           ${sourceIsEpub ? `<button id="exportEpub" type="button">${t.exportEpub ?? "Export EPUB"}</button>` : ""}
           ${canSaveTxt ? `<button id="saveTxt" type="button">${t.saveTxt ?? "Save TXT"}</button>` : ""}
+          <label class="compact-select">${t.lanSyncPin ?? "6-digit PIN"} <input id="lanSyncPin" type="text" inputmode="numeric" autocomplete="off" maxlength="6" pattern="\\d{6}" placeholder="000000" style="width:92px"></label>
+          <button id="startLanSync" type="button">${t.lanSync ?? "LAN sync"}</button>
           <input id="syncTranslationInput" type="file" accept=".txt,text/plain" hidden>
         </div>
       </header>
       ${promptSettingsHtml(t)}
       <p class="ai-status" id="aiStatus">${t.syncHelp ?? ""}</p>
+      <div id="lanSyncPanel" class="lan-sync-panel" hidden>
+        <div><strong>${t.lanSync ?? "LAN sync"}</strong></div>
+        <p>${t.lanSyncPinHelp ?? "Phones and other devices must enter this PIN after opening the link."}</p>
+        <div id="lanSyncLinks" class="lan-sync-links"></div>
+        <div class="lan-sync-actions">
+          <button id="copyLanSyncLink" type="button">${t.lanSyncCopy ?? "Copy link"}</button>
+          <button id="stopLanSync" type="button">${t.lanSyncStop ?? "Stop sync"}</button>
+        </div>
+        <p>${t.lanSyncExternal ?? "External tunnel"}: ${t.lanSyncExternalNote ?? "translation-workshop does not bundle public tunneling tools. If you use Cloudflare Tunnel, ngrok, or similar tools, point them to the local sync address."}</p>
+      </div>
       <div id="agentPanel" class="agent-panel agent-window" hidden>
         <div class="agent-panel-head">
           <strong>${t.callAgent ?? "Call Agent"}</strong>
@@ -940,6 +987,7 @@ rowsEl.addEventListener("input", (event) => {
   row.classList.add("manual");
   changedCount.textContent = Object.keys(state.edits).length;
   save();
+  queueLanSyncPatch({ type: "line-edit", line: Number(line), text: target.textContent, status: "manual" });
 });
 rowsEl.addEventListener("focusin", (event) => {
   const target = event.target.closest(".target");
@@ -972,6 +1020,7 @@ function restoreCurrentLine() {
   rowEl?.classList.remove("glossary");
   changedCount.textContent = Object.keys(state.edits).length;
   save();
+  queueLanSyncPatch({ type: "line-restore", line: Number(line) });
 }
 document.getElementById("restore").onclick = restoreCurrentLine;
 document.getElementById("export").onclick = () => {
@@ -1067,6 +1116,12 @@ const promptCandidateRatio = document.getElementById("promptCandidateRatio");
 const promptMontecarloSize = document.getElementById("promptMontecarloSize");
 const promptMontecarloRoundMin = document.getElementById("promptMontecarloRoundMin");
 const promptMontecarloRoundMax = document.getElementById("promptMontecarloRoundMax");
+const startLanSyncButton = document.getElementById("startLanSync");
+const lanSyncPanel = document.getElementById("lanSyncPanel");
+const lanSyncLinks = document.getElementById("lanSyncLinks");
+const lanSyncPinInput = document.getElementById("lanSyncPin");
+const copyLanSyncLinkButton = document.getElementById("copyLanSyncLink");
+const stopLanSyncButton = document.getElementById("stopLanSync");
 let activePromptKind = "translate";
 let agentRawOutput = "";
 let agentConsoleAgent = workflow.defaultAgent || "codex";
@@ -1074,6 +1129,9 @@ let agentConsoleSessionId = "";
 let agentConsoleQuietTimer = 0;
 let agentTerminal = undefined;
 let agentFitAddon = undefined;
+let lanSyncToken = "";
+let lanSyncPrimaryUrl = "";
+const lanSyncTimers = new Map();
 function createAgentTerminal() {
   if (agentTerminal) return agentTerminal;
   if (!interactiveAgentOutput) return undefined;
@@ -1123,12 +1181,18 @@ function fitAgentTerminal() {
 function renderAgentConsoleOutput() {
   const terminal = createAgentTerminal();
   if (!terminal) return;
+  fitAgentTerminal();
   terminal.reset?.();
   if (agentRawOutput) terminal.write(agentRawOutput);
+  terminal.scrollToBottom?.();
 }
 function appendAgentConsoleOutput(chunk) {
   const terminal = createAgentTerminal();
-  if (terminal && chunk) terminal.write(chunk);
+  if (terminal && chunk) {
+    fitAgentTerminal();
+    terminal.write(chunk);
+    terminal.scrollToBottom?.();
+  }
 }
 function resetAgentConsoleTranscript() {
   agentRawOutput = "";
@@ -1357,7 +1421,7 @@ const syncDbName = "translation-workshop-html-cache";
 const syncStoreName = "line-sync-v1";
 const syncTextKey = key + ":translation-text";
 // Bump when embedded prompts or prompt-related HTML behavior changes; old HTML will auto-upgrade.
-const promptSettingsVersion = 5;
+const promptSettingsVersion = 8;
 function splitSyncedText(text) {
   return String(text ?? "").replace(/\r\n/g, "\n").replace(/\r$/, "").replace(/\n$/, "").split("\n");
 }
@@ -1443,6 +1507,14 @@ function currentLineReviewPath() {
     .replace(/^\/([A-Za-z]:[\\/])/, "$1")
     .replace(/\//g, "\\");
 }
+function currentHtmlPath() {
+  if (location.protocol !== "file:") {
+    return location.href;
+  }
+  return decodeURIComponent(location.pathname)
+    .replace(/^\/([A-Za-z]:[\\/])/, "$1")
+    .replace(/\//g, "\\");
+}
 async function generateReviewHtmlFromReport(preferredReportPath) {
   const bridge = writeBridge();
   if (!bridge?.generateProposalReview) {
@@ -1510,6 +1582,115 @@ agentMessageInput?.addEventListener("keydown", (event) => {
 function invokeBridge() {
   return window.workshopHtml || window.parent?.workshopHtml || window.workshop || window.parent?.workshop;
 }
+function lanSyncRowPayload() {
+  return data.rows.map(row => ({
+    line: row.line,
+    source: row.source,
+    translation: rowValue(row),
+    status: state.status[row.line] || row.status || ""
+  }));
+}
+function lanSyncLineDocumentPayload() {
+  return {
+    title: document.title || "translation-workshop",
+    rows: lanSyncRowPayload(),
+    state,
+    pageSize,
+    lineReviewPath: currentLineReviewPath()
+  };
+}
+window.translationWorkshopLineLanSyncPayload = lanSyncLineDocumentPayload;
+function renderLanSyncLinks(result) {
+  if (!lanSyncPanel || !lanSyncLinks) return;
+  const lanUrls = Array.isArray(result?.lanUrls) ? result.lanUrls : [];
+  lanSyncPrimaryUrl = lanUrls[0] || result?.localUrl || "";
+  const linkRows = [];
+  if (lanUrls[0]) {
+    linkRows.push('<div><b>' + escapeHtml(data.labels.lanSyncLanUrl || "LAN address") + ':</b> <a href="' + escapeHtml(lanUrls[0]) + '">' + escapeHtml(lanUrls[0]) + '</a></div>');
+  }
+  if (result?.localUrl) {
+    linkRows.push('<div><b>' + escapeHtml(data.labels.lanSyncLocalUrl || "Local address") + ':</b> <a href="' + escapeHtml(result.localUrl) + '">' + escapeHtml(result.localUrl) + '</a></div>');
+  }
+  lanSyncLinks.innerHTML = linkRows.join("");
+  lanSyncPanel.hidden = false;
+}
+async function startLanSync() {
+  const bridge = invokeBridge();
+  if (!bridge?.startLanSync) {
+    setAiStatus(data.labels.lanSyncNeedsApp || "LAN sync requires opening this HTML inside translation-workshop.");
+    return;
+  }
+  const pin = String(lanSyncPinInput?.value || "").trim();
+  if (!/^\d{6}$/.test(pin)) {
+    setAiStatus(data.labels.lanSyncPinInvalid || "Enter a 6-digit numeric PIN.");
+    lanSyncPinInput?.focus?.();
+    return;
+  }
+  try {
+    const result = await bridge.startLanSync({
+      pin,
+      htmlPath: currentHtmlPath(),
+      outputDir: workflow.paths?.outputDir || "",
+      agent: agentSelect?.value || workflow.defaultAgent || "codex",
+      title: document.title || "translation-workshop",
+      lineDocument: lanSyncLineDocumentPayload(),
+      pageSize,
+      locale: document.documentElement.lang === "en-US" ? "en-US" : "zh-CN"
+    });
+    lanSyncToken = result?.token || "";
+    renderLanSyncLinks(result);
+    setAiStatus((data.labels.lanSyncStarted || "LAN sync started") + ": " + (lanSyncPrimaryUrl || result?.localUrl || ""));
+  } catch (error) {
+    setAiStatus((data.labels.lanSyncFailed || "LAN sync failed") + ": " + (error?.message || String(error)));
+  }
+}
+function queueLanSyncPatch(patch) {
+  if (!lanSyncToken) return;
+  const bridge = invokeBridge();
+  if (!bridge?.sendLanSyncPatch) return;
+  const line = Number(patch.line || 0);
+  clearTimeout(lanSyncTimers.get(line));
+  lanSyncTimers.set(line, setTimeout(() => {
+    bridge.sendLanSyncPatch({
+      token: lanSyncToken,
+      patch: { ...patch, clientId: "desktop", timestamp: new Date().toISOString() }
+    }).catch(() => {});
+  }, patch.type === "line-edit" ? 250 : 0));
+}
+function applyRemoteLanSyncPatch(payload) {
+  if (!payload || payload.token !== lanSyncToken) return;
+  const patch = payload.patch || {};
+  if (patch.clientId === "desktop") return;
+  const line = Number(patch.line || 0);
+  if (!Number.isInteger(line) || line <= 0) return;
+  if (patch.type === "line-restore") {
+    delete state.edits[line];
+    delete state.status[line];
+  } else {
+    state.edits[line] = String(patch.text ?? "");
+    state.status[line] = patch.status || "manual";
+  }
+  activeLine = String(line);
+  save();
+  const target = rowsEl.querySelector('.row[data-line="' + line + '"] .target');
+  if (target && document.activeElement !== target) {
+    target.textContent = rowValue({ line });
+  }
+  changedCount.textContent = Object.keys(state.edits).length;
+}
+invokeBridge()?.onLanSyncPatch?.(applyRemoteLanSyncPatch);
+startLanSyncButton?.addEventListener("click", () => { void startLanSync(); });
+copyLanSyncLinkButton?.addEventListener("click", () => {
+  if (!lanSyncPrimaryUrl) return;
+  navigator.clipboard?.writeText(lanSyncPrimaryUrl).then(() => setAiStatus(data.labels.copied || "Copied")).catch(() => {});
+});
+stopLanSyncButton?.addEventListener("click", () => {
+  const token = lanSyncToken;
+  lanSyncToken = "";
+  lanSyncPanel.hidden = true;
+  if (token) invokeBridge()?.stopLanSync?.(token).catch(() => {});
+  setAiStatus(data.labels.lanSyncStopped || "LAN sync stopped");
+});
 async function refreshInteractiveAgentSnapshot() {
   const bridge = invokeBridge();
   if (!bridge?.agentConsoleStatus) return;
@@ -2478,12 +2659,26 @@ export function renderProposalReviewHtml(options: ProposalReviewHtmlOptions): st
         <button class="btn" id="connectLineReview">${t.connectLineReview}</button>
         <button class="btn primary" id="applyProposalChanges">${t.applyProposalChanges}</button>
       </div>
+      <div class="toolbar">
+        <label>${t.lanSyncPin ?? "6-digit PIN"}<input id="lanSyncPin" type="text" inputmode="numeric" autocomplete="off" maxlength="6" pattern="\\d{6}" placeholder="000000"></label>
+        <button class="btn" id="startLanSync">${t.lanSync ?? "LAN sync"}</button>
+      </div>
+      <div id="lanSyncPanel" class="lan-sync-panel" hidden>
+        <div><strong>${t.lanSync ?? "LAN sync"}</strong></div>
+        <p>${t.lanSyncPinHelp ?? "Phones and other devices must enter this PIN after opening the link."}</p>
+        <div id="lanSyncLinks" class="lan-sync-links"></div>
+        <div class="lan-sync-actions">
+          <button class="btn" id="copyLanSyncLink" type="button">${t.lanSyncCopy ?? "Copy link"}</button>
+          <button class="btn" id="stopLanSync" type="button">${t.lanSyncStop ?? "Stop sync"}</button>
+        </div>
+        <p>${t.lanSyncExternal ?? "External tunnel"}: ${t.lanSyncExternalNote ?? "translation-workshop does not bundle public tunneling tools. If you use Cloudflare Tunnel, ngrok, or similar tools, point them to the local sync address."}</p>
+      </div>
       <p class="subtle" id="proposalStatus"></p>
       <button class="btn primary" id="export">${t.exportJson}</button>
     </aside>
     <main><section id="cards" class="cards"></section></main>
   </div>
-  <script id="proposalData" type="application/json">${jsonScript({ proposals: options.proposals, pageSize: firstPage.pageSize, startPage: firstPage.page, labels: t, reportPath: options.reportPath ?? "", lineReviewPath: options.lineReviewPath ?? "" })}</script>
+  <script id="proposalData" type="application/json">${jsonScript({ proposals: options.proposals, pageSize: firstPage.pageSize, startPage: firstPage.page, labels: t, outputDir: options.outputDir ?? "", reportPath: options.reportPath ?? "", lineReviewPath: options.lineReviewPath ?? "" })}</script>
   <script>${proposalReviewScript()}</script>
 </body>
 </html>`;
@@ -2504,6 +2699,15 @@ const pageInfo = document.getElementById("pageInfo");
 const proposalStatus = document.getElementById("proposalStatus");
 const searchInput = document.getElementById("search");
 const issueFilter = document.getElementById("issueFilter");
+const startLanSyncButton = document.getElementById("startLanSync");
+const lanSyncPinInput = document.getElementById("lanSyncPin");
+const lanSyncPanel = document.getElementById("lanSyncPanel");
+const lanSyncLinks = document.getElementById("lanSyncLinks");
+const copyLanSyncLinkButton = document.getElementById("copyLanSyncLink");
+const stopLanSyncButton = document.getElementById("stopLanSync");
+let lanSyncToken = "";
+let lanSyncPrimaryUrl = "";
+const lanSyncTimers = new Map();
 function escapeHtml(text) { return String(text ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])); }
 function save() {
   state.page = page;
@@ -2654,6 +2858,14 @@ function lineReviewFilePath() {
   }
   return raw;
 }
+function currentProposalHtmlPath() {
+  if (location.protocol !== "file:") {
+    return location.href;
+  }
+  return decodeURIComponent(location.pathname)
+    .replace(/^\/([A-Za-z]:[\\/])/, "$1")
+    .replace(/\//g, "\\");
+}
 let linkedLineReviewRowsPromise = null;
 function parseLineReviewRowsFromHtml(html) {
   const match = String(html || "").match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/i);
@@ -2736,6 +2948,100 @@ function readLineReviewState() {
 }
 function htmlBridge() {
   return window.workshopHtml || window.parent?.workshopHtml || window.workshop;
+}
+function lanSyncLineRowsPayload(rows) {
+  return rows.map(row => ({
+    line: row.line,
+    source: row.source,
+    translation: row.translation,
+    status: row.status || ""
+  }));
+}
+function renderLanSyncLinks(result) {
+  if (!lanSyncPanel || !lanSyncLinks) return;
+  const lanUrls = Array.isArray(result?.lanUrls) ? result.lanUrls : [];
+  lanSyncPrimaryUrl = lanUrls[0] || result?.localUrl || "";
+  const rows = [];
+  if (lanUrls[0]) {
+    rows.push('<div><b>' + escapeHtml(data.labels.lanSyncLanUrl || "LAN address") + ':</b> <a href="' + escapeHtml(lanUrls[0]) + '">' + escapeHtml(lanUrls[0]) + '</a></div>');
+  }
+  if (result?.localUrl) {
+    rows.push('<div><b>' + escapeHtml(data.labels.lanSyncLocalUrl || "Local address") + ':</b> <a href="' + escapeHtml(result.localUrl) + '">' + escapeHtml(result.localUrl) + '</a></div>');
+  }
+  lanSyncLinks.innerHTML = rows.join("");
+  lanSyncPanel.hidden = false;
+}
+async function startLanSync() {
+  const bridge = htmlBridge();
+  if (!bridge?.startLanSync) {
+    setProposalStatus(data.labels.lanSyncNeedsApp || "LAN sync requires opening this HTML inside translation-workshop.");
+    return;
+  }
+  const pin = String(lanSyncPinInput?.value || "").trim();
+  if (!/^\d{6}$/.test(pin)) {
+    setProposalStatus(data.labels.lanSyncPinInvalid || "Enter a 6-digit numeric PIN.");
+    lanSyncPinInput?.focus?.();
+    return;
+  }
+  const linkedRows = await readLinkedLineReviewRows();
+  const linkedState = readLineReviewState()?.lineState || {};
+  try {
+    const result = await bridge.startLanSync({
+      pin,
+      htmlPath: currentProposalHtmlPath(),
+      outputDir: data.outputDir || "",
+      agent: "codex",
+      title: document.title || "translation-workshop",
+      locale: document.documentElement.lang === "en-US" ? "en-US" : "zh-CN",
+      pageSize,
+      lineReviewPath: data.lineReviewPath,
+      lineDocument: linkedRows.length > 0 ? {
+        title: data.lineReviewPath || (data.labels.lineReviewLinked || "Line review"),
+        rows: lanSyncLineRowsPayload(linkedRows),
+        state: linkedState,
+        pageSize,
+        lineReviewPath: data.lineReviewPath
+      } : undefined,
+      proposalDocument: {
+        title: document.title || "translation-workshop",
+        proposals: data.proposals,
+        state,
+        pageSize,
+        reportPath: data.reportPath,
+        lineReviewPath: data.lineReviewPath
+      }
+    });
+    lanSyncToken = result?.token || "";
+    renderLanSyncLinks(result);
+    setProposalStatus((data.labels.lanSyncStarted || "LAN sync started") + ": " + (lanSyncPrimaryUrl || result?.localUrl || ""));
+  } catch (error) {
+    setProposalStatus((data.labels.lanSyncFailed || "LAN sync failed") + ": " + (error?.message || String(error)));
+  }
+}
+function queueLanSyncPatch(patch) {
+  if (!lanSyncToken) return;
+  const bridge = htmlBridge();
+  if (!bridge?.sendLanSyncPatch) return;
+  const key = patch.type === "proposal-decision" ? "proposal:" + patch.proposalId : "line:" + patch.line;
+  clearTimeout(lanSyncTimers.get(key));
+  lanSyncTimers.set(key, setTimeout(() => {
+    bridge.sendLanSyncPatch({
+      token: lanSyncToken,
+      patch: { ...patch, clientId: "desktop", timestamp: new Date().toISOString() }
+    }).catch(() => {});
+  }, patch.type === "proposal-decision" ? 200 : 0));
+}
+function applyRemoteLanSyncPatch(payload) {
+  if (!payload || payload.token !== lanSyncToken) return;
+  const patch = payload.patch || {};
+  if (patch.clientId === "desktop") return;
+  if (patch.type === "proposal-decision") {
+    const proposalId = String(patch.proposalId || "");
+    if (!proposalId) return;
+    state.decisions[proposalId] = { status: patch.status || "manual", manualText: patch.manualText || "" };
+    save();
+    render();
+  }
 }
 async function persistLineReviewState(target, line) {
   localStorage.setItem(target.storageKey, JSON.stringify(target.lineState));
@@ -2929,6 +3235,7 @@ cards.addEventListener("click", event => {
   const decision = effectiveProposalDecision(item, rawDecision);
   applyDecisionVisual(card, decision);
   save();
+  queueLanSyncPatch({ type: "proposal-decision", proposalId: id, status: decision.status, manualText: decision.manualText || rawDecision.manualText || "" });
 });
 cards.addEventListener("input", event => {
   if (event.target.tagName !== "TEXTAREA") return;
@@ -2940,6 +3247,7 @@ cards.addEventListener("input", event => {
   const decision = effectiveProposalDecision(item, rawDecision);
   applyDecisionVisual(card, decision);
   save();
+  queueLanSyncPatch({ type: "proposal-decision", proposalId: card.dataset.id, status: decision.status, manualText: event.target.value });
 });
 document.getElementById("prev").onclick = () => { page -= 1; render(); scrollTo(0, 0); };
 document.getElementById("next").onclick = () => { page += 1; render(); scrollTo(0, 0); };
@@ -2948,6 +3256,19 @@ searchInput.oninput = () => { page = 1; render(); scrollTo(0, 0); };
 issueFilter.onchange = () => { page = 1; state.issueFilter = activeIssueFilter(); render(); scrollTo(0, 0); };
 document.getElementById("connectLineReview")?.addEventListener("click", connectLineReview);
 document.getElementById("applyProposalChanges")?.addEventListener("click", applyProposalChanges);
+htmlBridge()?.onLanSyncPatch?.(applyRemoteLanSyncPatch);
+startLanSyncButton?.addEventListener("click", () => { void startLanSync(); });
+copyLanSyncLinkButton?.addEventListener("click", () => {
+  if (!lanSyncPrimaryUrl) return;
+  navigator.clipboard?.writeText(lanSyncPrimaryUrl).then(() => setProposalStatus(data.labels.copied || "Copied")).catch(() => {});
+});
+stopLanSyncButton?.addEventListener("click", () => {
+  const token = lanSyncToken;
+  lanSyncToken = "";
+  if (lanSyncPanel) lanSyncPanel.hidden = true;
+  if (token) htmlBridge()?.stopLanSync?.(token).catch(() => {});
+  setProposalStatus(data.labels.lanSyncStopped || "LAN sync stopped");
+});
 document.getElementById("export").onclick = () => {
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const a = document.createElement("a");

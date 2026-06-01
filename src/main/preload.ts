@@ -52,7 +52,15 @@ contextBridge.exposeInMainWorld("workshopHtml", {
   writeEpubFile: (args: { templatePath: string; lines: string[]; outputDir?: string; mode?: "all" | "pair-position"; replacePosition?: number; pairSize?: number }) => ipcRenderer.invoke("files:writeEpubFile", args),
   generateProposalReview: (args: unknown) => ipcRenderer.invoke("html:generateProposalReview", args),
   buildPrompt: (args: unknown) => ipcRenderer.invoke("prompts:build", args),
-  applyLineReviewState: (args: { lineReviewPath?: string; lineState?: unknown; line?: number }) => ipcRenderer.invoke("html:applyLineReviewState", args),
+  applyLineReviewState: (args: { lineReviewPath?: string; lineState?: unknown; line?: number; activate?: boolean }) => ipcRenderer.invoke("html:applyLineReviewState", args),
+  startLanSync: (args: unknown) => ipcRenderer.invoke("lan-sync:start", args),
+  sendLanSyncPatch: (args: unknown) => ipcRenderer.invoke("lan-sync:patch", args),
+  stopLanSync: (token: string) => ipcRenderer.invoke("lan-sync:stop", token),
+  onLanSyncPatch: (callback: (payload: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload);
+    ipcRenderer.on("lan-sync:patch", listener);
+    return () => ipcRenderer.removeListener("lan-sync:patch", listener);
+  },
   findProofreadReport: (outputDir: string) => ipcRenderer.invoke("reports:findProofreadReport", outputDir),
   openPath: (targetPath: string) => ipcRenderer.invoke("shell:openPath", targetPath),
   skillInstallCommand: (args: unknown) => ipcRenderer.invoke("skills:installCommand", args),

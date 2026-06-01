@@ -17,7 +17,7 @@ skills/codex/proofread-translation
 The app only copies this command; it does not execute global skill installation:
 
 ```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global --replace
 ```
 
 Targets:
@@ -27,7 +27,7 @@ Targets:
 ~/.codex/skills/proofread-translation/SKILL.md
 ```
 
-The installer skips existing targets by default. Use `--replace` only when you intentionally want to update an existing bundled target; it first backs up the exact target under `~/.translation-workshop/skill-backups/`. You only need one agent configured, so a Codex-only or Claude-only setup is valid.
+The recommended command updates existing bundled targets and first backs up the exact target under `~/.translation-workshop/skill-backups/`. You only need one agent configured, so a Codex-only or Claude-only setup is valid.
 
 ## Claude Code
 
@@ -46,7 +46,7 @@ skills/claude/commands/proofread-translation.md
 The app only copies this command; it does not execute global skill installation:
 
 ```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global --replace
 ```
 
 Targets:
@@ -56,7 +56,7 @@ Targets:
 ~/.claude/commands/proofread-translation.md
 ```
 
-The installer skips existing targets by default. Use `--replace` only when you intentionally want to update an existing bundled target; it first backs up the exact target under `~/.translation-workshop/skill-backups/`. You only need one agent configured, so a Codex-only or Claude-only setup is valid.
+The recommended command updates existing bundled targets and first backs up the exact target under `~/.translation-workshop/skill-backups/`. You only need one agent configured, so a Codex-only or Claude-only setup is valid.
 
 ## Interactive Agent Console
 

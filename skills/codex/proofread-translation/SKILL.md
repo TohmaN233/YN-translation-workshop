@@ -44,9 +44,11 @@ If a required input is missing, ask only for that item. If the language pair is 
 - Include global line numbers, source text, current translation, issue code, severity, explanation, and `Suggested fix` for every finding.
 - Before writing each finding, verify the global `L<N>` line number by re-reading that exact source/translation line pair from the input files. Do not infer line numbers from chunk-local, batch-local, sampled, displayed, or approximate positions.
 - The `L<N>` line number must point to the source line whose text exactly matches the reported `Source` field. If uncertain, include the candidate in the summary only, not in `[basename]_fix_proposal.md`.
+- `Source` and `Current translation` must contain the full exact line text from that row, not a shortened quote, fragment, or explanation.
 - For every severity level (HIGH, MEDIUM, and LOW), provide a concrete `Suggested fix` that can directly replace the current target line.
 - For H9 expansion/hallucination findings, retranslate the source line and put the full corrected target-language text in `Suggested fix`.
 - The `Suggested fix` field must contain only the final target-language text to write back. Do not include meta phrases, explanations, labels, quotes, or search/replace instructions inside that field.
+- When merging parallel or chunked findings, final proposal IDs must be globally unique. Duplicate IDs are forbidden; renumber duplicates after the current max for that Hx/Mx/Lx code before writing the final fix proposal.
 - Mark uncertain findings with a "needs verification" note instead of overstating confidence.
 - Include exactly one default handling option per finding.
 - Treat confirmed glossary mismatches as H3.
@@ -89,3 +91,5 @@ Every finding in `[basename]_fix_proposal.md` must use this block shape:
 ```
 
 Use `Chunk 001 L123` instead of `MC L123` for split-review findings. `Suggested fix` must be a complete replacement line in the target language, not an explanation or partial edit.
+
+When output was produced in parallel, merge and renumber before finalizing: each heading ID such as `H1-001`, `M2-004`, or `L1-003` must appear only once in the final fix proposal.

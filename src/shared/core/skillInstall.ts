@@ -34,7 +34,8 @@ export function buildLocalSkillInstallArgs(repoRoot: string, agent: SkillInstall
     scriptPath,
     "--agent",
     agent,
-    "--global"
+    "--global",
+    "--replace"
   ];
 }
 
@@ -44,14 +45,7 @@ export function buildLocalSkillInstallCommand(repoRoot: string, agent: SkillInst
 
 export function buildGithubSkillInstallCommand(agent: SkillInstallAgent, platform: NodeJS.Platform | string): string {
   if (platform === "win32") {
-    return [
-      "powershell",
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      `"irm '${githubSkillInstallScriptUrl}' | node - --github --agent ${agent} --global"`
-    ].join(" ");
+    return `irm ${githubSkillInstallScriptUrl} | node - --github --agent ${agent} --global --replace`;
   }
-  return `curl -fsSL ${quoteShellArg(githubSkillInstallScriptUrl)} | node - --github --agent ${agent} --global`;
+  return `curl -fsSL ${quoteShellArg(githubSkillInstallScriptUrl)} | node - --github --agent ${agent} --global --replace`;
 }

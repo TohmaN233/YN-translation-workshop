@@ -157,9 +157,10 @@ export function needsLegacyLineReviewUpgrade(html: string): boolean {
     || (html.includes('id="reviewData"') && html.includes("line-review") && html.includes('id="agentModeBackground"'))
     || (html.includes('id="reviewData"') && html.includes("line-review") && html.includes('id="startBackgroundAgent"'))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes('id="promptSettingsPanel"'))
-    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("promptSettingsVersion = 5"))
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("promptSettingsVersion = 8"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("createAgentTerminal"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("writeAgentConsoleInput"))
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes('id="startLanSync"'))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes('id="importGlossary"'))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("glossarySyncMissingTarget"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("sourceCount <= targetCount"))
@@ -172,7 +173,8 @@ export function needsLegacyLineReviewUpgrade(html: string): boolean {
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes('id="glossarySearch"'))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("glossaryRenderBatchSize"))
     || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("reviewFormatFallback"))
-    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("Output language: write all report prose in the target language"));
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes("Output language: write all report prose in the target language"))
+    || (html.includes('id="reviewData"') && html.includes("line-review") && !html.includes('id="lanSyncPin"'));
 }
 
 export function needsLegacyProposalReviewUpgrade(html: string): boolean {
@@ -182,6 +184,8 @@ export function needsLegacyProposalReviewUpgrade(html: string): boolean {
       !html.includes("persistLineReviewState")
       || !html.includes("proposalSafetyCheck")
       || !html.includes('id="issueFilter"')
+      || !html.includes('id="startLanSync"')
+      || !html.includes("currentProposalHtmlPath")
       || !html.includes("function issueTypeOptions")
       || html.includes("current-mismatch")
       || html.includes("currentScore")

@@ -177,6 +177,65 @@ function parseBlock(lines: string[], index: number): ReviewProposal | undefined 
   };
 }
 
+function sequencedIdParts(id: string): { prefix: string; number: number; width: number } | undefined {
+  const match = id.trim().toUpperCase().match(/^([HML][1-9]?|P)-(\d{1,6})$/);
+  if (!match) {
+    return undefined;
+  }
+  return {
+    prefix: match[1],
+    number: Number.parseInt(match[2], 10),
+    width: match[2].length
+  };
+}
+
+function proposalIdPrefix(proposal: ReviewProposal): string {
+  const id = proposal.id.trim().toUpperCase();
+  const sequenced = sequencedIdParts(id);
+  if (sequenced) {
+    return sequenced.prefix;
+  }
+  return id.match(/^([HML][1-9]?)/)?.[1]
+    ?? proposal.problemType.match(/\b([HML][1-9]?)\b/i)?.[1]?.toUpperCase()
+    ?? "P";
+}
+
+function normalizeDuplicateProposalIds(proposals: ReviewProposal[]): ReviewProposal[] {
+  const maxByPrefix = new Map<string, { max: number; width: number }>();
+  for (const proposal of proposals) {
+    const parts = sequencedIdParts(proposal.id);
+    if (!parts) {
+      continue;
+    }
+    const current = maxByPrefix.get(parts.prefix) ?? { max: 0, width: 3 };
+    maxByPrefix.set(parts.prefix, {
+      max: Math.max(current.max, parts.number),
+      width: Math.max(current.width, parts.width)
+    });
+  }
+
+  const seen = new Set<string>();
+  return proposals.map((proposal) => {
+    const id = proposal.id.trim().toUpperCase() || "P-0001";
+    if (!seen.has(id)) {
+      seen.add(id);
+      return id === proposal.id ? proposal : { ...proposal, id };
+    }
+
+    const prefix = proposalIdPrefix(proposal);
+    const current = maxByPrefix.get(prefix) ?? { max: 0, width: 3 };
+    let next = current.max + 1;
+    let nextId = `${prefix}-${String(next).padStart(current.width, "0")}`;
+    while (seen.has(nextId)) {
+      next += 1;
+      nextId = `${prefix}-${String(next).padStart(current.width, "0")}`;
+    }
+    maxByPrefix.set(prefix, { ...current, max: next });
+    seen.add(nextId);
+    return { ...proposal, id: nextId };
+  });
+}
+
 export function parseProofreadMarkdown(markdown: string): ReviewProposal[] {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: string[][] = [];
@@ -197,7 +256,8 @@ export function parseProofreadMarkdown(markdown: string): ReviewProposal[] {
     blocks.push(current);
   }
 
-  return blocks
+  const proposals = blocks
     .map((block, index) => parseBlock(block, index))
     .filter((proposal): proposal is ReviewProposal => Boolean(proposal));
+  return normalizeDuplicateProposalIds(proposals);
 }

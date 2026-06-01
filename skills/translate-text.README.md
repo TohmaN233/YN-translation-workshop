@@ -30,28 +30,28 @@ skills/claude/commands/translate-text.md
 
 ### 安装命令
 
-推荐 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用。需要 Node.js 18 或更新版本。
+推荐 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用。需要 Node.js 18 或更新版本。推荐命令默认带 `--replace`，更新前会备份旧目标。
 
 Codex：
 
 ```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global --replace
 ```
 
 Claude Code：
 
 ```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global --replace
 ```
 
 如果已经 clone 仓库，也可以用本地路径安装：
 
 ```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global --replace
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global --replace
 ```
 
-安装脚本默认跳过已有目标。需要更新时加 `--replace`，旧目标会先备份到 `~/.translation-workshop/skill-backups/`。
+推荐命令会更新已有目标，旧目标会先备份到 `~/.translation-workshop/skill-backups/`。
 
 ### 参数速查
 
@@ -139,28 +139,28 @@ skills/claude/commands/translate-text.md
 
 ### Install Commands
 
-The GitHub install command is recommended. It works for installed builds, portable builds, and users who have not cloned the repository. Node.js 18 or newer is required.
+The GitHub install command is recommended. It works for installed builds, portable builds, and users who have not cloned the repository. Node.js 18 or newer is required. The recommended command includes `--replace` and backs up old targets before updating them.
 
 Codex:
 
 ```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global --replace
 ```
 
 Claude Code:
 
 ```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global
+irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global --replace
 ```
 
 Local checkout alternative:
 
 ```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global --replace
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global --replace
 ```
 
-Existing targets are skipped by default. Add `--replace` only when you intentionally want to update them; the old target is backed up under `~/.translation-workshop/skill-backups/`.
+The recommended command updates existing targets and backs up the old target under `~/.translation-workshop/skill-backups/`.
 
 ### Parameter Quick Reference
 

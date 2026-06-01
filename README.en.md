@@ -30,6 +30,13 @@ Release page:
 
 ## Update Info
 
+### v1.10.0
+
+- **Prompt and skill updates**: Codex / Claude Code proofreading skills now enforce a tighter report contract: report prose uses the target language, `Source` / `Current translation` must contain the full original row text, and `Suggested fix` must be a complete replacement translation. Generated Agent prompts also include parallel-merge and fixed-label requirements.
+- **Review report parsing**: duplicate finding IDs are normalized before review HTML generation. If an AI report repeats IDs such as `H1-001`, `M2-004`, or `L1-003`, duplicates are renumbered after the current max for that category so search, jump, and one-click replacement stay stable.
+- **Agent launch context**: when the app starts Codex / Claude Code CLI, it defaults to the translation-workshop translate / proofread skills only, reducing context pollution from unrelated global skills. Skill install commands now include `--replace` by default and back up old targets before replacing them.
+- **LAN and public access**: HTML can start a 6-digit-PIN protected shared workspace. Phones, tablets, and remote devices can work against the software that is already open on the desktop, including line review, proposal review, and Agent interaction. The LAN address can also be exposed through external tools such as Cloudflare Tunnel or ngrok.
+
 ### v1.0.5
 
 - **Codex proofread skill**: simplified the proofreading report prompt; report prose now uses the target language, parser-required labels stay fixed in English, and fix proposal line / field constraints are stricter.
@@ -79,6 +86,34 @@ Supported:
 </p>
 
 TXT / EPUB can be exported at any time. TXT can also be written back to the bound translation file, with a timestamped backup before overwrite.
+
+### LAN Sync
+
+When HTML is opened inside Electron, it can start a LAN sync session. Set a fixed 6-digit PIN, then phones or tablets can visit the generated LAN address, enter the PIN, and open the shared workspace.
+
+The shared workspace supports both line-review and proposal-review tabs. When sync starts from a proposal-review HTML that is linked to a line-review HTML, the same link shows both the fix proposals and the source rows; mobile edits sync back to the desktop HTML cache.
+
+External tunnel: translation-workshop does not bundle public tunneling tools. If you use Cloudflare Tunnel, ngrok, or similar tools, point them to the local sync port.
+
+For example, if the desktop app shows:
+
+```text
+http://127.0.0.1:54321/s/abcdef...
+```
+
+Cloudflare Tunnel can run:
+
+```powershell
+cloudflared tunnel --url http://127.0.0.1:54321
+```
+
+ngrok can run:
+
+```powershell
+ngrok http 54321
+```
+
+Open the public URL and enter the 6-digit PIN set in the app. When there is only one active sync session, the new version redirects the tunnel root to that session automatically; if it does not, append the `/s/...` path from the local link to the public domain.
 
 ### Glossary And Replacement
 
@@ -159,13 +194,7 @@ Bundled paths:
 - Translate: `skills/codex/translate-text`
 - Proofread: `skills/codex/proofread-translation`
 
-The app only copies the install command. It does not automatically write to your global Codex configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups. It requires Node.js 18 or newer:
-
-```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global
-```
-
-To update existing Codex skills, add `--replace` to the same command:
+The app only copies the install command. It does not automatically write to your global Codex configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups. It requires Node.js 18 or newer and uses `--replace` by default to update existing skills after backing them up under `~/.translation-workshop/skill-backups/`:
 
 ```powershell
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global --replace
@@ -174,7 +203,7 @@ irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scr
 If you have cloned the repository, you can also install from the local path:
 
 ```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global --replace
 ```
 
 Install targets:
@@ -182,7 +211,7 @@ Install targets:
 - `~/.codex/skills/translate-text/SKILL.md`
 - `~/.codex/skills/proofread-translation/SKILL.md`
 
-The installer skips existing skills by default. Add `--replace` only when you intentionally want to update an existing target; the old target is backed up under `~/.translation-workshop/skill-backups/` first.
+The recommended command updates existing skills and backs up the old target before replacing it.
 
 ## Claude Code Skill Setup
 
@@ -191,13 +220,7 @@ Bundled paths:
 - Translate: `skills/claude/commands/translate-text.md`
 - Proofread: `skills/claude/commands/proofread-translation.md`
 
-The app only copies the install command. It does not automatically write to your global Claude Code configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups. It requires Node.js 18 or newer:
-
-```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global
-```
-
-To update existing Claude Code commands, add `--replace` to the same command:
+The app only copies the install command. It does not automatically write to your global Claude Code configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups. It requires Node.js 18 or newer and uses `--replace` by default to update existing commands after backing them up under `~/.translation-workshop/skill-backups/`:
 
 ```powershell
 irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global --replace
@@ -206,7 +229,7 @@ irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scr
 If you have cloned the repository, you can also install from the local path:
 
 ```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global
+node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global --replace
 ```
 
 Install targets:
@@ -214,7 +237,7 @@ Install targets:
 - `~/.claude/commands/translate-text.md`
 - `~/.claude/commands/proofread-translation.md`
 
-The installer skips existing commands by default. Add `--replace` only when you intentionally want to update an existing target; the old target is backed up under `~/.translation-workshop/skill-backups/` first.
+The recommended command updates existing commands and backs up the old target before replacing it.
 
 ## File Support
 
@@ -231,10 +254,10 @@ The installer skips existing commands by default. Add `--replace` only when you 
 
 - Source files are read-only and never modified.
 - The app does not automatically install global Codex / Claude Code skills. It only performs read-only detection and copies install commands.
-- The installer skips existing global targets by default.
-- `--replace` backs up the exact target before updating it.
+- Recommended install commands include `--replace`, which backs up the exact target before updating it.
 - `Save TXT` writes to the bound translation path only when the HTML is opened from the Electron app.
 - The Agent Console is a real interactive terminal. The app does not run hidden background jobs or pretend to know completion. Sync translations or discover reports manually after the agent finishes.
+- LAN sync only exposes the current shared session. It does not provide arbitrary file reads or directory browsing; access requires the 6-digit PIN, and stopping sync invalidates the session link. If you enable the Agent Console in the shared page, PIN holders can interact with the current Agent, so do not share the link or PIN with untrusted people.
 
 ## Acknowledgements
 

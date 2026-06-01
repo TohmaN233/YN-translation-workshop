@@ -232,7 +232,8 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
         `CALL SUBAGENT; SUBAGENT_COUNT=${defaults.subagentCount};`,
         "After all complete, merge into a single report:",
         `- Final merged overall review: ${outputPath(defaults.outputDir, `${defaults.basename}_proofread_summary.md`)}`,
-        `- Final merged fix proposal (single md with suggested fixes): ${outputPath(defaults.outputDir, `${defaults.basename}_fix_proposal.md`)}`
+        `- Final merged fix proposal (single md with suggested fixes): ${outputPath(defaults.outputDir, `${defaults.basename}_fix_proposal.md`)}`,
+        "Merge rule: final fix proposal IDs must be globally unique; if parallel outputs duplicate Hx/Mx/Lx numbers, renumber duplicates after the current max for that code."
       ]
     : [
         "NO SUBAGENT;",
@@ -247,7 +248,8 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
     ...subagentLines,
     "",
     "Report contract:",
-    "- Output language: write all report prose in the target language of the language pair. Keep parser-required fixed labels exactly as required by the proofread-translation format, such as `Suggested fix`."
+    "- Output language: write all report prose in the target language of the language pair. Keep parser-required fixed labels exactly as required by the proofread-translation format, such as `Suggested fix`.",
+    "- `Source` and `Current translation` must contain the full exact line text. `Suggested fix` must be a complete replacement line in the target language, with no explanation or partial edit."
   ].join("\n");
 }
 

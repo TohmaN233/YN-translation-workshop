@@ -1,12 +1,13 @@
-import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, type MenuItemConstructorOptions } from "electron";
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, webContents, type MenuItemConstructorOptions } from "electron";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { createRequire } from "node:module";
 
-import { CODEX_DISABLE_SUPERPOWERS_CONFIG } from "../shared/core/agentInvoke.ts";
 import { formatInteractiveAgentMessage } from "../shared/core/agentConsoleInput.ts";
 import { buildTimestampedBackupPath } from "../shared/core/backups.ts";
 import { buildAgentPromptFileMessage, shouldSendAgentPromptViaFile } from "../shared/core/agentPromptTransport.ts";
@@ -64,6 +65,84 @@ interface ProposalReviewFallbackResult {
 interface OpenReviewHtmlArgs {
   htmlPath?: string;
   outputDir?: string;
+}
+
+interface LanSyncLineRow {
+  line: number;
+  source: string;
+  translation?: string;
+  status?: string;
+}
+
+interface LanSyncPatch {
+  type: "line-edit" | "line-restore" | "proposal-decision";
+  line?: number;
+  proposalId?: string;
+  text?: string;
+  status?: string;
+  manualText?: string;
+  clientId?: string;
+  timestamp?: string;
+}
+
+interface LanSyncLineDocument {
+  title?: string;
+  rows: LanSyncLineRow[];
+  state: Record<string, unknown>;
+  pageSize?: number;
+  lineReviewPath?: string;
+}
+
+interface LanSyncProposalItem {
+  id: string;
+  line?: number;
+  src?: string;
+  current?: string;
+  problemType?: string;
+  problem?: string;
+  suggestion?: string;
+  status?: string;
+}
+
+interface LanSyncProposalDocument {
+  title?: string;
+  proposals: LanSyncProposalItem[];
+  state: Record<string, unknown>;
+  pageSize?: number;
+  reportPath?: string;
+  lineReviewPath?: string;
+}
+
+interface LanSyncStartArgs {
+  title?: string;
+  pin?: string;
+  htmlPath?: string;
+  outputDir?: string;
+  agent?: "codex" | "claude";
+  rows?: LanSyncLineRow[];
+  state?: Record<string, unknown>;
+  lineReviewPath?: string;
+  lineDocument?: Partial<LanSyncLineDocument>;
+  proposalDocument?: Partial<LanSyncProposalDocument>;
+  locale?: UiLocale;
+  pageSize?: number;
+}
+
+interface LanSyncSession {
+  token: string;
+  ownerWebContentsId: number;
+  title: string;
+  pinHash: string;
+  authTokens: Set<string>;
+  outputDir?: string;
+  agent: "codex" | "claude";
+  documents: {
+    line?: LanSyncLineDocument;
+    proposal?: LanSyncProposalDocument;
+  };
+  locale: UiLocale;
+  createdAt: string;
+  clients: Set<ServerResponse>;
 }
 
 interface WriteTextFileArgs {
@@ -174,12 +253,14 @@ interface InteractiveAgentSession {
   dismissedUpdatePrompt?: boolean;
   dismissedTrustPrompt?: boolean;
   lastDeniedClaudeMemoryPrompt?: string;
+  cleanupPaths?: string[];
 }
 
 interface ApplyLineReviewStateArgs {
   lineReviewPath?: string;
   lineState?: unknown;
   line?: number;
+  activate?: boolean;
 }
 
 interface HtmlCandidate {
@@ -198,12 +279,40 @@ let htmlViewerWindow: BrowserWindow | undefined;
 let activeHtmlViewerTab = "";
 const htmlViewerTabBarHeight = 44;
 let interactiveAgentSession: InteractiveAgentSession | undefined;
+let lanSyncServer: Server | undefined;
+let lanSyncPort = 0;
+const lanSyncSessions = new Map<string, LanSyncSession>();
+
+async function openHtmlFromDialog(): Promise<void> {
+  const result = await dialog.showOpenDialog({
+    title: "Open HTML",
+    properties: ["openFile"],
+    filters: [
+      { name: "HTML", extensions: ["html", "htm"] },
+      { name: "All Files", extensions: ["*"] }
+    ]
+  });
+  const [filePath] = result.filePaths;
+  if (!result.canceled && filePath) {
+    await openHtmlWindow(filePath);
+  }
+}
 
 function configureApplicationMenu(): void {
   const template: MenuItemConstructorOptions[] = [
     {
       label: "File",
-      submenu: process.platform === "darwin" ? [{ role: "close" }] : [{ role: "quit" }]
+      submenu: [
+        {
+          label: "Open HTML...",
+          accelerator: "CmdOrCtrl+O",
+          click: () => {
+            void openHtmlFromDialog();
+          }
+        },
+        { type: "separator" },
+        process.platform === "darwin" ? { role: "close" } : { role: "quit" }
+      ]
     },
     {
       label: "Edit",
@@ -269,6 +378,1301 @@ function configureApplicationMenu(): void {
   }
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function lanSyncLabels(locale: UiLocale): Record<string, string> {
+  if (locale === "en-US") {
+    return {
+      title: "translation-workshop shared workspace",
+      loading: "Loading...",
+      previous: "Previous",
+      next: "Next",
+      go: "Go",
+      page: "Page",
+      total: "Total",
+      saved: "Synced",
+      offline: "Disconnected",
+      line: "Line",
+      source: "Source",
+      translation: "Translation",
+      current: "Current translation",
+      issueType: "Issue type",
+      issue: "Issue",
+      suggestion: "Suggested fix",
+      accept: "Accept",
+      reject: "Reject",
+      manual: "Manual edit",
+      unreviewed: "Unreviewed",
+      lineTab: "Line review",
+      proposalTab: "Proposal review",
+      empty: "No document in this shared session.",
+      pinTitle: "Enter PIN",
+      pinHelp: "Use the fixed 6-digit PIN shown in the desktop app.",
+      pinPlaceholder: "6-digit PIN",
+      unlock: "Unlock",
+      pinInvalid: "PIN must be 6 digits.",
+      pinFailed: "PIN verification failed.",
+      agentConsole: "Agent Console",
+      agentOpen: "Open",
+      agentClose: "Collapse",
+      agentCodex: "Codex",
+      agentClaude: "Claude Code",
+      agentStart: "Start Agent",
+      agentStop: "Stop",
+      agentSend: "Send",
+      agentInput: "Prompt / message",
+      agentOutput: "Agent output",
+      agentNeedsOutput: "This shared session has no bound output folder, so Agent cannot be started.",
+      agentStarted: "Agent started",
+      agentStopped: "Agent stopped",
+      agentOutputReady: "Agent has output"
+    };
+  }
+  return {
+    title: "translation-workshop 共享工作区",
+    loading: "加载中...",
+    previous: "上一页",
+    next: "下一页",
+    go: "跳转",
+    page: "页码",
+    total: "总数",
+    saved: "已同步",
+    offline: "连接已断开",
+    line: "行",
+    source: "源文",
+    translation: "译文",
+    current: "当前译文",
+    issueType: "问题类型",
+    issue: "问题说明",
+    suggestion: "建议译文",
+    accept: "接受",
+    reject: "拒绝",
+    manual: "人工改写",
+    unreviewed: "未审阅",
+    lineTab: "正文校对",
+    proposalTab: "审阅建议",
+    empty: "当前共享会话没有文档。",
+    pinTitle: "输入 PIN",
+    pinHelp: "请输入桌面端设置的固定 6 位 PIN。",
+    pinPlaceholder: "6 位 PIN",
+    unlock: "解锁",
+    pinInvalid: "PIN 必须是 6 位数字。",
+    pinFailed: "PIN 验证失败。",
+    agentConsole: "Agent 控制台",
+    agentOpen: "展开",
+    agentClose: "收起",
+    agentCodex: "Codex",
+    agentClaude: "Claude Code",
+    agentStart: "启动 Agent",
+    agentStop: "停止",
+    agentSend: "发送",
+    agentInput: "提示词 / 消息",
+    agentOutput: "Agent 输出",
+    agentNeedsOutput: "当前共享会话没有绑定输出文件夹，无法启动 Agent。",
+    agentStarted: "Agent 已启动",
+    agentStopped: "Agent 已停止",
+    agentOutputReady: "Agent 有新输出"
+  };
+}
+
+function lanSyncJson(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function lanSyncResponse(res: ServerResponse, status: number, body: string, contentType: string): void {
+  res.writeHead(status, {
+    "Content-Type": contentType,
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "content-type",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
+  });
+  res.end(body);
+}
+
+function lanSyncEscapeHtml(value: unknown): string {
+  return String(value ?? "").replace(/[&<>"]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;"
+  }[character] ?? character));
+}
+
+function lanSyncLandingHtml(): string {
+  const sessions = [...lanSyncSessions.values()];
+  const links = sessions
+    .map((session) => `<li><a href="/s/${encodeURIComponent(session.token)}">${lanSyncEscapeHtml(session.title || "translation-workshop")}</a></li>`)
+    .join("");
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>translation-workshop</title>
+  <style>
+    body { margin:0; padding:28px; font:16px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#263452; background:#f5fbff; }
+    main { max-width:680px; margin:auto; padding:24px; border:1px solid #d8e7f8; border-radius:12px; background:#fff; box-shadow:0 16px 38px rgba(78,105,150,.12); }
+    h1 { margin:0 0 12px; font-size:24px; }
+    p { margin:8px 0; color:#66708b; }
+    a { color:#1f6fb2; font-weight:700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>translation-workshop</h1>
+    ${sessions.length > 0
+      ? `<p>请选择当前同步会话。外部穿透工具只给根地址时，也可以从这里进入。</p><ul>${links}</ul>`
+      : `<p>没有正在运行的同步会话。请先在桌面端 HTML 中启动局域网同步。</p>`}
+    <p>如果你使用 Cloudflare Tunnel/ngrok，请把穿透目标指向桌面端显示的本地同步端口。</p>
+  </main>
+</body>
+</html>`;
+}
+
+function lanSyncSessionNotFoundHtml(requestedPath: string): string {
+  const sessions = [...lanSyncSessions.values()];
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Session not found</title>
+  <style>
+    body { margin:0; padding:28px; font:16px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#263452; background:#fff7f7; }
+    main { max-width:720px; margin:auto; padding:24px; border:1px solid #f2c4c4; border-radius:12px; background:#fff; box-shadow:0 16px 38px rgba(150,78,78,.12); }
+    code { padding:2px 5px; border-radius:5px; background:#f7eef0; }
+    a { color:#1f6fb2; font-weight:700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Session not found</h1>
+    <p>找不到这个同步会话：<code>${lanSyncEscapeHtml(requestedPath)}</code></p>
+    <p>如果你正在使用 Cloudflare Tunnel/ngrok，请确认公网地址后面保留了桌面端链接中的 <code>/s/...</code> 路径。</p>
+    <p>当前正在运行的会话数：${sessions.length}。${sessions.length === 1 ? `可以尝试打开 <a href="/s/${encodeURIComponent(sessions[0].token)}">当前会话</a>。` : `可以返回 <a href="/">同步入口</a>。`}</p>
+  </main>
+</body>
+</html>`;
+}
+
+function normalizeLanSyncState(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function normalizeLanSyncRows(value: unknown): LanSyncLineRow[] {
+  return Array.isArray(value)
+    ? value
+        .map((row) => {
+          const source = row && typeof row === "object" ? row as Partial<LanSyncLineRow> : {};
+          return {
+            line: Number(source.line),
+            source: String(source.source ?? ""),
+            translation: source.translation === undefined ? undefined : String(source.translation),
+            status: source.status === undefined ? undefined : String(source.status)
+          };
+        })
+        .filter((row) => Number.isInteger(row.line) && row.line > 0)
+    : [];
+}
+
+function normalizeLanSyncProposals(value: unknown): LanSyncProposalItem[] {
+  return Array.isArray(value)
+    ? value
+        .map((item, index) => {
+          const source = item && typeof item === "object" ? item as Partial<LanSyncProposalItem> : {};
+          return {
+            id: String(source.id || `P-${index + 1}`),
+            line: Number.isInteger(Number(source.line)) && Number(source.line) > 0 ? Number(source.line) : undefined,
+            src: source.src === undefined ? undefined : String(source.src),
+            current: source.current === undefined ? undefined : String(source.current),
+            problemType: source.problemType === undefined ? undefined : String(source.problemType),
+            problem: source.problem === undefined ? undefined : String(source.problem),
+            suggestion: source.suggestion === undefined ? undefined : String(source.suggestion),
+            status: source.status === undefined ? undefined : String(source.status)
+          };
+        })
+        .filter((item) => item.id)
+    : [];
+}
+
+function normalizeLanSyncLineDocument(args: LanSyncStartArgs): LanSyncLineDocument | undefined {
+  const source = args.lineDocument && typeof args.lineDocument === "object" ? args.lineDocument : {};
+  const rows = normalizeLanSyncRows(source.rows ?? args.rows);
+  if (rows.length === 0) {
+    return undefined;
+  }
+  return {
+    title: typeof source.title === "string" && source.title.trim() ? source.title : args.title,
+    rows,
+    state: normalizeLanSyncState(source.state ?? args.state),
+    pageSize: Number.isInteger(Number(source.pageSize ?? args.pageSize)) && Number(source.pageSize ?? args.pageSize) > 0
+      ? Number(source.pageSize ?? args.pageSize)
+      : undefined,
+    lineReviewPath: typeof source.lineReviewPath === "string" && source.lineReviewPath.trim()
+      ? source.lineReviewPath
+      : typeof args.lineReviewPath === "string" && args.lineReviewPath.trim()
+        ? args.lineReviewPath
+        : undefined
+  };
+}
+
+function normalizeLinkedHtmlFilePath(value: string, basePath?: string): string {
+  const raw = value.trim().replace(/#.*$/, "");
+  if (!raw) {
+    return "";
+  }
+  if (/^file:/i.test(raw)) {
+    try {
+      const pathname = decodeURIComponent(new URL(raw).pathname || "");
+      return /^\/[A-Za-z]:\//.test(pathname) ? pathname.slice(1) : pathname;
+    } catch {
+      return "";
+    }
+  }
+  const normalized = raw.replace(/\\/g, "/");
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    return normalized;
+  }
+  if (path.isAbsolute(raw)) {
+    return raw;
+  }
+  const baseDir = basePath && path.isAbsolute(basePath) ? path.dirname(basePath) : "";
+  return baseDir ? path.resolve(baseDir, raw) : "";
+}
+
+function workspaceRootFromContainedPath(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  const filePath = normalizeLinkedHtmlFilePath(value);
+  if (!filePath || !path.isAbsolute(filePath)) {
+    return "";
+  }
+  const normalized = path.normalize(filePath);
+  const parts = normalized.split(path.sep);
+  const index = parts.findIndex((part) => part.toLowerCase() === ".translation-workshop");
+  if (index > 0) {
+    return parts.slice(0, index).join(path.sep) || path.parse(normalized).root;
+  }
+  return path.dirname(normalized);
+}
+
+function normalizeLanSyncOutputDir(args: LanSyncStartArgs, line?: LanSyncLineDocument, proposal?: LanSyncProposalDocument): string | undefined {
+  const direct = typeof args.outputDir === "string" ? args.outputDir.trim() : "";
+  if (direct && path.isAbsolute(direct)) {
+    return direct;
+  }
+  const inferred = [
+    workspaceRootFromContainedPath(proposal?.reportPath),
+    workspaceRootFromContainedPath(proposal?.lineReviewPath),
+    workspaceRootFromContainedPath(line?.lineReviewPath),
+    workspaceRootFromContainedPath(typeof args.htmlPath === "string" ? args.htmlPath : undefined)
+  ].find((item) => item && path.isAbsolute(item));
+  return inferred || undefined;
+}
+
+function parseLineReviewRowsFromHtmlContent(html: string): LanSyncLineRow[] {
+  const match = html.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/i);
+  if (!match) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(match[1]) as { rows?: unknown };
+    return normalizeLanSyncRows(parsed.rows);
+  } catch {
+    return [];
+  }
+}
+
+async function readLinkedLineReviewDocument(lineReviewPath: string, basePath?: string): Promise<LanSyncLineDocument | undefined> {
+  const filePath = normalizeLinkedHtmlFilePath(lineReviewPath, basePath);
+  if (!filePath || !path.isAbsolute(filePath) || !existsSync(filePath)) {
+    return undefined;
+  }
+  const info = await stat(filePath);
+  if (info.size > 80 * 1024 * 1024) {
+    return undefined;
+  }
+  const rows = parseLineReviewRowsFromHtmlContent(await readFile(filePath, "utf8"));
+  if (rows.length === 0) {
+    return undefined;
+  }
+  return {
+    title: path.basename(filePath),
+    rows,
+    state: {},
+    pageSize: 1000,
+    lineReviewPath: filePath
+  };
+}
+
+function lanSyncLineTranslationCount(document: LanSyncLineDocument | undefined): number {
+  if (!document) {
+    return 0;
+  }
+  const edits = document.state.edits && typeof document.state.edits === "object"
+    ? document.state.edits as Record<string, unknown>
+    : {};
+  return document.rows.filter((row) => {
+    const edited = edits[String(row.line)];
+    return String(edited ?? row.translation ?? "").trim().length > 0;
+  }).length;
+}
+
+async function readOpenLineReviewDocument(lineReviewPath: string, basePath?: string): Promise<LanSyncLineDocument | undefined> {
+  const filePath = normalizeLinkedHtmlFilePath(lineReviewPath, basePath);
+  if (!filePath) {
+    return undefined;
+  }
+  const tab = [...htmlViewerTabs.values()].find((item) => sameFilePath(item.filePath, filePath));
+  if (!tab || tab.view.webContents.isDestroyed()) {
+    return undefined;
+  }
+  try {
+    const payload = await tab.view.webContents.executeJavaScript(`
+      (async () => {
+        try {
+          if (typeof restoreSyncedText === "function") {
+            await restoreSyncedText();
+          }
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          if (typeof window.translationWorkshopLineLanSyncPayload === "function") {
+            return window.translationWorkshopLineLanSyncPayload();
+          }
+          const sourceRows = Array.isArray(data?.rows) ? data.rows : [];
+          const clonedState = JSON.parse(JSON.stringify(typeof state === "object" && state ? state : {}));
+          const rows = sourceRows.map((row) => ({
+            line: Number(row.line),
+            source: String(row.source ?? ""),
+            translation: typeof rowValue === "function" ? String(rowValue(row) ?? "") : String(row.translation ?? ""),
+            status: String(clonedState.status?.[row.line] || row.status || "")
+          })).filter((row) => Number.isInteger(row.line) && row.line > 0);
+          return {
+            title: document.title,
+            rows,
+            state: clonedState,
+            pageSize: typeof pageSize === "number" ? pageSize : Number(data?.pageSize || 1000)
+          };
+        } catch (error) {
+          return { error: String(error?.message || error), rows: [] };
+        }
+      })();
+    `) as Partial<LanSyncLineDocument> & { error?: string };
+    const rows = normalizeLanSyncRows(payload.rows);
+    if (rows.length === 0) {
+      return undefined;
+    }
+    return {
+      title: typeof payload.title === "string" ? payload.title : path.basename(filePath),
+      rows,
+      state: normalizeLanSyncState(payload.state),
+      pageSize: Number.isInteger(Number(payload.pageSize)) && Number(payload.pageSize) > 0 ? Number(payload.pageSize) : 1000,
+      lineReviewPath: filePath
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeLanSyncProposalDocument(args: LanSyncStartArgs): LanSyncProposalDocument | undefined {
+  const source = args.proposalDocument && typeof args.proposalDocument === "object" ? args.proposalDocument : undefined;
+  if (!source) {
+    return undefined;
+  }
+  const proposals = normalizeLanSyncProposals(source.proposals);
+  if (proposals.length === 0) {
+    return undefined;
+  }
+  return {
+    title: typeof source.title === "string" && source.title.trim() ? source.title : args.title,
+    proposals,
+    state: normalizeLanSyncState(source.state),
+    pageSize: Number.isInteger(Number(source.pageSize ?? args.pageSize)) && Number(source.pageSize ?? args.pageSize) > 0
+      ? Number(source.pageSize ?? args.pageSize)
+      : undefined,
+    reportPath: typeof source.reportPath === "string" && source.reportPath.trim() ? source.reportPath : undefined,
+    lineReviewPath: typeof source.lineReviewPath === "string" && source.lineReviewPath.trim()
+      ? source.lineReviewPath
+      : typeof args.lineReviewPath === "string" && args.lineReviewPath.trim()
+        ? args.lineReviewPath
+        : undefined
+  };
+}
+
+function hashLanSyncPin(pin: string): string {
+  return createHash("sha256").update(pin, "utf8").digest("hex");
+}
+
+function isValidLanSyncPin(pin: unknown): pin is string {
+  return typeof pin === "string" && /^\d{6}$/.test(pin);
+}
+
+function lanSyncAuthTokenFrom(url: URL, body?: { authToken?: unknown }): string {
+  const fromQuery = url.searchParams.get("auth");
+  if (fromQuery) {
+    return fromQuery;
+  }
+  return typeof body?.authToken === "string" ? body.authToken : "";
+}
+
+function isLanSyncAuthorized(session: LanSyncSession, token: string): boolean {
+  return Boolean(token && session.authTokens.has(token));
+}
+
+function lanSyncSessionPayload(session: LanSyncSession): Record<string, unknown> {
+  const line = session.documents.line;
+  const proposal = session.documents.proposal;
+  return {
+    title: session.title,
+    agent: session.agent,
+    outputDir: session.outputDir,
+    rows: line?.rows ?? [],
+    state: line?.state ?? {},
+    pageSize: line?.pageSize ?? 1000,
+    documents: {
+      line: line ? {
+        title: line.title,
+        rows: line.rows,
+        state: line.state,
+        pageSize: line.pageSize ?? 1000,
+        lineReviewPath: line.lineReviewPath
+      } : undefined,
+      proposal: proposal ? {
+        title: proposal.title,
+        proposals: proposal.proposals,
+        state: proposal.state,
+        pageSize: proposal.pageSize ?? 1000,
+        reportPath: proposal.reportPath,
+        lineReviewPath: proposal.lineReviewPath
+      } : undefined
+    },
+    labels: lanSyncLabels(session.locale),
+    createdAt: session.createdAt
+  };
+}
+
+function applyLanSyncPatchToSession(session: LanSyncSession, patch: LanSyncPatch): void {
+  if (patch.type === "proposal-decision") {
+    const proposalId = String(patch.proposalId || "").trim();
+    const proposal = session.documents.proposal;
+    if (!proposalId || !proposal) {
+      return;
+    }
+    const decisions = (proposal.state.decisions && typeof proposal.state.decisions === "object")
+      ? proposal.state.decisions as Record<string, unknown>
+      : {};
+    proposal.state.decisions = decisions;
+    decisions[proposalId] = {
+      status: patch.status || "manual",
+      manualText: patch.manualText === undefined ? "" : String(patch.manualText)
+    };
+    return;
+  }
+  const lineDocument = session.documents.line;
+  if (!lineDocument) {
+    return;
+  }
+  const line = Number(patch.line || 0);
+  if (!Number.isInteger(line) || line <= 0) {
+    return;
+  }
+  const edits = (lineDocument.state.edits && typeof lineDocument.state.edits === "object")
+    ? lineDocument.state.edits as Record<string, unknown>
+    : {};
+  const status = (lineDocument.state.status && typeof lineDocument.state.status === "object")
+    ? lineDocument.state.status as Record<string, unknown>
+    : {};
+  lineDocument.state.edits = edits;
+  lineDocument.state.status = status;
+  lineDocument.state.activeLine = String(line);
+  if (patch.type === "line-restore") {
+    delete edits[String(line)];
+    delete status[String(line)];
+    return;
+  }
+  edits[String(line)] = String(patch.text ?? "");
+  status[String(line)] = patch.status || "manual";
+}
+
+async function persistLanSyncLinePatch(session: LanSyncSession, patch: LanSyncPatch): Promise<void> {
+  if (patch.type !== "line-edit" && patch.type !== "line-restore") {
+    return;
+  }
+  const lineDocument = session.documents.line;
+  if (!lineDocument?.lineReviewPath) {
+    return;
+  }
+  const line = Number(patch.line || 0);
+  if (!Number.isInteger(line) || line <= 0) {
+    return;
+  }
+  try {
+    await applyLineReviewStateToView({
+      lineReviewPath: lineDocument.lineReviewPath,
+      lineState: lineDocument.state,
+      line,
+      activate: false
+    });
+  } catch {
+    // The live mobile session remains usable even if the linked desktop tab cannot be opened.
+  }
+}
+
+function broadcastLanSyncPatch(session: LanSyncSession, patch: LanSyncPatch): void {
+  const data = `event: patch\ndata: ${lanSyncJson({ patch })}\n\n`;
+  for (const client of [...session.clients]) {
+    if (client.destroyed) {
+      session.clients.delete(client);
+      continue;
+    }
+    client.write(data);
+  }
+}
+
+function sendLanSyncPatchToOwner(session: LanSyncSession, patch: LanSyncPatch): void {
+  webContents.fromId(session.ownerWebContentsId)?.send("lan-sync:patch", {
+    token: session.token,
+    patch
+  });
+}
+
+function stopLanSyncSession(session: LanSyncSession): void {
+  for (const client of session.clients) {
+    client.write(`event: stop\ndata: ${lanSyncJson({ ok: true })}\n\n`);
+    client.end();
+  }
+  lanSyncSessions.delete(session.token);
+}
+
+async function readLanSyncBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > 1024 * 1024) {
+      throw new Error("Request body is too large.");
+    }
+    chunks.push(buffer);
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  return text ? JSON.parse(text) as unknown : {};
+}
+
+function mobileWorkspaceHtml(session: LanSyncSession): string {
+  const initialLabels = lanSyncLabels(session.locale);
+  const token = session.token;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>translation-workshop shared workspace</title>
+  <link rel="stylesheet" href="/assets/xterm/xterm.css">
+  <script src="/assets/xterm/xterm.js"></script>
+  <style>
+    :root { color-scheme: light; --ink:#26324d; --muted:#6d7893; --line:#cfe0f7; --sky:#77c8ff; --panel:#ffffffec; --bg:#edf8ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--ink); background:linear-gradient(135deg,#f7fbff,#e8f8ff); }
+    header { position:sticky; top:0; z-index:2; display:grid; gap:8px; padding:12px; background:rgba(255,255,255,.92); border-bottom:1px solid var(--line); backdrop-filter:blur(12px); }
+    h1 { margin:0; font-size:17px; line-height:1.3; }
+    .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .gate { min-height:100vh; display:grid; place-items:center; padding:18px; }
+    .gate-card { width:min(420px,100%); display:grid; gap:12px; padding:18px; border:1px solid var(--line); border-radius:12px; background:var(--panel); box-shadow:0 12px 30px rgba(95,111,191,.14); }
+    .tabs { display:flex; gap:8px; }
+    .tabs button.active { border-color:#77c8ff; background:#eaf8ff; font-weight:700; }
+    button,input,textarea { font:inherit; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); padding:8px 10px; }
+    button { min-height:38px; box-shadow:0 2px 0 rgba(119,200,255,.18); }
+    input { width:72px; }
+    main { display:grid; gap:12px; padding:12px; min-width:0; max-width:100vw; overflow-x:hidden; }
+    article { display:grid; gap:8px; min-width:0; max-width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel); box-shadow:0 8px 20px rgba(95,111,191,.08); overflow:hidden; }
+    .meta { display:flex; justify-content:space-between; gap:8px; min-width:0; color:var(--muted); font-size:12px; font-weight:700; }
+    .meta span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+    .source { min-width:0; max-width:100%; padding:10px; border-radius:8px; background:#f8fbff; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .field { display:grid; gap:4px; min-width:0; }
+    .field b { color:var(--muted); font-size:12px; }
+    .field div { min-width:0; max-width:100%; padding:10px; border-radius:8px; background:#f8fbff; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .actions button.active { border-color:#77c8ff; background:#eaf8ff; font-weight:700; }
+    textarea { width:100%; min-width:0; max-width:100%; min-height:92px; resize:vertical; line-height:1.5; overflow-wrap:anywhere; }
+    select { font:inherit; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); padding:8px 10px; }
+    .agent { display:grid; gap:8px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#f8fbff; }
+    .agent-head { display:flex; align-items:center; gap:8px; }
+    .agent-head strong { margin-right:auto; }
+    .agent-head .status { flex:1 1 auto; min-width:0; min-height:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; text-align:right; }
+    .agent-body { display:grid; gap:8px; max-height:62vh; overflow:auto; overscroll-behavior:contain; }
+    .agent.collapsed .agent-body { display:none; }
+    .agent textarea { min-height:72px; }
+    .agent-log { height:min(42vh,380px); min-height:260px; overflow:auto; padding:4px; border-radius:8px; background:#071523; color:#dbeafe; font:12px/1.35 Consolas,"Cascadia Mono","Courier New",monospace; overscroll-behavior:contain; }
+    .agent-log .xterm { height:100%; }
+    .agent-log .xterm-viewport { overflow-y:auto !important; }
+    .status { color:var(--muted); min-height:22px; }
+    @media (max-width: 640px) {
+      header { gap:8px; padding:10px; }
+      .agent-body { max-height:64vh; }
+      .agent-log { height:42vh; min-height:260px; }
+      .agent textarea { min-height:58px; }
+      .agent .bar { gap:6px; }
+      .agent .bar button, .agent .bar select, #agentSend { padding:7px 8px; }
+    }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+  <section id="gate" class="gate">
+    <form id="pinForm" class="gate-card">
+      <h1 id="pinTitle">Enter PIN</h1>
+      <p id="pinHelp" class="status">Use the fixed 6-digit PIN shown in the desktop app.</p>
+      <input id="pinInput" inputmode="numeric" autocomplete="one-time-code" pattern="\\d{6}" maxlength="6" placeholder="6-digit PIN" style="width:100%">
+      <button id="unlockButton" type="submit">Unlock</button>
+      <div class="status" id="pinStatus"></div>
+    </form>
+  </section>
+  <section id="app" hidden>
+  <header>
+    <h1 id="title">translation-workshop</h1>
+    <div class="tabs">
+      <button id="lineTab" type="button">Line review</button>
+      <button id="proposalTab" type="button">Proposal review</button>
+    </div>
+    <section class="agent collapsed" id="agentPanel">
+      <div class="agent-head">
+        <strong id="agentTitle">Agent Console</strong>
+        <span id="agentStatus" class="status"></span>
+        <button id="agentToggle" type="button">Open</button>
+      </div>
+      <div class="agent-body" id="agentBody" hidden>
+        <div class="bar">
+          <select id="agentSelect"><option value="codex">Codex</option><option value="claude">Claude Code</option></select>
+          <button id="agentStart" type="button">Start Agent</button>
+          <button id="agentStop" type="button">Stop</button>
+        </div>
+        <div id="agentOutput" class="agent-log"></div>
+        <textarea id="agentInput" spellcheck="false" placeholder="Prompt / message"></textarea>
+        <button id="agentSend" type="button">Send</button>
+      </div>
+    </section>
+    <div class="bar">
+      <button id="prev" type="button">Previous</button>
+      <span><span id="pageLabel">Page</span> <input id="pageInput" type="number" min="1" value="1"></span>
+      <button id="jump" type="button">Go</button>
+      <button id="next" type="button">Next</button>
+    </div>
+    <div class="status" id="status">Loading...</div>
+  </header>
+  <main id="rows"></main>
+  </section>
+  <script>
+const token = ${lanSyncJson(token)};
+const clientId = globalThis.crypto?.randomUUID?.() || String(Date.now()) + Math.random();
+const authStorageKey = "translation-workshop:lan-auth:" + token;
+let authToken = sessionStorage.getItem(authStorageKey) || "";
+let labels = ${lanSyncJson(initialLabels)};
+let session = {};
+let lineDoc = null;
+let proposalDoc = null;
+let lineRows = [];
+let lineState = {};
+let proposalItems = [];
+let proposalState = {};
+let page = 1;
+let pageSize = 50;
+let activeKind = "line";
+const rowsEl = document.getElementById("rows");
+const statusEl = document.getElementById("status");
+const pageInput = document.getElementById("pageInput");
+const agentPanel = document.getElementById("agentPanel");
+const agentBody = document.getElementById("agentBody");
+const agentToggle = document.getElementById("agentToggle");
+const agentSelect = document.getElementById("agentSelect");
+const agentStatus = document.getElementById("agentStatus");
+const agentOutput = document.getElementById("agentOutput");
+const agentInput = document.getElementById("agentInput");
+let agentOutputText = "";
+let agentTerminal = undefined;
+let agentHasUnreadOutput = false;
+function t(key, fallback) { return labels[key] || fallback; }
+function escapeHtml(value) { return String(value ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])); }
+function rowValue(row) { return lineState.edits?.[row.line] ?? row.translation ?? ""; }
+function setStatus(text) { statusEl.textContent = text; }
+function setAgentStatus(text) { agentStatus.textContent = text || ""; }
+function isAgentExpanded() { return !agentPanel.classList.contains("collapsed"); }
+function setAgentExpanded(expanded) {
+  agentPanel.classList.toggle("collapsed", !expanded);
+  agentBody.hidden = !expanded;
+  agentToggle.textContent = expanded ? t("agentClose", "Collapse") : t("agentOpen", "Open");
+  if (expanded) {
+    agentHasUnreadOutput = false;
+    setTimeout(() => {
+      ensureAgentTerminal();
+      renderAgentOutput();
+    }, 20);
+  }
+}
+function ensureAgentTerminal() {
+  if (!isAgentExpanded()) return undefined;
+  if (agentTerminal) return agentTerminal;
+  const TerminalCtor = window.Terminal?.Terminal || window.Terminal;
+  if (!TerminalCtor) {
+    agentOutput.textContent = agentOutputText;
+    return undefined;
+  }
+  agentOutput.textContent = "";
+  agentTerminal = new TerminalCtor({
+    cursorBlink: false,
+    convertEol: false,
+    fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
+    fontSize: 12,
+    lineHeight: 1.2,
+    scrollback: 5000,
+    theme: { background: "#071523", foreground: "#dbeafe", cursor: "#ffffff", selectionBackground: "#355c7d" }
+  });
+  agentTerminal.open(agentOutput);
+  resizeAgentTerminal();
+  return agentTerminal;
+}
+function resizeAgentTerminal() {
+  if (!agentTerminal || !agentOutput) return;
+  const width = Math.max(0, agentOutput.clientWidth - 8);
+  const height = Math.max(0, agentOutput.clientHeight - 8);
+  if (!width || !height) return;
+  const cols = Math.max(96, Math.min(160, Math.floor(width / 7.2)));
+  const rows = Math.max(24, Math.min(40, Math.floor(height / 14.4)));
+  try { agentTerminal.resize(cols, rows); } catch {}
+}
+function scrollAgentTerminalToBottom() {
+  if (agentTerminal?.scrollToBottom) {
+    try { agentTerminal.scrollToBottom(); return; } catch {}
+  }
+  agentOutput.scrollTop = agentOutput.scrollHeight;
+}
+function renderAgentOutput() {
+  if (!isAgentExpanded()) return;
+  const terminal = ensureAgentTerminal();
+  if (terminal) {
+    resizeAgentTerminal();
+    terminal.reset?.();
+    if (agentOutputText) terminal.write(agentOutputText);
+    scrollAgentTerminalToBottom();
+  } else {
+    agentOutput.textContent = agentOutputText;
+    agentOutput.scrollTop = agentOutput.scrollHeight;
+  }
+}
+function appendAgentOutput(text) {
+  agentOutputText = (agentOutputText + String(text || "")).slice(-120000);
+  if (!isAgentExpanded()) {
+    agentHasUnreadOutput = true;
+    setAgentStatus(t("agentOutputReady", "Agent has output"));
+    return;
+  }
+  const terminal = ensureAgentTerminal();
+  if (terminal) {
+    resizeAgentTerminal();
+    terminal.write(String(text || ""));
+    scrollAgentTerminalToBottom();
+  } else {
+    agentOutput.textContent = agentOutputText;
+    agentOutput.scrollTop = agentOutput.scrollHeight;
+  }
+}
+function applyAuthLabels() {
+  document.getElementById("pinTitle").textContent = t("pinTitle", "Enter PIN");
+  document.getElementById("pinHelp").textContent = t("pinHelp", "Use the fixed 6-digit PIN shown in the desktop app.");
+  document.getElementById("pinInput").placeholder = t("pinPlaceholder", "6-digit PIN");
+  document.getElementById("unlockButton").textContent = t("unlock", "Unlock");
+}
+function authed(path) { return path + (path.includes("?") ? "&" : "?") + "auth=" + encodeURIComponent(authToken); }
+async function postAgent(path, body = {}) {
+  const result = await fetch(authed(path), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const payload = await result.json().catch(() => ({}));
+  if (!result.ok || payload.ok === false) throw new Error(payload.message || result.statusText);
+  return payload;
+}
+async function refreshAgentStatus() {
+  const snapshot = await fetch(authed("/api/agent/status/" + encodeURIComponent(token))).then(res => res.json());
+  if (snapshot?.output && snapshot.output !== agentOutputText) {
+    agentOutputText = snapshot.output;
+    if (isAgentExpanded()) renderAgentOutput();
+    else if (agentOutputText) {
+      agentHasUnreadOutput = true;
+      setAgentStatus(t("agentOutputReady", "Agent has output"));
+    }
+  }
+  if (snapshot?.agent) agentSelect.value = snapshot.agent;
+  setAgentStatus(snapshot?.running ? (agentHasUnreadOutput ? t("agentOutputReady", "Agent has output") : t("agentStarted", "Agent started")) : "");
+}
+async function startAgent() {
+  try {
+    const payload = await postAgent("/api/agent/start/" + encodeURIComponent(token), {
+      agent: agentSelect.value,
+      cols: Math.max(96, agentTerminal?.cols || 120),
+      rows: Math.max(24, agentTerminal?.rows || 32)
+    });
+    setAgentStatus(payload.message || t("agentStarted", "Agent started"));
+    if (payload.status?.output) {
+      agentOutputText = payload.status.output;
+      renderAgentOutput();
+    }
+    return true;
+  } catch (error) {
+    setAgentStatus(error?.message || String(error));
+    return false;
+  }
+}
+async function sendAgentInput() {
+  const text = agentInput.value;
+  if (!text.trim()) return;
+  try {
+    if (!await startAgent()) return;
+    agentInput.value = "";
+    const payload = await postAgent("/api/agent/input/" + encodeURIComponent(token), { text });
+    setAgentStatus(payload.promptPath ? payload.promptPath : t("saved", "Synced"));
+  } catch (error) {
+    agentInput.value = text;
+    setAgentStatus(error?.message || String(error));
+  }
+}
+async function stopAgent() {
+  try {
+    await postAgent("/api/agent/stop/" + encodeURIComponent(token), {});
+    setAgentStatus(t("agentStopped", "Agent stopped"));
+  } catch (error) {
+    setAgentStatus(error?.message || String(error));
+  }
+}
+function setTab(kind) {
+  activeKind = kind;
+  page = 1;
+  document.getElementById("lineTab").classList.toggle("active", kind === "line");
+  document.getElementById("proposalTab").classList.toggle("active", kind === "proposal");
+  render();
+}
+function renderLine() {
+  const totalPages = Math.max(1, Math.ceil(lineRows.length / pageSize));
+  page = Math.min(Math.max(1, page), totalPages);
+  pageInput.value = page;
+  const pageRows = lineRows.slice((page - 1) * pageSize, page * pageSize);
+  setStatus(t("lineTab", "Line review") + " · " + t("page", "Page") + " " + page + " / " + totalPages + " · " + t("total", "Total") + ": " + lineRows.length);
+  rowsEl.innerHTML = pageRows.length ? pageRows.map(row => '<article data-line="' + row.line + '">' +
+    '<div class="meta"><span>' + t("line", "Line") + ' ' + row.line + '</span><span>' + escapeHtml(lineState.status?.[row.line] || row.status || "") + '</span></div>' +
+    '<div class="source">' + escapeHtml(row.source) + '</div>' +
+    '<textarea spellcheck="false">' + escapeHtml(rowValue(row)) + '</textarea>' +
+  '</article>').join("") : '<article>' + escapeHtml(t("empty", "No document in this shared session.")) + '</article>';
+}
+function decisionFor(item) {
+  const raw = proposalState.decisions?.[item.id] || { status: item.status || "unreviewed", manualText: "" };
+  const manualText = String(raw.manualText || "");
+  if (manualText.trim()) return { status: "manual", manualText };
+  if (raw.status === "accepted" || raw.status === "rejected") return { status: raw.status, manualText: "" };
+  if (String(item.suggestion || "").trim()) return { status: "accepted", manualText: "" };
+  return { status: raw.status || "unreviewed", manualText: "" };
+}
+function renderProposal() {
+  const proposalPageSize = Math.min(80, Math.max(10, Math.floor(Number(proposalDoc?.pageSize || 1000) / 20) || 50));
+  const totalPages = Math.max(1, Math.ceil(proposalItems.length / proposalPageSize));
+  page = Math.min(Math.max(1, page), totalPages);
+  pageInput.value = page;
+  const pageItems = proposalItems.slice((page - 1) * proposalPageSize, page * proposalPageSize);
+  setStatus(t("proposalTab", "Proposal review") + " · " + t("page", "Page") + " " + page + " / " + totalPages + " · " + t("total", "Total") + ": " + proposalItems.length);
+  rowsEl.innerHTML = pageItems.length ? pageItems.map(item => {
+    const decision = decisionFor(item);
+    return '<article data-proposal-id="' + escapeHtml(item.id) + '">' +
+      '<div class="meta"><span>' + escapeHtml(item.id) + '</span><span>' + t("line", "Line") + ' ' + escapeHtml(item.line || "?") + ' · ' + escapeHtml(decision.status || t("unreviewed", "Unreviewed")) + '</span></div>' +
+      '<div class="field"><b>' + t("source", "Source") + '</b><div>' + escapeHtml(item.src || "") + '</div></div>' +
+      '<div class="field"><b>' + t("current", "Current translation") + '</b><div>' + escapeHtml(item.current || "") + '</div></div>' +
+      '<div class="field"><b>' + t("issueType", "Issue type") + '</b><div>' + escapeHtml(item.problemType || "") + '</div></div>' +
+      '<div class="field"><b>' + t("issue", "Issue") + '</b><div>' + escapeHtml(item.problem || "") + '</div></div>' +
+      '<div class="field"><b>' + t("suggestion", "Suggested fix") + '</b><div>' + escapeHtml(item.suggestion || "") + '</div></div>' +
+      '<textarea spellcheck="false" placeholder="' + t("manual", "Manual edit") + '">' + escapeHtml(decision.manualText || "") + '</textarea>' +
+      '<div class="actions"><button data-action="accepted" class="' + (decision.status === "accepted" ? "active" : "") + '">' + t("accept", "Accept") + '</button>' +
+      '<button data-action="rejected" class="' + (decision.status === "rejected" ? "active" : "") + '">' + t("reject", "Reject") + '</button>' +
+      '<button data-action="manual" class="' + (decision.status === "manual" ? "active" : "") + '">' + t("manual", "Manual edit") + '</button></div>' +
+    '</article>';
+  }).join("") : '<article>' + escapeHtml(t("empty", "No document in this shared session.")) + '</article>';
+}
+function render() {
+  if (activeKind === "proposal") renderProposal();
+  else renderLine();
+}
+async function postPatch(patch) {
+  await fetch(authed("/api/patch/" + encodeURIComponent(token)), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...patch, clientId, timestamp: new Date().toISOString() })
+  });
+}
+let timers = new Map();
+rowsEl.addEventListener("input", event => {
+  if (activeKind === "proposal") {
+    const textarea = event.target.closest("textarea");
+    if (!textarea) return;
+    const proposalId = textarea.closest("article")?.dataset.proposalId || "";
+    if (!proposalId) return;
+    proposalState.decisions ||= {};
+    proposalState.decisions[proposalId] = { status: "manual", manualText: textarea.value };
+    clearTimeout(timers.get("proposal:" + proposalId));
+    timers.set("proposal:" + proposalId, setTimeout(() => {
+      postPatch({ type: "proposal-decision", proposalId, status: "manual", manualText: textarea.value })
+        .then(() => setStatus(t("saved", "Synced")))
+        .catch(error => setStatus(String(error?.message || error)));
+    }, 300));
+    return;
+  }
+  const textarea = event.target.closest("textarea");
+  if (!textarea) return;
+  const line = Number(textarea.closest("article")?.dataset.line || 0);
+  if (!line) return;
+  lineState.edits ||= {};
+  lineState.status ||= {};
+  lineState.edits[line] = textarea.value;
+  lineState.status[line] = "manual";
+  clearTimeout(timers.get(line));
+  timers.set(line, setTimeout(() => {
+    postPatch({ type: "line-edit", line, text: textarea.value, status: "manual" })
+      .then(() => setStatus(t("saved", "Synced")))
+      .catch(error => setStatus(String(error?.message || error)));
+  }, 300));
+});
+rowsEl.addEventListener("click", event => {
+  const button = event.target.closest("button[data-action]");
+  if (!button || activeKind !== "proposal") return;
+  const article = button.closest("article");
+  const proposalId = article?.dataset.proposalId || "";
+  if (!proposalId) return;
+  const manualText = article.querySelector("textarea")?.value || "";
+  const status = button.dataset.action || "manual";
+  proposalState.decisions ||= {};
+  proposalState.decisions[proposalId] = { status, manualText };
+  render();
+  postPatch({ type: "proposal-decision", proposalId, status, manualText })
+    .then(() => setStatus(t("saved", "Synced")))
+    .catch(error => setStatus(String(error?.message || error)));
+});
+function applyPatch(patch) {
+  if (!patch || patch.clientId === clientId) return;
+  if (patch.type === "proposal-decision") {
+    const proposalId = String(patch.proposalId || "");
+    if (!proposalId) return;
+    proposalState.decisions ||= {};
+    proposalState.decisions[proposalId] = { status: patch.status || "manual", manualText: patch.manualText || "" };
+    if (activeKind === "proposal") render();
+    return;
+  }
+  const line = Number(patch.line || 0);
+  if (!line) return;
+  lineState.edits ||= {};
+  lineState.status ||= {};
+  if (patch.type === "line-restore") {
+    delete lineState.edits[line];
+    delete lineState.status[line];
+  } else {
+    lineState.edits[line] = String(patch.text ?? "");
+    lineState.status[line] = patch.status || "manual";
+  }
+  const visible = rowsEl.querySelector('article[data-line="' + line + '"] textarea');
+  if (visible && document.activeElement !== visible) visible.value = rowValue({ line });
+}
+async function authenticate(pin) {
+  const result = await fetch("/api/auth/" + encodeURIComponent(token), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pin })
+  });
+  if (!result.ok) throw new Error(t("pinFailed", "PIN verification failed."));
+  const payload = await result.json();
+  authToken = payload.authToken || "";
+  if (!authToken) throw new Error(t("pinFailed", "PIN verification failed."));
+  sessionStorage.setItem(authStorageKey, authToken);
+}
+async function boot() {
+  const loaded = await fetch(authed("/api/session/" + encodeURIComponent(token)));
+  if (loaded.status === 401 || loaded.status === 403) {
+    sessionStorage.removeItem(authStorageKey);
+    authToken = "";
+    document.getElementById("gate").hidden = false;
+    document.getElementById("app").hidden = true;
+    return;
+  }
+  session = await loaded.json();
+  labels = session.labels || {};
+  lineDoc = session.documents?.line || null;
+  proposalDoc = session.documents?.proposal || null;
+  lineRows = lineDoc?.rows || [];
+  lineState = lineDoc?.state || {};
+  proposalItems = proposalDoc?.proposals || [];
+  proposalState = proposalDoc?.state || {};
+  pageSize = Math.min(100, Math.max(20, Math.floor(Number(lineDoc?.pageSize || session.pageSize || 1000) / 10) || 50));
+  document.getElementById("title").textContent = session.title || t("title", "translation-workshop mobile review");
+  document.getElementById("prev").textContent = t("previous", "Previous");
+  document.getElementById("next").textContent = t("next", "Next");
+  document.getElementById("pageLabel").textContent = t("page", "Page");
+  document.getElementById("jump").textContent = t("go", "Go");
+  document.getElementById("lineTab").textContent = t("lineTab", "Line review");
+  document.getElementById("proposalTab").textContent = t("proposalTab", "Proposal review");
+  document.getElementById("agentTitle").textContent = t("agentConsole", "Agent Console");
+  document.getElementById("agentStart").textContent = t("agentStart", "Start Agent");
+  document.getElementById("agentStop").textContent = t("agentStop", "Stop");
+  document.getElementById("agentSend").textContent = t("agentSend", "Send");
+  document.getElementById("agentInput").placeholder = t("agentInput", "Prompt / message");
+  agentSelect.value = session.agent || "codex";
+  document.getElementById("lineTab").hidden = lineRows.length === 0;
+  document.getElementById("proposalTab").hidden = proposalItems.length === 0;
+  activeKind = proposalItems.length > 0 && lineRows.length === 0 ? "proposal" : "line";
+  document.getElementById("gate").hidden = true;
+  document.getElementById("app").hidden = false;
+  setAgentExpanded(false);
+  setTab(activeKind);
+  render();
+  await refreshAgentStatus().catch(() => {});
+  const events = new EventSource(authed("/events/" + encodeURIComponent(token)));
+  events.addEventListener("patch", event => applyPatch(JSON.parse(event.data).patch));
+  events.addEventListener("agent-console", event => appendAgentOutput(JSON.parse(event.data).data || ""));
+  events.addEventListener("agent-exit", event => setAgentStatus(t("agentStopped", "Agent stopped") + ": " + (JSON.parse(event.data).exitCode ?? "")));
+  events.onerror = () => setStatus(t("offline", "Disconnected"));
+}
+document.getElementById("prev").onclick = () => { page -= 1; render(); scrollTo(0, 0); };
+document.getElementById("next").onclick = () => { page += 1; render(); scrollTo(0, 0); };
+document.getElementById("jump").onclick = () => { page = Number(pageInput.value || 1); render(); scrollTo(0, 0); };
+document.getElementById("lineTab").onclick = () => setTab("line");
+document.getElementById("proposalTab").onclick = () => setTab("proposal");
+document.getElementById("agentStart").onclick = () => { void startAgent(); };
+document.getElementById("agentStop").onclick = () => { void stopAgent(); };
+document.getElementById("agentSend").onclick = () => { void sendAgentInput(); };
+agentToggle.onclick = () => setAgentExpanded(agentPanel.classList.contains("collapsed"));
+agentInput.addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    void sendAgentInput();
+  }
+});
+window.addEventListener("resize", () => {
+  if (!isAgentExpanded()) return;
+  resizeAgentTerminal();
+  scrollAgentTerminalToBottom();
+});
+document.getElementById("pinForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const pin = String(document.getElementById("pinInput").value || "").trim();
+  if (!/^\\d{6}$/.test(pin)) {
+    document.getElementById("pinStatus").textContent = t("pinInvalid", "PIN must be 6 digits.");
+    return;
+  }
+  try {
+    await authenticate(pin);
+    await boot();
+  } catch (error) {
+    document.getElementById("pinStatus").textContent = error?.message || String(error);
+  }
+});
+applyAuthLabels();
+boot().catch(error => {
+  document.getElementById("gate").hidden = false;
+  document.getElementById("app").hidden = true;
+  document.getElementById("pinStatus").textContent = String(error?.message || error);
+});
+  </script>
+</body>
+</html>`;
+}
+
+function lanSyncUrls(token: string): { localUrl: string; lanUrls: string[] } {
+  const pathPart = `/s/${encodeURIComponent(token)}`;
+  const localUrl = `http://127.0.0.1:${lanSyncPort}${pathPart}`;
+  const lanUrls: string[] = [];
+  for (const items of Object.values(os.networkInterfaces())) {
+    for (const item of items ?? []) {
+      if (item.family === "IPv4" && !item.internal) {
+        lanUrls.push(`http://${item.address}:${lanSyncPort}${pathPart}`);
+      }
+    }
+  }
+  return { localUrl, lanUrls: [...new Set(lanUrls)] };
+}
+
+async function ensureLanSyncServer(): Promise<void> {
+  if (lanSyncServer?.listening) {
+    return;
+  }
+  lanSyncServer = createServer(async (req, res) => {
+    try {
+      if (req.method === "OPTIONS") {
+        lanSyncResponse(res, 204, "", "text/plain; charset=utf-8");
+        return;
+      }
+      const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      const parts = url.pathname.split("/");
+      const route = parts[1] || "";
+      if (req.method === "GET" && (route === "" || route === "index.html")) {
+        const sessions = [...lanSyncSessions.values()];
+        if (sessions.length === 1) {
+          res.writeHead(302, {
+            "Location": `/s/${encodeURIComponent(sessions[0].token)}`,
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*"
+          });
+          res.end();
+          return;
+        }
+        lanSyncResponse(res, 200, lanSyncLandingHtml(), "text/html; charset=utf-8");
+        return;
+      }
+      if (req.method === "GET" && route === "assets" && parts[2] === "xterm") {
+        const filename = path.basename(parts[3] || "");
+        if (!["xterm.css", "xterm.js", "addon-fit.js"].includes(filename)) {
+          lanSyncResponse(res, 404, "Not found.", "text/plain; charset=utf-8");
+          return;
+        }
+        const assetPath = path.join(app.getAppPath(), "assets", "vendor", "xterm", filename);
+        const contentType = filename.endsWith(".css") ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8";
+        lanSyncResponse(res, 200, await readFile(assetPath, "utf8"), contentType);
+        return;
+      }
+      const token = route === "api" && parts[2] === "agent" ? parts[4] : route === "api" ? parts[3] : parts[2];
+      const session = token ? lanSyncSessions.get(decodeURIComponent(token)) : undefined;
+      if (!session) {
+        if (req.method === "GET" && (route === "s" || route === "")) {
+          lanSyncResponse(res, 404, lanSyncSessionNotFoundHtml(url.pathname), "text/html; charset=utf-8");
+          return;
+        }
+        lanSyncResponse(res, 404, "Session not found.", "text/plain; charset=utf-8");
+        return;
+      }
+      if (req.method === "GET" && route === "s") {
+        lanSyncResponse(res, 200, mobileWorkspaceHtml(session), "text/html; charset=utf-8");
+        return;
+      }
+      if (req.method === "POST" && route === "api" && url.pathname.includes("/api/auth/")) {
+        const body = await readLanSyncBody(req) as { pin?: unknown };
+        if (!isValidLanSyncPin(body.pin) || hashLanSyncPin(body.pin) !== session.pinHash) {
+          lanSyncResponse(res, 403, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
+          return;
+        }
+        const authToken = randomBytes(18).toString("base64url");
+        session.authTokens.add(authToken);
+        lanSyncResponse(res, 200, lanSyncJson({ ok: true, authToken }), "application/json; charset=utf-8");
+        return;
+      }
+      if (req.method === "GET" && route === "api" && url.pathname.includes("/api/session/")) {
+        if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url))) {
+          lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
+          return;
+        }
+        lanSyncResponse(res, 200, lanSyncJson(lanSyncSessionPayload(session)), "application/json; charset=utf-8");
+        return;
+      }
+      if (req.method === "GET" && route === "api" && parts[2] === "agent" && parts[3] === "status") {
+        if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url))) {
+          lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
+          return;
+        }
+        lanSyncResponse(res, 200, lanSyncJson(interactiveConsoleSnapshot()), "application/json; charset=utf-8");
+        return;
+      }
+      if (req.method === "GET" && route === "events") {
+        if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url))) {
+          lanSyncResponse(res, 401, "Unauthorized.", "text/plain; charset=utf-8");
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          "Connection": "keep-alive",
+          "Access-Control-Allow-Origin": "*"
+        });
+        session.clients.add(res);
+        res.write(`event: hello\ndata: ${lanSyncJson({ ok: true })}\n\n`);
+        req.on("close", () => session.clients.delete(res));
+        return;
+      }
+      if (req.method === "POST" && route === "api" && url.pathname.includes("/api/patch/")) {
+        const body = await readLanSyncBody(req) as Partial<LanSyncPatch> & { authToken?: unknown };
+        if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url, body))) {
+          lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
+          return;
+        }
+        const patch: LanSyncPatch = {
+          type: body.type === "proposal-decision" ? "proposal-decision" : body.type === "line-restore" ? "line-restore" : "line-edit",
+          line: Number(body.line || 0),
+          proposalId: typeof body.proposalId === "string" ? body.proposalId : undefined,
+          text: typeof body.text === "string" ? body.text : "",
+          status: typeof body.status === "string" ? body.status : "manual",
+          manualText: typeof body.manualText === "string" ? body.manualText : "",
+          clientId: typeof body.clientId === "string" ? body.clientId : "remote",
+          timestamp: typeof body.timestamp === "string" ? body.timestamp : new Date().toISOString()
+        };
+        applyLanSyncPatchToSession(session, patch);
+        await persistLanSyncLinePatch(session, patch);
+        sendLanSyncPatchToOwner(session, patch);
+        broadcastLanSyncPatch(session, patch);
+        lanSyncResponse(res, 200, lanSyncJson({ ok: true }), "application/json; charset=utf-8");
+        return;
+      }
+      if (req.method === "POST" && route === "api" && parts[2] === "agent" && parts[3] === "start") {
+        const body = await readLanSyncBody(req) as { authToken?: unknown; agent?: unknown; cols?: unknown; rows?: unknown };
+        if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url, body))) {
+          lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
+          return;
+        }
+        if (!session.outputDir) {
+          lanSyncResponse(res, 400, lanSyncJson({ ok: false, message: lanSyncLabels(session.locale).agentNeedsOutput }), "application/json; charset=utf-8");
+          return;
+        }
+        const result = await startInteractiveAgentConsole({
+          agent: body.agent === "claude" ? "claude" : session.agent,
+          outputDir: session.outputDir,
+          cols: Number(body.cols || 100),
+          rows: Number(body.rows || 28)
+        });
+        lanSyncResponse(res, result.ok ? 200 : 500, lanSyncJson(result), "application/json; charset=utf-8");
+        return;
+      }
+      if (req.method === "POST" && route === "api" && parts[2] === "agent" && parts[3] === "input") {
+        const body = await readLanSyncBody(req) as { authToken?: unknown; text?: unknown };
+        if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url, body))) {
+          lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
+          return;
+        }
+        if (!interactiveAgentSession) {
+          lanSyncResponse(res, 400, lanSyncJson({ ok: false, message: "No interactive Agent Console is running." }), "application/json; charset=utf-8");
+          return;
+        }
+        const result = await submitInteractiveAgentInput(interactiveAgentSession, typeof body.text === "string" ? body.text : "");
+        lanSyncResponse(res, result.ok ? 200 : 500, lanSyncJson(result), "application/json; charset=utf-8");
+        return;
+      }
+      if (req.method === "POST" && route === "api" && parts[2] === "agent" && parts[3] === "stop") {
+        const body = await readLanSyncBody(req) as { authToken?: unknown };
+        if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url, body))) {
+          lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
+          return;
+        }
+        if (interactiveAgentSession) {
+          const running = interactiveAgentSession;
+          interactiveAgentSession = undefined;
+          running.pty.kill();
+        }
+        lanSyncResponse(res, 200, lanSyncJson({ ok: true }), "application/json; charset=utf-8");
+        return;
+      }
+      lanSyncResponse(res, 404, "Not found.", "text/plain; charset=utf-8");
+    } catch (error) {
+      lanSyncResponse(res, 500, String((error as Error)?.message || error), "text/plain; charset=utf-8");
+    }
+  });
+  await new Promise<void>((resolve, reject) => {
+    lanSyncServer?.once("error", reject);
+    lanSyncServer?.listen(0, "0.0.0.0", () => {
+      lanSyncServer?.off("error", reject);
+      lanSyncPort = (lanSyncServer?.address() as AddressInfo).port;
+      resolve();
+    });
+  });
 }
 
 function timestamp(): string {
@@ -543,6 +1947,8 @@ function buildReportFormatRepairPrompt(reportPath: string, locale: UiLocale): st
       "Directly overwrite the same Markdown file after fixing the format.",
       "Every issue must use a global source line number L<N>.",
       "If the report contains chunk-local, batch-local, Bxxx, rawxxx, or similar internal IDs, convert them to global source line numbers L<N>.",
+      "`Source` and `Current translation` must be the full exact row text. If the existing report only has a fragment, re-read that global line and fill the complete row.",
+      "Final finding IDs must be unique. If any Hx/Mx/Lx ID is duplicated, renumber duplicates after the current max for that code.",
       "",
       "Each finding must use this structure:",
       "",
@@ -569,6 +1975,8 @@ function buildReportFormatRepairPrompt(reportPath: string, locale: UiLocale): st
     "修正格式后直接覆盖同一个 Markdown 文件。",
     "每条问题都必须使用全局源文行号 L<N>。",
     "如果报告里出现 chunk-local、batch-local、Bxxx、rawxxx 等内部编号，请换算为全局源文行号 L<N>。",
+    "`Source` 和 `Current translation` 必须是该行完整原文和完整当前译文。如果现有报告只有片段，请重新读取对应全局行并补全整行。",
+    "最终 finding 编号必须唯一。如果 Hx/Mx/Lx 编号重复，请接在该 code 当前最大编号后继续递增。",
     "",
     "每条 finding 必须使用这种结构：",
     "",
@@ -845,11 +2253,173 @@ function loadNodePty(): NodePtyModule {
   }
 }
 
-function interactiveAgentArgs(agent: "codex" | "claude", outputDir: string): string[] {
-  if (agent === "codex") {
-    return ["-c", "check_for_update_on_startup=false", "-c", CODEX_DISABLE_SUPERPOWERS_CONFIG, "--cd", outputDir];
+const TRANSLATION_SKILLS = new Set(["translate-text", "proofread-translation"]);
+
+interface InteractiveAgentLaunch {
+  args: string[];
+  cleanupPaths: string[];
+}
+
+function toTomlPath(filePath: string): string {
+  return path.resolve(filePath).replace(/\\/g, "/").replace(/"/g, "\\\"");
+}
+
+function skillNameFromSkillPath(skillPath: string): string {
+  return path.basename(path.dirname(skillPath));
+}
+
+async function directoryExists(dirPath: string): Promise<boolean> {
+  try {
+    return (await stat(dirPath)).isDirectory();
+  } catch {
+    return false;
   }
-  return ["--add-dir", outputDir, "--permission-mode", "acceptEdits"];
+}
+
+async function discoverSkillMarkdownFiles(skillDirs: string[]): Promise<string[]> {
+  const seen = new Set<string>();
+  const results: string[] = [];
+  async function visit(dirPath: string, depth: number): Promise<void> {
+    if (depth > 3 || !await directoryExists(dirPath)) {
+      return;
+    }
+    const directSkillPath = path.join(dirPath, "SKILL.md");
+    try {
+      if ((await stat(directSkillPath)).isFile()) {
+        const normalized = path.resolve(directSkillPath).toLowerCase();
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          results.push(directSkillPath);
+        }
+        return;
+      }
+    } catch {
+      // Not every directory is a skill directory.
+    }
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const skillPath = path.join(dirPath, entry.name);
+      try {
+        await visit(skillPath, depth + 1);
+      } catch {
+        // Ignore unreadable skill candidates.
+      }
+    }
+  }
+  for (const skillDir of skillDirs) {
+    await visit(skillDir, 0);
+  }
+  return results;
+}
+
+async function discoverClaudeSkillNames(skillDirs: string[], commandDirs: string[]): Promise<string[]> {
+  const names = new Set<string>(TRANSLATION_SKILLS);
+  for (const skillPath of await discoverSkillMarkdownFiles(skillDirs)) {
+    names.add(skillNameFromSkillPath(skillPath));
+  }
+  for (const commandDir of commandDirs) {
+    if (!await directoryExists(commandDir)) {
+      continue;
+    }
+    const entries = await readdir(commandDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && /\.md$/i.test(entry.name)) {
+        names.add(path.basename(entry.name, path.extname(entry.name)));
+      }
+    }
+  }
+  return [...names].sort((left, right) => left.localeCompare(right));
+}
+
+function workspaceAncestor(startDir: string): string | undefined {
+  let current = path.resolve(startDir);
+  while (true) {
+    if (existsSync(path.join(current, "package.json")) || existsSync(path.join(current, ".git"))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+async function prepareClaudeTranslationLaunch(outputDir: string): Promise<InteractiveAgentLaunch> {
+  const home = os.homedir();
+  const skillNames = await discoverClaudeSkillNames(
+    [
+      path.join(outputDir, ".claude", "skills"),
+      path.join(home, ".claude", "skills")
+    ],
+    [
+      path.join(outputDir, ".claude", "commands"),
+      path.join(home, ".claude", "commands")
+    ]
+  );
+  const skillOverrides: Record<string, "on" | "user-invocable-only"> = {};
+  for (const name of skillNames) {
+    skillOverrides[name] = TRANSLATION_SKILLS.has(name) ? "on" : "user-invocable-only";
+  }
+  const settingsDir = await mkdtemp(path.join(os.tmpdir(), "translation-workshop-claude-"));
+  const settingsPath = path.join(settingsDir, "settings.json");
+  await writeFile(settingsPath, JSON.stringify({ skillOverrides }, null, 2), "utf8");
+  return {
+    args: ["--settings", settingsPath, "--add-dir", outputDir, "--permission-mode", "acceptEdits"],
+    cleanupPaths: [settingsDir]
+  };
+}
+
+async function prepareCodexTranslationLaunch(outputDir: string): Promise<InteractiveAgentLaunch> {
+  const home = os.homedir();
+  const repoRoot = workspaceAncestor(outputDir);
+  const skillPaths = await discoverSkillMarkdownFiles([
+    ...(repoRoot ? [path.join(repoRoot, ".agents", "skills")] : []),
+    path.join(outputDir, ".agents", "skills"),
+    path.join(home, ".agents", "skills"),
+    path.join(home, ".codex", "skills")
+  ]);
+  const disabledSkillPaths = skillPaths.filter((skillPath) => !TRANSLATION_SKILLS.has(skillNameFromSkillPath(skillPath)));
+  const profileName = `translation-workshop-${process.pid}-${Date.now()}`;
+  const codexHome = process.env.CODEX_HOME && process.env.CODEX_HOME.trim()
+    ? process.env.CODEX_HOME.trim()
+    : path.join(home, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  const profilePath = path.join(codexHome, `${profileName}.config.toml`);
+  const profile = [
+    "# Generated by translation-workshop for this Agent session.",
+    "# Codex has no user-invocable-only equivalent, so non-translation skills are disabled by SKILL.md path.",
+    ...disabledSkillPaths.flatMap((skillPath) => [
+      "",
+      "[[skills.config]]",
+      `path = "${toTomlPath(skillPath)}"`,
+      "enabled = false"
+    ])
+  ].join("\n");
+  await writeFile(profilePath, profile, "utf8");
+  return {
+    args: ["--profile-v2", profileName, "-c", "check_for_update_on_startup=false", "--cd", outputDir],
+    cleanupPaths: [profilePath]
+  };
+}
+
+async function cleanupAgentLaunchFiles(paths: string[] | undefined): Promise<void> {
+  for (const itemPath of paths ?? []) {
+    try {
+      await rm(itemPath, { recursive: true, force: true });
+    } catch {
+      // Temporary launcher files should never block Agent shutdown.
+    }
+  }
+}
+
+async function interactiveAgentLaunch(agent: "codex" | "claude", outputDir: string): Promise<InteractiveAgentLaunch> {
+  return agent === "claude"
+    ? prepareClaudeTranslationLaunch(outputDir)
+    : prepareCodexTranslationLaunch(outputDir);
 }
 
 function dismissCodexUpdatePrompt(session: InteractiveAgentSession, output: string): void {
@@ -907,6 +2477,17 @@ function broadcastAgentConsoleEvent(channel: "agent-console:data" | "agent-conso
       webContents.send(channel, payload);
     }
   }
+  const eventName = channel === "agent-console:data" ? "agent-console" : "agent-exit";
+  for (const session of lanSyncSessions.values()) {
+    const data = `event: ${eventName}\ndata: ${lanSyncJson(payload)}\n\n`;
+    for (const client of [...session.clients]) {
+      if (client.destroyed) {
+        session.clients.delete(client);
+        continue;
+      }
+      client.write(data);
+    }
+  }
 }
 
 function interactiveConsoleSnapshot() {
@@ -954,6 +2535,65 @@ async function submitInteractiveAgentInput(session: InteractiveAgentSession, tex
       ? `Prompt saved to file; skill invocation was sent with a details reference: ${prepared.promptPath}`
       : undefined
   };
+}
+
+async function startInteractiveAgentConsole(args: AgentConsoleStartArgs): Promise<{ ok: boolean; message?: string; status?: ReturnType<typeof interactiveConsoleSnapshot> }> {
+  const agent = args.agent === "claude" ? "claude" : "codex";
+  const outputDir = args.outputDir?.trim();
+  if (!outputDir || !path.isAbsolute(outputDir)) {
+    return { ok: false, message: "An absolute output folder is required for the interactive Agent Console." };
+  }
+  if (interactiveAgentSession) {
+    return { ok: true, message: `${interactiveAgentSession.agent} console is already running.`, status: interactiveConsoleSnapshot() };
+  }
+  try {
+    await ensureWorkspace(outputDir);
+    const [pty, cliPath] = await Promise.all([Promise.resolve(loadNodePty()), resolveAgentCli(agent)]);
+    const launch = await interactiveAgentLaunch(agent, outputDir);
+    const cols = Math.max(40, Math.min(240, Math.floor(args.cols || 120)));
+    const rows = Math.max(10, Math.min(80, Math.floor(args.rows || 32)));
+    let ptyProcess: PtyProcess;
+    try {
+      ptyProcess = pty.spawn(cliPath, launch.args, {
+        cwd: outputDir,
+        cols,
+        rows,
+        name: "xterm-color",
+        env: { ...process.env, TERM: "xterm-256color" }
+      });
+    } catch (error) {
+      await cleanupAgentLaunchFiles(launch.cleanupPaths);
+      throw error;
+    }
+    const session: InteractiveAgentSession = {
+      id: `agent-console-${Date.now()}`,
+      agent,
+      outputDir,
+      startedAt: new Date().toISOString(),
+      pty: ptyProcess,
+      outputBuffer: "",
+      cleanupPaths: launch.cleanupPaths
+    };
+    interactiveAgentSession = session;
+    ptyProcess.onData((data) => {
+      session.outputBuffer = `${session.outputBuffer}${data}`.slice(-120000);
+      session.recentOutput = `${session.recentOutput ?? ""}${data}`.slice(-4000);
+      dismissCodexUpdatePrompt(session, session.recentOutput);
+      dismissCodexTrustPrompt(session, session.recentOutput);
+      dismissClaudeMemoryPermissionPrompt(session, session.recentOutput);
+      broadcastAgentConsoleEvent("agent-console:data", { id: session.id, data });
+    });
+    ptyProcess.onExit((exit) => {
+      if (interactiveAgentSession?.id === session.id) {
+        interactiveAgentSession = undefined;
+      }
+      void cleanupAgentLaunchFiles(session.cleanupPaths);
+      broadcastAgentConsoleEvent("agent-console:exit", { id: session.id, exitCode: exit.exitCode, signal: exit.signal });
+    });
+    return { ok: true, message: `Started interactive ${agent} console.`, status: interactiveConsoleSnapshot() };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 async function collectLineFiles(folderPath: string, fileType: GenerateLineHtmlArgs["fileType"], workspaceDir: string): Promise<FolderLineFile[]> {
@@ -1241,7 +2881,9 @@ async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promi
       }
     })();`
   );
-  activateHtmlViewerTab(key);
+  if (args.activate !== false) {
+    activateHtmlViewerTab(key);
+  }
   return { ok: true };
 }
 
@@ -1640,6 +3282,7 @@ ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateRevie
   const html = renderProposalReviewHtml({
     title: path.basename(reportPath),
     proposals,
+    outputDir: args.outputDir,
     reportPath,
     lineReviewPath,
     pageSize: args.pageSize,
@@ -1662,6 +3305,94 @@ ipcMain.handle("html:openReviewHtml", async (_event, args: OpenReviewHtmlArgs) =
 
 ipcMain.handle("html:applyLineReviewState", async (_event, args: ApplyLineReviewStateArgs) => {
   return applyLineReviewStateToView(args);
+});
+
+ipcMain.handle("lan-sync:start", async (event, args: LanSyncStartArgs) => {
+  if (!isValidLanSyncPin(args?.pin)) {
+    throw new Error(args?.locale === "en-US" ? "LAN sync PIN must be exactly 6 digits." : "局域网同步 PIN 必须是 6 位数字。");
+  }
+  await ensureLanSyncServer();
+  const token = randomBytes(18).toString("base64url");
+  let lineDocument = normalizeLanSyncLineDocument(args);
+  const proposalDocument = normalizeLanSyncProposalDocument(args);
+  if (proposalDocument?.lineReviewPath) {
+    const basePath = typeof args.htmlPath === "string" ? args.htmlPath : proposalDocument.reportPath;
+    const openLineDocument = await readOpenLineReviewDocument(proposalDocument.lineReviewPath, basePath);
+    if (openLineDocument && lanSyncLineTranslationCount(openLineDocument) >= lanSyncLineTranslationCount(lineDocument)) {
+      lineDocument = openLineDocument;
+    }
+    if (!lineDocument) {
+      lineDocument = await readLinkedLineReviewDocument(proposalDocument.lineReviewPath, basePath);
+    }
+    if (lineDocument) {
+      const incomingState = normalizeLanSyncState(args.lineDocument?.state);
+      if (Object.keys(incomingState).length > 0 && lanSyncLineTranslationCount(lineDocument) === 0) {
+        lineDocument.state = incomingState;
+      }
+      lineDocument.pageSize = Number.isInteger(Number(args.pageSize)) && Number(args.pageSize) > 0 ? Number(args.pageSize) : lineDocument.pageSize;
+    }
+  }
+  if (!lineDocument && !proposalDocument) {
+    throw new Error(args.locale === "en-US" ? "No shareable document was found." : "没有可共享的文档。");
+  }
+  const outputDir = normalizeLanSyncOutputDir(args, lineDocument, proposalDocument);
+  const session: LanSyncSession = {
+    token,
+    ownerWebContentsId: event.sender.id,
+    title: String(args.title || "translation-workshop"),
+    pinHash: hashLanSyncPin(args.pin),
+    authTokens: new Set(),
+    outputDir,
+    agent: args.agent === "claude" ? "claude" : "codex",
+    documents: {
+      line: lineDocument,
+      proposal: proposalDocument
+    },
+    locale: args.locale === "en-US" ? "en-US" : "zh-CN",
+    createdAt: new Date().toISOString(),
+    clients: new Set()
+  };
+  lanSyncSessions.set(token, session);
+  event.sender.once("destroyed", () => {
+    for (const item of [...lanSyncSessions.values()]) {
+      if (item.ownerWebContentsId === session.ownerWebContentsId) {
+        stopLanSyncSession(item);
+      }
+    }
+  });
+  return {
+    ok: true,
+    token,
+    ...lanSyncUrls(token),
+    externalTunnelNote: session.locale === "en-US"
+      ? "translation-workshop does not bundle public tunneling tools. If you use Cloudflare Tunnel, ngrok, or similar tools, point them to the local sync address."
+      : "translation-workshop 不内置公网穿透工具。如果你使用 Cloudflare Tunnel、ngrok 等工具，可将它们指向本地同步地址。"
+  };
+});
+
+ipcMain.handle("lan-sync:patch", async (event, args: { token?: string; patch?: LanSyncPatch }) => {
+  const token = String(args?.token || "");
+  const session = lanSyncSessions.get(token);
+  if (!session || session.ownerWebContentsId !== event.sender.id || !args.patch) {
+    return { ok: false };
+  }
+  const patch: LanSyncPatch = {
+    ...args.patch,
+    clientId: args.patch.clientId || "desktop",
+    timestamp: args.patch.timestamp || new Date().toISOString()
+  };
+  applyLanSyncPatchToSession(session, patch);
+  broadcastLanSyncPatch(session, patch);
+  return { ok: true };
+});
+
+ipcMain.handle("lan-sync:stop", async (event, token: string) => {
+  const session = lanSyncSessions.get(String(token || ""));
+  if (!session || session.ownerWebContentsId !== event.sender.id) {
+    return { ok: false };
+  }
+  stopLanSyncSession(session);
+  return { ok: true };
 });
 
 ipcMain.handle("reports:findProofreadReport", async (_event, outputDir: string) => {
@@ -1800,53 +3531,7 @@ ipcMain.handle("html-tabs:close", async (_event, key: string) => {
 });
 
 ipcMain.handle("agent-console:start", async (_event, args: AgentConsoleStartArgs) => {
-  const agent = args.agent === "claude" ? "claude" : "codex";
-  const outputDir = args.outputDir?.trim();
-  if (!outputDir || !path.isAbsolute(outputDir)) {
-    return { ok: false, message: "An absolute output folder is required for the interactive Agent Console." };
-  }
-  if (interactiveAgentSession) {
-    return { ok: true, message: `${interactiveAgentSession.agent} console is already running.`, status: interactiveConsoleSnapshot() };
-  }
-  try {
-    await ensureWorkspace(outputDir);
-    const [pty, cliPath] = await Promise.all([Promise.resolve(loadNodePty()), resolveAgentCli(agent)]);
-    const cols = Math.max(40, Math.min(240, Math.floor(args.cols || 120)));
-    const rows = Math.max(10, Math.min(80, Math.floor(args.rows || 32)));
-    const ptyProcess = pty.spawn(cliPath, interactiveAgentArgs(agent, outputDir), {
-      cwd: outputDir,
-      cols,
-      rows,
-      name: "xterm-color",
-      env: { ...process.env, TERM: "xterm-256color" }
-    });
-    const session: InteractiveAgentSession = {
-      id: `agent-console-${Date.now()}`,
-      agent,
-      outputDir,
-      startedAt: new Date().toISOString(),
-      pty: ptyProcess,
-      outputBuffer: ""
-    };
-    interactiveAgentSession = session;
-    ptyProcess.onData((data) => {
-      session.outputBuffer = `${session.outputBuffer}${data}`.slice(-120000);
-      session.recentOutput = `${session.recentOutput ?? ""}${data}`.slice(-4000);
-      dismissCodexUpdatePrompt(session, session.recentOutput);
-      dismissCodexTrustPrompt(session, session.recentOutput);
-      dismissClaudeMemoryPermissionPrompt(session, session.recentOutput);
-      broadcastAgentConsoleEvent("agent-console:data", { id: session.id, data });
-    });
-    ptyProcess.onExit((exit) => {
-      if (interactiveAgentSession?.id === session.id) {
-        interactiveAgentSession = undefined;
-      }
-      broadcastAgentConsoleEvent("agent-console:exit", { id: session.id, exitCode: exit.exitCode, signal: exit.signal });
-    });
-    return { ok: true, message: `Started interactive ${agent} console.`, status: interactiveConsoleSnapshot() };
-  } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : String(error) };
-  }
+  return startInteractiveAgentConsole(args);
 });
 
 ipcMain.handle("agent-console:input", async (_event, args: AgentConsoleInputArgs) => {

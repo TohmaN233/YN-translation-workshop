@@ -91,6 +91,25 @@ type WorkshopProposalReviewResult = {
   fallbackPrompt?: string;
 };
 
+type WorkshopLanSyncPatch = {
+  type: "line-edit" | "line-restore" | "proposal-decision";
+  line?: number;
+  proposalId?: string;
+  text?: string;
+  status?: string;
+  manualText?: string;
+  clientId?: string;
+  timestamp?: string;
+};
+
+type WorkshopLanSyncStartResult = {
+  ok: boolean;
+  token: string;
+  localUrl: string;
+  lanUrls: string[];
+  externalTunnelNote: string;
+};
+
 type WorkshopAgentConsoleApi = {
   startAgentConsole: (args: { agent?: "codex" | "claude"; outputDir?: string; cols?: number; rows?: number }) => Promise<WorkshopAgentConsoleResult>;
   sendAgentConsoleInput: (data: string) => Promise<{ ok: boolean; message?: string; promptPath?: string }>;
@@ -131,7 +150,11 @@ declare global {
       writeEpubFile: (args: { templatePath: string; lines: string[]; outputDir?: string; mode?: "all" | "pair-position"; replacePosition?: number; pairSize?: number }) => Promise<{ ok: boolean; path: string; changedDocuments: number }>;
       generateProposalReview: (args: unknown) => Promise<WorkshopProposalReviewResult>;
       buildPrompt: (args: WorkshopPromptBuildArgs) => Promise<string>;
-      applyLineReviewState: (args: { lineReviewPath?: string; lineState?: unknown; line?: number }) => Promise<{ ok: boolean }>;
+      applyLineReviewState: (args: { lineReviewPath?: string; lineState?: unknown; line?: number; activate?: boolean }) => Promise<{ ok: boolean }>;
+      startLanSync: (args: unknown) => Promise<WorkshopLanSyncStartResult>;
+      sendLanSyncPatch: (args: { token?: string; patch: WorkshopLanSyncPatch }) => Promise<{ ok: boolean }>;
+      stopLanSync: (token: string) => Promise<{ ok: boolean }>;
+      onLanSyncPatch: (callback: (payload: { token: string; patch: WorkshopLanSyncPatch }) => void) => () => void;
       findProofreadReport: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedMs: number; score: number; reasons: string[] }>>;
       openPath: (targetPath: string) => Promise<string>;
       skillInstallCommand: (args: { agent?: WorkshopSkillInstallAgent }) => Promise<WorkshopSkillInstallDetails>;

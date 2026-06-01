@@ -22,6 +22,14 @@ Two workflows:
 
 Do not edit the translation unless the user explicitly asks for fixes or chooses split-review with batch edits.
 
+## Report Contract
+
+- Write report prose in the target language of the language pair.
+- Keep parser-required fixed labels in English: `Source`, `Current translation`, `Issue`, `Suggested fix`, and `Accept suggestion`.
+- `Source` and `Current translation` must be the full exact row text from the files, not shortened quotes, fragments, or explanations.
+- `Suggested fix` must be a complete replacement line in the target language, with no explanation or partial edit.
+- When merging parallel, chunked, or subagent findings, final proposal IDs must be globally unique. If Hx/Mx/Lx IDs repeat, renumber duplicates after the current max for that code.
+
 ## Argument Parsing
 
 Parse `$ARGUMENTS` as:
@@ -541,6 +549,7 @@ Summary:       ./[basename]_proofread_summary.md
 
 This file is structured for automated tools (e.g. apply_decisions.py).
 Every finding follows the exact FIX_PROPOSALS schema below. Do not add prose.
+Every final finding ID must be unique across the whole file.
 
 ---
 
@@ -636,6 +645,8 @@ After all chunks, consolidate per-chunk reports into the same two-file format as
 
 The summary contains the chunk status table, findings counts, glossary pre-scan, and any missing-gender entries. The fix_proposal contains every finding still pending (i.e. not yet applied via batch-fix during chunk review). Findings that were applied with the user's approval are recorded in the summary's "Applied" count and excluded from fix_proposal.
 
+Before writing the final fix proposal, merge and renumber: each heading ID such as `H1-001`, `M2-004`, or `L1-003` must appear only once. If chunk/subagent outputs reused an ID, continue after the current max for that Hx/Mx/Lx code.
+
 #### `[basename]_proofread_summary.md` (split mode)
 
 Same structure as MC summary, but replace "Region Heatmap" and "Sampling Coverage" with:
@@ -714,12 +725,13 @@ Every finding uses this format. It is designed for downstream automation.
    - Chunk: chunk number (split mode) or `MC` (montecarlo mode)
    - Example: `### H1-042 | Chunk 015 L74521`
 
-2. **Source / Current translation**: backtick-wrapped, **verbatim copy** from the file — no edits, no normalization.
+2. **Source / Current translation**: backtick-wrapped, **full exact row text** copied verbatim from the files — no edits, no normalization, no shortened fragments.
 
-3. **Issue**: brief description.
+3. **Issue**: brief description in the target language.
 
 4. **Suggested fix** — must be:
-   - **Directly substitutable**: the text inside the backticks can overwrite the translation line as-is.
+   - **Directly substitutable**: the text inside the backticks can overwrite the whole translation line as-is.
+   - **Target-language complete line**: write the full corrected target-language row, not a phrase or local patch.
    - **No commentary**: no `"change to XYZ"`, no `should read: ...`, no trailing notes.
    - **No extra quotes**: don't wrap in `""` unless the source itself has quoted dialogue.
    - **Always present for all severities** (HIGH/MEDIUM/LOW). For H9 (bloat), retranslate from source and put that here. There is no "direction only" option — acceptance is the user's decision.
@@ -733,8 +745,10 @@ Every finding uses this format. It is designed for downstream automation.
 
 ### Common (both modes)
 - Provide line numbers in headers — they drive automated fix application.
-- Source and Current translation are verbatim copies — never edit them.
+- Report prose uses the target language; fixed parser labels stay English.
+- Source and Current translation are full exact row copies — never edit, shorten, or summarize them.
 - Every finding has a concrete substitutable suggestion, regardless of severity.
+- Final finding IDs are globally unique; renumber duplicates after the current max for that code.
 - H3 always passes through the false-positive filter (Step 3). Substring hits are not findings.
 - H8 fires only when the character's name appears in that source line.
 - H9 pre-scan (Step 3.5) is mandatory, not optional.

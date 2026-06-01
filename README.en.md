@@ -32,7 +32,7 @@ Release page:
 
 ### v1.10.0
 
-- **Prompt and skill updates**: Codex / Claude Code proofreading skills now enforce a tighter report contract: report prose uses the target language, `Source` / `Current translation` must contain the full original row text, and `Suggested fix` must be a complete replacement translation. Generated Agent prompts also include parallel-merge and fixed-label requirements.
+- **Prompt and skill updates**: Codex / Claude Code proofreading skills now enforce a tighter report contract: report prose uses the target language, `Source` / `Current translation` must contain the full original row text, and `Suggested fix` must be a complete replacement translation.
 - **Review report parsing**: duplicate finding IDs are normalized before review HTML generation. If an AI report repeats IDs such as `H1-001`, `M2-004`, or `L1-003`, duplicates are renumbered after the current max for that category so search, jump, and one-click replacement stay stable.
 - **Agent launch context**: when the app starts Codex / Claude Code CLI, it defaults to the translation-workshop translate / proofread skills only, reducing context pollution from unrelated global skills. Skill install commands now include `--replace` by default and back up old targets before replacing them.
 - **LAN and public access**: HTML can start a 6-digit-PIN protected shared workspace. Phones, tablets, and remote devices can work against the software that is already open on the desktop, including line review, proposal review, and Agent interaction. The LAN address can also be exposed through external tools such as Cloudflare Tunnel or ngrok.

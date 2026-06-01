@@ -32,7 +32,7 @@ Release 页面：
 
 ### v1.10.0
 
-- **提示词与 skill 更新**：Codex / Claude Code 校对 skill 强化报告契约，要求报告正文使用目标语言、`Source` / `Current translation` 使用完整原行、`Suggested fix` 给出完整替换译文；生成给 Agent 的提示词也补充并行合并与固定字段要求。
+- **提示词与 skill 更新**：Codex / Claude Code 校对 skill 强化报告契约，要求报告正文使用目标语言、`Source` / `Current translation` 使用完整原行、`Suggested fix` 给出完整替换译文。
 - **审阅报告解析**：生成审阅 HTML 前会严格处理重复编号；若 AI 报告里出现重复的 `H1-001`、`M2-004`、`L1-003` 等 ID，会接在该分类当前最大编号后重新编号，避免查找、跳转和一键替换互相覆盖。
 - **Agent 启动上下文**：软件内启动 Codex / Claude Code CLI 时，默认只开放 translation-workshop 的翻译 / 校对 skill，减少其他全局 skill 对当前任务的上下文污染；安装命令默认带 `--replace`，覆盖前会备份旧目标。
 - **局域网与公网访问**：HTML 支持启动 6 位 PIN 保护的共享工作区，手机、平板或远程设备可以访问正在打开的软件，进行正文校对、审阅建议处理和 Agent 交互；局域网地址也可通过 Cloudflare Tunnel / ngrok 等外部工具穿透到公网。

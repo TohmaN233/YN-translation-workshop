@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createRequire } from "node:module";
@@ -12,7 +13,7 @@ import { formatInteractiveAgentMessage } from "../shared/core/agentConsoleInput.
 import { buildTimestampedBackupPath } from "../shared/core/backups.ts";
 import { buildAgentPromptFileMessage, shouldSendAgentPromptViaFile } from "../shared/core/agentPromptTransport.ts";
 import { parseBilingualPairs } from "../shared/core/bilingualPairs.ts";
-import { resolveCliFromPath } from "../shared/core/cliResolver.ts";
+import { executableNames, resolveCliFromPath } from "../shared/core/cliResolver.ts";
 import { matchFolderFiles, type FolderLineFile } from "../shared/core/folderMatch.ts";
 import { parseGlossaryText, type GlossaryEntry } from "../shared/core/glossary.ts";
 import { renderBatchLineReviewIndexHtml, renderLineReviewHtml, renderProposalReviewHtml, type BatchLineReviewIndexFile, type UiLocale } from "../shared/core/html.ts";
@@ -2140,7 +2141,62 @@ async function backupFile(targetPath: string, outputDir?: string): Promise<strin
   return backupPath;
 }
 
+function resolveCliCandidates(command: string): string[] {
+  if (process.platform !== "win32") {
+    const candidate = resolveCliFromPath(command, {
+      platform: process.platform,
+      pathEnv: process.env.PATH,
+      pathext: process.env.PATHEXT,
+      pathJoin: path.join,
+      exists: existsSync
+    });
+    return candidate ? [candidate] : [];
+  }
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const names = executableNames(command, process.platform, process.env.PATHEXT);
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter).map((item) => item.trim()).filter(Boolean)) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      const key = candidate.toLowerCase();
+      if (!seen.has(key) && existsSync(candidate)) {
+        seen.add(key);
+        candidates.push(candidate);
+      }
+    }
+  }
+  return candidates;
+}
+
+function commandVersionScore(candidate: string): number {
+  try {
+    const result = spawnSync(candidate, ["--version"], {
+      encoding: "utf8",
+      timeout: 5000,
+      windowsHide: true
+    });
+    const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    const match = text.match(/(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z0-9.-]+))?/);
+    if (!match) {
+      return -1;
+    }
+    const [, major, minor, patch, suffix] = match;
+    const prereleasePenalty = suffix ? 0 : 500;
+    return Number(major) * 1_000_000_000 + Number(minor) * 1_000_000 + Number(patch) * 1_000 + prereleasePenalty;
+  } catch {
+    return -1;
+  }
+}
+
 function resolveCliCommand(command: string): string {
+  if (command === "codex") {
+    const candidates = resolveCliCandidates(command);
+    if (candidates.length > 0) {
+      return candidates
+        .map((candidate, index) => ({ candidate, index, score: commandVersionScore(candidate) }))
+        .sort((a, b) => b.score - a.score || a.index - b.index)[0].candidate;
+    }
+  }
   const candidate = resolveCliFromPath(command, {
     platform: process.platform,
     pathEnv: process.env.PATH,
@@ -2401,7 +2457,7 @@ async function prepareCodexTranslationLaunch(outputDir: string): Promise<Interac
   ].join("\n");
   await writeFile(profilePath, profile, "utf8");
   return {
-    args: ["--profile-v2", profileName, "-c", "check_for_update_on_startup=false", "--cd", outputDir],
+    args: ["--profile", profileName, "-c", "check_for_update_on_startup=false", "--cd", outputDir],
     cleanupPaths: [profilePath]
   };
 }

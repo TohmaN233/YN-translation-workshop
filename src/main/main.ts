@@ -2314,6 +2314,7 @@ const TRANSLATION_SKILLS = new Set(["translate-text", "proofread-translation"]);
 interface InteractiveAgentLaunch {
   args: string[];
   cleanupPaths: string[];
+  env?: NodeJS.ProcessEnv;
 }
 
 function toTomlPath(filePath: string): string {
@@ -2458,7 +2459,8 @@ async function prepareCodexTranslationLaunch(outputDir: string): Promise<Interac
   await writeFile(profilePath, profile, "utf8");
   return {
     args: ["--profile", profileName, "-c", "check_for_update_on_startup=false", "--cd", outputDir],
-    cleanupPaths: [profilePath]
+    cleanupPaths: [profilePath],
+    env: { CODEX_HOME: codexHome }
   };
 }
 
@@ -2615,7 +2617,7 @@ async function startInteractiveAgentConsole(args: AgentConsoleStartArgs): Promis
         cols,
         rows,
         name: "xterm-color",
-        env: { ...process.env, TERM: "xterm-256color" }
+        env: { ...process.env, ...launch.env, TERM: "xterm-256color" }
       });
     } catch (error) {
       await cleanupAgentLaunchFiles(launch.cleanupPaths);

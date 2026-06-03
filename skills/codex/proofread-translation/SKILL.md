@@ -33,7 +33,7 @@ If a required input is missing, ask only for that item. If the language pair is 
    - Automated checks for untranslated source text, AI contamination, pronoun issues, and terminology mismatches where applicable to the language pair.
 6. Apply the selected mode:
    - `montecarlo`: classify regions, sample by region priority from a non-repeating sampled-line pool, iterate until convergence, and write the two-file final report without editing the translation.
-   - `split N`: review every line in each chunk, report findings per chunk, edit the main translation file only after the user explicitly approves the proposed fixes, and consolidate remaining findings into the same two-file final report.
+   - `split N`: treat `N` as a checkpoint/save interval, review the complete assigned range without skipping lines, report progress per checkpoint, edit the main translation file only after the user explicitly approves the proposed fixes, and consolidate remaining findings into the same two-file final report.
 7. When stable proper nouns or world-specific terms are discovered outside the glossary, record them as candidate term-table entries for later merge. Prefer names, places, organizations, species, titles, and setting terms; avoid generic words, common nouns, and short ambiguous fragments unless the user confirms them.
 
 ## Reporting Rules

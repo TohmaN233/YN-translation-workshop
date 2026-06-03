@@ -501,15 +501,15 @@ Write the final two-file output required by the Final Output Contract: `[basenam
 
 ---
 
-## Mode B: Split-Review (分片逐行)
+## Mode B: Split-Review (checkpointed full review / 分段保存的逐行审查)
 
-**适用场景**：对文件（或文件的某个区域）进行精细的逐行审查，每片审查完后即可修复。
-**核心思路**：按用户指定的行数拆分 → 逐片 line-by-line → 发现问题 → 用户确认修复 → 修复写回主文件 → 下一片。
+**适用场景**：对文件（或文件的某个区域）进行精细的逐行审查，并定期保存进度，防止长任务丢失。
+**核心思路**：split N 表示 checkpoint/save interval，不是"只审 N 行"。完整审查 assigned range → 每 N 行保存/汇报一次 → 发现问题 → 用户确认修复 → 修复写回主文件 → 继续到范围结束。
 
 ### B-Step 1: 拆分文件
 
 ```python
-CHUNK_SIZE = N  # 用户指定，如 500
+CHUNK_SIZE = N  # checkpoint interval，用户指定，如 500
 
 total_pairs = len(aligned_pairs)
 num_chunks = (total_pairs + CHUNK_SIZE - 1) // CHUNK_SIZE
@@ -523,7 +523,7 @@ for i in range(num_chunks):
     # chunk_src_{i}.txt, chunk_tgt_{i}.txt（可选，仅当需要外部工具时）
 ```
 
-输出拆分概览：
+输出 checkpoint 概览：
 ```
 文件拆分完成（每片 500 行）：
   片段 1/10：行 0-499    (500 对)
@@ -531,12 +531,12 @@ for i in range(num_chunks):
   ...
   片段 10/10：行 4500-4832 (333 对)
 
-将从片段 1 开始逐行审查。
+将从片段 1 开始逐行审查；必须覆盖完整 assigned range。
 ```
 
 ### B-Step 2: 逐片审查循环
 
-对每个片段，执行完整的检查流程：
+对每个 checkpoint 片段，执行完整的检查流程：
 
 ```
 处理片段 [K]/[N]：行 [start]-[end]
@@ -637,3 +637,5 @@ After all chunks are reviewed, write the final two-file output required by the F
 - **不跳行**：逐行审查意味着片段内每一行都要过目，不允许只看"可疑行"
 - **记录覆盖**：每完成一个片段就在 summary 中记录覆盖范围和统计
 - **片段间保持上下文**：切换片段时，新片段的开头几行要读取前一片段的末尾几行作为上下文
+- **split 是保存间隔**：split N 是 checkpoint/save interval；必须审完整 assigned range，不得只完成一个 split 就停止
+- **subagent 分配规则**：使用 subagent 时，先按 subagent 数量把完整 aligned range 分成互不重叠的大范围；每个 subagent 在自己的范围内按 split N 定期保存/报告

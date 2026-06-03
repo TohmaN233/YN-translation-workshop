@@ -18,7 +18,7 @@ Parse the user request for:
 - language pair: `Japanese->Chinese`, `ja->zh`, `English->Chinese`, etc.;
 - style: `game`, `novel`, `literal`, `literary`, or `faithful`;
 - source file;
-- split size, default `2000` lines;
+- split/checkpoint interval, default `2000` lines;
 - optional glossary file;
 - optional work description or setting notes;
 - output file or output directory.
@@ -40,11 +40,11 @@ translation/
   output/
 ```
 
-`TRANSLATION_STATE.json` should record source path, output path, language pair, style, split size, total lines, total chunks, completed chunks, last completed chunk, status, glossary count, character count, and timestamp. If an in-progress state exists, offer to resume from the next incomplete chunk unless the user clearly requested a restart.
+`TRANSLATION_STATE.json` should record source path, output path, language pair, style, checkpoint interval, total lines, total checkpoint chunks, completed chunks, last completed chunk, status, glossary count, character count, and timestamp. If an in-progress state exists, offer to resume from the next incomplete chunk unless the user clearly requested a restart.
 
 ## Initialization
 
-Read the source with UTF-8 and `splitlines()` so line count is explicit. Report source file, total lines, split size, and total chunks.
+Read the source with UTF-8 and `splitlines()` so line count is explicit. Report source file, total lines, checkpoint interval, and total checkpoint chunks.
 
 Load an existing glossary if supplied. Supported minimum shape:
 
@@ -121,6 +121,8 @@ Update the bible when a new character appears or when new facts affect translati
 
 ## Chunk Translation
 
+`SPLIT_SIZE` is a checkpoint/save interval, not a cognitive scope limit. Process the whole assigned range. Save chunk files every `SPLIT_SIZE` source lines so progress can be resumed after interruption.
+
 For each chunk:
 
 1. Load the current glossary and character bible.
@@ -147,11 +149,12 @@ For mixed lines, translate only human-language text and preserve markup exactly:
 
 ## Multi-Agent Translation
 
-Use no more than five concurrent agents. Assign disjoint line ranges and make each agent responsible for its own chunk files or returned chunk text.
+Use no more than five concurrent agents. Assign disjoint line ranges by dividing the full source range into roughly equal ranges by agent count. `SPLIT_SIZE` remains each agent's checkpoint interval inside its assigned range, not the agent assignment size.
 
 Each agent must receive:
 
 - source file path and exact line range;
+- checkpoint interval for progress saves;
 - language pair and style;
 - current glossary in full;
 - current character bible in full;

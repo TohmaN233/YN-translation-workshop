@@ -18,7 +18,7 @@ Two workflows:
 | Mode | Purpose | Strategy |
 |------|---------|----------|
 | `montecarlo` | Fast risk discovery in very large files | Classify risk regions, sample stratified, iterate until convergence |
-| `split N` | Detailed line-by-line review | Split into N-line chunks, review each chunk, apply approved fixes back |
+| `split N` | Detailed line-by-line review | Use N as checkpoint/save interval, review the full assigned range, apply approved fixes back |
 
 Do not edit the translation unless the user explicitly asks for fixes or chooses split-review with batch edits.
 
@@ -585,17 +585,17 @@ Do **not** edit files in Monte Carlo mode unless the user explicitly asks for fi
 
 ## Split Review Mode
 
-For detailed correction. The user provides chunk size N.
+For detailed correction. The user provides N as a checkpoint/save interval, not as the total review scope. Review the complete assigned line range; save/report progress every N line pairs.
 
-### B-Step 1 — Split
+### B-Step 1 — Checkpoint plan
 
 ```python
-CHUNK = N
+CHUNK = N  # checkpoint interval
 total = len(pairs)
 chunks = [(i*CHUNK, min((i+1)*CHUNK, total)) for i in range((total + CHUNK - 1)//CHUNK)]
 ```
 
-Report the split plan before starting.
+Report the checkpoint plan before starting. If using subagents, first divide the full aligned range into roughly equal, non-overlapping agent ranges by subagent count; each subagent then checkpoints every `CHUNK` line pairs inside its own range.
 
 ### B-Step 2 — Per-chunk review loop
 
@@ -771,6 +771,7 @@ Every finding uses this format. It is designed for downstream automation.
 - Read trailing context from the previous chunk to preserve continuity.
 - Every line in the chunk is read — no "only the suspicious ones".
 - Record progress after each chunk so the review is resumable.
+- Split size is a checkpoint interval. Do not stop after one split; cover the whole assigned range.
 
 ### Safety
 - Never strip control tags, placeholders, variables, escape sequences, or formatting markers.

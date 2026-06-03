@@ -193,6 +193,8 @@ export function buildTranslatePrompt(options: TranslatePromptOptions): string {
   const subagentLines = defaults.subagent
     ? [
         `CALL SUBAGENT; SUBAGENT_COUNT=${defaults.subagentCount};`,
+        `Split=${defaults.splitSize} is a checkpoint interval, not the task scope.`,
+        `Divide the full source line range into ${defaults.subagentCount} non-overlapping agent ranges of roughly equal size; each subagent must process its full assigned range and save progress every ${defaults.splitSize} source lines.`,
         "After all complete, merge in part order:",
         `- Final translation (single file): ${outputPath(defaults.outputDir, `${defaults.basename}_translated.txt`)}`,
         `- Merged glossary: ${outputPath(defaults.outputDir, "glossary.json")}`,
@@ -211,17 +213,20 @@ export function buildTranslatePrompt(options: TranslatePromptOptions): string {
         `- Character bible: ${outputPath(defaults.outputDir, "character_bible.md")}`,
         `- Workspace: ${outputPath(defaults.outputDir, "_workspace/")}`
       ];
+  const outputContract = [
+    defaults.split ? `- Split=${defaults.splitSize} means checkpoint/save interval. Process the whole assigned range; do not stop after one split.` : "",
+    "- Write the final translation and auxiliary output prose in the target language of the language pair; keep source terms, paths, placeholders, IDs, and schema keys unchanged where required.",
+    "- Do not modify the source file.",
+    "- Preserve one-to-one line alignment, placeholders, tags, variables, IDs, and empty lines.",
+    "- Do not write explanations into translated lines."
+  ].filter(Boolean);
 
   return [
     translateCommandLine(options, defaults),
     ...subagentLines,
     "",
     "Output contract:",
-    "- Write the final translation and auxiliary output prose in the target language of the language pair; keep source terms, paths, placeholders, IDs, and schema keys unchanged where required.",
-    "- Do not modify the source file.",
-    "- Preserve one-to-one line alignment, placeholders, tags, variables, IDs, and empty lines.",
-    "- Do not write explanations into translated lines.",
-    "- Avoid mojibake: on Windows PowerShell set UTF-8 before reading or writing text: `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); [Console]::InputEncoding=[System.Text.UTF8Encoding]::new(); $env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'`."
+    ...outputContract
   ].join("\n");
 }
 
@@ -230,6 +235,8 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
   const subagentLines = defaults.subagent
     ? [
         `CALL SUBAGENT; SUBAGENT_COUNT=${defaults.subagentCount};`,
+        `Mode split ${defaults.splitSize} is a checkpoint interval, not the review scope.`,
+        `Divide the full aligned line range into ${defaults.subagentCount} non-overlapping agent ranges of roughly equal size; each subagent must review its full assigned range and save/report progress every ${defaults.splitSize} line pairs.`,
         "After all complete, merge into a single report:",
         `- Final merged overall review: ${outputPath(defaults.outputDir, `${defaults.basename}_proofread_summary.md`)}`,
         `- Final merged fix proposal (single md with suggested fixes): ${outputPath(defaults.outputDir, `${defaults.basename}_fix_proposal.md`)}`,
@@ -241,6 +248,11 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
         `- ${outputPath(defaults.outputDir, `${defaults.basename}_proofread_summary.md`)}`,
         `- ${outputPath(defaults.outputDir, `${defaults.basename}_fix_proposal.md`)}`
       ];
+  const reportContract = [
+    defaults.mode === "split" ? `- In split mode, ${defaults.splitSize} means checkpoint/save interval. Review the complete assigned range; do not stop after one split.` : "",
+    "- Output language: write all report prose in the target language of the language pair. Keep parser-required fixed labels exactly as required by the proofread-translation format, such as `Suggested fix`.",
+    "- `Source` and `Current translation` must contain the full exact line text. `Suggested fix` must be a complete replacement line in the target language, with no explanation or partial edit."
+  ].filter(Boolean);
 
   return [
     proofreadCommandLine(options, defaults),
@@ -248,8 +260,7 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
     ...subagentLines,
     "",
     "Report contract:",
-    "- Output language: write all report prose in the target language of the language pair. Keep parser-required fixed labels exactly as required by the proofread-translation format, such as `Suggested fix`.",
-    "- `Source` and `Current translation` must contain the full exact line text. `Suggested fix` must be a complete replacement line in the target language, with no explanation or partial edit."
+    ...reportContract
   ].join("\n");
 }
 

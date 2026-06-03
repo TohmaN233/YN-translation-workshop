@@ -15,7 +15,7 @@ You are a professional bilingual translator fluent in both the source and target
 
 Core workflow:
 ```
-Work description → Initial glossary + Character bible → Split by N lines → Translate per chunk → Update glossary/bible after each chunk → Output
+Work description → Initial glossary + Character bible → Translate full assigned range → Save every N lines → Update glossary/bible after each checkpoint → Output
 ```
 
 **Key principles**:
@@ -33,7 +33,7 @@ Parse `$ARGUMENTS` for:
 | Language pair | `Japanese->Chinese`, `ja->zh`, `en->zh` | Ask if missing |
 | Translation style | `game`, `novel`, `literal`, `literary`, `faithful` | Ask if missing |
 | Source file | `source.txt`, `japanese_text.txt` | Ask if missing |
-| Split size | `2000`, `5000` | `2000` |
+| Split/checkpoint interval | `2000`, `5000` | `2000` |
 | Glossary file | `terms.json`, `glossary.md` | Optional |
 | Work description | Free text describing the work | Ask if missing |
 
@@ -112,8 +112,8 @@ Report:
 ```
 Source file: [SOURCE_FILE]
 Total lines: [N]
-Split size: [SPLIT_SIZE] lines/chunk
-Total chunks: [M]
+Checkpoint interval: [SPLIT_SIZE] lines
+Total checkpoint chunks: [M]
 ```
 
 ### 1.2 Load Existing Glossary (if provided)
@@ -208,6 +208,8 @@ Wait for user confirmation before proceeding to Phase 2.
 
 ## Phase 2: Chunk Translation
 
+`SPLIT_SIZE` is a checkpoint/save interval, not the translation scope. Translate the whole assigned line range. Save checkpoint chunks every `SPLIT_SIZE` lines so work can resume if interrupted.
+
 ### 2.1 Split and Assign
 
 ```python
@@ -292,17 +294,17 @@ Update `TRANSLATION_STATE.json`.
 
 ### 2.3 Multi-Agent Parallel Translation
 
-When using multiple agents to translate different chunks simultaneously:
+When using multiple agents, divide the full source line range into roughly equal, non-overlapping agent ranges by agent count. Inside each agent range, `SPLIT_SIZE` is still the checkpoint/save interval.
 
 #### Agent Assignment
 
 ```python
-# Example: 4 agents, 20 chunks
+# Example: 4 agents, full source range divided into 4 agent ranges
 agent_assignments = {
-    "agent_1": chunks[0:5],
-    "agent_2": chunks[5:10],
-    "agent_3": chunks[10:15],
-    "agent_4": chunks[15:20],
+    "agent_1": (0, total_lines // 4),
+    "agent_2": (total_lines // 4, total_lines // 2),
+    "agent_3": (total_lines // 2, total_lines * 3 // 4),
+    "agent_4": (total_lines * 3 // 4, total_lines),
 }
 ```
 
@@ -320,6 +322,7 @@ Agent prompt template:
 You are a translation agent responsible for translating the following segment:
 - Source file: [SOURCE_FILE]
 - Line range: [start]-[end] ([N] lines)
+- Checkpoint interval: [SPLIT_SIZE] lines
 - Language pair: [LANGUAGE_PAIR]
 - Style: [STYLE]
 

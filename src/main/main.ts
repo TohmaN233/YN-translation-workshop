@@ -394,6 +394,8 @@ function lanSyncLabels(locale: UiLocale): Record<string, string> {
       search: "Search",
       searchPlaceholder: "Search source, translation, issue, or suggestion",
       searchNoMatches: "No matches.",
+      controlsOpen: "Show tools",
+      controlsClose: "Hide tools",
       saved: "Synced",
       offline: "Disconnected",
       line: "Line",
@@ -443,6 +445,8 @@ function lanSyncLabels(locale: UiLocale): Record<string, string> {
     search: "搜索",
     searchPlaceholder: "搜索原文、译文、问题或建议",
     searchNoMatches: "没有匹配结果。",
+    controlsOpen: "展开工具",
+    controlsClose: "收起工具",
     saved: "已同步",
     offline: "连接已断开",
     line: "行",
@@ -982,15 +986,19 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
     :root { color-scheme: light; --ink:#26324d; --muted:#6d7893; --line:#cfe0f7; --sky:#77c8ff; --panel:#ffffffec; --bg:#edf8ff; }
     * { box-sizing:border-box; }
     body { margin:0; font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--ink); background:linear-gradient(135deg,#f7fbff,#e8f8ff); }
-    header { position:sticky; top:0; z-index:2; display:grid; gap:8px; padding:12px; background:rgba(255,255,255,.92); border-bottom:1px solid var(--line); backdrop-filter:blur(12px); }
-    h1 { margin:0; font-size:17px; line-height:1.3; }
+    header { position:sticky; top:0; z-index:2; display:grid; gap:8px; padding:10px 12px; background:rgba(255,255,255,.92); border-bottom:1px solid var(--line); backdrop-filter:blur(12px); }
+    h1 { margin:0; font-size:15px; line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .header-top { display:flex; align-items:center; gap:8px; min-width:0; }
+    .header-top h1 { flex:1 1 auto; min-width:0; }
+    .header-drawer { display:grid; gap:8px; }
     .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .gate { min-height:100vh; display:grid; place-items:center; padding:18px; }
     .gate-card { width:min(420px,100%); display:grid; gap:12px; padding:18px; border:1px solid var(--line); border-radius:12px; background:var(--panel); box-shadow:0 12px 30px rgba(95,111,191,.14); }
-    .tabs { display:flex; gap:8px; }
+    .tabs { display:flex; gap:8px; flex:0 0 auto; }
     .tabs button.active { border-color:#77c8ff; background:#eaf8ff; font-weight:700; }
     button,input,textarea { font:inherit; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); padding:8px 10px; }
     button { min-height:38px; box-shadow:0 2px 0 rgba(119,200,255,.18); }
+    .controls-toggle { flex:0 0 auto; width:40px; min-width:40px; padding:7px 8px; font-weight:800; }
     input { width:72px; }
     .search-box { display:flex; gap:8px; align-items:center; min-width:0; }
     .search-box input { width:min(520px,100%); flex:1 1 180px; }
@@ -1018,7 +1026,11 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
     .agent-log .xterm-viewport { overflow-y:auto !important; }
     .status { color:var(--muted); min-height:22px; }
     @media (max-width: 640px) {
-      header { gap:8px; padding:10px; }
+      header { gap:6px; padding:8px 10px; }
+      .header-top h1 { display:none; }
+      .tabs { flex:1 1 auto; min-width:0; }
+      .tabs button { flex:1 1 0; min-width:0; padding:7px 8px; }
+      .controls-toggle { min-height:36px; }
       .agent-body { max-height:64vh; }
       .agent-log { height:42vh; min-height:260px; }
       .agent textarea { min-height:58px; }
@@ -1040,36 +1052,41 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
   </section>
   <section id="app" hidden>
   <header>
-    <h1 id="title">translation-workshop</h1>
-    <div class="tabs">
-      <button id="lineTab" type="button">Line review</button>
-      <button id="proposalTab" type="button">Proposal review</button>
-    </div>
-    <label class="search-box"><span id="searchLabel">Search</span><input id="searchInput" type="search"></label>
-    <section class="agent collapsed" id="agentPanel">
-      <div class="agent-head">
-        <strong id="agentTitle">Agent Console</strong>
-        <span id="agentStatus" class="status"></span>
-        <button id="agentToggle" type="button">Open</button>
+    <div class="header-top">
+      <h1 id="title">translation-workshop</h1>
+      <div class="tabs">
+        <button id="lineTab" type="button">Line review</button>
+        <button id="proposalTab" type="button">Proposal review</button>
       </div>
-      <div class="agent-body" id="agentBody" hidden>
-        <div class="bar">
-          <select id="agentSelect"><option value="codex">Codex</option><option value="claude">Claude Code</option></select>
-          <button id="agentStart" type="button">Start Agent</button>
-          <button id="agentStop" type="button">Stop</button>
+      <button id="controlsToggle" class="controls-toggle" type="button" aria-expanded="false">⌄</button>
+    </div>
+    <div id="headerDrawer" class="header-drawer" hidden>
+      <label class="search-box"><span id="searchLabel">Search</span><input id="searchInput" type="search"></label>
+      <section class="agent collapsed" id="agentPanel">
+        <div class="agent-head">
+          <strong id="agentTitle">Agent Console</strong>
+          <span id="agentStatus" class="status"></span>
+          <button id="agentToggle" type="button">Open</button>
         </div>
-        <div id="agentOutput" class="agent-log"></div>
-        <textarea id="agentInput" spellcheck="false" placeholder="Prompt / message"></textarea>
-        <button id="agentSend" type="button">Send</button>
+        <div class="agent-body" id="agentBody" hidden>
+          <div class="bar">
+            <select id="agentSelect"><option value="codex">Codex</option><option value="claude">Claude Code</option></select>
+            <button id="agentStart" type="button">Start Agent</button>
+            <button id="agentStop" type="button">Stop</button>
+          </div>
+          <div id="agentOutput" class="agent-log"></div>
+          <textarea id="agentInput" spellcheck="false" placeholder="Prompt / message"></textarea>
+          <button id="agentSend" type="button">Send</button>
+        </div>
+      </section>
+      <div class="bar">
+        <button id="prev" type="button">Previous</button>
+        <span><span id="pageLabel">Page</span> <input id="pageInput" type="number" min="1" value="1"></span>
+        <button id="jump" type="button">Go</button>
+        <button id="next" type="button">Next</button>
       </div>
-    </section>
-    <div class="bar">
-      <button id="prev" type="button">Previous</button>
-      <span><span id="pageLabel">Page</span> <input id="pageInput" type="number" min="1" value="1"></span>
-      <button id="jump" type="button">Go</button>
-      <button id="next" type="button">Next</button>
+      <div class="status" id="status">Loading...</div>
     </div>
-    <div class="status" id="status">Loading...</div>
   </header>
   <main id="rows"></main>
   </section>
@@ -1094,6 +1111,8 @@ const rowsEl = document.getElementById("rows");
 const statusEl = document.getElementById("status");
 const pageInput = document.getElementById("pageInput");
 const searchInput = document.getElementById("searchInput");
+const headerDrawer = document.getElementById("headerDrawer");
+const controlsToggle = document.getElementById("controlsToggle");
 const agentPanel = document.getElementById("agentPanel");
 const agentBody = document.getElementById("agentBody");
 const agentToggle = document.getElementById("agentToggle");
@@ -1109,6 +1128,12 @@ function escapeHtml(value) { return String(value ?? "").replace(/[&<>"]/g, c => 
 function rowValue(row) { return lineState.edits?.[row.line] ?? row.translation ?? ""; }
 function setStatus(text) { statusEl.textContent = text; }
 function setAgentStatus(text) { agentStatus.textContent = text || ""; }
+function setControlsExpanded(expanded) {
+  headerDrawer.hidden = !expanded;
+  controlsToggle.textContent = expanded ? "⌃" : "⌄";
+  controlsToggle.title = expanded ? t("controlsClose", "Hide tools") : t("controlsOpen", "Show tools");
+  controlsToggle.setAttribute("aria-expanded", String(expanded));
+}
 function isAgentExpanded() { return !agentPanel.classList.contains("collapsed"); }
 function setAgentExpanded(expanded) {
   agentPanel.classList.toggle("collapsed", !expanded);
@@ -1451,6 +1476,7 @@ async function boot() {
   document.getElementById("jump").textContent = t("go", "Go");
   document.getElementById("lineTab").textContent = t("lineTab", "Line review");
   document.getElementById("proposalTab").textContent = t("proposalTab", "Proposal review");
+  setControlsExpanded(false);
   document.getElementById("agentTitle").textContent = t("agentConsole", "Agent Console");
   document.getElementById("agentStart").textContent = t("agentStart", "Start Agent");
   document.getElementById("agentStop").textContent = t("agentStop", "Stop");
@@ -1483,6 +1509,7 @@ searchInput.addEventListener("input", () => {
 });
 document.getElementById("lineTab").onclick = () => setTab("line");
 document.getElementById("proposalTab").onclick = () => setTab("proposal");
+controlsToggle.onclick = () => setControlsExpanded(headerDrawer.hidden);
 document.getElementById("agentStart").onclick = () => { void startAgent(); };
 document.getElementById("agentStop").onclick = () => { void stopAgent(); };
 document.getElementById("agentSend").onclick = () => { void sendAgentInput(); };

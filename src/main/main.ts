@@ -391,6 +391,9 @@ function lanSyncLabels(locale: UiLocale): Record<string, string> {
       go: "Go",
       page: "Page",
       total: "Total",
+      search: "Search",
+      searchPlaceholder: "Search source, translation, issue, or suggestion",
+      searchNoMatches: "No matches.",
       saved: "Synced",
       offline: "Disconnected",
       line: "Line",
@@ -437,6 +440,9 @@ function lanSyncLabels(locale: UiLocale): Record<string, string> {
     go: "跳转",
     page: "页码",
     total: "总数",
+    search: "搜索",
+    searchPlaceholder: "搜索原文、译文、问题或建议",
+    searchNoMatches: "没有匹配结果。",
     saved: "已同步",
     offline: "连接已断开",
     line: "行",
@@ -986,6 +992,8 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
     button,input,textarea { font:inherit; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); padding:8px 10px; }
     button { min-height:38px; box-shadow:0 2px 0 rgba(119,200,255,.18); }
     input { width:72px; }
+    .search-box { display:flex; gap:8px; align-items:center; min-width:0; }
+    .search-box input { width:min(520px,100%); flex:1 1 180px; }
     main { display:grid; gap:12px; padding:12px; min-width:0; max-width:100vw; overflow-x:hidden; }
     article { display:grid; gap:8px; min-width:0; max-width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel); box-shadow:0 8px 20px rgba(95,111,191,.08); overflow:hidden; }
     .meta { display:flex; justify-content:space-between; gap:8px; min-width:0; color:var(--muted); font-size:12px; font-weight:700; }
@@ -1037,6 +1045,7 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
       <button id="lineTab" type="button">Line review</button>
       <button id="proposalTab" type="button">Proposal review</button>
     </div>
+    <label class="search-box"><span id="searchLabel">Search</span><input id="searchInput" type="search"></label>
     <section class="agent collapsed" id="agentPanel">
       <div class="agent-head">
         <strong id="agentTitle">Agent Console</strong>
@@ -1077,12 +1086,14 @@ let lineRows = [];
 let lineState = {};
 let proposalItems = [];
 let proposalState = {};
-let page = 1;
+let pageByKind = { line: 1, proposal: 1 };
+let searchByKind = { line: "", proposal: "" };
 let pageSize = 50;
 let activeKind = "line";
 const rowsEl = document.getElementById("rows");
 const statusEl = document.getElementById("status");
 const pageInput = document.getElementById("pageInput");
+const searchInput = document.getElementById("searchInput");
 const agentPanel = document.getElementById("agentPanel");
 const agentBody = document.getElementById("agentBody");
 const agentToggle = document.getElementById("agentToggle");
@@ -1249,22 +1260,42 @@ async function stopAgent() {
 }
 function setTab(kind) {
   activeKind = kind;
-  page = 1;
+  searchInput.value = searchByKind[activeKind] || "";
   document.getElementById("lineTab").classList.toggle("active", kind === "line");
   document.getElementById("proposalTab").classList.toggle("active", kind === "proposal");
   render();
 }
+function activeSearch() {
+  return String(searchByKind[activeKind] || "").trim().toLowerCase();
+}
+function lineSearchText(row) {
+  return [row.line, row.source, rowValue(row), lineState.status?.[row.line] || row.status || ""].join("\\n").toLowerCase();
+}
+function proposalSearchText(item) {
+  const decision = decisionFor(item);
+  return [item.id, item.line, item.src, item.current, item.problemType, item.problem, item.suggestion, decision.status, decision.manualText].join("\\n").toLowerCase();
+}
+function filteredLineRows() {
+  const q = activeSearch();
+  return q ? lineRows.filter(row => lineSearchText(row).includes(q)) : lineRows;
+}
+function filteredProposalItems() {
+  const q = activeSearch();
+  return q ? proposalItems.filter(item => proposalSearchText(item).includes(q)) : proposalItems;
+}
 function renderLine() {
-  const totalPages = Math.max(1, Math.ceil(lineRows.length / pageSize));
-  page = Math.min(Math.max(1, page), totalPages);
+  const visibleRows = filteredLineRows();
+  let page = Math.min(Math.max(1, pageByKind.line || 1), Math.max(1, Math.ceil(visibleRows.length / pageSize)));
+  pageByKind.line = page;
+  const totalPages = Math.max(1, Math.ceil(visibleRows.length / pageSize));
   pageInput.value = page;
-  const pageRows = lineRows.slice((page - 1) * pageSize, page * pageSize);
-  setStatus(t("lineTab", "Line review") + " · " + t("page", "Page") + " " + page + " / " + totalPages + " · " + t("total", "Total") + ": " + lineRows.length);
+  const pageRows = visibleRows.slice((page - 1) * pageSize, page * pageSize);
+  setStatus(t("lineTab", "Line review") + " · " + t("page", "Page") + " " + page + " / " + totalPages + " · " + t("total", "Total") + ": " + visibleRows.length + " / " + lineRows.length);
   rowsEl.innerHTML = pageRows.length ? pageRows.map(row => '<article data-line="' + row.line + '">' +
     '<div class="meta"><span>' + t("line", "Line") + ' ' + row.line + '</span><span>' + escapeHtml(lineState.status?.[row.line] || row.status || "") + '</span></div>' +
     '<div class="source">' + escapeHtml(row.source) + '</div>' +
     '<textarea spellcheck="false">' + escapeHtml(rowValue(row)) + '</textarea>' +
-  '</article>').join("") : '<article>' + escapeHtml(t("empty", "No document in this shared session.")) + '</article>';
+  '</article>').join("") : '<article>' + escapeHtml(activeSearch() ? t("searchNoMatches", "No matches.") : t("empty", "No document in this shared session.")) + '</article>';
 }
 function decisionFor(item) {
   const raw = proposalState.decisions?.[item.id] || { status: item.status || "unreviewed", manualText: "" };
@@ -1276,11 +1307,13 @@ function decisionFor(item) {
 }
 function renderProposal() {
   const proposalPageSize = Math.min(80, Math.max(10, Math.floor(Number(proposalDoc?.pageSize || 1000) / 20) || 50));
-  const totalPages = Math.max(1, Math.ceil(proposalItems.length / proposalPageSize));
-  page = Math.min(Math.max(1, page), totalPages);
+  const visibleItems = filteredProposalItems();
+  let page = Math.min(Math.max(1, pageByKind.proposal || 1), Math.max(1, Math.ceil(visibleItems.length / proposalPageSize)));
+  pageByKind.proposal = page;
+  const totalPages = Math.max(1, Math.ceil(visibleItems.length / proposalPageSize));
   pageInput.value = page;
-  const pageItems = proposalItems.slice((page - 1) * proposalPageSize, page * proposalPageSize);
-  setStatus(t("proposalTab", "Proposal review") + " · " + t("page", "Page") + " " + page + " / " + totalPages + " · " + t("total", "Total") + ": " + proposalItems.length);
+  const pageItems = visibleItems.slice((page - 1) * proposalPageSize, page * proposalPageSize);
+  setStatus(t("proposalTab", "Proposal review") + " · " + t("page", "Page") + " " + page + " / " + totalPages + " · " + t("total", "Total") + ": " + visibleItems.length + " / " + proposalItems.length);
   rowsEl.innerHTML = pageItems.length ? pageItems.map(item => {
     const decision = decisionFor(item);
     return '<article data-proposal-id="' + escapeHtml(item.id) + '">' +
@@ -1295,7 +1328,7 @@ function renderProposal() {
       '<button data-action="rejected" class="' + (decision.status === "rejected" ? "active" : "") + '">' + t("reject", "Reject") + '</button>' +
       '<button data-action="manual" class="' + (decision.status === "manual" ? "active" : "") + '">' + t("manual", "Manual edit") + '</button></div>' +
     '</article>';
-  }).join("") : '<article>' + escapeHtml(t("empty", "No document in this shared session.")) + '</article>';
+  }).join("") : '<article>' + escapeHtml(activeSearch() ? t("searchNoMatches", "No matches.") : t("empty", "No document in this shared session.")) + '</article>';
 }
 function render() {
   if (activeKind === "proposal") renderProposal();
@@ -1413,6 +1446,8 @@ async function boot() {
   document.getElementById("prev").textContent = t("previous", "Previous");
   document.getElementById("next").textContent = t("next", "Next");
   document.getElementById("pageLabel").textContent = t("page", "Page");
+  document.getElementById("searchLabel").textContent = t("search", "Search");
+  searchInput.placeholder = t("searchPlaceholder", "Search source, translation, issue, or suggestion");
   document.getElementById("jump").textContent = t("go", "Go");
   document.getElementById("lineTab").textContent = t("lineTab", "Line review");
   document.getElementById("proposalTab").textContent = t("proposalTab", "Proposal review");
@@ -1437,9 +1472,15 @@ async function boot() {
   events.addEventListener("agent-exit", event => setAgentStatus(t("agentStopped", "Agent stopped") + ": " + (JSON.parse(event.data).exitCode ?? "")));
   events.onerror = () => setStatus(t("offline", "Disconnected"));
 }
-document.getElementById("prev").onclick = () => { page -= 1; render(); scrollTo(0, 0); };
-document.getElementById("next").onclick = () => { page += 1; render(); scrollTo(0, 0); };
-document.getElementById("jump").onclick = () => { page = Number(pageInput.value || 1); render(); scrollTo(0, 0); };
+document.getElementById("prev").onclick = () => { pageByKind[activeKind] = (pageByKind[activeKind] || 1) - 1; render(); scrollTo(0, 0); };
+document.getElementById("next").onclick = () => { pageByKind[activeKind] = (pageByKind[activeKind] || 1) + 1; render(); scrollTo(0, 0); };
+document.getElementById("jump").onclick = () => { pageByKind[activeKind] = Number(pageInput.value || 1); render(); scrollTo(0, 0); };
+searchInput.addEventListener("input", () => {
+  searchByKind[activeKind] = searchInput.value || "";
+  pageByKind[activeKind] = 1;
+  render();
+  scrollTo(0, 0);
+});
 document.getElementById("lineTab").onclick = () => setTab("line");
 document.getElementById("proposalTab").onclick = () => setTab("proposal");
 document.getElementById("agentStart").onclick = () => { void startAgent(); };

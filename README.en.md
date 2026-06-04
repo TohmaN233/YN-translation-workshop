@@ -30,7 +30,7 @@ Release page:
 
 ## Update Info
 
-### v1.10.0
+### v1.1.1
 
 - **Prompt and skill updates**: Codex / Claude Code proofreading skills now enforce a tighter report contract: report prose uses the target language, `Source` / `Current translation` must contain the full original row text, and `Suggested fix` must be a complete replacement translation.
 - **Review report parsing**: duplicate finding IDs are normalized before review HTML generation. If an AI report repeats IDs such as `H1-001`, `M2-004`, or `L1-003`, duplicates are renumbered after the current max for that category so search, jump, and one-click replacement stay stable.

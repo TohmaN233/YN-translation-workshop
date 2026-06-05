@@ -160,6 +160,8 @@ function App() {
   const agentConsoleQuietTimer = useRef<number | undefined>(undefined);
   const lastLineReviewHtml = useRef("");
   const lastProposalReviewHtml = useRef("");
+  const hydratingProject = useRef(false);
+  const autoSaveTimer = useRef<number | undefined>(undefined);
 
   function fitAgentTerminal() {
     const terminal = agentTerminal.current;
@@ -317,6 +319,23 @@ function App() {
     };
   }, [t]);
 
+  useEffect(() => {
+    if (!form.outputDir || hydratingProject.current) {
+      return undefined;
+    }
+    if (autoSaveTimer.current) {
+      window.clearTimeout(autoSaveTimer.current);
+    }
+    autoSaveTimer.current = window.setTimeout(() => {
+      void saveProject();
+    }, 600);
+    return () => {
+      if (autoSaveTimer.current) {
+        window.clearTimeout(autoSaveTimer.current);
+      }
+    };
+  }, [form]);
+
   function patch(next: Partial<FormState>) {
     setForm((current) => ({ ...current, ...next }));
   }
@@ -347,7 +366,11 @@ function App() {
   async function loadProjectState(outputDir: string, openLastHtml: boolean) {
     const loaded = asLoadedProject(await window.workshop.loadProject(outputDir));
     if (!loaded) {
+      hydratingProject.current = true;
       patch({ outputDir });
+      window.setTimeout(() => {
+        hydratingProject.current = false;
+      }, 0);
       setLastOutput("");
       lastLineReviewHtml.current = "";
       lastProposalReviewHtml.current = "";
@@ -358,6 +381,7 @@ function App() {
     lastLineReviewHtml.current = loaded.lastLineReviewHtml || loaded.lineReviewPath || "";
     lastProposalReviewHtml.current = loaded.lastProposalReviewHtml || "";
     const projectOutputDir = typeof loaded.outputDir === "string" && loaded.outputDir ? loaded.outputDir : outputDir;
+    hydratingProject.current = true;
     setForm((current) => ({
       ...current,
       agent: loaded.agent ?? current.agent,
@@ -390,6 +414,9 @@ function App() {
       sourcePosition: loaded.sourcePosition ?? loaded.sourceColumn ?? current.sourcePosition,
       translationPosition: loaded.translationPosition ?? loaded.translationColumn ?? current.translationPosition
     }));
+    window.setTimeout(() => {
+      hydratingProject.current = false;
+    }, 0);
     setLastOutput(lastHtml);
     setStatus(lastHtml ? t.projectOpened : t.projectOpenedNoHtml);
     if (openLastHtml && lastHtml) {

@@ -1976,6 +1976,12 @@ function workflowPaths() {
   workflow.paths ||= {};
   return workflow.paths;
 }
+function updateProjectState(patch) {
+  const outputDir = workflow.paths?.outputDir || "";
+  const bridge = writeBridge();
+  if (!outputDir || !bridge?.updateProjectState) return;
+  void bridge.updateProjectState({ outputDir, patch });
+}
 function setBoundTranslationPath(path, promptPath) {
   const value = String(path || "").trim();
   if (!value) return;
@@ -1986,6 +1992,7 @@ function setBoundTranslationPath(path, promptPath) {
   paths.translationPath = value;
   paths.promptTranslationPath = promptValue;
   save();
+  updateProjectState({ translationPath: value, promptTranslationPath: promptValue });
 }
 function writeBridge() {
   return window.workshopHtml || window.parent?.workshopHtml;
@@ -2055,7 +2062,7 @@ document.getElementById("syncTranslationInput")?.addEventListener("change", asyn
 document.getElementById("exportTxt")?.addEventListener("click", downloadTxt);
 document.getElementById("saveTxt")?.addEventListener("click", writeCurrentTranslationFile);
 document.getElementById("exportEpub")?.addEventListener("click", writeCurrentEpubCopy);
-let glossaryEntries = workflow.glossaryEntries || [];
+let glossaryEntries = state.glossaryEntries || workflow.glossaryEntries || [];
 state.glossaryTargets ||= {};
 state.glossaryAliases ||= {};
 state.glossaryPath ||= workflow.paths?.glossaryPath || "";
@@ -2109,6 +2116,7 @@ function setBoundGlossaryPath(path) {
   state.glossaryPath = value;
   workflowPaths().glossaryPath = value;
   save();
+  updateProjectState({ glossaryPath: value });
 }
 function glossarySearchQuery() {
   return String(glossarySearchEl?.value || "").trim().toLocaleLowerCase();
@@ -2460,6 +2468,7 @@ function syncGlossaryFromText(text, label) {
     return false;
   }
   glossaryEntries = parsed;
+  state.glossaryEntries = parsed;
   state.glossaryTargets = {};
   state.glossaryAliases = {};
   save();

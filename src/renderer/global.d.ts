@@ -144,6 +144,7 @@ declare global {
     workshopHtml?: WorkshopAgentConsoleApi & {
       openFile: (filters?: Array<{ name: string; extensions: string[] }>) => Promise<string | undefined>;
       readTextFile: (args: { path: string }) => Promise<{ ok: boolean; path: string; text: string }>;
+      updateProjectState: (args: { outputDir?: string; patch?: unknown }) => Promise<boolean>;
       writeTextFile: (args: { path: string; text: string; outputDir?: string }) => Promise<{ ok: boolean; path: string; backupPath?: string }>;
       writeGlossaryFile: (args: { path: string; text: string; outputDir?: string }) => Promise<{ ok: boolean; path: string; backupPath?: string }>;
       writeAuditWhitelistFile: (args: { outputDir?: string; sourcePath?: string; lines?: number[] }) => Promise<{ ok: boolean; path: string; backupPath?: string; lineCount: number }>;

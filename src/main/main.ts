@@ -3151,6 +3151,26 @@ ipcMain.handle("project:save", async (_event, outputDir: string, state: unknown)
   return true;
 });
 
+ipcMain.handle("project:patch", async (_event, args: { outputDir?: unknown; patch?: unknown }) => {
+  const outputDir = typeof args?.outputDir === "string" ? args.outputDir.trim() : "";
+  const patch = args?.patch && typeof args.patch === "object" && !Array.isArray(args.patch)
+    ? args.patch as Record<string, unknown>
+    : undefined;
+  if (!outputDir || !patch) {
+    return false;
+  }
+  const workspaceDir = await ensureWorkspace(outputDir);
+  const projectPath = path.join(workspaceDir, "project.json");
+  const current = await readJsonObject(projectPath) ?? {};
+  await writeFile(projectPath, JSON.stringify({
+    ...current,
+    ...patch,
+    outputDir,
+    updatedAt: new Date().toISOString()
+  }, null, 2), "utf8");
+  return true;
+});
+
 ipcMain.handle("prompts:build", async (_event, args: unknown) => {
   return buildPrompt(normalizePromptBuildArgs(args));
 });

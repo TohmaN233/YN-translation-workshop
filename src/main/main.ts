@@ -1178,7 +1178,15 @@ function resizeAgentTerminal() {
   const rows = Math.max(24, Math.min(40, Math.floor(height / 14.4)));
   try { agentTerminal.resize(cols, rows); } catch {}
 }
-function scrollAgentTerminalToBottom() {
+function isAgentTerminalNearBottom() {
+  const buffer = agentTerminal?.buffer?.active;
+  if (buffer && agentTerminal?.rows) {
+    return buffer.baseY - buffer.viewportY <= agentTerminal.rows + 2;
+  }
+  return agentOutput.scrollHeight - agentOutput.scrollTop - agentOutput.clientHeight < 48;
+}
+function scrollAgentTerminalToBottom(force = false) {
+  if (!force && !isAgentTerminalNearBottom()) return;
   if (agentTerminal?.scrollToBottom) {
     try { agentTerminal.scrollToBottom(); return; } catch {}
   }
@@ -1191,7 +1199,7 @@ function renderAgentOutput() {
     resizeAgentTerminal();
     terminal.reset?.();
     if (agentOutputText) terminal.write(agentOutputText);
-    scrollAgentTerminalToBottom();
+    scrollAgentTerminalToBottom(true);
   } else {
     agentOutput.textContent = agentOutputText;
     agentOutput.scrollTop = agentOutput.scrollHeight;
@@ -1207,8 +1215,9 @@ function appendAgentOutput(text) {
   const terminal = ensureAgentTerminal();
   if (terminal) {
     resizeAgentTerminal();
+    const shouldFollow = isAgentTerminalNearBottom();
     terminal.write(String(text || ""));
-    scrollAgentTerminalToBottom();
+    scrollAgentTerminalToBottom(shouldFollow);
   } else {
     agentOutput.textContent = agentOutputText;
     agentOutput.scrollTop = agentOutput.scrollHeight;

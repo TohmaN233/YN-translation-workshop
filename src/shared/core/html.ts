@@ -1178,20 +1178,33 @@ function fitAgentTerminal() {
     // xterm cannot measure before the panel is visible.
   }
 }
+function isAgentTerminalNearBottom() {
+  const buffer = agentTerminal?.buffer?.active;
+  if (buffer && agentTerminal?.rows) {
+    return buffer.baseY - buffer.viewportY <= agentTerminal.rows + 2;
+  }
+  if (!interactiveAgentOutput) return true;
+  return interactiveAgentOutput.scrollHeight - interactiveAgentOutput.scrollTop - interactiveAgentOutput.clientHeight < 48;
+}
+function scrollAgentTerminalToBottom(force = false) {
+  if (!force && !isAgentTerminalNearBottom()) return;
+  agentTerminal?.scrollToBottom?.();
+}
 function renderAgentConsoleOutput() {
   const terminal = createAgentTerminal();
   if (!terminal) return;
   fitAgentTerminal();
   terminal.reset?.();
   if (agentRawOutput) terminal.write(agentRawOutput);
-  terminal.scrollToBottom?.();
+  scrollAgentTerminalToBottom(true);
 }
 function appendAgentConsoleOutput(chunk) {
   const terminal = createAgentTerminal();
   if (terminal && chunk) {
     fitAgentTerminal();
+    const shouldFollow = isAgentTerminalNearBottom();
     terminal.write(chunk);
-    terminal.scrollToBottom?.();
+    scrollAgentTerminalToBottom(shouldFollow);
   }
 }
 function resetAgentConsoleTranscript() {

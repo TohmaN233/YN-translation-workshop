@@ -2168,6 +2168,13 @@ async function readLineDocumentForWorkflow(
   return { text, kind, promptPath };
 }
 
+async function readTranslationDocumentForWorkflow(
+  filePath: string,
+  workspaceDir: string
+): Promise<{ text: string; kind: "txt" | "epub"; promptPath?: string }> {
+  return readLineDocumentForWorkflow(filePath, "auto", workspaceDir, "translation");
+}
+
 async function parseBilingualDocument(
   filePath: string,
   fileType: GenerateLineHtmlArgs["fileType"],
@@ -2291,6 +2298,15 @@ function resolveCliCommand(command: string): string {
 }
 
 async function resolveAgentCli(agent: "codex" | "claude"): Promise<string> {
+  if (agent === "codex" && process.platform === "win32") {
+    const npmCodex = path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm", "codex.cmd");
+    if (existsSync(npmCodex)) {
+      const version = spawnSync(npmCodex, ["--version"], { encoding: "utf8", windowsHide: true });
+      if (version.status === 0) {
+        return npmCodex;
+      }
+    }
+  }
   return resolveCliCommand(agent === "codex" ? "codex" : "claude");
 }
 
@@ -2747,6 +2763,10 @@ async function collectLineFiles(folderPath: string, fileType: GenerateLineHtmlAr
       })
   );
   return files.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+}
+
+async function collectTranslationLineFiles(folderPath: string, workspaceDir: string): Promise<FolderLineFile[]> {
+  return collectLineFiles(folderPath, "auto", workspaceDir);
 }
 
 async function collectBilingualFiles(folderPath: string, fileType: GenerateLineHtmlArgs["fileType"]): Promise<Array<{ name: string; path: string }>> {
@@ -3308,7 +3328,7 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
     await mkdir(batchDir, { recursive: true });
     const [sourceFiles, translationFiles] = await Promise.all([
       collectLineFiles(args.sourcePath, args.fileType, workspaceDir),
-      args.translationPath ? collectLineFiles(args.translationPath, args.fileType, workspaceDir) : Promise.resolve([])
+      args.translationPath ? collectTranslationLineFiles(args.translationPath, workspaceDir) : Promise.resolve([])
     ]);
     if (sourceFiles.length === 0) {
       throw new Error("No .txt or .epub files were found in the source folder.");
@@ -3318,7 +3338,7 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
     for (const [index, match] of matches.entries()) {
       const sourceDocument = await readLineDocumentForWorkflow(match.sourcePath, args.fileType, workspaceDir, "source");
       const translationDocument = match.status === "matched" && match.translationPath
-        ? await readLineDocumentForWorkflow(match.translationPath, args.fileType, workspaceDir, "translation")
+        ? await readTranslationDocumentForWorkflow(match.translationPath, workspaceDir)
         : undefined;
       const childName = htmlSafeName(match.sourceName, index);
       const childPath = path.join(batchDir, childName);
@@ -3385,7 +3405,7 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
   }
   const sourceDocument = await readLineDocumentForWorkflow(args.sourcePath, args.fileType, workspaceDir, "source");
   const translationDocument = args.translationPath
-    ? await readLineDocumentForWorkflow(args.translationPath, args.fileType, workspaceDir, "translation")
+    ? await readTranslationDocumentForWorkflow(args.translationPath, workspaceDir)
     : undefined;
   const title = `${path.basename(args.sourcePath)} line review`;
   const html = renderLineReviewHtml({

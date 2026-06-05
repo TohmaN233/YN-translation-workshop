@@ -1127,6 +1127,7 @@ let agentRawOutput = "";
 let agentConsoleAgent = workflow.defaultAgent || "codex";
 let agentConsoleSessionId = "";
 let agentConsoleQuietTimer = 0;
+let agentConsoleAwaitingReply = false;
 let agentTerminal = undefined;
 let agentFitAddon = undefined;
 const agentTranscriptLimit = 2000000;
@@ -1163,6 +1164,10 @@ function createAgentTerminal() {
   }
   agentTerminal.open(interactiveAgentOutput);
   agentTerminal.onData((rawInput) => {
+    if (String(rawInput || "").includes("\r")) {
+      agentConsoleAwaitingReply = true;
+      setInteractiveAgentStatus("waiting");
+    }
     const bridge = invokeBridge();
     if (bridge?.writeAgentConsoleInput) void bridge.writeAgentConsoleInput(rawInput);
   });
@@ -1229,9 +1234,16 @@ function setInteractiveAgentStatus(key) {
   interactiveAgentStatus.dataset.phase = key;
 }
 function markInteractiveAgentStreaming() {
+  if (!agentConsoleAwaitingReply) {
+    setInteractiveAgentStatus("running");
+    return;
+  }
   setInteractiveAgentStatus("streaming");
   if (agentConsoleQuietTimer) clearTimeout(agentConsoleQuietTimer);
-  agentConsoleQuietTimer = setTimeout(() => setInteractiveAgentStatus("quiet"), 2200);
+  agentConsoleQuietTimer = setTimeout(() => {
+    agentConsoleAwaitingReply = false;
+    setInteractiveAgentStatus("quiet");
+  }, 2200);
 }
 if (agentSelect) {
   agentSelect.value = workflow.defaultAgent || "codex";
@@ -1774,11 +1786,13 @@ async function sendInteractiveAgentMessage() {
   if (!started) return;
   try {
     await new Promise((resolve) => setTimeout(resolve, 700));
+    agentConsoleAwaitingReply = true;
     setInteractiveAgentStatus("waiting");
     if (agentMessageInput) agentMessageInput.value = "";
     promptPreview.value = "";
     const result = await bridge.sendAgentConsoleInput(promptText);
     if (!result?.ok) {
+      agentConsoleAwaitingReply = false;
       if (agentMessageInput) agentMessageInput.value = promptText;
       promptPreview.value = promptText;
     }
@@ -1823,6 +1837,7 @@ document.getElementById("stopInteractiveAgent")?.addEventListener("click", async
   }
   if (bridge?.onAgentConsoleExit) {
     bridge.onAgentConsoleExit((payload) => {
+      agentConsoleAwaitingReply = false;
       setInteractiveAgentStatus("stopped");
       setAiStatus((data.labels.agentConsoleStopped || "Agent Console stopped.") + ": " + (payload.exitCode ?? ""));
     });

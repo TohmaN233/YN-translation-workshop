@@ -283,6 +283,11 @@ function App() {
     terminal.loadAddon(fitAddon);
     terminal.open(agentTerminalElement.current);
     terminal.onData((data) => {
+      if (data.includes("\r")) {
+        agentConsoleAwaitingReply.current = true;
+        lastAgentConsoleDataAt.current = Date.now();
+        setAgentConsolePhase("waiting");
+      }
       void window.workshop.writeAgentConsoleInput(data);
     });
     agentTerminal.current = terminal;
@@ -516,7 +521,9 @@ function App() {
       const lower = selected.toLowerCase();
       patch({
         [key]: selected,
-        fileType: lower.endsWith(".epub") ? "epub" : lower.endsWith(".txt") ? "txt" : form.fileType,
+        fileType: key === "sourcePath"
+          ? (lower.endsWith(".epub") ? "epub" : lower.endsWith(".txt") ? "txt" : form.fileType)
+          : form.fileType,
         sourcePosition: form.inputMode === "bilingual" ? 2 : form.sourcePosition,
         translationPosition: form.inputMode === "bilingual" ? 1 : form.translationPosition
       } as Partial<FormState>);

@@ -158,6 +158,7 @@ function App() {
   const agentConsoleAgent = useRef<AgentType>("codex");
   const agentConsoleSessionId = useRef("");
   const agentConsoleQuietTimer = useRef<number | undefined>(undefined);
+  const lastAgentConsoleDataAt = useRef(0);
   const lastLineReviewHtml = useRef("");
   const lastProposalReviewHtml = useRef("");
   const hydratingProject = useRef(false);
@@ -186,13 +187,36 @@ function App() {
   }
 
   function markAgentConsoleStreaming() {
+    lastAgentConsoleDataAt.current = Date.now();
     setAgentConsolePhase("streaming");
     if (agentConsoleQuietTimer.current) {
       window.clearTimeout(agentConsoleQuietTimer.current);
     }
     agentConsoleQuietTimer.current = window.setTimeout(() => {
-      setAgentConsolePhase((phase) => phase === "streaming" || phase === "waiting" ? "quiet" : phase);
-    }, 2200);
+      void refreshAgentConsoleStatus(true);
+    }, 2500);
+  }
+
+  async function refreshAgentConsoleStatus(allowQuiet = false) {
+    try {
+      const snapshot = await window.workshop.agentConsoleStatus();
+      setAgentConsoleRunning(Boolean(snapshot.running));
+      if (snapshot.agent) {
+        agentConsoleAgent.current = snapshot.agent;
+      }
+      if (snapshot.id) {
+        agentConsoleSessionId.current = snapshot.id;
+      }
+      if (!snapshot.running) {
+        setAgentConsolePhase("stopped");
+        return;
+      }
+      if (allowQuiet && Date.now() - lastAgentConsoleDataAt.current >= 2400) {
+        setAgentConsolePhase((phase) => phase === "streaming" || phase === "waiting" ? "quiet" : phase);
+      }
+    } catch {
+      // Status is advisory; live output events remain the source for terminal text.
+    }
   }
 
   function resetAgentConsoleTranscript() {
@@ -291,10 +315,16 @@ function App() {
       writeAgentTerminal(payload.data);
     });
     const stopExit = window.workshop.onAgentConsoleExit((payload) => {
+      if (agentConsoleQuietTimer.current) {
+        window.clearTimeout(agentConsoleQuietTimer.current);
+      }
       setAgentConsoleRunning(false);
       setAgentConsolePhase("stopped");
       setStatus(`${t.agentConsoleStopped} (${payload.exitCode ?? "?"})`);
     });
+    const statusPoll = window.setInterval(() => {
+      void refreshAgentConsoleStatus(true);
+    }, 1500);
     void window.workshop.agentConsoleStatus().then((snapshot) => {
       setAgentConsoleRunning(Boolean(snapshot.running));
       if (snapshot.agent) {
@@ -314,6 +344,7 @@ function App() {
       if (agentConsoleQuietTimer.current) {
         window.clearTimeout(agentConsoleQuietTimer.current);
       }
+      window.clearInterval(statusPoll);
       stopData();
       stopExit();
     };
@@ -527,15 +558,6 @@ function App() {
     });
   }
 
-  function ensureActiveAgentPrompt(kind: AgentTaskKind = promptKind) {
-    const activePrompt = activeAgentPrompt || prompt || buildDefaultAgentPrompt(kind);
-    if (!prompt) {
-      setPrompt(activePrompt);
-    }
-    setActiveAgentPrompt(activePrompt);
-    return activePrompt;
-  }
-
   function setBilingualFileType(fileType: FileType) {
     patch({
       fileType,
@@ -681,7 +703,6 @@ function App() {
 
   function openCallAgentPanel() {
     setCallAgentPanelOpen(true);
-    setActiveAgentPrompt(ensureActiveAgentPrompt());
     window.requestAnimationFrame(() => {
       fitAgentTerminal();
       agentTerminal.current?.focus();
@@ -722,7 +743,7 @@ function App() {
   }
 
   async function sendInteractiveAgentMessage() {
-    const message = ensureActiveAgentPrompt();
+    const message = activeAgentPrompt || prompt;
     if (!message.trim()) {
       return;
     }
@@ -1028,7 +1049,6 @@ function App() {
             <IconButton icon={<FileText size={18} />} label={t.generateLineHtml} onClick={generateLineHtml} primary />
             <IconButton icon={<Languages size={18} />} label={t.generateTranslatePrompt} onClick={generateTranslatePrompt} />
             <IconButton icon={<ShieldCheck size={18} />} label={t.generateProofreadPrompt} onClick={generateProofreadPrompt} />
-            <IconButton icon={<Clipboard size={18} />} label={t.copyPrompt} onClick={copyPrompt} disabled={!prompt && !activeAgentPrompt} />
             <IconButton icon={<RefreshCw size={18} />} label={t.syncTranslation} onClick={syncTranslations} />
             <IconButton icon={<ExternalLink size={18} />} label={t.openOutput} onClick={() => form.outputDir && window.workshop.openPath(form.outputDir)} disabled={!form.outputDir} />
           </div>

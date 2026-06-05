@@ -28,6 +28,8 @@ If you do not want to install it, use the portable build:
 Release page:  
 <https://github.com/TohmaN233/YN-translation-workshop/releases>
 
+On Windows, if command-line Chinese text appears garbled, you can download and run [`set_utf8.reg`](./set_utf8.reg) to make consoles use UTF-8 by default. If you are unsure, open it in Notepad first and inspect the contents before running it.
+
 ## Update Info
 
 ### v1.1.1

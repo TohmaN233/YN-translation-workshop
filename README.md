@@ -28,6 +28,8 @@ Windows 用户推荐下载：
 Release 页面：  
 <https://github.com/TohmaN233/YN-translation-workshop/releases>
 
+Windows 如果遇到命令行中文乱码，可以下载仓库里的 [`set_utf8.reg`](./set_utf8.reg) 后双击运行，让控制台默认使用 UTF-8 编码；不放心的话，运行前可以先用记事本打开检查内容。
+
 ## 更新说明
 
 ### v1.1.1

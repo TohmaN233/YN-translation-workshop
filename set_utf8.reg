@@ -1,0 +1,22 @@
+Windows Registry Editor Version 5.00
+
+; Set system ANSI/OEM code page to UTF-8 (65001)
+; This is equivalent to checking "Beta: Use Unicode UTF-8 for worldwide language support"
+; in Region Settings → Administrative → Change system locale
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Nls\CodePage]
+"ACP"="65001"
+"OEMCP"="65001"
+"MACCP"="65001"
+
+; Set default console to UTF-8 for current user
+[HKEY_CURRENT_USER\Console]
+"CodePage"=dword:0000fde9
+
+; Set PowerShell to UTF-8
+[HKEY_CURRENT_USER\Console\%SystemRoot%_System32_WindowsPowerShell_v1.0_powershell.exe]
+"CodePage"=dword:0000fde9
+
+; Set cmd.exe to UTF-8
+[HKEY_CURRENT_USER\Console\%SystemRoot%_System32_cmd.exe]
+"CodePage"=dword:0000fde9

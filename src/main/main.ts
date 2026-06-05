@@ -30,6 +30,8 @@ import { buildPrompt, type PromptAdvancedOptions, type PromptBuildOptions } from
 import { readEpubText } from "./epubReader.ts";
 import { createTranslatedEpub } from "./epubWriter.ts";
 
+const agentTranscriptLimit = 2_000_000;
+
 interface GenerateLineHtmlArgs {
   sourcePath: string;
   translationPath?: string;
@@ -1123,6 +1125,7 @@ const agentInput = document.getElementById("agentInput");
 let agentOutputText = "";
 let agentTerminal = undefined;
 let agentHasUnreadOutput = false;
+const agentTranscriptLimit = 2000000;
 function t(key, fallback) { return labels[key] || fallback; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])); }
 function rowValue(row) { return lineState.edits?.[row.line] ?? row.translation ?? ""; }
@@ -1206,7 +1209,7 @@ function renderAgentOutput() {
   }
 }
 function appendAgentOutput(text) {
-  agentOutputText = (agentOutputText + String(text || "")).slice(-120000);
+  agentOutputText = (agentOutputText + String(text || "")).slice(-agentTranscriptLimit);
   if (!isAgentExpanded()) {
     agentHasUnreadOutput = true;
     setAgentStatus(t("agentOutputReady", "Agent has output"));
@@ -2711,7 +2714,7 @@ async function startInteractiveAgentConsole(args: AgentConsoleStartArgs): Promis
     };
     interactiveAgentSession = session;
     ptyProcess.onData((data) => {
-      session.outputBuffer = `${session.outputBuffer}${data}`.slice(-120000);
+      session.outputBuffer = `${session.outputBuffer}${data}`.slice(-agentTranscriptLimit);
       session.recentOutput = `${session.recentOutput ?? ""}${data}`.slice(-4000);
       dismissCodexUpdatePrompt(session, session.recentOutput);
       dismissCodexTrustPrompt(session, session.recentOutput);

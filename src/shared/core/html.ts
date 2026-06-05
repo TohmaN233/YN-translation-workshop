@@ -1129,6 +1129,7 @@ let agentConsoleSessionId = "";
 let agentConsoleQuietTimer = 0;
 let agentTerminal = undefined;
 let agentFitAddon = undefined;
+const agentTranscriptLimit = 2000000;
 let lanSyncToken = "";
 let lanSyncPrimaryUrl = "";
 const lanSyncTimers = new Map();
@@ -1815,7 +1816,7 @@ document.getElementById("stopInteractiveAgent")?.addEventListener("click", async
         agentConsoleSessionId = payload.id;
         resetAgentConsoleTranscript();
       }
-      agentRawOutput = (agentRawOutput + payload.data).slice(-240000);
+      agentRawOutput = (agentRawOutput + payload.data).slice(-agentTranscriptLimit);
       markInteractiveAgentStreaming();
       appendAgentConsoleOutput(payload.data);
     });

@@ -158,6 +158,7 @@ function App() {
   const agentConsoleAgent = useRef<AgentType>("codex");
   const agentConsoleSessionId = useRef("");
   const agentConsoleQuietTimer = useRef<number | undefined>(undefined);
+  const agentConsoleAwaitingReply = useRef(false);
   const lastAgentConsoleDataAt = useRef(0);
   const lastLineReviewHtml = useRef("");
   const lastProposalReviewHtml = useRef("");
@@ -188,6 +189,10 @@ function App() {
 
   function markAgentConsoleStreaming() {
     lastAgentConsoleDataAt.current = Date.now();
+    if (!agentConsoleAwaitingReply.current) {
+      setAgentConsolePhase((phase) => phase === "stopped" ? "running" : phase);
+      return;
+    }
     setAgentConsolePhase("streaming");
     if (agentConsoleQuietTimer.current) {
       window.clearTimeout(agentConsoleQuietTimer.current);
@@ -208,11 +213,18 @@ function App() {
         agentConsoleSessionId.current = snapshot.id;
       }
       if (!snapshot.running) {
+        agentConsoleAwaitingReply.current = false;
         setAgentConsolePhase("stopped");
         return;
       }
       if (allowQuiet && Date.now() - lastAgentConsoleDataAt.current >= 2400) {
-        setAgentConsolePhase((phase) => phase === "streaming" || phase === "waiting" ? "quiet" : phase);
+        setAgentConsolePhase((phase) => {
+          if (phase === "streaming" || phase === "waiting") {
+            agentConsoleAwaitingReply.current = false;
+            return "quiet";
+          }
+          return phase;
+        });
       }
     } catch {
       // Status is advisory; live output events remain the source for terminal text.
@@ -318,6 +330,7 @@ function App() {
       if (agentConsoleQuietTimer.current) {
         window.clearTimeout(agentConsoleQuietTimer.current);
       }
+      agentConsoleAwaitingReply.current = false;
       setAgentConsoleRunning(false);
       setAgentConsolePhase("stopped");
       setStatus(`${t.agentConsoleStopped} (${payload.exitCode ?? "?"})`);
@@ -751,11 +764,14 @@ function App() {
     if (!started) {
       return;
     }
+    agentConsoleAwaitingReply.current = true;
+    lastAgentConsoleDataAt.current = Date.now();
     setAgentConsolePhase("waiting");
     setActiveAgentPrompt("");
     setPrompt("");
     const result = await window.workshop.sendAgentConsoleInput(message);
     if (!result.ok) {
+      agentConsoleAwaitingReply.current = false;
       setActiveAgentPrompt(message);
       setPrompt(message);
       setStatus(result.message || t.agentUnavailable);

@@ -195,6 +195,7 @@ export function buildTranslatePrompt(options: TranslatePromptOptions): string {
         `CALL SUBAGENT; SUBAGENT_COUNT=${defaults.subagentCount};`,
         `Split=${defaults.splitSize} is a checkpoint interval, not the task scope.`,
         `Divide the full source line range into ${defaults.subagentCount} non-overlapping agent ranges of roughly equal size; each subagent must process its full assigned range and save progress every ${defaults.splitSize} source lines.`,
+        "Boundary/context lines are read-only references only; subagents must not translate, count, or write them into outputs.",
         "After all complete, merge in part order:",
         `- Final translation (single file): ${outputPath(defaults.outputDir, `${defaults.basename}_translated.txt`)}`,
         `- Merged glossary: ${outputPath(defaults.outputDir, "glossary.json")}`,
@@ -217,7 +218,7 @@ export function buildTranslatePrompt(options: TranslatePromptOptions): string {
     defaults.split ? `- Split=${defaults.splitSize} means checkpoint/save interval. Process the whole assigned range; do not stop after one split.` : "",
     "- Write the final translation and auxiliary output prose in the target language of the language pair; keep source terms, paths, placeholders, IDs, and schema keys unchanged where required.",
     "- Do not modify the source file.",
-    "- Preserve one-to-one line alignment, placeholders, tags, variables, IDs, and empty lines.",
+    "- MUST preserve one-to-one line alignment, placeholders, tags, variables, IDs, and empty lines. Before finalizing, self-check that source line count equals output line count and every output line maps to the same source line number; fix any mismatch before writing the final file.",
     "- Do not write explanations into translated lines."
   ].filter(Boolean);
 

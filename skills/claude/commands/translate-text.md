@@ -22,7 +22,7 @@ Work description → Initial glossary + Character bible → Translate full assig
 - Glossary and character bible are living documents, updated continuously during translation
 - Content not in the target language (code, tags, variables, control characters) is preserved verbatim
 - In multi-agent mode, glossary and character bible are merged after each agent returns
-- Each translation chunk receives 10 lines of preceding context (not translated)
+- Boundary context is read-only and never part of the assigned range or output
 
 ## Argument Parsing
 
@@ -226,10 +226,10 @@ For each chunk `[start, end)`:
 
 #### a. Load Context
 
-1. **Preceding context**: read lines `max(0, start-10)` to `start` — source text plus existing translations as reference. **Do not translate these 10 lines.**
+1. **Boundary context**: if needed, read a short summary or a few lines before `start` as read-only reference. Do not translate, count, or write this context into the chunk output.
 2. **Glossary**: load current `translation/settings/GLOSSARY.json`
 3. **Character bible**: load current `translation/settings/CHARACTER_BIBLE.md`
-4. **Previous chunk tail**: read the last 10 translated lines from the previous chunk for voice/narrative continuity
+4. **Previous chunk tail**: if needed, read a brief translated tail from the previous chunk for voice/narrative continuity. Do not copy it into the current chunk output.
 
 #### b. Translate Line by Line
 
@@ -245,7 +245,7 @@ For each line in the chunk:
    - Control characters, placeholders
    - Empty lines remain empty
    - Pure punctuation/number lines stay as-is
-5. **Line-for-line alignment**: source line N maps to translation line N. Line count must be identical.
+5. **Line-for-line alignment**: source line N maps to translation line N. Line count must be identical. Before finalizing, self-check that every output line maps to the same assigned source line number.
 6. **Style**: apply the user-specified translation style (game/novel/literal/literary/faithful)
 
 **Dialogue translation notes** (game/novel style):
@@ -314,8 +314,8 @@ Each agent receives on startup:
 
 1. **Full glossary**: complete current `GLOSSARY.json`
 2. **Full character bible**: complete current `CHARACTER_BIBLE.md`
-3. **10 lines of preceding context**: source text from before the assigned range (not translated) — for understanding context
-4. **Translation rules**: language pair, style, do-not-translate rules
+3. **Read-only boundary context**: a short summary or a few source lines before the assigned range, only if needed for continuity
+4. **Translation rules**: language pair, style, do-not-translate rules, and strict assigned-range-only output
 
 Agent prompt template:
 ```
@@ -326,8 +326,8 @@ You are a translation agent responsible for translating the following segment:
 - Language pair: [LANGUAGE_PAIR]
 - Style: [STYLE]
 
-Context (10 preceding lines, do NOT translate):
-[10 lines of context]
+Read-only boundary context (NOT part of the line range; do NOT translate, count, or output):
+[brief summary or a few previous lines, only if needed]
 
 Glossary (must follow — confirmed terms are non-negotiable):
 [GLOSSARY content]
@@ -336,14 +336,14 @@ Character bible (reference for voice/tone):
 [CHARACTER_BIBLE content]
 
 Translation rules:
-1. Translate line-by-line; output line count must exactly match source
+1. Translate line-by-line; output line count must exactly match the assigned source range
 2. Glossary terms cannot be varied
 3. Code/tags/variables/control characters preserved verbatim
 4. Record any new proper nouns discovered in new_terms
 5. Record any new character information in bible_updates
 
 Output format:
-1. Translation result (one line per source line)
+1. Translation result for the assigned range only (one output line per assigned source line)
 2. new_terms: [{"src": "...", "dst": "...", "info": "..."}]
 3. bible_updates: [description of newly discovered character information]
 ```
@@ -506,15 +506,15 @@ Resume translation? (starting from chunk [K+1])
 On resume:
 1. Reload the latest glossary and character bible
 2. Continue from `last_chunk + 1`
-3. Use the previous chunk's last 10 lines as context
+3. Use only brief read-only boundary context from the previous chunk if continuity needs it
 
 ## Key Rules
 
-- **Line count must match exactly**: source file has N lines, translation must have N lines — no more, no less
+- **Line count must match exactly**: source file has N lines, translation must have N lines — no more, no less. Self-check line count and line-number mapping before final output.
 - **Glossary is non-negotiable**: confirmed terms are used verbatim every time — no synonyms, no variation, no creative alternatives
 - **Character voice consistency**: same character must use the same speech style and self-reference pronoun throughout, per the character bible
 - **Do not touch what shouldn't be touched**: code/tags/variables/control characters are preserved byte-for-byte
-- **Context is mandatory**: every chunk (including agent tasks) must receive 10 lines of preceding context
+- **Boundary context is read-only**: if provided, it is only for continuity and must never be translated, counted, or written into output
 - **Glossary updates are immediate**: after each chunk, the glossary is updated before the next chunk begins
 - **Conflicts are resolved on merge**: multi-agent term conflicts must be resolved during the merge phase, never deferred
 - **Large file handling**: if Write fails, retry with Bash heredoc. Do not ask for permission.

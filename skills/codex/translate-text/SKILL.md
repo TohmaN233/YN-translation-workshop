@@ -14,7 +14,7 @@ For full chunking, state files, glossary, character-bible, and multi-agent proce
 ## Core Rules
 
 - Produce directly usable translated text. Do not insert meta phrases such as "建议译文", "可译为", "意思是", "translation:", or explanatory notes into translated lines.
-- Preserve one-to-one line alignment whenever the source is line based: source line `N` must map to translation line `N`; keep empty lines empty.
+- Preserve one-to-one line alignment whenever the source is line based: source line `N` must map to translation line `N`; keep empty lines empty. Before finalizing, self-check that source line count equals output line count and every output line maps to the same source line number.
 - Preserve non-language payload exactly: placeholders, tags, variables, escape/control codes, paths, resource IDs, markup, and code-like fragments.
 - Use the provided glossary as the source of truth. Confirmed terms must not be paraphrased or replaced by a preferred alternative.
 - Prefer longer glossary matches before shorter matches when both can apply.
@@ -62,7 +62,7 @@ When returning a small translation directly in chat, provide the final translati
 
 ## Parallel Work
 
-Use sub-agents only when the user permits parallel translation or the task is clearly too large for one pass. Use at most five concurrent agents. Give every agent the current glossary, character bible, previous-context lines, exact line range, and the no-meta/direct-translation output rule.
+Use sub-agents only when the user permits parallel translation or the task is clearly too large for one pass. Use at most five concurrent agents. Give every agent the current glossary, character bible, exact line range, optional read-only boundary context, and the no-meta/direct-translation output rule. Boundary context is never part of the assigned range or output.
 
 Merge agent outputs deterministically:
 

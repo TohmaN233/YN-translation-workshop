@@ -126,8 +126,8 @@ Update the bible when a new character appears or when new facts affect translati
 For each chunk:
 
 1. Load the current glossary and character bible.
-2. Load up to 10 previous source lines as context; do not translate those context lines again.
-3. If available, load the last 10 translated lines from the previous chunk for continuity.
+2. If needed, read brief boundary context from before the chunk, preferably a summary or only a few previous lines. This context is read-only: do not translate it, count it, or write it into the chunk output.
+3. If available, read a brief previous translation tail for continuity; do not copy it into the current chunk output.
 4. Translate only the assigned line range.
 5. Preserve line count exactly.
 6. Save the chunk to `translation/chunks/chunk_XXXX.txt`.
@@ -158,7 +158,8 @@ Each agent must receive:
 - language pair and style;
 - current glossary in full;
 - current character bible in full;
-- up to 10 previous context lines, marked as context only;
+- optional read-only boundary context, preferably as a short summary or only a few previous lines;
+- an explicit warning that boundary context is not part of the assigned range and must not appear in output;
 - output format and file path;
 - the rule that translated lines must contain direct translations only, with no meta wording.
 

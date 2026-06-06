@@ -111,6 +111,18 @@ node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --g
 
 `fix_proposal` 给 translation-workshop 解析，必须包含稳定的行号、原文、当前译文、问题说明和完整建议译文。应用会把它转换成人工审阅 HTML，让用户逐条接受、拒绝或手动改写。
 
+Codex 版 skill 内置格式验证 helper，安装后位于：
+
+```text
+~/.codex/skills/proofread-translation/scripts/validate-fix-proposal.mjs
+```
+
+可手动检查 AI 生成的 fix proposal：
+
+```bash
+node ~/.codex/skills/proofread-translation/scripts/validate-fix-proposal.mjs path/to/file_fix_proposal.md
+```
+
 ### 核心规则
 
 - 不修改源文件。
@@ -226,6 +238,18 @@ Final proofreading output is split into two Markdown files:
 `summary` is for human reading: scope, mode, statistics, risk notes, and processing summary.
 
 `fix_proposal` is for translation-workshop parsing. It must contain stable line numbers, source text, current translation, issue explanation, and a complete suggested replacement. The app converts it into review HTML where users accept, reject, or manually rewrite each item.
+
+The Codex skill includes a format validation helper after installation:
+
+```text
+~/.codex/skills/proofread-translation/scripts/validate-fix-proposal.mjs
+```
+
+You can manually check an AI-generated fix proposal with:
+
+```bash
+node ~/.codex/skills/proofread-translation/scripts/validate-fix-proposal.mjs path/to/file_fix_proposal.md
+```
 
 ### Core Rules
 

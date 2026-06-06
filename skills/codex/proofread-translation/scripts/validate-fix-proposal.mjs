@@ -144,8 +144,8 @@ if (args.includes("--self-test")) {
 } else {
   const file = args[0];
   if (!file) {
-    console.error("Usage: node scripts/validate-fix-proposal.mjs <fix_proposal.md>");
-    console.error("       node scripts/validate-fix-proposal.mjs --self-test");
+    console.error("Usage: node validate-fix-proposal.mjs <fix_proposal.md>");
+    console.error("       node validate-fix-proposal.mjs --self-test");
     process.exit(2);
   }
   const text = fs.readFileSync(file, "utf8");

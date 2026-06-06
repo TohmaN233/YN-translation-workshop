@@ -94,3 +94,11 @@ Every finding in `[basename]_fix_proposal.md` must use this block shape:
 Use `Chunk 001 L123` instead of `MC L123` for split-review findings. `Suggested fix` must be a complete replacement line in the target language, not an explanation or partial edit.
 
 When output was produced in parallel, merge and renumber before finalizing: each heading ID such as `H1-001`, `M2-004`, or `L1-003` must appear only once in the final fix proposal.
+
+If Node.js is available after writing `[basename]_fix_proposal.md`, validate the file with the helper bundled in this skill. Resolve the script path relative to this skill directory:
+
+```bash
+node <this-skill-dir>/scripts/validate-fix-proposal.mjs path/to/[basename]_fix_proposal.md
+```
+
+Fix any reported format errors before presenting the report as complete.

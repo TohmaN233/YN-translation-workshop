@@ -472,113 +472,12 @@ If the user picks `c`, run 3 more rounds with the same logic (still without repl
 
 ### A-Step 5 — Report (two files)
 
-The report is split into **two files** that share the same basename. Tools downstream parse them independently — summary is for humans/dashboards, fix_proposal is for automated fix application.
+Write the two final Markdown files described in **Output Format — FIX_PROPOSALS**:
 
-**Output paths:**
-- Summary (human overview):   `[translation_file_directory]/[basename]_proofread_summary.md`
-- Findings (per-issue, structured):   `[translation_file_directory]/[basename]_fix_proposal.md`
+- `[translation_file_directory]/[basename]_proofread_summary.md`
+- `[translation_file_directory]/[basename]_fix_proposal.md`
 
-Both files must have a matching `Generated` timestamp and identical Source/Translation paths in their headers — this is how tooling verifies they belong together.
-
-#### `[basename]_proofread_summary.md` skeleton
-
-```markdown
-# Proofread Summary — <basename>
-
-## Metadata
-- Source:        <path>
-- Translation:   <path>
-- Glossary:      <path or "none">
-- Type:          <profile>
-- Language pair: <pair>
-- Mode:          montecarlo
-- Total lines:   <N>
-- Generated:     <ISO timestamp>
-- Fix proposals: ./[basename]_fix_proposal.md
-
-## Findings Summary
-| Severity | Count |
-|----------|-------|
-| HIGH     | <n>   |
-| MEDIUM   | <n>   |
-| LOW      | <n>   |
-
-## By Code
-| Code | Type | Count |
-|------|------|-------|
-| H1   | Wrong meaning      | <n> |
-| H2   | Wrong subject      | <n> |
-| ...  | (only non-zero rows)| ... |
-
-## Region Heatmap
-| Region | Range | Priority | Auto hits | Sampled hits | Total |
-| R01    | 0-499 | COLD     | 0         | 0            | 0     |
-| ...
-
-## Sampling Coverage
-| Round | HOT | WARM | COLD | New findings |
-| 1     | 150 | 75   | 25   | 12           |
-| ...
-
-Converged: <yes/no>     Total sampled: <X> / <total>  (<pct>%)
-If unconverged: list HOT regions still active and the user's chosen action (continue/split/stop).
-
-## Glossary Pre-scan
-| Line | Source term | Canonical | In translation | Status | Reason |
-| ...  (only `Confirmed` rows feed H3; filtered rows shown for transparency)
-
-## Missing Gender Entries
-(only present if `missing_gender` was non-empty)
-The following glossary character entries lack a gender token. H8 was skipped for these characters:
-- <src term 1>
-- <src term 2>
-
-## Top Concerns (optional, max 5)
-Brief plain-language summary of the most important issues found, with line ranges.
-```
-
-#### `[basename]_fix_proposal.md` skeleton
-
-```markdown
-# Fix Proposals — <basename>
-
-Source:        <path>
-Translation:   <path>
-Generated:     <ISO timestamp>   (must match summary's timestamp)
-Mode:          montecarlo
-Summary:       ./[basename]_proofread_summary.md
-
-This file is structured for automated tools (e.g. apply_decisions.py).
-Every finding follows the exact FIX_PROPOSALS schema below. Do not add prose.
-Every final finding ID must be unique across the whole file.
-
----
-
-## HIGH
-
-### H1-001 | MC L<N>
-**Source**: `<source text, verbatim>`
-**Current translation**: `<translation, verbatim>`
-**Issue**: <brief description>
-**Suggested fix**: `<directly substitutable replacement>`
-- [ ] Accept suggestion
-
-### H1-002 | MC L<N>
-...
-
-### H9-001 | MC L<N>
-**Source**: `...`
-**Current translation**: `...`
-**Issue**: bloat (src width X, tgt width Y, ratio Z)
-**Suggested fix**: `<retranslated from source>`
-- [ ] Accept suggestion
-
-## MEDIUM
-...
-
-## LOW
-...
-```
+The summary is for humans and may include metadata, counts, region heatmap, sampling coverage, glossary pre-scan notes, missing-gender entries, and top concerns. The fix proposal is machine-parsed: do not add prose outside the required metadata header and finding blocks.
 
 Do **not** edit files in Monte Carlo mode unless the user explicitly asks for fixes.
 
@@ -651,32 +550,13 @@ Before writing the final fix proposal, merge and renumber: each heading ID such 
 
 #### `[basename]_proofread_summary.md` (split mode)
 
-Same structure as MC summary, but replace "Region Heatmap" and "Sampling Coverage" with:
-
-```markdown
-## Chunk Status
-| Chunk | Range       | Findings | Applied | Skipped | Remaining |
-| 1     | 0-499       | 8        | 5       | 2       | 1         |
-| 2     | 500-999     | 3        | 3       | 0       | 0         |
-| ...
-
-Total: <X> findings, <Y> applied, <Z> skipped, <R> remaining.
-```
+Same structure as MC summary, but replace "Region Heatmap" and "Sampling Coverage" with a compact chunk status table: chunk number, human line range, findings, applied, skipped, and remaining.
 
 `Remaining` is the count of findings emitted to `fix_proposal.md`. Applied findings are not emitted again.
 
 #### `[basename]_fix_proposal.md` (split mode)
 
-Same FIX_PROPOSALS structure as MC, but headers use chunk numbers:
-
-```markdown
-### H1-001 | Chunk 015 L74521
-**Source**: `...`
-**Current translation**: `...`
-**Issue**: ...
-**Suggested fix**: `...`
-- [ ] Accept suggestion
-```
+Same FIX_PROPOSALS structure as MC, but headers use `Chunk NNN L<N>` instead of `MC L<N>`.
 
 Print to the user at the end:
 

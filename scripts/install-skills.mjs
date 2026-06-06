@@ -15,7 +15,8 @@ const codexSkillFiles = {
   "proofread-translation": [
     "SKILL.md",
     "agents/openai.yaml",
-    "references/proofread-workflow.md"
+    "references/proofread-workflow.md",
+    "scripts/validate-fix-proposal.mjs"
   ]
 };
 

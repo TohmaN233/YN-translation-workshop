@@ -123,6 +123,18 @@ Codex 版 skill 内置格式验证 helper，安装后位于：
 node ~/.codex/skills/proofread-translation/scripts/validate-fix-proposal.mjs path/to/file_fix_proposal.md
 ```
 
+Claude Code 版也会安装同一个 helper 到：
+
+```text
+~/.claude/translation-workshop/scripts/validate-fix-proposal.mjs
+```
+
+可手动检查：
+
+```bash
+node ~/.claude/translation-workshop/scripts/validate-fix-proposal.mjs path/to/file_fix_proposal.md
+```
+
 ### 核心规则
 
 - 不修改源文件。
@@ -249,6 +261,18 @@ You can manually check an AI-generated fix proposal with:
 
 ```bash
 node ~/.codex/skills/proofread-translation/scripts/validate-fix-proposal.mjs path/to/file_fix_proposal.md
+```
+
+The Claude Code command installs the same helper to:
+
+```text
+~/.claude/translation-workshop/scripts/validate-fix-proposal.mjs
+```
+
+Manual check:
+
+```bash
+node ~/.claude/translation-workshop/scripts/validate-fix-proposal.mjs path/to/file_fix_proposal.md
 ```
 
 ### Core Rules

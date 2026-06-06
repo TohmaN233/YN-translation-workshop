@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const codexSkills = ["translate-text", "proofread-translation"];
 const claudeCommands = ["translate-text.md", "proofread-translation.md"];
+const proofreadValidatorPath = ["skills", "codex", "proofread-translation", "scripts", "validate-fix-proposal.mjs"];
 const githubRawBase = "https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main";
 const codexSkillFiles = {
   "translate-text": [
@@ -207,6 +208,11 @@ export function installPlan({ repo, home, agent }) {
         destination: path.join(home, ".claude", "commands", name)
       });
     }
+    operations.push({
+      kind: "file",
+      source: path.join(repo, ...proofreadValidatorPath),
+      destination: path.join(home, ".claude", "translation-workshop", "scripts", "validate-fix-proposal.mjs")
+    });
   }
   return operations;
 }
@@ -239,6 +245,11 @@ export function githubInstallPlan({ rawBase, home, agent }) {
         destination: path.join(home, ".claude", "commands", name)
       });
     }
+    operations.push({
+      kind: "remote-file",
+      source: rawUrl(rawBase, ...proofreadValidatorPath),
+      destination: path.join(home, ".claude", "translation-workshop", "scripts", "validate-fix-proposal.mjs")
+    });
   }
   return operations;
 }

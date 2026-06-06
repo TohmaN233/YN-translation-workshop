@@ -620,6 +620,13 @@ Every finding uses this format. It is designed for downstream automation.
 
 5. **Accept suggestion**: checkbox for the human reviewer.
 
+If Node.js is available and the helper was installed by translation-workshop, validate the final fix proposal before reporting completion:
+
+```bash
+node ~/.claude/translation-workshop/scripts/validate-fix-proposal.mjs path/to/[basename]_fix_proposal.md
+```
+
+On Windows, resolve `~` from `%USERPROFILE%`. Fix any reported format errors before presenting the report as complete.
 
 ---
 

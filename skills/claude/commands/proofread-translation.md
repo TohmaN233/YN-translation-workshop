@@ -26,6 +26,7 @@ Do not edit the translation unless the user explicitly asks for fixes or chooses
 
 - Write report prose in the target language of the language pair.
 - Keep parser-required fixed labels in English: `Source`, `Current translation`, `Issue`, `Suggested fix`, and `Accept suggestion`.
+- Use human/global 1-based line numbers in headings: `L<N>` maps to `source_lines[N-1]` and `translation_lines[N-1]`. Never use chunk-local, batch-local, `raw`, or `B` line IDs in final fix proposals.
 - `Source` and `Current translation` must be the full exact row text from the files, not shortened quotes, fragments, or explanations.
 - `Suggested fix` must be a complete replacement line in the target language, with no explanation or partial edit.
 - When merging parallel, chunked, or subagent findings, final proposal IDs must be globally unique. If Hx/Mx/Lx IDs repeat, renumber duplicates after the current max for that code.
@@ -347,7 +348,7 @@ for i, (src, tgt) in enumerate(pairs):
         wrong = PRONOUNS[target_lang]["female" if gender == "male" else "male"]
         for w in wrong:
             if re.search(rf'\b{re.escape(w)}\b' if target_lang == "en" else re.escape(w), tgt):
-                flag(H8, line=i, note=f"{char_src} marked {gender}, but '{w}' used")
+                flag(H8, line=i + 1, note=f"{char_src} marked {gender}, but '{w}' used")
 ```
 
 H8 fires only when the character's name appears in that source line. When multiple characters appear in the same line, append `(needs verification)` to the issue.
@@ -626,8 +627,9 @@ How would you like to apply fixes?
 lines = pathlib.Path(TRANSLATION_FILE).read_text(encoding="utf-8").splitlines()
 skipped = []
 for line_num, expected_old, new in replacements:
-    if lines[line_num] == expected_old:
-        lines[line_num] = new
+    idx = line_num - 1  # proposal headings use human/global 1-based L<N>
+    if 0 <= idx < len(lines) and lines[idx] == expected_old:
+        lines[idx] = new
     else:
         skipped.append((line_num, "content changed since report"))
 pathlib.Path(TRANSLATION_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -721,7 +723,7 @@ Every finding uses this format. It is designed for downstream automation.
 1. **Header**: `### {code}-{seq} | Chunk {chunk_or_region} L{global_line_num}`
    - Code: H1..H9, M1..M5, L1..L4
    - Seq: zero-padded 3-digit, globally incrementing per code
-   - Line num: 0-indexed — maps to `translation_lines[line_num]`
+   - Line num: human/global 1-based — `L<N>` maps to `source_lines[N-1]` and `translation_lines[N-1]`
    - Chunk: chunk number (split mode) or `MC` (montecarlo mode)
    - Example: `### H1-042 | Chunk 015 L74521`
 

@@ -42,6 +42,7 @@ If a required input is missing, ask only for that item. If the language pair is 
 - Write report headings, summaries, explanations, issue descriptions, confidence notes, handling options, and every `Suggested fix` value in `target_language`.
 - Keep parser-required fixed field labels in English, including `Source`, `Current translation`, `Issue`, `Suggested fix`, and `Accept suggestion`.
 - Include global line numbers, source text, current translation, issue code, severity, explanation, and `Suggested fix` for every finding.
+- Use human/global 1-based line numbers in headings: `L<N>` maps to `source_lines[N-1]` and `translation_lines[N-1]`.
 - Before writing each finding, verify the global `L<N>` line number by re-reading that exact source/translation line pair from the input files. Do not infer line numbers from chunk-local, batch-local, sampled, displayed, or approximate positions.
 - The `L<N>` line number must point to the source line whose text exactly matches the reported `Source` field. If uncertain, include the candidate in the summary only, not in `[basename]_fix_proposal.md`.
 - `Source` and `Current translation` must contain the full exact line text from that row, not a shortened quote, fragment, or explanation.
@@ -50,7 +51,7 @@ If a required input is missing, ask only for that item. If the language pair is 
 - The `Suggested fix` field must contain only the final target-language text to write back. Do not include meta phrases, explanations, labels, quotes, or search/replace instructions inside that field.
 - When merging parallel or chunked findings, final proposal IDs must be globally unique. Duplicate IDs are forbidden; renumber duplicates after the current max for that Hx/Mx/Lx code before writing the final fix proposal.
 - Mark uncertain findings with a "needs verification" note instead of overstating confidence.
-- Include exactly one default handling option per finding.
+- Include exactly one unchecked `- [ ] Accept suggestion` line per finding.
 - Treat confirmed glossary mismatches as H3.
 - For split-review edits, verify the target line still matches the expected old text before replacing it.
 

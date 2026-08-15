@@ -59,6 +59,7 @@
 ## 翻译/校对工作流
 
 - 翻译/校对是固定 YN domain contract：系统提示、host tools、artifact validator 和 completion gate 由产品内置；当前没有 skill 选择器、外部 Agent 模式或 `readSkillReference` runtime。
+- 产品可见 Workflow 只允许 `initial_translation` 与 `proofread`，并且必须分别对应完整 translate/proofread Host contract。术语一致性、角色口吻与最终 QA 是这两条 Workflow 内部的检查维度；不得把只有预填 Prompt、没有 typed DomainRun、调度器、产物 validator 与 completion gate 的 preset 再包装成独立 Workflow。
 - 翻译/校对输出以机器可校验的 artifact 为契约：译文候选要行对齐，proofread findings 以 JSON 为主。
 - 文件夹 line-review batch index 是每个源文件 HTML/sidecar 身份的唯一清单。proposal HTML 生成或旧页面打开时，只要其 `lineReviewPath` 指向 batch child，就必须归一到拥有它的 batch index；不能让首个 child 把文件夹工作流降级成单文件路径。汇总建议的一键应用必须先把索引内全部 canonical child 原子同步到当前译文并回写 matched 绑定，包括没有 finding 的文件，再把建议提交到这些 child 的 sidecar；禁止为 batch 已拥有的文件另建 `proposal-line-review` 平行产物。旧平行 child 只能在无冲突迁移其状态后删除。批量写 TXT 必须拒绝 index、child 与 sidecar 的分叉绑定、缺失基线或行数漂移，不能按优先级猜路径后假成功。
 - 审阅 HTML 中可执行的语义修正建议默认状态必须是 `accepted`；只有用户明确拒绝、检测到冲突，或只读机械证据才不得默认应用。folder 与单文件 JSON/Markdown 解析、legacy HTML 升级和“一键应用建议”必须使用同一默认状态契约；不得把页面看起来已接受的建议在内嵌数据中写成 `unreviewed`。

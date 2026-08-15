@@ -65,7 +65,7 @@
   const image = (src, alt, caption) => `<figure><div class="image-frame"><img src="assets/screens/${src}" alt="${esc(alt)}" loading="lazy"><button type="button" data-lightbox="assets/screens/${src}">放大</button></div><figcaption class="image-caption"><span>${caption}</span><span>来自产品实机参考</span></figcaption></figure>`;
 
   const metricGrid = () => `<div class="metric-grid">
-    <div class="metric"><b>${data.metrics.workflowTemplates}</b><span>内置 Workflow 模板</span></div>
+    <div class="metric"><b>${data.metrics.workflowTemplates}</b><span>内置完整 Workflow</span></div>
     <div class="metric"><b>${data.metrics.callableSurfaces}</b><span>可调用函数面：${data.metrics.parentFunctions} parent + ${data.metrics.childFunctions} child</span></div>
     <div class="metric"><b>${data.metrics.coreAssets}</b><span>核心可定制资产类型</span></div>
     <div class="metric"><b>${data.metrics.canonicalWorkflows}</b><span>Canonical full workflow：翻译 + 校对</span></div>
@@ -81,7 +81,7 @@
       <h2 id="what-it-is">它是什么</h2>
       <p class="lead">YN Translation Workshop 是本地优先的翻译与校对工作台。它把 TXT / EPUB、译名表、角色信息、行级编辑、Agent 会话、并行 Worker、审阅建议和最终 TXT 写回放进同一条可追溯链路。用户可以一键跑默认流程，也可以在每个关键节点插手、询问、修改、拒绝或恢复。</p>
       <div class="note"><strong>不是“按一下就相信 AI”</strong>真正的核心是人机协作：源文件只读、候选与真实 TXT 分离、每次写入有行范围、每批工作有验证债务、审阅建议需要人类审批，最终才写回真实文件。</div>
-      ${image("workbench.png", "YN Translation Workshop 启动工作台", "项目、输入、模板、Prompt 和输出集中在启动工作台。")}
+      ${image("workbench.png", "YN Translation Workshop 启动工作台", "项目、输入、Workflow、Prompt 和输出集中在启动工作台。")}
 
       <h2 id="capability-map">能力地图</h2>
       <div class="three-col">
@@ -95,7 +95,7 @@
 
       <h2 id="interfaces">你会看到的三个界面</h2>
       <div class="three-col">
-        <article><h3>启动工作台</h3><p>选择源文、译文、输出目录与 workflow 模板，生成行对齐 HTML 和 typed Prompt。</p></article>
+        <article><h3>启动工作台</h3><p>选择源文、译文、输出目录与完整 Workflow，生成行对齐 HTML 和 typed Prompt。</p></article>
         <article><h3>行审阅 HTML</h3><p>逐行对照、搜索、术语替换、主题、Agent、LAN 同步、导出/写入 TXT 都在这里完成。</p></article>
         <article><h3>Agent 会话</h3><p>可展开工具调用、thinking 与 child 卡片；运行时仍可 Steer 或排队 Follow-up。</p></article>
       </div>
@@ -130,8 +130,8 @@
     const assets = data.assets.map((item) => `<tr><td><strong>${item.name}</strong><br><code>${item.path}</code></td><td>${item.format}</td><td>${item.readers}</td><td>${item.writers}</td><td>${item.rule}</td></tr>`).join("");
     return `${pageHead("1 / Features & Parameters", "基本功能与参数设置", "这一章回答“这个开关到底改变了哪一步”。参数不是装饰文本：它们会进入 typed prompt metadata、Host manifest、调度器、validator 或资产路径。")}
       <h2 id="workbench">启动工作台</h2>
-      <p class="lead">最左侧决定项目边界与输入；右侧决定 workflow 模板、输出目录和 Prompt。源文件始终只读，候选译文、HTML 状态和真实 TXT 是不同的安全层。</p>
-      ${image("workbench.png", "启动工作台完整界面", "选择文件/文件夹、输入模式、模板和输出，再生成行对齐 HTML 或 typed Prompt。")}
+      <p class="lead">最左侧决定项目边界与输入；右侧决定完整 Workflow、输出目录和 Prompt。源文件始终只读，候选译文、HTML 状态和真实 TXT 是不同的安全层。</p>
+      ${image("workbench.png", "启动工作台完整界面", "选择文件/文件夹、输入模式、Workflow 和输出，再生成行对齐 HTML 或 typed Prompt。")}
 
       <h2 id="parameters">完整参数表</h2>
       <div class="filters"><input id="param-search" type="search" placeholder="筛选参数，例如 splitSize"><select id="param-area"><option value="">全部区域</option>${[...new Set(data.parameters.map((item) => item.area))].map((area) => `<option>${area}</option>`).join("")}</select><div class="scope-toggle" aria-label="参数数量"><button class="active" type="button">${data.parameters.length} 项</button></div></div>
@@ -259,10 +259,10 @@ chapter_01.txt</code></pre></div><div class="note"><strong>Host 如何解释</st
       <div class="workflow-timeline">${workflow.steps.map((step) => `<section class="workflow-step"><div class="workflow-step-index">${step.phase}</div><div class="workflow-step-main"><div class="workflow-step-title"><div><small>${step.owner}</small><h4>${step.title}</h4></div><a href="functions.html?q=${encodeURIComponent(step.functions.split(/[、；]/u)[0])}" title="在 Function 图鉴中搜索">查看函数</a></div><p>${step.action}</p><dl class="step-contract"><div><dt>读取</dt><dd>${step.reads}</dd></div><div><dt>Function / 执行器</dt><dd>${step.functions}</dd></div><div><dt>产出 / 状态</dt><dd>${step.output}</dd></div><div><dt>硬门槛</dt><dd>${step.gate}</dd></div></dl></div></section>`).join("")}</div>
       <div class="workflow-outcomes"><div><span>完成条件</span><p>${workflow.completion}</p></div><div><span>失败与恢复</span><p>${workflow.failure}</p></div><div><span>Token 策略</span><p>${workflow.token}</p></div></div>
     </article>`).join("");
-    return `${pageHead("Workflow Atlas", "所有内置 Workflow 与拼接方式", "先区分两个层次：UI 有 5 个内置模板；真正带完整 Host completion gate 的 canonical runtime workflow 是翻译与校对。复用审计、局部修复、通用委派等是它们内部或旁路的有界子流程。")}
-      <h2 id="templates">5 个内置模板</h2>
+    return `${pageHead("Workflow Atlas", "所有内置 Workflow 与拼接方式", "产品只提供两个带完整 Host completion gate 的 canonical workflow：翻译与校对。术语、角色口吻和最终 QA 都是这两条流程内部的检查维度，不再维护没有 Host 契约的独立入口。复用审计、局部修复、通用委派等是内部或旁路的有界子流程。")}
+      <h2 id="templates">2 个内置 Workflow</h2>
       <div class="table-wrap"><table><thead><tr><th>ID / 名称</th><th>Prompt kind</th><th>产物路径提示</th><th>用途</th></tr></thead><tbody>${templates}</tbody></table></div>
-      <div class="note warning"><strong>模板不等于新的 Host 状态机</strong><code>terminology_sweep</code> 和 <code>character_voice_check</code> 是 generic 模板；<code>final_qa</code> 复用 proofread 类型。只有精确 marker + typed workflowIntent 才能新建完整翻译/校对 contract。</div>
+      <div class="note"><strong>入口与 Harness 一一对应</strong>每个可选项都拥有明确的 typed workflowIntent、DomainRun、调度器、产物协议和 completion gate；不存在只生成 Prompt 却没有 Host 约束的伪 Workflow。</div>
 
       <h2 id="translation-workflow">完整翻译 Workflow</h2>
       <p class="lead">点击阶段查看它读取的参数/资产、主要 Function、输出与不可变约束。</p>
@@ -295,8 +295,8 @@ chapter_01.txt</code></pre></div><div class="note"><strong>Host 如何解释</st
       <h2 id="completion">Completion gate 如何拼接</h2>
       <ol class="step-list"><li><strong>文档归属</strong><br>每份完成证据必须匹配 documentId、sourceLineCount 和 hash-current 输入。</li><li><strong>Assignment 结算</strong><br>按已接受 assignment 结果数结算，不按 Worker 数，也不把空闲 Worker 当任务。</li><li><strong>审阅结算</strong><br>每个翻译 chunk 的风险行/样本通过，或精确失败行已修复并复审。</li><li><strong>资产结算</strong><br>pending 术语/角色发现必须被 accept/reject；校对专名候选也必须全部决策。</li><li><strong>最终 validator</strong><br>行数、保护载荷、对齐与 Host-required debt 全部清零。</li></ol>
 
-      <h2 id="all-workflow-details">五条 Workflow 完整拆解</h2>
-      <p class="lead">下面逐条列出真实入口、每一步的 owner、参数与资产何时读取、调用链、写出状态、失败门槛、完成条件和 Token 策略。generic preset 也明确标出它不拥有的 runtime 能力。</p>
+      <h2 id="all-workflow-details">两条 Workflow 完整拆解</h2>
+      <p class="lead">下面逐条列出真实入口、每一步的 owner、参数与资产何时读取、调用链、写出状态、失败门槛、完成条件和 Token 策略。</p>
       <nav class="workflow-jump" aria-label="Workflow 快速跳转">${data.workflowTemplates.map((item, index) => `<a href="#workflow-${item.id}"><span>0${index + 1}</span>${item.name}</a>`).join("")}</nav>
       ${deepDives}`;
   }
@@ -372,7 +372,7 @@ chapter_01.txt</code></pre></div><div class="note"><strong>Host 如何解释</st
 
       <h2 id="typed-contract">Typed contract 里到底存什么</h2>
       <div class="table-wrap"><table><thead><tr><th>字段族</th><th>典型字段</th><th>为什么不能只放在 Prompt</th></tr></thead><tbody>
-        <tr><td>Workflow identity</td><td>kind、fullWorkflow、ownerSessionId、intent、suspended/recoveryPauseId</td><td>防止另一个会话、普通 follow-up 或旧模板取得 ambient authorization。</td></tr>
+        <tr><td>Workflow identity</td><td>kind、fullWorkflow、ownerSessionId、intent、suspended/recoveryPauseId</td><td>防止另一个会话、普通 follow-up 或旧状态取得 ambient authorization。</td></tr>
         <tr><td>Document manifest</td><td>documentId、sourcePath、candidatePath、sourceLineCount、stage、order</td><td>确保文件夹中每条证据属于正确文件，移除的文件不会继续占完成门槛。</td></tr>
         <tr><td>Assignment</td><td>assignmentId、documentId、fromLine/toLine 或 sparse lines、input hash、attempt、worker</td><td>模型不能把一个分片的结果记到另一文件，也不能因读了上下文扩大写权限。</td></tr>
         <tr><td>Translation evidence</td><td>stagingPath、candidateHash、requiredBatchLines、risk/sample lines、review verdict</td><td>非空候选、普通 validator warning 或旧审阅不能自行结清明确债务。</td></tr>
@@ -442,7 +442,7 @@ chapter_01.txt</code></pre></div><div class="note"><strong>Host 如何解释</st
         <tr><td>Atomic commit</td><td>staging/canonical/domain/evidence revision 与 rollback result</td><td>文件、状态与证据是否在同一提交边界？</td></tr>
         <tr><td>Completion</td><td>每 document 的 sourceLineCount、accepted scopes、pending discoveries/candidates、validator debt</td><td>为什么模型说完成但 Host 仍阻止结束？</td></tr>
       </tbody></table></div>
-      <div class="note"><strong>关键源码入口</strong><code>src/main/agent/piNative/sessionAgentRuntime.ts</code> 负责 Pi session loop；<code>ynDomainTools.ts</code> 注册 35 个 Parent Host Function；<code>subagentRunner.ts</code> 构造 17 个 child 调用面；<code>workflowTemplates.ts</code> 只定义五个 UI 模板 metadata。</div>
+      <div class="note"><strong>关键源码入口</strong><code>src/main/agent/piNative/sessionAgentRuntime.ts</code> 负责 Pi session loop；<code>ynDomainTools.ts</code> 注册 35 个 Parent Host Function；<code>subagentRunner.ts</code> 构造 17 个 child 调用面；<code>workflowTemplates.ts</code> 只定义两个与 Harness 对齐的 Workflow 入口 metadata。</div>
       <div class="gallery"><figure class="image-frame"><img src="assets/screens/tool-call.png" alt="结构化工具块" loading="lazy"><figcaption>工具调用、参数和结果在对话流中可检查。</figcaption></figure><figure class="image-frame"><img src="assets/screens/agent-panel.png" alt="Agent 面板" loading="lazy"><figcaption>本地与 LAN 面板都从 canonical Pi messages 重建。</figcaption></figure></div>`;
   }
 

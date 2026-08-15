@@ -7103,3 +7103,48 @@ Final verification evidence:
   portable: 104,806,049 bytes. Packaged runtime acceptance launched only hidden
   `release/win-unpacked/translation-workshop.exe`, rendered in 1,922 ms, and exited cleanly. The NSIS
   portable envelope was not executed.
+
+## 2026-08-14: Remove Prompt-Only Pseudo Workflows
+
+Observed evidence and root cause:
+
+- the product registry exposed five peers, but only `initial_translation` and `proofread` create typed
+  Host contracts with DomainRun state, schedulers, validators, durable artifacts, and completion gates;
+- `terminology_sweep`, `character_voice_check`, and `final_qa` only populated the desktop Prompt box.
+  They were never called by translation or proofreading and still referenced removed Function names,
+  so the UI and guide overstated the reliable product surface and created dead maintenance paths;
+- terminology, character voice, and final QA are already enforced inside the canonical translation and
+  proofreading workflows through indexed assets, deterministic scans, semantic workers, review gates,
+  and final validation.
+
+Implemented contract and why it works:
+
+- the visible registry now contains only the two Harness-backed workflows, and the renderer has no
+  generic preset prompt branches or preset-only parameter panels;
+- old persisted template ids canonicalize through the existing `getWorkflowTemplate` fallback to
+  `initial_translation`, so removing the UI entries does not strand legacy projects;
+- product copy and the full guide now describe two workflows and keep terminology, voice, and final QA
+  as internal checks rather than advertising unsupported standalone artifacts;
+- `AGENTS.md` records that a new visible Workflow requires a typed DomainRun, scheduler, validator,
+  durable artifact, and completion gate rather than only a prefilled Prompt.
+
+Verification evidence:
+
+- [x] focused registry tests prove the only visible ids are `initial_translation` and `proofread`, old
+  persisted ids canonicalize safely, and retired prompt/function copy is absent from product and guide;
+- [x] `npm test` passes all 138 test files;
+- [x] the guide rendered with two registry rows, two jump links, and two deep dives at desktop and
+  390x844 viewports, with no retired ids, console errors, or horizontal overflow;
+- [x] the complete hidden Electron Agent/HTML acceptance passed, including LAN convergence, folder and
+  proposal synchronization, native Pi UI, provider retry, compaction, and cold restart;
+- [x] Windows 2.0.0 artifacts were rebuilt and checksums verified. Installer: 105,180,361 bytes;
+  portable: 104,805,582 bytes. Packaged runtime acceptance launched only hidden
+  `release/win-unpacked/translation-workshop.exe`, rendered in 1,276 ms, and exited cleanly. The NSIS
+  portable envelope was not executed.
+
+Unrelated verifier debt observed:
+
+- `verify:electron-project-open` is stale against the multi-`BrowserView` tab host and current proposal
+  report routing fixture. It is not used as acceptance evidence for this change; temporary diagnostic
+  edits were reverted. Product project-open behavior remains covered by unit tests and the complete
+  hidden Agent/HTML acceptance, but this dedicated verifier still needs a separate harness-only repair.

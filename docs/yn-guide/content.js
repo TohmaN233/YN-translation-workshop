@@ -4,7 +4,7 @@ window.YN_GUIDE = {
   version: "2.0.0",
   verified: "2026-08-14",
   metrics: {
-    workflowTemplates: 5,
+    workflowTemplates: 2,
     canonicalWorkflows: 2,
     parentFunctions: 35,
     childFunctions: 17,
@@ -111,11 +111,8 @@ window.YN_GUIDE = {
     { key: "LAN PIN", area: "远程", def: "000000", effect: "生成局域网同步入口；浏览器状态从 durable session 收敛。", used: "远程行审阅、Agent 面板、SSE + durable poll" }
   ],
   workflowTemplates: [
-    { id: "initial_translation", name: "初译", kind: "translate", output: "{translationOutputDir}/{document}_translated.txt", purpose: "完整生成候选译文；唯一直接进入 canonical translation full workflow 的模板。" },
-    { id: "proofread", name: "完整校对", kind: "proofread", output: "{reportOutputDir}/{document}.proofread.json", purpose: "先机械预扫，再由语义 Worker 复核，产出唯一 findings JSON。" },
-    { id: "terminology_sweep", name: "术语一致性检查", kind: "generic", output: "{reportOutputDir}/{document}.terminology.json", purpose: "面向术语一致性的检查模板；复用通用 Agent 能力与项目资产。" },
-    { id: "character_voice_check", name: "角色口吻检查", kind: "generic", output: "{reportOutputDir}/{document}.character-voice.json", purpose: "依据角色圣经检查称谓、身份、语气和禁用表达。" },
-    { id: "final_qa", name: "最终 QA", kind: "proofread", output: "{reportOutputDir}/{document}.final-qa.json", purpose: "交付前的最终校验模板，沿用 proofread 类型的输入约束。" }
+    { id: "initial_translation", name: "初译", kind: "translate", output: "{translationOutputDir}/{document}_translated.txt", purpose: "完整生成候选译文，进入 canonical translation full workflow。" },
+    { id: "proofread", name: "完整校对", kind: "proofread", output: "{reportOutputDir}/{document}.proofread.json", purpose: "先机械预扫，再由语义 Worker 复核，产出唯一 findings JSON。" }
   ],
   parentFunctions: [
     fn("resumeYnWorkflow", "控制", "幂等恢复同一 Pi 会话中被停放的完整翻译/校对 workflow；active 或无暂停时成功 no-op。"),
@@ -183,8 +180,8 @@ window.YN_GUIDE.workflowDeepDives = [
   {
     id: "initial_translation",
     runtime: "Canonical translate workflow",
-    truth: "这是五个模板中唯一直接创建完整翻译 DomainRun、翻译 Worker 池、独立审阅池和最终 completion gate 的入口。模板只决定 promptKind 与目标产物；真正的文件清单、写入所有权和完成条件由 Host typed contract 决定。",
-    entry: "用户从初译模板生成带精确 Workflow marker 的 translate Prompt，页面先通过 Electron bridge 原子保存项目设置；marker 与 typed workflowIntent 必须一致。",
+    truth: "这是两个内置 Workflow 之一，直接创建完整翻译 DomainRun、翻译 Worker 池、独立审阅池和最终 completion gate。入口 metadata 只决定 promptKind 与目标产物；真正的文件清单、写入所有权和完成条件由 Host typed contract 决定。",
+    entry: "用户从初译入口生成带精确 Workflow marker 的 translate Prompt，页面先通过 Electron bridge 原子保存项目设置；marker 与 typed workflowIntent 必须一致。",
     parameters: ["languagePair / style / workDescription", "splitSize", "folderTranslationOrder", "reuseExistingTranslation", "customPreserveRules", "subagentEnabled / subagentCount", "reviewSubagentCount", "child provider/model override", "translateOutputDir"],
     assets: ["绑定原文或文件夹 manifest", ".translation-workshop/glossary.json", "AI_translation/_workspace/glossary_candidates.json", "AI_translation/_workspace/character_bible.md", ".translation-workshop/style_guide.md", ".translation-workshop/translation_memory.sqlite", "旧候选译文及备份", "translation-staging + Pi JSONL"],
     steps: [
@@ -224,64 +221,6 @@ window.YN_GUIDE.workflowDeepDives = [
     completion: "清单中每个 documentId 的计划 scope 都已结算，prescan 仍 hash-current，Monte Carlo 已收敛或用户明确停止，专名候选全部决策，唯一报告通过 schema 与 Host gate。",
     failure: "单个 assignment 的 provider/contract 失败留在原 Worker 有界恢复；报告写入失败不会把未持久化 findings 假装成成功。",
     token: "Host 承担全量确定性扫描；语义模型只看风险/抽样或当前 split；directMatches 避免全文资产；findings 只写问题行，replacement 避免重复历史。"
-  },
-  {
-    id: "terminology_sweep",
-    runtime: "Generic preset, not a dedicated DomainRun",
-    truth: "源码把它注册为 promptKind=generic、artifact kind=terminology_findings_json 的 UI 模板。它没有独立的 Host 调度器、专属 completion gate 或专属 Function；因此应理解为“预填好的术语检查任务”，而不是第三种 canonical workflow。",
-    entry: "选择模板后，Renderer 生成术语一致性检查 Prompt，并附加目标路径 {reportOutputDir}/{document}.terminology.json 与 artifact kind。",
-    parameters: ["sourcePath", "translationPath", "glossaryPath / canonical glossary", "reportOutputDir", "languagePair", "workDescription"],
-    assets: ["当前 source/translation pair", "正式术语表", "术语候选", "角色圣经中的称谓记录", "目标 terminology JSON"],
-    steps: [
-      { phase: "01", owner: "Renderer", title: "选择 generic 模板", action: "getWorkflowTemplate 返回 terminology_sweep；unknown id 会回退 initial_translation，因此持久项目里的 template id 会先 canonicalize。", reads: "workflowTemplateId", functions: "非 Agent Function；getWorkflowTemplate", output: "generic promptKind + terminology artifact hint", gate: "模板 metadata 不会自动创建 translation/proofread DomainRun。" },
-      { phase: "02", owner: "Parent Agent", title: "确认绑定与检查范围", action: "读取界面上下文和当前 source/translation 路径，明确是当前页、一个范围还是完整文件，避免把“术语检查”误解成全量翻译。", reads: "visible route、source/translation、用户范围", functions: "readYnInterfaceContext、inspectTranslationContext", output: "bounded terminology audit plan", gate: "没有完整 workflow marker 时不得偷偷启动完整翻译或校对队列。" },
-      { phase: "03", owner: "Parent/General child", title: "检索规范术语", action: "以源词为单位在正式术语、候选与相关项目文本中做精确搜索；只为歧义读取小段参考。", reads: "glossary records、candidate records、bounded source/translation", functions: "searchProjectText、readProjectFile、readSourceLines、readTranslationLines", output: "每个命中的 source/target/evidence", gate: "索引资产返回完整结构化记录，不靠 JSON 命中行猜字段。" },
-      { phase: "04", owner: "Agent", title: "判定一致性", action: "区分正式术语冲突、同源多译、不同源误复用、别名与上下文允许变体，只形成带绝对行号的 findings。", reads: "命中行与邻域、正式/候选优先级", functions: "可选 runSubagents 做不同文档的只读调查", output: "terminology findings", gate: "generic child 不获得候选译文专用写权限。" },
-      { phase: "05", owner: "Parent", title: "输出独立 JSON", action: "按模板目标写 terminology findings artifact；若发现应更新项目资产，必须走受校验的资产决策路径，而不是在检查中直接覆盖 glossary。", reads: "findings、artifact path hint", functions: "writeProjectFile 仅限允许的 workspace/report 路径；资产更新走 resolve*", output: "{document}.terminology.json", gate: "此模板自身没有专属 finalize Function，完成声明依赖实际 artifact 存在与读取确认。" },
-      { phase: "06", owner: "Human", title: "决定修文还是修资产", action: "将真实译文问题送入局部修复；将受证据支持的新专名加入候选；不要把两类动作混成一次不可审计覆盖。", reads: "terminology JSON、line-review state", functions: "runSubagents / writeTranslationChunk / resolveTranslationDiscoveries", output: "可追踪的修复或资产决策", gate: "检查结果不会自动写回最终 TXT。" }
-    ],
-    completion: "模板层的完成是目标 terminology JSON 已按约定写出；它没有 canonical workflow 的跨文档 coverage gate。需要强保证时，应在完整 proofread workflow 中执行术语检查。",
-    failure: "若 Prompt 提到旧名称而当前 registry 不暴露该 Function，Agent 必须使用当前可用的 read/search/write/resolve 工具，不能假称调用成功。",
-    token: "按源词索引命中与精确范围读取，避免每次把完整 glossary、全文件和全部 child transcript送入模型。"
-  },
-  {
-    id: "character_voice_check",
-    runtime: "Generic preset, not a dedicated DomainRun",
-    truth: "这是 promptKind=generic、artifact kind=character_voice_findings_json 的专项检查模板。角色圣经是判断依据，但模板不会建立自己的 Worker pool 或自动修改角色资产。",
-    entry: "选择模板后生成角色名、口吻、称谓与一致性检查 Prompt，目标为 {reportOutputDir}/{document}.character-voice.json。",
-    parameters: ["sourcePath", "translationPath", "languagePair", "style", "workDescription", "reportOutputDir", "subagentEnabled"],
-    assets: ["AI_translation/_workspace/character_bible.md", "正式术语表中的角色名/称谓", "源译对齐行", "目标 character-voice JSON"],
-    steps: [
-      { phase: "01", owner: "Renderer", title: "构造专项 Prompt", action: "附加 character voice artifact hint，但保持 generic prompt kind。", reads: "workflowTemplateId、项目表单", functions: "非 Agent Function；getWorkflowTemplate", output: "角色专项任务描述", gate: "不自动获得 proofread completion gate。" },
-      { phase: "02", owner: "Parent", title: "读取角色上下文", action: "先确定当前可见人物、说话行与检查范围，再读取直接命中的角色完整记录；unknown 字段保持 unknown，不凭空补设定。", reads: "interface context、character bible direct matches", functions: "readYnInterfaceContext、inspectTranslationContext、searchProjectText", output: "人物身份/称谓/代词/语气证据", gate: "必须把角色事实与对应 source line 绑定。" },
-      { phase: "03", owner: "Agent/General children", title: "分片调查角色声音", action: "按人物或不重叠范围委派只读调查，检查名称一致、称谓关系、语体、口头禅、敬语层级与代词。", reads: "bounded source/translation、角色记录、邻域", functions: "runSubagents、readBoundSourceLines、readBoundTranslationLines", output: "每条问题的 line + evidence + suggested fix", gate: "用户明确的 child 数量才是 exact；否则配置只是上限。" },
-      { phase: "04", owner: "Parent", title: "合并同类 findings", action: "将同一角色的重复问题去重，区分翻译错误与角色圣经缺失；不把风格偏好冒充硬错误。", reads: "child result summaries、canonical records", functions: "inspectSubagents；必要时 readProjectFile", output: "deduplicated character voice findings", gate: "parent 卡片只保存轻量 child 状态，不嵌入 transcript。" },
-      { phase: "05", owner: "Parent", title: "写专项 JSON", action: "把行号、角色、当前译文、证据和建议写到模板目标；发现的新角色事实另走资产决策。", reads: "merged findings、artifact hint", functions: "writeProjectFile；角色资产走 resolveTranslationDiscoveries", output: "{document}.character-voice.json", gate: "检查 artifact 与角色圣经更新是两个独立提交。" },
-      { phase: "06", owner: "Human/repair flow", title: "审批并精确修复", action: "用户确认后，把问题行交给局部 translation_repair，并重新做 alignment 风险/抽样检查。", reads: "approved findings、当前候选 hash", functions: "runSubagents、inspectTranslationAlignment、recordTranslationAlignmentChecks", output: "精确修复 + hash-current evidence", gate: "模板本身绝不直接覆盖最终译文。" }
-    ],
-    completion: "character-voice JSON 已写出且每条记录带角色与行证据。若要把结果计入正式交付门槛，应通过 proofread 或 bounded repair contract 结算。",
-    failure: "角色记录缺失时输出 unknown/候选并保留证据，不用臆测填满；文件或范围未绑定时直接失败。",
-    token: "按人物和源词直接命中角色记录；并行调查只返回问题摘要；完整 child 对话留在各自 JSONL。"
-  },
-  {
-    id: "final_qa",
-    runtime: "Proofread-kind preset",
-    truth: "模板使用 promptKind=proofread，但产物 kind 是 final_qa_findings_json、路径是 {document}.final-qa.json。它复用校对输入与工具约束，却不是代码中第三套 final-QA Host 状态机。",
-    entry: "选择 final_qa 后 Renderer 生成“交付前 QA、结构化 findings、不得直接编辑最终译文”的 Prompt，并附加独立 artifact hint。",
-    parameters: ["sourcePath / translationPath", "proofreadMode", "candidateRatio", "customPreserveRules", "glossary/character/style assets", "reportOutputDir"],
-    assets: ["最终候选译文", "全部批准项目资产", "既有 proofread findings", "line-review 状态", "目标 final-qa JSON"],
-    steps: [
-      { phase: "01", owner: "Renderer + Host", title: "冻结交付候选", action: "读取当前 source/translation binding 和 candidate hash，确保 QA 检查的就是准备交付的 revision。", reads: "visible route、candidate path/hash", functions: "inspectTranslationContext", output: "QA input identity", gate: "候选变化后旧 QA 结论不再 hash-current。" },
-      { phase: "02", owner: "Host scanner", title: "重跑确定性检查", action: "重新检查行数、placeholder/tag/control code、自定义保留、目标语言残留、异常长度和项目规则。", reads: "完整 source/candidate + validation options", functions: "validateTranslationArtifact / proofread prescan", output: "确定性 QA signals", gate: "warning 与 hard debt 分开，required debt 不能被普通 validator warning 清空。" },
-      { phase: "03", owner: "Proofread runtime", title: "复核高风险语义", action: "按 proofread 类型读取风险行、边界上下文与直接命中资产，确认遗漏、错译、术语、角色和可读性问题。", reads: "risk/sample rows、approved assets", functions: "runProofreadSubagents、readAssignedProofreadContext、writeAssignedFindings", output: "final QA findings", gate: "机械信号必须经语义确认；白名单行不重复报告。" },
-      { phase: "04", owner: "Parent", title: "对比既有报告", action: "辨认已修复、仍存在和新出现的问题；只保留当前 candidate hash 上仍成立的记录。", reads: "现有 findings、current candidate、QA findings", functions: "readProjectFile、readTranslationLines", output: "current-only QA set", gate: "不能把旧 revision 的 finding 直接复制进新报告。" },
-      { phase: "05", owner: "Parent", title: "写 final-qa JSON", action: "按独立 artifact kind 写出结构化结果和简短摘要，不直接修改最终译文。", reads: "current-only QA set", functions: "writeProjectFile / writeProofreadFindings（取决于实际启动的是 preset 还是 canonical proofread）", output: "{document}.final-qa.json", gate: "路径提示是 durable output contract，不是让模型自由选择目录。" },
-      { phase: "06", owner: "Human + bounded repair", title: "修复阻塞项", action: "确认后的错误通过精确范围修复；修复后重跑局部 alignment 与受影响 QA scope。", reads: "accepted QA findings、exact lines", functions: "writeTranslationChunk / runSubagents、inspectTranslationAlignment", output: "新 candidate revision", gate: "修复动作与只读 QA 分离。" },
-      { phase: "07", owner: "Host", title: "交付前再验证", action: "对最终 revision 再执行 artifact validator，并确认行审阅/批次索引/sidecar/真实 TXT 没有分叉。", reads: "canonical candidate、review state、batch index", functions: "validateTranslationArtifact", output: "可进入人工写回/导出的交付候选", gate: "QA 报告为空不等于写回已经完成。" }
-    ],
-    completion: "final-qa JSON 对应当前候选 hash，阻塞 finding 已处理或明确保留，最终 artifact validator 通过。模板本身不新增专属 completion state。",
-    failure: "发现输入 revision 漂移、报告路径分叉或未决硬债务时必须重新绑定/复审，不能沿用旧空报告。",
-    token: "复用校对的风险/抽样、direct asset match 与局部复审；不再让模型通读已验证的所有通过行并逐行解释。"
   }
 ];
 

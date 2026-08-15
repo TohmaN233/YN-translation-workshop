@@ -21,7 +21,7 @@ import "./styles.css";
 type Locale = "zh-CN" | "en-US";
 type FileType = "auto" | "txt" | "epub";
 type InputMode = "separate" | "bilingual";
-type AgentTaskKind = "translate" | "proofread" | "generic";
+type AgentTaskKind = "translate" | "proofread";
 type ProofreadMode = "split" | "montecarlo";
 
 interface AssetProposal {
@@ -614,34 +614,13 @@ function App() {
     return [
       `Primary artifact: ${artifact.pathHint}`,
       `Artifact kind: ${artifact.kind}`,
-      "Use this artifact as the durable output for the selected workflow template."
+      "Use this artifact as the durable output for the selected workflow."
     ].join("\n");
   }
 
   function buildWorkflowTemplatePrompt(templateId: WorkflowTemplateId) {
-    const withArtifact = (lines: string[]) => [...lines, workflowArtifactInstruction(templateId)].join("\n");
-    switch (templateId) {
-      case "terminology_sweep":
-        return withArtifact([
-          "Run a terminology sweep for the current source/translation pair.",
-          "Check glossary consistency, use readProjectAssets, and propose glossary updates with proposeAssetUpdate.",
-          "Do not edit the final translation file directly."
-        ]);
-      case "character_voice_check":
-        return withArtifact([
-          "Run a character voice check for the current source/translation pair.",
-          "Check character names, speaking style, and consistency against the character bible.",
-          "Use proposeAssetUpdate for character bible updates and write line-aware findings when fixes are needed."
-        ]);
-      case "final_qa":
-        return withArtifact([
-          "Run final QA for the current source/translation pair.",
-          "Produce structured findings JSON and a concise QA summary under the report folder.",
-          "Do not edit the final translation file directly."
-        ]);
-      default:
-        return withArtifact([buildDefaultAgentPrompt(getWorkflowTemplate(templateId).promptKind)]);
-    }
+    const template = getWorkflowTemplate(templateId);
+    return [buildDefaultAgentPrompt(template.promptKind), workflowArtifactInstruction(template.id)].join("\n");
   }
 
   function setBilingualFileType(fileType: FileType) {
@@ -779,45 +758,6 @@ function App() {
                 <option value="split">split</option>
                 <option value="montecarlo">montecarlo</option>
               </select>
-            </label>
-            <label className="field">
-              <span>{t.candidateRatio ?? "H9 candidate ratio"}</span>
-              <input type="number" min={0.1} step={0.1} value={form.candidateRatio} onChange={(event) => patch({ candidateRatio: Number(event.target.value) })} />
-            </label>
-          </>
-        );
-      case "terminology_sweep":
-        return (
-          <>
-            <label className="field">
-              <span>{t.glossaryPath}</span>
-              <input value={form.glossaryPath} onChange={(event) => patch({ glossaryPath: event.target.value })} />
-            </label>
-            <label className="field wideField">
-              <span>{t.workDescription}</span>
-              <textarea value={form.workDescription} onChange={(event) => patch({ workDescription: event.target.value })} />
-            </label>
-          </>
-        );
-      case "character_voice_check":
-        return (
-          <>
-            <label className="field">
-              <span>{t.proofreadOutputDir ?? "Report output folder"}</span>
-              <input value={form.proofreadOutputDir || defaultProofreadOutputDir()} onChange={(event) => patch({ proofreadOutputDir: event.target.value })} />
-            </label>
-            <label className="field wideField">
-              <span>{t.workDescription}</span>
-              <textarea value={form.workDescription} onChange={(event) => patch({ workDescription: event.target.value })} />
-            </label>
-          </>
-        );
-      case "final_qa":
-        return (
-          <>
-            <label className="field">
-              <span>{t.proofreadOutputDir ?? "Report output folder"}</span>
-              <input value={form.proofreadOutputDir || defaultProofreadOutputDir()} onChange={(event) => patch({ proofreadOutputDir: event.target.value })} />
             </label>
             <label className="field">
               <span>{t.candidateRatio ?? "H9 candidate ratio"}</span>
@@ -1296,7 +1236,7 @@ function App() {
           </div>
 
           <label className="field workflowTemplateField">
-            <span>{t.workflowTemplate ?? "Workflow template"}</span>
+            <span>{t.workflowTemplate ?? "Built-in workflow"}</span>
             <select value={form.workflowTemplateId} onChange={(event) => selectWorkflowTemplate(event.target.value as WorkflowTemplateId)}>
               {workflowTemplates.map((template) => (
                 <option key={template.id} value={template.id}>
@@ -1306,7 +1246,7 @@ function App() {
             </select>
           </label>
           <section className="workflowTemplateParams">
-            <strong>{t.workflowTemplateParams ?? "Template parameters"}</strong>
+            <strong>{t.workflowTemplateParams ?? "Workflow parameters"}</strong>
             <div className="workflowTemplateParamGrid">
               {workflowTemplateParams()}
             </div>

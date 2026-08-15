@@ -22,12 +22,10 @@ async function test(name, fn) {
 }
 
 await test("workflow templates select the prompt mode without a legacy job contract", () => {
-  assert.equal(workflowTemplates.length, 5);
+  assert.deepEqual(workflowTemplates.map((template) => template.id), ["initial_translation", "proofread"]);
   assert.equal(getWorkflowTemplate("initial_translation")?.promptKind, "translate");
   assert.equal(getWorkflowTemplate("proofread")?.promptKind, "proofread");
-  assert.equal(getWorkflowTemplate("terminology_sweep")?.promptKind, "generic");
-  assert.equal(getWorkflowTemplate("character_voice_check")?.promptKind, "generic");
-  assert.equal(getWorkflowTemplate("final_qa")?.promptKind, "proofread");
+  assert.equal(getWorkflowTemplate("terminology_sweep")?.id, "initial_translation");
   for (const template of workflowTemplates) {
     assert.equal("jobType" in template, false);
   }
@@ -36,10 +34,7 @@ await test("workflow templates select the prompt mode without a legacy job contr
 await test("workflow templates declare their primary artifact protocol", () => {
   const expected = new Map([
     ["initial_translation", ["translation_candidate", "{translationOutputDir}/{document}_translated.txt"]],
-    ["proofread", ["findings_json", "{reportOutputDir}/{document}.proofread.json"]],
-    ["terminology_sweep", ["terminology_findings_json", "{reportOutputDir}/{document}.terminology.json"]],
-    ["character_voice_check", ["character_voice_findings_json", "{reportOutputDir}/{document}.character-voice.json"]],
-    ["final_qa", ["final_qa_findings_json", "{reportOutputDir}/{document}.final-qa.json"]]
+    ["proofread", ["findings_json", "{reportOutputDir}/{document}.proofread.json"]]
   ]);
   for (const template of workflowTemplates) {
     const [kind, pathHint] = expected.get(template.id);
@@ -61,15 +56,27 @@ await test("App persists the selected workflow template in project state", async
   assert.match(source, /outputArtifact/);
   assert.match(source, /Primary artifact:/);
   assert.match(source, /Artifact kind:/);
-  assert.match(source, /case "terminology_sweep"/);
-  assert.match(source, /case "character_voice_check"/);
-  assert.match(source, /case "final_qa"/);
+  assert.doesNotMatch(source, /terminology_sweep|character_voice_check|final_qa/);
+  assert.doesNotMatch(source, /proposeAssetUpdate|use readProjectAssets/);
   assert.match(source, /patch\(\{ translateOutputDir: event\.target\.value \}\)/);
   assert.match(source, /patch\(\{ proofreadMode: event\.target\.value as ProofreadMode \}\)/);
   assert.match(source, /patch\(\{ workDescription: event\.target\.value \}\)/);
   assert.match(source, /workflowTemplateId: getWorkflowTemplate\(loaded\.workflowTemplateId\)\.id/);
   assert.match(styles, /\.workflowTemplateParams/);
   assert.match(styles, /\.workflowTemplateParamGrid/);
+});
+
+await test("retired prompt presets are absent from product copy and the guide", async () => {
+  const files = await Promise.all([
+    readFile("src/shared/agent/workflowTemplates.ts", "utf8"),
+    readFile("src/shared/i18n/zh-CN.json", "utf8"),
+    readFile("src/shared/i18n/en-US.json", "utf8"),
+    readFile("docs/yn-guide/content.js", "utf8"),
+    readFile("docs/yn-guide/app.js", "utf8")
+  ]);
+  for (const source of files) {
+    assert.doesNotMatch(source, /terminology_sweep|character_voice_check|final_qa/);
+  }
 });
 
 await test("generated workflow prompts replace the embedded Pi draft and typed metadata instead of starting a legacy job", async () => {

@@ -17,6 +17,8 @@ const lineReviewPath = path.join(htmlDir, "line-review-newest.html");
 const oldLineReviewPath = path.join(htmlDir, "line-review-old.html");
 const proposalReviewPath = path.join(htmlDir, "proposal-review-newest.html");
 const oldProposalReviewPath = path.join(htmlDir, "proposal-review-old.html");
+const reportPath = path.join(outputDir, "report.json");
+const translationPath = path.join(outputDir, "AI_translation", "source_translated.txt");
 const nestedSourceRoot = path.join(outputDir, "nested-source");
 const glossaryPath = path.join(workspaceDir, "glossary.json");
 const characterBiblePath = path.join(outputDir, "AI_translation", "_workspace", "character_bible.md");
@@ -35,6 +37,20 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
+function activeBrowserView(window: BrowserWindow): BrowserView | undefined {
+  return window.getBrowserViews().find((view) => {
+    if (view.webContents.isDestroyed()) return false;
+    const bounds = view.getBounds();
+    return bounds.width > 0 && bounds.height > 0;
+  });
+}
+
+function browserViewFilePath(view: BrowserView | undefined): string | undefined {
+  if (!view || view.webContents.isDestroyed() || view.webContents.isLoadingMainFrame()) return undefined;
+  const url = view.webContents.getURL();
+  return url.startsWith("file:") ? fileURLToPath(url) : undefined;
+}
+
 async function waitFor<T>(read: () => Promise<T> | T, accept: (value: T) => boolean, label: string, timeoutMs = 10_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   let last: T | undefined;
@@ -44,6 +60,25 @@ async function waitFor<T>(read: () => Promise<T> | T, accept: (value: T) => bool
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
   throw new Error(`Timed out waiting for ${label}; last value: ${JSON.stringify(last)}`);
+}
+
+async function executeJavaScript<T>(
+  contents: Electron.WebContents,
+  script: string,
+  label: string,
+  timeoutMs = 5_000
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      contents.executeJavaScript(script) as Promise<T>,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out evaluating ${label}.`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function clickOpenProject(mainWindow: BrowserWindow): Promise<void> {
@@ -77,10 +112,12 @@ await Promise.all([
   mkdir(activeProjectHtmlDir, { recursive: true }),
   mkdir(screenshotDir, { recursive: true }),
   mkdir(path.dirname(characterBiblePath), { recursive: true }),
+  mkdir(path.dirname(translationPath), { recursive: true }),
   mkdir(path.join(nestedSourceRoot, "route-a"), { recursive: true }),
   mkdir(path.join(nestedSourceRoot, "route-b", "chapter"), { recursive: true })
 ]);
 await writeFile(sourcePath, "原文一\n原文二", "utf8");
+await writeFile(translationPath, "译文一\n译文二", "utf8");
 await writeFile(activeProjectSourcePath, "当前项目原文", "utf8");
 await Promise.all([
   writeFile(path.join(nestedSourceRoot, "route-a", "scene.txt"), "原文甲\n原文乙", "utf8"),
@@ -133,7 +170,7 @@ const proposalHtml = renderProposalReviewHtml({
   title: "latest proposal review",
   proposals,
   outputDir,
-  reportPath: path.join(outputDir, "report.json"),
+  reportPath,
   lineReviewPath
 });
 await Promise.all([
@@ -141,6 +178,24 @@ await Promise.all([
   writeFile(lineReviewPath, lineHtml, "utf8"),
   writeFile(oldProposalReviewPath, proposalHtml, "utf8"),
   writeFile(proposalReviewPath, proposalHtml, "utf8"),
+  writeFile(reportPath, JSON.stringify({
+    schemaVersion: "1.0",
+    documentId: "source.txt",
+    sourcePath,
+    translationPath,
+    generatedAt: new Date(0).toISOString(),
+    findings: [{
+      id: "H3-001",
+      severity: "H3",
+      type: "terminology",
+      sourceLine: 1,
+      translationLine: 1,
+      sourceText: "原文一",
+      currentTranslation: "译文一",
+      suggestedFix: "修订一",
+      rationale: "fixture"
+    }]
+  }, null, 2), "utf8"),
   writeFile(activeProjectLineReviewPath, activeProjectLineHtml, "utf8"),
   writeFile(path.join(workspaceDir, "project.json"), JSON.stringify({
     outputDir,
@@ -179,6 +234,7 @@ app.disableHardwareAcceleration();
 await import("../src/main/main.ts");
 
 async function run(): Promise<void> {
+  console.log("[project-open] waiting-for-renderer");
   const mainWindow = await waitFor(
     () => BrowserWindow.getAllWindows().find((candidate) => candidate.webContents.getURL().includes("renderer/index.html")),
     Boolean,
@@ -205,27 +261,33 @@ async function run(): Promise<void> {
     "both project review tabs"
   );
   const activeView = await waitFor(
-    () => viewerWindow.getBrowserView(),
+    () => activeBrowserView(viewerWindow),
     (view): view is BrowserView => Boolean(
       view
-      && !view.webContents.isDestroyed()
-      && view.webContents.getURL().startsWith("file:")
-      && path.resolve(fileURLToPath(view.webContents.getURL())) === path.resolve(lineReviewPath)
+      && path.resolve(browserViewFilePath(view) || "") === path.resolve(lineReviewPath)
+      && view.webContents.getTitle() === "latest line review"
     ),
     "the active review tab"
   );
   const firstInteractiveMs = performance.now() - openStartedAt;
+  console.log("[project-open] initial-tabs-ready");
+  console.log("[project-open] active-view", JSON.stringify({
+    url: activeView.webContents.getURL(),
+    title: activeView.webContents.getTitle(),
+    loading: activeView.webContents.isLoadingMainFrame(),
+    crashed: activeView.webContents.isCrashed()
+  }));
   assert(path.resolve(fileURLToPath(activeView.webContents.getURL())) === path.resolve(lineReviewPath), "Newest line review was not the active project tab");
   assert(firstInteractiveMs <= 3_000, `Project first interactive review took ${Math.round(firstInteractiveMs)} ms`);
 
   const restoredPromptSettings = await waitFor(
-    () => activeView.webContents.executeJavaScript(`({
+    () => executeJavaScript<Record<string, unknown>>(activeView.webContents, `({
       languagePair: document.querySelector("#promptLanguagePair")?.value,
       style: document.querySelector("#promptStyle")?.value,
       workDescription: document.querySelector("#promptWorkDescription")?.value,
       splitSize: Number(document.querySelector("#promptSplitSize")?.value),
       subagentCount: Number(document.querySelector("#promptSubagentCount")?.value)
-    })`).catch(() => ({})),
+    })`, "restored prompt settings"),
     (value: Record<string, unknown>) => value.languagePair === "en->zh-CN" && value.style === "literary-noir" && value.subagentCount === 4,
     "project-scoped HTML prompt settings"
   );
@@ -366,6 +428,7 @@ async function run(): Promise<void> {
     "custom preservation rules to broadcast into the open line-review HTML"
   );
   await captureWebContentsPng(mainWindow.webContents, customPreserveRulesScreenshotPath);
+  console.log("[project-open] preservation-rules-ready");
 
   await mainWindow.webContents.executeJavaScript(`(() => {
     const label = [...document.querySelectorAll("label.field")].find((item) => {
@@ -451,6 +514,7 @@ async function run(): Promise<void> {
     (value) => value.entries?.some((entry) => entry.source === "Archive" && entry.target === "文献馆") === true,
     "HTML glossary edit persistence"
   );
+  console.log("[project-open] glossary-live");
   await waitFor(
     () => activeView.webContents.executeJavaScript(`[...document.querySelectorAll("#glossaryList input")].map((input) => input.value).join("\\n")`).catch(() => ""),
     (text) => String(text).includes("文献馆"),
@@ -463,12 +527,11 @@ async function run(): Promise<void> {
     button.click();
   })()`);
   const siblingView = await waitFor(
-    () => viewerWindow.getBrowserView(),
+    () => activeBrowserView(viewerWindow),
     (view): view is BrowserView => Boolean(
       view
-      && !view.webContents.isDestroyed()
-      && view.webContents.getURL().startsWith("file:")
-      && path.resolve(fileURLToPath(view.webContents.getURL())) === path.resolve(oldLineReviewPath)
+      && path.resolve(browserViewFilePath(view) || "") === path.resolve(oldLineReviewPath)
+      && view.webContents.getTitle() === "sibling line review"
     ),
     "the active sibling line-review tab"
   );
@@ -487,7 +550,7 @@ async function run(): Promise<void> {
     button.click();
   })()`);
   await waitFor(
-    () => viewerWindow.getBrowserView(),
+    () => activeBrowserView(viewerWindow),
     (view) => view === activeView,
     "return to the latest line-review tab"
   );
@@ -512,6 +575,7 @@ async function run(): Promise<void> {
     (value: Record<string, unknown>) => value.style === "historical-drama" && String(value.glossary).includes("文献馆"),
     "project settings and assets after HTML reopen"
   );
+  console.log("[project-open] sibling-and-reload-ready");
   await activeView.webContents.executeJavaScript(`(() => {
     document.querySelector("#translatePrompt")?.click();
     document.querySelector("#glossaryDrawerToggle")?.click();
@@ -552,12 +616,11 @@ async function run(): Promise<void> {
 
   await mainWindow.webContents.executeJavaScript(`window.workshop.openPath(${JSON.stringify(activeProjectLineReviewPath)})`);
   await waitFor(
-    () => viewerWindow.getBrowserView(),
+    () => activeBrowserView(viewerWindow),
     (view): view is BrowserView => Boolean(
       view
-      && !view.webContents.isDestroyed()
-      && view.webContents.getURL().startsWith("file:")
-      && path.resolve(fileURLToPath(view.webContents.getURL())) === path.resolve(activeProjectLineReviewPath)
+      && path.resolve(browserViewFilePath(view) || "") === path.resolve(activeProjectLineReviewPath)
+      && view.webContents.getTitle() === "active project line review"
     ),
     "the newly active project review tab"
   );
@@ -571,6 +634,7 @@ async function run(): Promise<void> {
     path.resolve(secondProjectPicker[1].defaultPath || "") === path.resolve(activeOutputDir),
     "Project picker did not follow the currently active review project"
   );
+  console.log("[project-open] active-project-picker-ready");
   await waitFor(
     () => BrowserWindow.getAllWindows().every((window) => window.isDestroyed() || !window.webContents.isLoading()),
     Boolean,
@@ -600,6 +664,8 @@ async function run(): Promise<void> {
     const info = await stat(path.resolve(path.dirname(nestedResult.outputPath), file.outputPath));
     assert(info.isFile(), `Nested folder child HTML is not a file: ${file.outputPath}`);
   }));
+  console.log("[project-open] nested-folder-ready");
+  assert(viewerWindow.getBrowserViews().length === 4, "Project-open verification did not retain all four review tabs");
 
   console.log(JSON.stringify({
     ok: true,
@@ -621,15 +687,30 @@ async function run(): Promise<void> {
     styleGuideLoaded: true,
     customPreserveRulesEditor: true,
     decisionLedgerRemoved: true,
+    multiBrowserViewTabs: true,
     screenshotPath,
     glossaryReferenceScreenshotPath,
     customPreserveRulesScreenshotPath,
-    tabCount: 3,
+    tabCount: viewerWindow.getBrowserViews().length,
     firstInteractiveMs: Math.round(firstInteractiveMs)
   }));
 }
 
-void app.whenReady().then(run).catch((error) => {
+async function runWithTimeout(): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      run(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Project-open verifier timed out after 120 seconds.")), 120_000);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+void app.whenReady().then(runWithTimeout).catch((error) => {
   console.error(error instanceof Error ? error.stack || error.message : String(error));
   process.exitCode = 1;
 }).finally(async () => {

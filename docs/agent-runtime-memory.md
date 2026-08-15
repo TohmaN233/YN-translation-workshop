@@ -7142,12 +7142,18 @@ Verification evidence:
   `release/win-unpacked/translation-workshop.exe`, rendered in 1,276 ms, and exited cleanly. The NSIS
   portable envelope was not executed.
 
-Unrelated verifier debt observed:
+Resolved verifier debt:
 
-- `verify:electron-project-open` is stale against the multi-`BrowserView` tab host and current proposal
-  report routing fixture. It is not used as acceptance evidence for this change; temporary diagnostic
-  edits were reverted. Product project-open behavior remains covered by unit tests and the complete
-  hidden Agent/HTML acceptance, but this dedicated verifier still needs a separate harness-only repair.
+- `verify:electron-project-open` now targets the multi-`BrowserView` tab host through
+  `getBrowserViews()`, supplies a current proofread JSON routing fixture, and runs hidden views with real
+  offscreen rendering. Without offscreen rendering, the hidden line-review renderer stopped servicing
+  DOM evaluation even though its URL/title had loaded, causing the old harness to hang;
+- the Node launcher no longer calls `child.kill()` on timeout. A bounded watchdog now runs inside the
+  Electron verifier process, which records its current phase, cleans up its own windows/temp projects,
+  and exits with an observable failure;
+- the restored acceptance keeps four real review tabs, validates the active-tab project pointer, live
+  project settings/assets, nested folder generation, and screenshots. The verifier passes end to end
+  with `multiBrowserViewTabs=true` and a 315 ms first interactive review in the final run.
 
 ## 2026-08-14: Glossary-Candidate Toggle Boundary
 

@@ -43,14 +43,14 @@ try {
       env: {
         ...process.env,
         ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
-        YN_ELECTRON_VERIFY_HEADLESS: "1"
+        YN_ELECTRON_VERIFY_HEADLESS: "1",
+        YN_ELECTRON_VERIFY_OFFSCREEN: "1"
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill(), 30_000);
     child.stdout.on("data", (chunk) => {
       const value = chunk.toString("utf8");
       stdout += value;
@@ -62,11 +62,9 @@ try {
       process.stderr.write(value);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
       resolve({ code, stdout, stderr });
     });
     child.on("error", (error) => {
-      clearTimeout(timer);
       resolve({ code: 1, stdout, stderr: `${stderr}\n${error.stack || error.message}` });
     });
   });
@@ -86,6 +84,7 @@ try {
     || !result.stdout.includes('"reactProjectStateLive":true')
     || !result.stdout.includes('"characterBibleMarkdown":true')
     || !result.stdout.includes('"styleGuideLoaded":true')
+    || !result.stdout.includes('"multiBrowserViewTabs":true')
     || /ERR_ABORTED|Error occurred in handler/.test(result.stderr)
   ) {
     throw new Error("Electron project-open verifier failed.");

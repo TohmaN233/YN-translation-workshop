@@ -7148,3 +7148,41 @@ Unrelated verifier debt observed:
   report routing fixture. It is not used as acceptance evidence for this change; temporary diagnostic
   edits were reverted. Product project-open behavior remains covered by unit tests and the complete
   hidden Agent/HTML acceptance, but this dedicated verifier still needs a separate harness-only repair.
+
+## 2026-08-14: Glossary-Candidate Toggle Boundary
+
+Observed evidence and root cause:
+
+- the project checkbox reached the typed request and completion requirements, but the new per-assignment
+  terminology commit path treated every translation run as candidate-enabled. Child validation still
+  requested discoveries, Host committed them, restored candidate-derived debt, installed the batch claim
+  gate, and rebuilt terminology debt during final validation even when `glossaryCandidates=false`;
+- disabling candidate generation must not hide the existing candidate file. It remains useful as a
+  read-only consistency reference and can reduce translation token use; only new discovery construction,
+  reporting, mutation, gating, and repair scheduling are disabled.
+
+Implemented contract and why it works:
+
+- the child still receives bounded direct matches and exact-search access to the existing
+  `glossary_candidates.json`, while its submission schema and prompt omit new candidate discoveries when
+  the switch is off;
+- Host filters accidental glossary reports before DomainRun mutation, does not write the candidate file,
+  does not install a terminology claim gate, and does not restore or rebuild candidate-derived repair
+  debt. Stale pending candidate-only Host state is removed without deleting the existing reference file;
+- the formal project glossary remains authoritative and continues through ordinary mechanical
+  validation. Character-fact collection follows its own independent switch.
+
+Verification evidence:
+
+- [x] focused Domain-tool tests prove no candidate file, gate, priority repair, discovery hint, or final
+  validation debt is created while disabled, including a cold state containing old candidate debt;
+- [x] focused child-lifecycle tests prove the existing candidate and formal glossary remain readable but
+  the child validation schema cannot submit new candidate discoveries;
+- [x] all 138 unit test files pass. One first-pass failure in the pre-existing deterministic review-context
+  sampling assertion passed both focused runs and the complete clean rerun;
+- [x] the complete hidden Electron Agent/HTML acceptance passes, including LAN terminal convergence,
+  proposal/folder synchronization, native child UI, reuse, reviewer gates, retries, compaction, and restart;
+- [x] Windows 2.0.0 artifacts were rebuilt and checksums verified. Installer: 105,181,060 bytes;
+  portable: 104,806,332 bytes. Packaged runtime acceptance launched only hidden
+  `release/win-unpacked/translation-workshop.exe`, rendered in 3,010 ms, and exited cleanly. The NSIS
+  portable envelope was not executed.

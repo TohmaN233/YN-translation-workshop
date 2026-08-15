@@ -403,6 +403,225 @@ await test("accepted translation splits commit provisional terms immediately and
   }
 });
 
+await test("disabled glossary candidates cannot create files, gates, hints, or terminology debt", async () => {
+  let started;
+  const priorityRepairs = [];
+  const subagents = {
+    hasRunning: () => Boolean(started),
+    startTranslationBatch(options) {
+      started = options;
+      return { id: options.batchId, kind: "translation", status: "running", startedAt: 1, subagents: [] };
+    },
+    list: () => started
+      ? [{ id: started.batchId, kind: "translation", status: "running", startedAt: 1, subagents: [] }]
+      : [],
+    async notifyParent() {},
+    translationPriorityBatchOwner() { return started?.batchId; },
+    enqueueTranslationPriorityTasksIfActive(batchId, tasks) {
+      priorityRepairs.push({ batchId, tasks });
+      return tasks.length;
+    }
+  };
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: true,
+    subagentEnabled: true,
+    subagentCount: 2
+  });
+  const staleGlossaryRecord = {
+    id: "disabled-stale-glossary",
+    kind: "glossary",
+    documentId: "source.txt",
+    fromLine: 1,
+    toLine: 1,
+    sourceHash: "stale-source",
+    candidateHash: "stale-candidate",
+    source: "ゲートオープン",
+    target: "旧门",
+    category: "setting_term",
+    evidenceLine: 1,
+    rationale: "stale candidate state"
+  };
+  const staleCharacterRecord = {
+    id: "enabled-character",
+    kind: "character",
+    documentId: "source.txt",
+    fromLine: 1,
+    toLine: 1,
+    sourceHash: "stale-source",
+    candidateHash: "stale-candidate",
+    sourceName: "ユッピ",
+    evidenceLine: 1,
+    evidence: "speaker evidence",
+    gender: "unknown",
+    confidence: "unknown"
+  };
+  domainRun.recordTranslationDiscoveries([staleGlossaryRecord, staleCharacterRecord]);
+  domainRun.recordTranslationDiscoveryConflicts([{
+    id: "disabled-stale-conflict",
+    batchId: "old-batch",
+    source: "ゲートオープン",
+    observedTargets: ["旧门", "开门"],
+    discoveryIds: [staleGlossaryRecord.id],
+    documentIds: ["source.txt"],
+    affectedRanges: [{
+      documentId: "source.txt",
+      fromLine: 1,
+      toLine: 1,
+      sourceHash: staleGlossaryRecord.sourceHash,
+      candidateHash: staleGlossaryRecord.candidateHash
+    }],
+    status: "conflict"
+  }]);
+  domainRun.recordTranslationTerminologyDebt([{
+    documentId: "source.txt",
+    line: 1,
+    source: "ゲートオープン",
+    expectedTarget: "开门",
+    observedTargets: ["旧门"]
+  }]);
+  const fx = await fixture({
+    subagents,
+    domainRun,
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      glossaryCandidates: false,
+      characterBible: true,
+      subagentEnabled: true,
+      subagentCount: 2,
+      reviewSubagentCount: 2,
+      translationSplitSize: 1
+    }
+  }, "ゲートオープン A\n次へ\n");
+  const candidate = resolveTranslationCandidatePath({
+    outputDir: fx.outputDir,
+    sourcePaths: [fx.sourcePath],
+    documentId: "source.txt"
+  });
+  const result = {
+    discoveries: {
+      glossaryCandidates: [{
+        source: "ゲートオープン",
+        target: "开门",
+        category: "setting_term",
+        evidenceLine: 1,
+        rationale: "must be ignored while disabled"
+      }],
+      characterFacts: [{
+        sourceName: "ユッピ",
+        evidenceLine: 1,
+        evidence: "speaker evidence",
+        gender: "unknown",
+        confidence: "unknown"
+      }]
+    }
+  };
+  try {
+    await execute(fx.tool("inspectTranslationContext"));
+    assert.equal(
+      Object.hasOwn(fx.tool("resolveTranslationDiscoveries").parameters.properties, "glossary"),
+      false,
+      "the parent resolver schema must not expose terminology decisions while candidates are disabled"
+    );
+    await assert.rejects(
+      execute(fx.tool("writeProjectFile"), {
+        path: "AI_translation/_workspace/glossary_candidates.json",
+        content: JSON.stringify({ entries: [] })
+      }),
+      /Glossary-candidate generation is disabled/i
+    );
+    await execute(fx.tool("runTranslationSubagents"), {
+      tasks: [
+        { documentId: "source.txt", fromLine: 1, toLine: 1 },
+        { documentId: "source.txt", fromLine: 2, toLine: 2 }
+      ]
+    });
+    assert.ok(started);
+    assert.equal(started.claimGate, undefined, "the candidate conflict gate must not exist while disabled");
+    assert.deepEqual(started.priorityTasks, [], "stale candidate debt must not enter the disabled queue");
+    assert.deepEqual(domainRun.pendingTranslationDiscoveryConflicts(), []);
+    assert.deepEqual(domainRun.pendingTranslationTerminologyDebt(), []);
+    assert.deepEqual(
+      domainRun.pendingTranslationDiscoveries().map((record) => record.kind),
+      ["character"],
+      "disabling candidates must clear only glossary state and preserve enabled character facts"
+    );
+
+    await mkdir(path.dirname(candidate), { recursive: true });
+    await writeFile(candidate, "开门 A\n下一步\n", "utf8");
+    await started.onTaskCompleted(result, started.tasks[0]);
+    await assert.rejects(
+      readFile(path.join(fx.outputDir, "AI_translation", "_workspace", "glossary_candidates.json"), "utf8"),
+      (error) => error?.code === "ENOENT"
+    );
+    assert.equal(priorityRepairs.length, 0);
+    assert.equal(domainRun.translationDiscoveryObservations().some((record) => (
+      record.kind === "glossary" && record.id !== staleGlossaryRecord.id
+    )), false);
+    const nextRequest = started.requestForTask(started.tasks[1]);
+    assert.deepEqual(nextRequest.priorTranslationDiscoveries.glossaryCandidates, []);
+    assert.equal(nextRequest.priorTranslationDiscoveries.characterFacts.length, 1);
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("disabled glossary candidates do not rebuild old candidate-derived debt during final validation", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: false,
+    subagentEnabled: false
+  });
+  const oldRecord = {
+    id: "old-resolved-candidate-term",
+    kind: "glossary",
+    documentId: "source.txt",
+    fromLine: 1,
+    toLine: 1,
+    sourceHash: "old-source-hash",
+    candidateHash: "old-candidate-hash",
+    source: "ゲートオープン",
+    target: "旧门",
+    category: "setting_term",
+    evidenceLine: 1,
+    rationale: "old enabled run"
+  };
+  domainRun.recordTranslationDiscoveries([oldRecord]);
+  domainRun.resolveTranslationDiscoveries([oldRecord.id], [{
+    source: oldRecord.source,
+    target: oldRecord.target,
+    observedTargets: [oldRecord.target]
+  }]);
+  const fx = await fixture({
+    domainRun,
+    requestPatch: {
+      workflowIntent: "translation",
+      glossaryCandidates: false,
+      characterBible: false,
+      subagentEnabled: false
+    }
+  }, "ゲートオープン\n");
+  try {
+    await execute(fx.tool("writeTranslationChunk"), {
+      fromLine: 1,
+      toLine: 1,
+      lines: ["开门"]
+    });
+    const audit = await execute(fx.tool("inspectTranslationAlignment"));
+    await execute(fx.tool("readSourceLines"), { fromLine: 1, toLine: 1 });
+    await execute(fx.tool("readTranslationLines"), { fromLine: 1, toLine: 1 });
+    await execute(fx.tool("recordTranslationAlignmentChecks"), {
+      auditId: audit.details.auditId,
+      failures: []
+    });
+    await execute(fx.tool("validateTranslationArtifact"));
+    assert.deepEqual(domainRun.pendingTranslationTerminologyDebt(), []);
+  } finally {
+    await fx.close();
+  }
+});
+
 await test("concurrent assignment terminology commits serialize candidate, DomainRun, and Host persistence as one transaction", async () => {
   let started;
   let persistenceFailureArmed = false;

@@ -508,6 +508,8 @@ function translationDiscoveryRecords(args: {
   documentId: string;
   sourceLines: string[];
   candidateLines: string[];
+  includeGlossaryCandidates: boolean;
+  includeCharacterFacts: boolean;
 }): YnTranslationDiscoveryRecord[] {
   const sourceHash = translationDiscoverySliceHash(args.sourceLines, args.task.fromLine, args.task.toLine);
   const candidateHash = translationDiscoverySliceHash(args.candidateLines, args.task.fromLine, args.task.toLine);
@@ -523,12 +525,12 @@ function translationDiscoveryRecords(args: {
     id: createHash("sha256").update(JSON.stringify(record)).digest("hex")
   });
   return [
-    ...args.result.discoveries.glossaryCandidates.map((discovery) => withId({
+    ...(args.includeGlossaryCandidates ? args.result.discoveries.glossaryCandidates : []).map((discovery) => withId({
       ...identity,
       kind: "glossary" as const,
       ...discovery
     })),
-    ...args.result.discoveries.characterFacts.map((discovery) => withId({
+    ...(args.includeCharacterFacts ? args.result.discoveries.characterFacts : []).map((discovery) => withId({
       ...identity,
       kind: "character" as const,
       ...discovery
@@ -1021,6 +1023,8 @@ function normalizeTranslationTasks(
 
 export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
   const baseRequest = context.request;
+  const glossaryCandidateCollectionEnabled = baseRequest.glossaryCandidates !== false;
+  const characterFactCollectionEnabled = baseRequest.characterBible !== false;
   const recoveryPauseIdAtToolCreation = context.domainRun?.recoveryPauseId;
   const webReferences = context.webReferences ?? webReferenceService;
   let request: PiBoundSourceRequest = baseRequest;
@@ -1457,6 +1461,36 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     resolvedManifest: PiSourceManifest
   ): Promise<YnTranslationDiscoveryConflict[]> => {
     const domainRun = context.domainRun;
+    if (!glossaryCandidateCollectionEnabled) {
+      if (!domainRun) return [];
+      const glossaryDiscoveryIds = domainRun.pendingTranslationDiscoveries()
+        .filter((record) => record.kind === "glossary")
+        .map((record) => record.id);
+      const conflicts = domainRun.pendingTranslationDiscoveryConflicts();
+      const debt = domainRun.pendingTranslationTerminologyDebt();
+      if (glossaryDiscoveryIds.length > 0 || conflicts.length > 0 || debt.length > 0) {
+        await runWorkspaceGlossaryCandidateTransaction(request.outputDir, async () => {
+          const rollbacks: Array<() => void> = [];
+          if (glossaryDiscoveryIds.length > 0) {
+            rollbacks.push(domainRun.resolveTranslationDiscoveries(glossaryDiscoveryIds, []));
+          }
+          if (conflicts.length > 0) {
+            rollbacks.push(domainRun.replaceTranslationDiscoveryConflicts([]));
+          }
+          if (debt.length > 0) {
+            rollbacks.push(domainRun.recordTranslationTerminologyDebt([]));
+          }
+          try {
+            await context.persistHostState?.();
+          } catch (error) {
+            for (const rollback of rollbacks.reverse()) rollback();
+            throw error;
+          }
+        });
+      }
+      domainRun.releaseTranslationTerminologyGate();
+      return [];
+    }
     const conflicts = domainRun?.pendingTranslationDiscoveryConflicts() ?? [];
     if (!domainRun || conflicts.length === 0) return conflicts;
     const documentsById = new Map(resolvedManifest.documents.map((document) => [document.id, document]));
@@ -1630,8 +1664,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     discoveries: PiTranslationDiscoveries;
   }): Promise<{ committedDiscoveries: PiTranslationDiscoveries; conflicts: YnTranslationDiscoveryConflict[] }> => {
     const domainRun = context.domainRun;
-    if (!domainRun || args.records.length === 0) {
-      return { committedDiscoveries: args.discoveries, conflicts: [] };
+    const discoveries: PiTranslationDiscoveries = {
+      glossaryCandidates: glossaryCandidateCollectionEnabled ? args.discoveries.glossaryCandidates : [],
+      characterFacts: characterFactCollectionEnabled ? args.discoveries.characterFacts : []
+    };
+    const records = args.records.filter((record) => (
+      record.kind === "glossary" ? glossaryCandidateCollectionEnabled : characterFactCollectionEnabled
+    ));
+    if (!domainRun || records.length === 0) {
+      return { committedDiscoveries: discoveries, conflicts: [] };
     }
     return runWorkspaceGlossaryCandidateTransaction(request.outputDir, async (transaction) => {
     const rollbacks: Array<() => void | Promise<void>> = [];
@@ -1639,8 +1680,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     let priorityTasksByBatch = new Map<string, PiTranslationSubagentTask[]>();
     let hostStatePersisted = false;
     try {
-      rollbacks.push(domainRun.recordTranslationDiscoveries(args.records));
-      const glossaryGroups = translationGlossaryGroups(args.records);
+      rollbacks.push(domainRun.recordTranslationDiscoveries(records));
+      const glossaryGroups = translationGlossaryGroups(records);
       const assets = glossaryGroups.size > 0
         ? await readProjectAssets({ outputDir: request.outputDir })
         : undefined;
@@ -1753,7 +1794,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         rollbacks.push(domainRun.recordTranslationTerminologyDebt([...existingDebt, ...repairs.debt]));
         priorityTasksByBatch = routeTranslationTerminologyRepairs(repairs.tasks);
       }
-      await readWorkspaceAssetsStatus(request.outputDir);
+      if (glossaryGroups.size > 0) await readWorkspaceAssetsStatus(request.outputDir);
       await context.persistHostState?.();
       hostStatePersisted = true;
       for (const [repairBatchId, repairTasks] of priorityTasksByBatch) {
@@ -1762,10 +1803,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       const committedSources = new Set(autoTerms.keys());
       return {
         committedDiscoveries: {
-          glossaryCandidates: args.discoveries.glossaryCandidates.filter((entry) => (
+          glossaryCandidates: discoveries.glossaryCandidates.filter((entry) => (
             committedSources.has(normalizeTranslationTerm(entry.source))
           )),
-          characterFacts: args.discoveries.characterFacts
+          characterFacts: discoveries.characterFacts
         },
         conflicts
       };
@@ -1889,6 +1930,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
   const planPersistedTranslationTerminologyTasks = async (
     resolvedManifest: PiSourceManifest
   ): Promise<PiTranslationSubagentTask[]> => {
+    if (!glossaryCandidateCollectionEnabled) return [];
     const domainRun = context.domainRun;
     const persistedDebt = domainRun?.pendingTranslationTerminologyDebt() ?? [];
     if (!domainRun || persistedDebt.length === 0) return [];
@@ -2984,8 +3026,12 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       }, { additionalProperties: false }),
       async execute(_toolCallId, params) {
         const input = params as { offset?: number; limit?: number };
-        const pending = context.domainRun?.pendingTranslationDiscoveries() ?? [];
-        const discoveryConflicts = context.domainRun?.pendingTranslationDiscoveryConflicts() ?? [];
+        const pending = (context.domainRun?.pendingTranslationDiscoveries() ?? []).filter((record) => (
+          record.kind !== "glossary" || glossaryCandidateCollectionEnabled
+        ));
+        const discoveryConflicts = glossaryCandidateCollectionEnabled
+          ? context.domainRun?.pendingTranslationDiscoveryConflicts() ?? []
+          : [];
         const conflictsBySource = new Map(discoveryConflicts.map((conflict) => [
           normalizeTranslationTerm(conflict.source),
           conflict
@@ -3057,14 +3103,16 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     {
       name: "resolveTranslationDiscoveries",
       label: "Resolve translation discoveries",
-      description: "Resolve one or more Host-persisted discovery groups. Accept writes the selected terminology to glossary_candidates.json or merges a validated character entry into character_bible.md; reject records that the proposal is ordinary, unsupported, or already covered. Every decision is typed and evidence remains auditable in Pi Host history.",
+      description: glossaryCandidateCollectionEnabled
+        ? "Resolve one or more Host-persisted discovery groups. Accept writes the selected terminology to glossary_candidates.json or merges a validated character entry into character_bible.md; reject records that the proposal is ordinary, unsupported, or already covered. Every decision is typed and evidence remains auditable in Pi Host history."
+        : "Resolve Host-persisted character discoveries. Glossary-candidate collection is disabled, so this tool cannot accept or write terminology candidates.",
       parameters: Type.Object({
-        glossary: Type.Optional(Type.Array(Type.Object({
+        ...(glossaryCandidateCollectionEnabled ? { glossary: Type.Optional(Type.Array(Type.Object({
           source: Type.String({ minLength: 1 }),
           action: Type.Union([Type.Literal("accept"), Type.Literal("reject")]),
           target: Type.Optional(Type.String({ minLength: 1 })),
           rationale: Type.String({ minLength: 1, maxLength: 1_000 })
-        }, { additionalProperties: false }))),
+        }, { additionalProperties: false }))) } : {}),
         characters: Type.Optional(Type.Array(Type.Object({
           sourceName: Type.String({ minLength: 1 }),
           action: Type.Union([Type.Literal("accept"), Type.Literal("reject")]),
@@ -4013,6 +4061,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const input = params as { path: string; content: string; append?: boolean };
         const relativePath = assertDomainWritePath(request.outputDir, input.path);
         if (relativePath === WORKSPACE_GLOSSARY) {
+          if (!glossaryCandidateCollectionEnabled) {
+            throw new Error("Glossary-candidate generation is disabled for this workflow.");
+          }
           if (input.append) throw new Error("Generated glossary candidates must be replaced as one validated JSON document, not appended.");
           validateGeneratedGlossaryContent(input.content, relativePath);
         }
@@ -4548,12 +4599,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               omittedWarningSampleCount: Math.max(0, compactValidation.warningSamples.length - 4)
             });
           }
-          terminologyDebt.push(...scanResolvedTerminologyDebt({
-            documentId: document.id,
-            sourceLines: splitTextLines(sourceText),
-            candidateLines: splitTextLines(candidateText),
-            terms: context.domainRun?.resolvedTranslationTerms() ?? []
-          }));
+          if (glossaryCandidateCollectionEnabled) {
+            terminologyDebt.push(...scanResolvedTerminologyDebt({
+              documentId: document.id,
+              sourceLines: splitTextLines(sourceText),
+              candidateLines: splitTextLines(candidateText),
+              terms: context.domainRun?.resolvedTranslationTerms() ?? []
+            }));
+          }
         }
         context.domainRun?.recordTranslationTerminologyDebt(terminologyDebt);
         if (terminologyDebt.length > 0) {
@@ -5850,7 +5903,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               priorTranslationDiscoveries: completedDiscoveries
             };
           },
-          ...(context.domainRun ? {
+          ...(context.domainRun && glossaryCandidateCollectionEnabled ? {
             claimGate: {
               isBlocked: () => context.domainRun!.pendingTranslationDiscoveryConflicts().length > 0,
               wait: (gateSignal: AbortSignal) => context.domainRun!.waitForTranslationTerminologyGate(gateSignal),
@@ -5880,7 +5933,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               result,
               documentId: completedDocumentId,
               sourceLines,
-              candidateLines
+              candidateLines,
+              includeGlossaryCandidates: glossaryCandidateCollectionEnabled,
+              includeCharacterFacts: characterFactCollectionEnabled
             });
             const committed = await commitTranslationAssignmentDiscoveries({
               batchId,

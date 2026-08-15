@@ -787,6 +787,75 @@ await test("full translation children receive the built-in contract once and rea
   }
 });
 
+await test("disabled glossary candidates stay readable but are absent from the child submission schema", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-child-candidates-off-"));
+  const sourcePath = path.join(outputDir, "source.txt");
+  const workspace = path.join(outputDir, ".translation-workshop");
+  const generatedWorkspace = path.join(outputDir, "AI_translation", "_workspace");
+  await writeFile(sourcePath, "Alice arrived.\n", "utf8");
+  await mkdir(workspace, { recursive: true });
+  await writeFile(path.join(workspace, "glossary.json"), JSON.stringify({
+    entries: [{ source: "Alice", target: "爱丽丝" }]
+  }), "utf8");
+  await mkdir(generatedWorkspace, { recursive: true });
+  await writeFile(path.join(generatedWorkspace, "glossary_candidates.json"), JSON.stringify({
+    entries: [{ source: "arrived", target: "抵达" }]
+  }), "utf8");
+  const progress = {
+    sourceRead: false,
+    translationWritten: false,
+    translationValidated: false
+  };
+  const context = {
+    request: {
+      outputDir,
+      sourcePath,
+      sessionId: "pi_candidates_off",
+      prompt: "translate the assigned line",
+      providerId: "test",
+      modelId: "test",
+      languagePair: "en->zh-CN",
+      glossaryCandidates: false,
+      characterBible: true
+    },
+    task: { fromLine: 1, toLine: 1 },
+    executionMode: "full_workflow",
+    publishCustomMessage: async () => {}
+  };
+  const tools = subagentRunner.createPiTranslationSubagentTools(context, progress);
+  const read = tools.find((tool) => tool.name === "readAssignedSource");
+  const searchProjectText = tools.find((tool) => tool.name === "searchProjectText");
+  const validate = tools.find((tool) => tool.name === "validateAssignedTranslation");
+  assert.ok(read);
+  assert.ok(searchProjectText);
+  assert.ok(validate);
+
+  try {
+    const readResult = await read.execute("candidates-off-read", {});
+    assert.equal(readResult.details.projectReferences.glossaryCandidates.available, true);
+    assert.deepEqual(readResult.details.projectReferences.directMatches.glossaryCandidates, [
+      { source: "arrived", target: "抵达" }
+    ], "existing candidates remain read-only consistency references while collection is disabled");
+    assert.deepEqual(readResult.details.projectReferences.directMatches.approvedGlossary, [
+      { source: "Alice", target: "爱丽丝" }
+    ], "the formal glossary must remain active when candidate collection is disabled");
+    assert.match(readResult.details.translationReference, /New glossary-candidate collection is disabled/i);
+    assert.equal(Object.hasOwn(validate.parameters.properties, "glossaryCandidates"), false);
+    assert.equal(Object.hasOwn(validate.parameters.properties, "characterFacts"), true);
+    const runtimeSpec = subagentRunner.createPiTranslationRuntimeSpec(context, progress);
+    assert.match(runtimeSpec.taskPrompt, /New glossary-candidate collection is disabled/i);
+    assert.doesNotMatch(runtimeSpec.taskPrompt, /include evidence-backed glossary candidates/i);
+    const candidateSearch = await searchProjectText.execute("candidates-off-search", {
+      path: "AI_translation/_workspace/glossary_candidates.json",
+      query: "arrived"
+    });
+    assert.equal(candidateSearch.details.matches.length, 1);
+    assert.match(candidateSearch.details.matches[0].text, /抵达/);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
 await test("translation child cannot complete from a pre-existing valid shard without its own native tool sequence", async () => {
   const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-child-existing-shard-"));
   const sourcePath = path.join(outputDir, "source.txt");

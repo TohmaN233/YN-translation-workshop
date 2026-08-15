@@ -1113,8 +1113,17 @@ async function translationReferenceContext(
     readTranslationSubagentGuidance(),
     optionalContext(request, task)
   ]);
+  const assetSwitches = [
+    request.glossaryCandidates === false
+      ? "New glossary-candidate collection is disabled for this assignment. Existing candidate entries remain read-only translation references; do not construct or report new candidate discoveries."
+      : "Glossary-candidate collection is enabled for this assignment.",
+    request.characterBible === false
+      ? "New character-fact collection is disabled for this assignment. Existing character-bible entries remain read-only translation references; do not construct or report new character facts."
+      : "Character-fact collection is enabled for this assignment."
+  ].join(" ");
   return [
     `## Built-in translate-text child workflow\n${guidance}`,
+    `## Host asset switches\n${assetSwitches}`,
     projectContext
   ].filter(Boolean).join("\n\n");
 }
@@ -1604,6 +1613,7 @@ export interface AssignedTranslationRepairPlanInput {
   requiredLines?: number[];
   languagePair?: string;
   executionMode?: "full_workflow" | "bounded_repair" | "chunk_review_repair";
+  glossaryCandidates?: boolean;
 }
 
 export function buildAssignedTranslationRepairPlan(input: AssignedTranslationRepairPlanInput) {
@@ -1685,7 +1695,9 @@ export function buildAssignedTranslationRepairPlan(input: AssignedTranslationRep
       : input.sourceSlice.length > MAX_ASSIGNED_TRANSLATION_CHUNK_LINES
         ? `Before repairing, call readAssignedSource in ordered chunks of at most ${MAX_ASSIGNED_TRANSLATION_CHUNK_LINES} lines until the assigned range is covered.`
         : "Call readAssignedSource for the exact assigned range before repairing if this assignment has not read it yet.",
-    "Then use each issue's absolute line, exact validation detail, and the matching source line from the sourceBlocks returned by readAssignedSource. If an intentional proper noun needs a consistent rendering, report the term and target-language rendering as a glossary candidate instead of returning the source unchanged.",
+    input.glossaryCandidates === false
+      ? "Then use each issue's absolute line, exact validation detail, and the matching source line from the sourceBlocks returned by readAssignedSource. Glossary-candidate collection is disabled; translate intentional proper nouns directly instead of returning the source unchanged."
+      : "Then use each issue's absolute line, exact validation detail, and the matching source line from the sourceBlocks returned by readAssignedSource. If an intentional proper noun needs a consistent rendering, report the term and target-language rendering as a glossary candidate instead of returning the source unchanged.",
     repairInstruction,
     JSON.stringify(repairEvidence)
   ].join("\n\n");
@@ -2111,6 +2123,8 @@ export function createPiTranslationSubagentTools(
       description: "Structured line/translation repairs for the host-reported requiredLines; never echo source text unchanged."
     })
   }, { additionalProperties: false });
+  const glossaryCandidatesEnabled = context.request.glossaryCandidates !== false;
+  const characterFactsEnabled = context.request.characterBible !== false;
   const validateSchema = Type.Object({
     ...(context.executionMode === "bounded_repair" ? {
       misalignedLines: Type.Array(
@@ -2118,7 +2132,7 @@ export function createPiTranslationSubagentTools(
         maxItems: context.task.toLine - context.task.fromLine + 1
       })
     } : {}),
-    glossaryCandidates: Type.Optional(Type.Array(Type.Object({
+    ...(glossaryCandidatesEnabled ? { glossaryCandidates: Type.Optional(Type.Array(Type.Object({
       source: Type.String({ minLength: 1 }),
       target: Type.String({ minLength: 1 }),
       category: Type.Union([
@@ -2132,8 +2146,8 @@ export function createPiTranslationSubagentTools(
       evidenceLine: Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }),
       rationale: Type.String({ minLength: 1, maxLength: 1_000 }),
       aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 16 }))
-    }, { additionalProperties: false }), { maxItems: 64 })),
-    characterFacts: Type.Optional(Type.Array(Type.Object({
+    }, { additionalProperties: false }), { maxItems: 64 })) } : {}),
+    ...(characterFactsEnabled ? { characterFacts: Type.Optional(Type.Array(Type.Object({
       sourceName: Type.String({ minLength: 1 }),
       targetName: Type.Optional(Type.String({ minLength: 1 })),
       evidenceLine: Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }),
@@ -2150,7 +2164,7 @@ export function createPiTranslationSubagentTools(
         Type.Literal("inferred"),
         Type.Literal("unknown")
       ])
-    }, { additionalProperties: false }), { maxItems: 32 }))
+    }, { additionalProperties: false }), { maxItems: 32 })) } : {})
   }, { additionalProperties: false });
   let executeAssignedTranslationWrite!: NonNullable<AgentTool["execute"]>;
   return [
@@ -2561,8 +2575,12 @@ export function createPiTranslationSubagentTools(
           result,
           (params as { misalignedLines?: number[] }).misalignedLines
         );
+        const submittedDiscoveries = params as Partial<PiTranslationDiscoveries>;
         const discoveryReport = normalizeTranslationDiscoveries(
-          params as Partial<PiTranslationDiscoveries>,
+          {
+            glossaryCandidates: glossaryCandidatesEnabled ? submittedDiscoveries.glossaryCandidates ?? [] : [],
+            characterFacts: characterFactsEnabled ? submittedDiscoveries.characterFacts ?? [] : []
+          },
           context.task,
           splitTextLines(await readFile(sourcePath(context.request), "utf8"))
         );
@@ -3916,6 +3934,14 @@ export function createPiTranslationRuntimeSpec(
   discoveries: PiTranslationDiscoveries;
 }> {
   const assignmentLength = context.task.toLine - context.task.fromLine + 1;
+  const glossaryCandidatesEnabled = context.request.glossaryCandidates !== false;
+  const characterFactsEnabled = context.request.characterBible !== false;
+  const discoveryInstruction = glossaryCandidatesEnabled || characterFactsEnabled
+    ? `Call validateAssignedTranslation when requested and include evidence-backed ${[
+        glossaryCandidatesEnabled ? "glossary candidates" : "",
+        characterFactsEnabled ? "character facts" : ""
+      ].filter(Boolean).join(" and ")}, or omit those optional fields when there are none.`
+    : "Call validateAssignedTranslation when requested. Glossary-candidate and character-fact collection are disabled; do not report either field.";
   const sourceInstruction = assignmentLength > MAX_ASSIGNED_TRANSLATION_CHUNK_LINES
     ? [
       `Process the assignment in ordered chunks of at most ${MAX_ASSIGNED_TRANSLATION_CHUNK_LINES} lines.`,
@@ -3973,9 +3999,14 @@ export function createPiTranslationRuntimeSpec(
       ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
       ...sourceInstruction,
       "Read the complete translationReference from the first result. Use projectReferences.directMatches when present. Do not bulk-read the indexed glossary, character bible, or glossary candidates; exact-search one source term only for a real uncovered ambiguity. Other project files and prior translations remain readable on demand. Use readTranslationContext for bounded surrounding context when needed.",
+      ...(glossaryCandidatesEnabled ? [] : [
+        "New glossary-candidate collection is disabled. Existing candidate entries in projectReferences remain read-only consistency references, but do not construct or report new candidate discoveries. The selected formal glossary, when present, remains authoritative."
+      ]),
       "Write every returned sourceBlocks item with writeAssignedTranslation in the exact block format described by that tool result. Repair only Host-reported lines with repairAssignedTranslation.",
-      "Call validateAssignedTranslation when requested and include evidence-backed glossary/character discoveries, or empty arrays.",
-      "Report only proper names, named organizations/places/titles, coined setting terms, and character facts. Do not propose ordinary dictionary words or everyday phrases. Mark unresolved gender/pronouns as unknown with source-line evidence so the parent can research them; never guess.",
+      discoveryInstruction,
+      ...(glossaryCandidatesEnabled || characterFactsEnabled ? [
+        "Report only proper names, named organizations/places/titles, coined setting terms, and character facts. Do not propose ordinary dictionary words or everyday phrases. Mark unresolved gender/pronouns as unknown with source-line evidence so the parent can research them; never guess."
+      ] : []),
       "Every non-empty output line must be the actual translation of its matching source line. Never write progress narration, labels such as 'translation below', summaries, or generic placeholder prose such as （本段译文）, 本行译文, 译文待补, or 'translation goes here' into the translation artifact.",
       "Do not modify the source file or return the translation only in chat. A successful validateAssignedTranslation call returns directly to the Host; do not spend another model turn on a prose confirmation."
         ].join("\n"),
@@ -4014,7 +4045,8 @@ export function createPiTranslationRuntimeSpec(
           sourceSlice: existingArtifact.sourceSlice,
           validation: existingArtifact.validation,
           languagePair: context.request.languagePair,
-          executionMode: context.executionMode
+          executionMode: context.executionMode,
+          glossaryCandidates: glossaryCandidatesEnabled
         })
         : undefined;
       if (resumeRepairPlan) {
@@ -4107,7 +4139,8 @@ export function createPiTranslationRuntimeSpec(
         validation: artifact.validation,
         requiredLines: [...(progress.requiredBatchLines ?? [])],
         languagePair: context.request.languagePair,
-        executionMode: context.executionMode
+        executionMode: context.executionMode,
+        glossaryCandidates: glossaryCandidatesEnabled
       });
       let repairTurn = 0;
       let repairNoProgressTurns = 0;
@@ -4149,7 +4182,8 @@ export function createPiTranslationRuntimeSpec(
           validation: repairedArtifact.validation,
           requiredLines: [...(progress.requiredBatchLines ?? [])],
           languagePair: context.request.languagePair,
-          executionMode: context.executionMode
+          executionMode: context.executionMode,
+          glossaryCandidates: glossaryCandidatesEnabled
         });
         const hasPendingRequiredLines = (progress.requiredBatchLines?.size ?? 0) > 0;
         if (

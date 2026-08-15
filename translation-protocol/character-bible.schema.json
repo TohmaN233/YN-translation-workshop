@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://translation-workshop/protocol/character-bible.schema.json",
+  "title": "Character Bible",
+  "description": "Agent-readable character metadata. Stored as character_bible.json in .translation-workshop/; the Markdown rendering is for humans only.",
+  "type": "object",
+  "required": ["schemaVersion", "characters"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0" },
+    "worldNotes": { "type": "string", "description": "Free-form setting/faction/magic-system notes that affect translation choices." },
+    "characters": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Character" }
+    }
+  },
+  "$defs": {
+    "Character": {
+      "type": "object",
+      "required": ["sourceName", "translatedName"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceName": { "type": "string" },
+        "translatedName": { "type": "string" },
+        "gender": { "type": "string", "enum": ["male", "female", "neutral", "unknown"], "description": "Must match the glossary info token for this character so H8 pronoun checks can fire." },
+        "pronoun": { "type": "string", "description": "Self-reference pronoun used by this character." },
+        "role": { "type": "string" },
+        "faction": { "type": "string" },
+        "relationships": { "type": "string" },
+        "voice": { "type": "string", "description": "formal/casual/archaic/cute/rough/etc." },
+        "catchphrases": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "string" },
+        "genderConfidence": { "type": "string", "enum": ["confirmed", "inferred"] }
+      }
+    }
+  }
+}

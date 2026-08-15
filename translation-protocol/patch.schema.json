@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://translation-workshop/protocol/patch.schema.json",
+  "title": "Translation Patch",
+  "description": "A list of line-level translation changes proposed by an agent or human. Patches are reviewed and applied line-by-line; they never auto-overwrite the final translation file.",
+  "type": "object",
+  "required": ["schemaVersion", "documentId", "changes"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0" },
+    "documentId": { "type": "string" },
+    "jobId": { "type": "string", "description": "Originating agent job id, when known." },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "changes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Change" }
+    }
+  },
+  "$defs": {
+    "Change": {
+      "type": "object",
+      "required": ["lineId", "newText", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "lineId": { "type": "integer", "minimum": 1, "description": "Global 1-based line number; must correspond to an existing source line." },
+        "oldText": { "type": "string", "description": "Current translation text the patch expects to replace. Required for conflict detection against the live working state." },
+        "newText": { "type": "string", "description": "Replacement translation text." },
+        "baseRevision": { "type": "integer", "minimum": 0, "description": "Revision the patch was generated against. Optional in the MVP; when set, mismatch with the current revision surfaces a conflict." },
+        "reason": { "type": "string", "description": "Why the change is proposed (e.g. 术语统一, 漏译补全)." },
+        "sourceFindingId": { "type": "string", "description": "Link back to the proofread finding that produced this change, if any." }
+      }
+    }
+  }
+}

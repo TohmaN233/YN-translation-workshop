@@ -7,7 +7,13 @@ export default defineConfig({
   base: "./",
   build: {
     outDir: "dist/renderer",
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        "agent-embedded": "src/renderer/agent/embedded.tsx"
+      }
+    }
   },
   server: {
     host: "127.0.0.1",

@@ -1,9 +1,9 @@
 import { buildLinePairs, paginateRows } from "./lineReview.ts";
-import { buildPrompt, promptParameterDefaults, type AgentType, type PromptAdvancedOptions } from "./prompts.ts";
+import { buildPrompt, promptParameterDefaults, type PromptAdvancedOptions } from "./prompts.ts";
 import type { GlossaryEntry } from "./glossary.ts";
 import type { ReviewProposal } from "./reviewReport.ts";
 import type { EpubReplacementOptions } from "./epubExport.ts";
-import { renderXtermBrowserAssets } from "./xtermAssets.ts";
+import { agentChatEmbedCss, agentChatEmbedHtml, agentChatEmbedScript } from "./agentChatEmbed.ts";
 
 export type UiLocale = "zh-CN" | "en-US";
 
@@ -14,6 +14,8 @@ export interface LineReviewHtmlOptions {
   pageSize?: number;
   startPage?: number;
   locale?: UiLocale;
+  /** Absolute path to this HTML file; embedded so import/repair IPC uses a real path, not location.href. */
+  lineReviewPath?: string;
   workflow?: HtmlWorkflowOptions;
 }
 
@@ -31,6 +33,7 @@ export interface ProposalReviewHtmlOptions {
 export interface BatchLineReviewIndexFile {
   sourceName: string;
   sourcePath: string;
+  /** Relative child HTML path rooted at the batch index directory. */
   outputPath: string;
   status: "matched" | "missing-translation" | "line-count-mismatch";
   sourceLineCount: number;
@@ -43,17 +46,24 @@ export interface BatchLineReviewIndexOptions {
   title: string;
   files: BatchLineReviewIndexFile[];
   locale?: UiLocale;
+  workflow?: HtmlWorkflowOptions;
 }
 
 export interface HtmlWorkflowOptions {
   sourcePath?: string;
+  /** UTF-8 line source used to match, validate, repair, and import Agent artifacts. */
+  validationSourcePath?: string;
+  sourceKind?: "file" | "folder";
   translationPath?: string;
+  /** Host-owned UTF-8 TXT that line-review edits may overwrite, including EPUB-extracted translations. */
+  editableTranslationPath?: string;
   sourcePromptPath?: string;
+  /** Prompt-only source scope; line-review editing may still remain file-scoped. */
+  promptSourceKind?: "file" | "folder";
   translationPromptPath?: string;
   outputDir?: string;
   glossaryPath?: string;
   glossaryEntries?: GlossaryEntry[];
-  agent?: AgentType;
   inputMode?: "separate" | "bilingual";
   promptInputMode?: "separate" | "bilingual";
   advanced?: PromptAdvancedOptions;
@@ -80,6 +90,8 @@ const labels = {
     searchNoMatches: "无匹配",
     issueFilter: "问题分类",
     allIssueTypes: "全部分类",
+    documentFilter: "文件",
+    allDocuments: "全部文件",
     exportJson: "导出状态 JSON",
     restore: "还原当前行",
     reviewTitle: "校对建议审阅",
@@ -89,7 +101,16 @@ const labels = {
     suggestion: "建议译文",
     accept: "接受",
     reject: "拒绝",
-    manual: "人工改写"
+    manual: "人工改写",
+    conflict: "冲突",
+    keepCurrent: "保留当前",
+    acceptAgent: "接受 Agent",
+    manualMerge: "手动合并",
+    conflictList: "冲突列表",
+    revisionHistory: "版本历史",
+    noConflicts: "暂无冲突",
+    askAgentTranslation: "发送给 Agent 询问翻译",
+    askAgentSelection: "发送选中原文给 Agent"
   },
   "en-US": {
     source: "Source",
@@ -105,6 +126,8 @@ const labels = {
     searchNoMatches: "No matches",
     issueFilter: "Issue type",
     allIssueTypes: "All issue types",
+    documentFilter: "Document",
+    allDocuments: "All documents",
     exportJson: "Export state JSON",
     restore: "Restore current row",
     reviewTitle: "Proposal Review",
@@ -114,49 +137,68 @@ const labels = {
     suggestion: "Suggested translation",
     accept: "Accept",
     reject: "Reject",
-    manual: "Manual edit"
+    manual: "Manual edit",
+    conflict: "Conflict",
+    keepCurrent: "Keep current",
+    acceptAgent: "Accept Agent",
+    manualMerge: "Manual merge",
+    conflictList: "Conflicts",
+    revisionHistory: "Revision history",
+    noConflicts: "No conflicts",
+    askAgentTranslation: "Ask Agent about this translation",
+    askAgentSelection: "Send selected source to Agent"
   }
 } as const;
 
 const workflowLabels: Record<UiLocale, Record<string, string>> = {
   "zh-CN": {
     aiTools: "AI \u5de5\u5177",
-    agent: "Agent",
     generateTranslatePrompt: "\u751f\u6210\u7ffb\u8bd1\u63d0\u793a\u8bcd",
     generateProofreadPrompt: "\u751f\u6210\u6821\u5bf9\u63d0\u793a\u8bcd",
     promptSettingsTitle: "\u63d0\u793a\u8bcd\u53c2\u6570",
     promptSettingsTranslateTitle: "\u7ffb\u8bd1\u53c2\u6570",
     promptSettingsProofreadTitle: "\u6821\u5bf9\u53c2\u6570",
+    promptSettingsReset: "\u6062\u590d\u9ed8\u8ba4",
+    promptSettingsResetDone: "\u5df2\u6062\u590d\u9ed8\u8ba4\u53c2\u6570",
     promptSettingsApply: "\u751f\u6210\u63d0\u793a\u8bcd",
     promptSettingsCancel: "\u53d6\u6d88",
     promptGenerationFailed: "\u63d0\u793a\u8bcd\u751f\u6210\u5931\u8d25",
-    languagePair: "\u8bed\u8a00\u65b9\u5411",
     style: "\u98ce\u683c",
     workDescription: "\u4f5c\u54c1\u8bf4\u660e",
     translateOutputDir: "\u7ffb\u8bd1\u8f93\u51fa\u6587\u4ef6\u5939",
     proofreadOutputDir: "\u62a5\u544a\u8f93\u51fa\u6587\u4ef6\u5939",
     split: "\u62c6\u5206",
     splitSize: "\u62c6\u5206\u5927\u5c0f",
-    subagent: "Subagent",
-    subagentCount: "Subagent \u6570\u91cf",
+    folderTranslationOrder: "\u6587\u4ef6\u7ffb\u8bd1\u987a\u5e8f",
+    folderTranslationOrderHint: "\u5927\u62ec\u53f7\u5185\u7684\u6587\u4ef6\u4e92\u76f8\u6ca1\u6709\u5148\u540e\u8981\u6c42\uff0c\u4ecd\u7531\u5b50 Agent \u6309\u884c\u6570\u52a8\u6001\u6392\u961f\uff0c\u4e0d\u4ee3\u8868\u5fc5\u987b\u540c\u65f6\u5f00\u59cb\u6216\u5b8c\u6210\uff1b\u79fb\u5230\u5927\u62ec\u53f7\u5916\u624d\u4f1a\u6309\u4e66\u5199\u987a\u5e8f\u4e25\u683c\u5148\u540e\u5904\u7406\uff1b\u4ece\u8868\u8fbe\u5f0f\u4e2d\u5220\u9664\u7684\u6587\u4ef6\u4f1a\u5728\u7ffb\u8bd1\u548c\u6821\u5bf9\u4e2d\u8df3\u8fc7\u3002",
+    customPreserveRules: "\u81ea\u5b9a\u4e49\u6b63\u5219\u4fdd\u7559\u89c4\u5219",
+    customPreserveRulesHint: "\u6bcf\u6761\u89c4\u5219\u5339\u914d\u5230\u7684\u539f\u6587\u5fc5\u987b\u5728\u8bd1\u6587\u4e2d\u539f\u6837\u4fdd\u7559\u3002\u9002\u5408\u4fdd\u7559\u884c\u9996\u6807\u8bc6\u7b26\u3001\u5bf9\u8bdd\u65b9\u6846\u548c\u9879\u76ee\u7279\u6709\u63a7\u5236\u7801\u3002",
+    customPreserveRuleLabel: "\u8bf4\u660e",
+    customPreserveRulePattern: "\u6b63\u5219\u8868\u8fbe\u5f0f",
+    customPreserveRuleFlags: "\u6807\u5fd7",
+    addCustomPreserveRule: "\u6dfb\u52a0\u4fdd\u7559\u89c4\u5219",
+    removeCustomPreserveRule: "\u5220\u9664\u4fdd\u7559\u89c4\u5219",
+    reuseExistingTranslation: "\u5ba1\u8ba1\u5e76\u590d\u7528\u5df2\u6709\u8bd1\u6587",
+    subagent: "\u5b50 Agent",
+    subagentCount: "\u5b50 Agent \u6570\u91cf",
+    reviewSubagentCount: "\u5ba1\u9605 Agent \u6570\u91cf",
+    reviewSubagentCountFollowTranslation: "\u8ddf\u968f\u7ffb\u8bd1 Agent \u6570\u91cf",
     proofreadMode: "\u6821\u5bf9\u6a21\u5f0f",
     candidateRatio: "H9 \u5019\u9009\u6bd4\u4f8b",
     montecarloSize: "Monte Carlo \u62bd\u6837\u6570\u91cf",
     montecarloRoundMin: "\u6700\u5c11\u8f6e\u6570",
     montecarloRoundMax: "\u6700\u591a\u8f6e\u6570",
+    subagentModel: "\u5b50 Agent \u6a21\u578b",
+    subagentModelFollowParent: "\u8ddf\u968f\u4e3b Agent",
+    subagentModelLoading: "\u6b63\u5728\u52a0\u8f7d\u5df2\u914d\u7f6e\u7684 Pi \u6a21\u578b...",
+    subagentModelUnavailable: "\u672a\u627e\u5230\u5df2\u914d\u7f6e\u6a21\u578b\uff0c\u5b50 Agent \u9ed8\u8ba4\u8ddf\u968f\u4e3b Agent",
     generateReviewHtml: "\u751f\u6210\u5ba1\u9605 HTML",
     copyPrompt: "\u590d\u5236\u63d0\u793a\u8bcd",
-    callAgent: "\u8c03\u7528 Agent",
-    startInteractiveAgent: "\u542f\u52a8\u63a7\u5236\u53f0",
-    stopAgentConsole: "\u505c\u6b62",
-    agentConsoleRunning: "控制台运行中",
-    agentConsoleWaiting: "等待 Agent 回复...",
-    agentConsoleStreaming: "Agent 输出中...",
-    agentConsoleQuiet: "输出已静默，可能已完成。",
-    collapseAgentWindow: "\u6536\u8d77\u7a97\u53e3",
-    agentPromptInput: "\u63d0\u793a\u8bcd / \u6d88\u606f",
-    agentConsoleEmpty: "\u4ea4\u4e92\u63a7\u5236\u53f0\u8f93\u51fa\u4f1a\u663e\u793a\u5728\u8fd9\u91cc\u3002",
-    sendPromptToAgent: "\u53d1\u9001\u5230 Agent",
+    openAgentChat: "Agent \u4f1a\u8bdd",
+    agentChatPopout: "\u65b0\u7a97\u53e3",
+    agentChatSettings: "\u8bbe\u7f6e",
+    agentChatSettingsTitle: "Agent \u670d\u52a1\u8bbe\u7f6e",
+    agentChatLoading: "\u6b63\u5728\u52a0\u8f7d Agent OS\u2026",
     syncTranslation: "\u540c\u6b65\u8bd1\u6587",
     chooseTranslationFile: "\u9009\u62e9\u5176\u4ed6\u8bd1\u6587",
     exportTxt: "\u5bfc\u51fa TXT",
@@ -169,6 +211,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     promptPreview: "\u63d0\u793a\u8bcd\u9884\u89c8",
     theme: "\u4e3b\u9898\u8272",
     copied: "\u5df2\u590d\u5236",
+    refresh: "\u5237\u65b0",
     synced: "\u5df2\u540c\u6b65\u8bd1\u6587",
     syncFailed: "\u8bd1\u6587\u540c\u6b65\u5931\u8d25",
     txtWritten: "TXT \u5df2\u5199\u5165",
@@ -180,20 +223,26 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     lineReviewMissing: "\u672a\u7ed1\u5b9a\u6b63\u6587 HTML",
     lineReviewLinked: "\u5df2\u6807\u8bb0\u6b63\u6587 HTML",
     proposalChangesApplied: "\u5df2\u5e94\u7528\u5efa\u8bae",
+    proposalApplyRunning: "\u6b63\u5728\u5e94\u7528\u5efa\u8bae",
+    proposalApplyFailed: "\u5e94\u7528\u5efa\u8bae\u5931\u8d25",
     proposalApplySkipped: "\u8df3\u8fc7",
+    mechanicalScan: "\u673a\u68b0\u626b\u63cf",
+    mechanicalConfirm: "\u786e\u8ba4\u95ee\u9898",
+    mechanicalFalsePositive: "\u8bef\u62a5",
+    mechanicalConfirmed: "\u5df2\u786e\u8ba4\u4e3a\u95ee\u9898",
+    mechanicalSuppressed: "\u5df2\u8bb0\u5f55\u8bef\u62a5\uff0c\u9996\u9875\u4e0d\u518d\u663e\u793a",
     proposalSafetySkipped: "安全检查未通过",
+    proposalConflictSkipped: "冲突未应用",
     proposalOpenFailed: "\u6253\u5f00\u6b63\u6587 HTML \u5931\u8d25",
     reviewGenerated: "\u5df2\u751f\u6210\u5ba1\u9605 HTML",
+    reviewFindings: "审阅 findings",
+    reviewTerminologyFindings: "审阅术语 findings",
+    reviewCharacterVoiceFindings: "审阅角色语气 findings",
+    reviewFinalQaFindings: "审阅最终 QA findings",
     reviewGenerationFailed: "\u751f\u6210\u5ba1\u9605 HTML \u5931\u8d25",
     reviewFormatFallback: "AI 报告未通过格式审核，已生成格式修复提示词。",
     reviewHtmlNeedsApp: "\u751f\u6210\u5ba1\u9605 HTML \u9700\u8981\u5728 translation-workshop \u5e94\u7528\u5185\u6253\u5f00\u6b64 HTML",
     reviewReportFound: "\u5df2\u627e\u5230\u6821\u5bf9\u62a5\u544a",
-    agentLaunched: "Agent \u5df2\u542f\u52a8",
-    agentLaunchFailed: "Agent \u542f\u52a8\u5931\u8d25",
-    promptSentToAgent: "\u63d0\u793a\u8bcd\u5df2\u53d1\u9001\u5230 Agent",
-    promptSentViaFile: "\u63d0\u793a\u8bcd\u8f83\u957f\uff0c\u5df2\u4fdd\u5b58\u4e3a\u6587\u4ef6\u5e76\u53d1\u9001\u6587\u4ef6\u5f15\u7528",
-    agentConsoleNeedsApp: "\u53d1\u9001\u5230 Agent \u9700\u8981\u5728 translation-workshop \u5e94\u7528\u5185\u6253\u5f00\u6b64 HTML",
-    agentConsoleNeedsOutput: "\u5f53\u524d HTML \u6ca1\u6709\u7ed1\u5b9a\u8f93\u51fa\u6587\u4ef6\u5939\uff0c\u65e0\u6cd5\u542f\u52a8 Agent",
     lanSync: "局域网同步",
     lanSyncStop: "停止同步",
     lanSyncCopy: "复制链接",
@@ -224,7 +273,6 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     auditHint: "审计标记默认隐藏；点击行尾小框可加入/移出白名单。",
     auditWhitelistWritten: "审计白名单已写入",
     auditWhitelistWriteFailed: "审计白名单写入失败",
-    auditPromptNote: "审计白名单行记录在 {path}，行号：{lines}。生成任何翻译校对/问题审计报告时必须跳过这些行；如果报告中出现与白名单行号一致的问题，请自动删除。",
     auditH3: "H3 术语数量不匹配",
     auditGlossaryFinished: "术语审计完成",
     glossaryEmpty: "\u672a\u52a0\u8f7d glossary",
@@ -241,51 +289,92 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossaryWriteMissingTarget: "\u5f53\u524d HTML \u6ca1\u6709\u7ed1\u5b9a glossary \u6587\u4ef6\u8def\u5f84\u3002",
     glossaryReadFailed: "\u672f\u8bed\u540c\u6b65\u5931\u8d25",
     glossaryWriteFailed: "\u672f\u8bed\u5199\u5165\u5931\u8d25",
+    importGeneratedGlossary: "\u4e00\u952e\u5bfc\u5165 Agent \u672f\u8bed\u5019\u9009",
+    generatedGlossaryImported: "Agent \u672f\u8bed\u5019\u9009\u5df2\u5bfc\u5165",
+    generatedGlossaryImportFailed: "Agent \u672f\u8bed\u5019\u9009\u5bfc\u5165\u5931\u8d25",
     txtWriteNeedsApp: "\u5199\u5165 TXT \u9700\u8981\u5728 translation-workshop \u5e94\u7528\u5185\u6253\u5f00\u6b64 HTML\u3002\u8bf7\u4ece\u5e94\u7528\u91cd\u65b0\u6253\u5f00\u751f\u6210\u7ed3\u679c\u3002",
     txtWriteMissingTarget: "\u5f53\u524d HTML \u6ca1\u6709\u7ed1\u5b9a\u8bd1\u6587\u6587\u4ef6\u8def\u5f84\uff0c\u4e0d\u80fd\u8986\u76d6\u5199\u5165\u3002\u8bf7\u5728\u5e94\u7528\u4e2d\u9009\u62e9\u8bd1\u6587\u6587\u4ef6\u540e\u91cd\u65b0\u751f\u6210 HTML\u3002",
     txtWriteFailed: "\u5199\u5165 TXT \u5931\u8d25",
     epubWriteNeedsApp: "\u5bfc\u51fa EPUB \u9700\u8981\u5728 translation-workshop \u5e94\u7528\u5185\u6253\u5f00\u6b64 HTML\u3002",
     epubWriteMissingTemplate: "\u5f53\u524d HTML \u6ca1\u6709\u7ed1\u5b9a EPUB \u6a21\u677f\u8def\u5f84\u3002",
-    epubWriteFailed: "EPUB \u5bfc\u51fa\u5931\u8d25"
+    epubWriteFailed: "EPUB \u5bfc\u51fa\u5931\u8d25",
+    agentArtifacts: "Agent 译文产物",
+    artifactsPanelIntro: "扫描 AI_translation/ 下的 Agent 初翻候选，校验后可导入为行审草稿。",
+    artifactsBridgeMissing: "请从 translation-workshop 应用内打开此 HTML，以使用 Agent 产物发现。",
+    refreshArtifacts: "刷新",
+    scanningArtifacts: "正在扫描 Agent 产物…",
+    noArtifacts: "未在 AI_translation/ 下找到候选译文产物。",
+    artifactsNeedOutputDir: "需要先选择输出文件夹才能发现 Agent 产物。",
+    artifactScanFailed: "产物扫描失败",
+    importAsDraft: "导入为译文草稿",
+    openRepair: "定位到问题行",
+    generateRepairPrompt: "生成格式修复提示词",
+    openArtifact: "打开产物文件",
+    importingDraft: "正在导入候选译文为草稿…",
+    importedDraft: "已导入为草稿",
+    importedDraftNote: "（{count} 行）最终 TXT 需手动导出才会写入。",
+    importBlocked: "校验未通过，已阻止导入",
+    importFailed: "导入失败",
+    repairPromptReady: "修复提示词已填入下方 Agent 输入框，可直接复制或发送。",
+    repairPromptFailed: "修复提示词生成失败",
+    repairJumpedToLine: "已跳转到第 {line} 行，请对照原文检查候选译文。",
+    repairLineCountHint: "行数不一致（原文 {source} 行，候选 {candidate} 行），无法定位单行；请使用「生成格式修复提示词」。",
+    artifactSourceLabel: "原文",
+    artifactSourceUnmatched: "未匹配到原文文件，绑定原文后才能导入。",
+    artifactOkBadge: "通过",
+    artifactBlockingBadge: "阻断",
+    artifactWarningBadge: "警告",
+    artifactValidationFailed: "校验失败",
+    artifactsRescanned: "已从磁盘重新扫描 {count} 个产物。"
   },
   "en-US": {
     aiTools: "AI tools",
-    agent: "Agent",
     generateTranslatePrompt: "Generate translation prompt",
     generateProofreadPrompt: "Generate proofread prompt",
     promptSettingsTitle: "Prompt parameters",
     promptSettingsTranslateTitle: "Translate parameters",
     promptSettingsProofreadTitle: "Proofread parameters",
+    promptSettingsReset: "Restore defaults",
+    promptSettingsResetDone: "Default parameters restored",
     promptSettingsApply: "Generate prompt",
     promptSettingsCancel: "Cancel",
     promptGenerationFailed: "Prompt generation failed",
-    languagePair: "Language pair",
     style: "Style",
     workDescription: "Work description",
     translateOutputDir: "Translation output folder",
     proofreadOutputDir: "Report output folder",
     split: "Split",
     splitSize: "Split size",
+    folderTranslationOrder: "File translation order",
+    folderTranslationOrderHint: "Files inside braces have no order preference and remain in the line-balanced dynamic worker queue; they do not have to start or finish together. Move a file outside the braces to enforce written order. Delete a filename from the expression to skip it in translation and proofreading.",
+    customPreserveRules: "Custom regex preservation rules",
+    customPreserveRulesHint: "Every source match must remain verbatim in the translation. Use this for line prefixes, dialogue brackets, and project-specific control codes.",
+    customPreserveRuleLabel: "Label",
+    customPreserveRulePattern: "Regular expression",
+    customPreserveRuleFlags: "Flags",
+    addCustomPreserveRule: "Add preservation rule",
+    removeCustomPreserveRule: "Remove preservation rule",
+    reuseExistingTranslation: "Audit and reuse existing translation",
     subagent: "Subagent",
     subagentCount: "Subagent count",
+    reviewSubagentCount: "Review Agent count",
+    reviewSubagentCountFollowTranslation: "Follow translation Agent count",
     proofreadMode: "Proofread mode",
     candidateRatio: "H9 candidate ratio",
     montecarloSize: "Monte Carlo sample size",
     montecarloRoundMin: "Minimum rounds",
     montecarloRoundMax: "Maximum rounds",
+    subagentModel: "Subagent model",
+    subagentModelFollowParent: "Follow main Agent",
+    subagentModelLoading: "Loading configured Pi models...",
+    subagentModelUnavailable: "No configured model found; subagents will follow the main Agent",
     generateReviewHtml: "Generate review HTML",
     copyPrompt: "Copy prompt",
-    callAgent: "Call Agent",
-    startInteractiveAgent: "Start console",
-    stopAgentConsole: "Stop",
-    agentConsoleRunning: "Console running",
-    agentConsoleWaiting: "Waiting for Agent reply...",
-    agentConsoleStreaming: "Agent is writing...",
-    agentConsoleQuiet: "Output is quiet; likely finished.",
-    collapseAgentWindow: "Collapse window",
-    agentPromptInput: "Prompt / message",
-    agentConsoleEmpty: "Interactive console output will appear here.",
-    sendPromptToAgent: "Send to Agent",
+    openAgentChat: "Agent chat",
+    agentChatPopout: "New window",
+    agentChatSettings: "Settings",
+    agentChatSettingsTitle: "Provider settings",
+    agentChatLoading: "Loading Agent OS…",
     syncTranslation: "Sync translation",
     chooseTranslationFile: "Choose other file",
     exportTxt: "Export TXT",
@@ -298,6 +387,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     promptPreview: "Prompt preview",
     theme: "Theme color",
     copied: "Copied",
+    refresh: "Refresh",
     synced: "Translation synced",
     syncFailed: "Translation sync failed",
     txtWritten: "TXT written",
@@ -309,20 +399,26 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     lineReviewMissing: "No linked line review HTML",
     lineReviewLinked: "Line review HTML marked",
     proposalChangesApplied: "Proposals applied",
+    proposalApplyRunning: "Applying proposals",
+    proposalApplyFailed: "Failed to apply proposals",
     proposalApplySkipped: "skipped",
     proposalSafetySkipped: "failed safety check",
+    proposalConflictSkipped: "conflicts",
+    mechanicalScan: "Mechanical scan",
+    mechanicalConfirm: "Confirm issue",
+    mechanicalFalsePositive: "False positive",
+    mechanicalConfirmed: "Confirmed as an issue",
+    mechanicalSuppressed: "False positive saved and hidden from the main review",
     proposalOpenFailed: "Failed to open line HTML",
     reviewGenerated: "Review HTML generated",
+    reviewFindings: "Review findings",
+    reviewTerminologyFindings: "Review terminology findings",
+    reviewCharacterVoiceFindings: "Review character voice findings",
+    reviewFinalQaFindings: "Review final QA findings",
     reviewGenerationFailed: "Review HTML generation failed",
     reviewFormatFallback: "The AI report failed format validation. A repair prompt was generated.",
     reviewHtmlNeedsApp: "Open this HTML in translation-workshop to generate review HTML.",
     reviewReportFound: "Report found",
-    agentLaunched: "Agent launched",
-    agentLaunchFailed: "Agent launch failed",
-    promptSentToAgent: "Prompt sent to Agent",
-    promptSentViaFile: "Prompt is long, so it was saved to a file and sent as a file reference",
-    agentConsoleNeedsApp: "Sending to Agent requires opening this HTML inside translation-workshop.",
-    agentConsoleNeedsOutput: "This HTML has no bound output folder, so Agent cannot be started.",
     lanSync: "LAN sync",
     lanSyncStop: "Stop sync",
     lanSyncCopy: "Copy link",
@@ -353,7 +449,6 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     auditHint: "Audit marks are hidden by default; click a row marker to add/remove it from the whitelist.",
     auditWhitelistWritten: "Audit whitelist written",
     auditWhitelistWriteFailed: "Audit whitelist write failed",
-    auditPromptNote: "Audit whitelist lines are recorded at {path}; line numbers: {lines}. Skip these lines in every proofreading/audit report, and remove any issues whose line number matches the whitelist.",
     auditH3: "H3 glossary term count mismatch",
     auditGlossaryFinished: "Term audit finished",
     glossaryEmpty: "No glossary loaded",
@@ -370,12 +465,43 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossaryWriteMissingTarget: "This HTML has no bound glossary file path.",
     glossaryReadFailed: "Glossary sync failed",
     glossaryWriteFailed: "Glossary write failed",
+    importGeneratedGlossary: "Import Agent glossary candidates",
+    generatedGlossaryImported: "Agent glossary candidates imported",
+    generatedGlossaryImportFailed: "Agent glossary candidate import failed",
     txtWriteNeedsApp: "Writing TXT needs this HTML to be opened inside the translation-workshop app. Reopen the generated result from the app.",
     txtWriteMissingTarget: "This HTML has no bound translation file path, so it cannot overwrite a TXT file. Choose a translation file in the app and regenerate the HTML.",
     txtWriteFailed: "TXT write failed",
     epubWriteNeedsApp: "Exporting EPUB needs this HTML to be opened inside the translation-workshop app.",
     epubWriteMissingTemplate: "This HTML has no bound EPUB template path.",
-    epubWriteFailed: "EPUB export failed"
+    epubWriteFailed: "EPUB export failed",
+    agentArtifacts: "Agent translation artifacts",
+    artifactsPanelIntro: "Scans AI_translation/ for agent draft candidates; import validated results as line-review drafts.",
+    artifactsBridgeMissing: "Open this HTML inside translation-workshop to discover agent artifacts.",
+    refreshArtifacts: "Refresh",
+    scanningArtifacts: "Scanning for agent artifacts…",
+    noArtifacts: "No candidate translation artifacts found under AI_translation/.",
+    artifactsNeedOutputDir: "Set an output folder to discover agent artifacts.",
+    artifactScanFailed: "Artifact scan failed",
+    importAsDraft: "Import as draft",
+    openRepair: "Jump to issue line",
+    generateRepairPrompt: "Generate repair prompt",
+    openArtifact: "Open artifact",
+    importingDraft: "Importing candidate as draft…",
+    importedDraft: "Imported as draft",
+    importedDraftNote: "({count} lines). Export manually to write the final TXT.",
+    importBlocked: "Import blocked by validation",
+    importFailed: "Import failed",
+    repairPromptReady: "Repair prompt is in the Agent input box below — copy or send it.",
+    repairPromptFailed: "Repair prompt generation failed",
+    repairJumpedToLine: "Jumped to line {line}. Compare the candidate against the source.",
+    repairLineCountHint: "Line count mismatch ({source} source vs {candidate} candidate). Use Generate repair prompt.",
+    artifactSourceLabel: "Source",
+    artifactSourceUnmatched: "Source not matched — bind a source file before importing.",
+    artifactOkBadge: "OK",
+    artifactBlockingBadge: "blocking",
+    artifactWarningBadge: "warnings",
+    artifactValidationFailed: "Validation failed",
+    artifactsRescanned: "Rescanned {count} artifact(s) from disk."
   }
 };
 
@@ -397,44 +523,48 @@ function fallbackPath(value: string | undefined, label: string): string {
 
 function workflowData(workflow: HtmlWorkflowOptions | undefined, initialTranslationLines: string[] = []) {
   const sourcePath = fallbackPath(workflow?.sourcePath, "source path");
+  const validationSourcePath = fallbackPath(workflow?.validationSourcePath ?? workflow?.sourcePath, "source path");
   const translationPath = fallbackPath(workflow?.translationPath, "sync translation file first");
   const promptSourcePath = fallbackPath(workflow?.sourcePromptPath ?? workflow?.sourcePath, "source path");
   const promptTranslationPath = workflow?.translationPromptPath ?? workflow?.translationPath;
   const promptTranslationPathFallback = fallbackPath(promptTranslationPath, "sync translation file first");
+  const promptSourceKind = workflow?.promptSourceKind ?? workflow?.sourceKind;
   const outputDir = fallbackPath(workflow?.outputDir, "output folder");
   const glossaryPath = workflow?.glossaryPath;
   const advanced = workflow?.advanced;
   const inputMode = workflow?.inputMode ?? "separate";
   const promptInputMode = workflow?.promptInputMode ?? inputMode;
   const promptDefaults = promptParameterDefaults(outputDir, advanced);
+  const factoryPromptDefaults = promptParameterDefaults(outputDir, {
+    folderSourceDocuments: advanced?.folderSourceDocuments
+  });
 
   return {
-    defaultAgent: workflow?.agent ?? "codex",
     inputMode,
     promptInputMode,
     paths: {
       sourcePath,
+      validationSourcePath,
+      sourceKind: workflow?.sourceKind ?? "file",
+      promptSourceKind: promptSourceKind ?? "file",
       translationPath: workflow?.translationPath ?? "",
+      editableTranslationPath: workflow?.editableTranslationPath ?? "",
       promptSourcePath,
       promptTranslationPath: promptTranslationPath ?? "",
       outputDir,
       glossaryPath: glossaryPath ?? ""
     },
     promptDefaults,
+    factoryPromptDefaults,
     glossaryEntries: workflow?.glossaryEntries ?? [],
     bilingualPair: workflow?.bilingualPair,
     epubExport: workflow?.epubExport ?? { mode: "all" },
+    advanced,
     initialTranslationLines,
     hasInitialTranslation: initialTranslationLines.some((line) => line.trim() !== ""),
     prompts: {
-      codex: {
-        translate: buildPrompt({ kind: "translate", agent: "codex", sourcePath: promptSourcePath, translationPath: promptTranslationPath, outputDir, glossaryPath, inputMode: promptInputMode, advanced }),
-        proofread: buildPrompt({ kind: "proofread", agent: "codex", sourcePath: promptSourcePath, translationPath: promptTranslationPathFallback, glossaryPath, outputDir, inputMode: promptInputMode, advanced })
-      },
-      claude: {
-        translate: buildPrompt({ kind: "translate", agent: "claude", sourcePath: promptSourcePath, translationPath: promptTranslationPath, outputDir, glossaryPath, inputMode: promptInputMode, advanced }),
-        proofread: buildPrompt({ kind: "proofread", agent: "claude", sourcePath: promptSourcePath, translationPath: promptTranslationPathFallback, glossaryPath, outputDir, inputMode: promptInputMode, advanced })
-      }
+      translate: buildPrompt({ kind: "translate", sourcePath: promptSourcePath, sourceKind: promptSourceKind, translationPath: promptTranslationPath, outputDir, glossaryPath, inputMode: promptInputMode, advanced }),
+      proofread: buildPrompt({ kind: "proofread", sourcePath: promptSourcePath, translationPath: promptTranslationPathFallback, glossaryPath, outputDir, inputMode: promptInputMode, advanced })
     }
   };
 }
@@ -443,8 +573,9 @@ function animeThemeCss(mode: "line" | "proposal"): string {
   const layout = mode === "line"
     ? `
     header { position:sticky; top:0; z-index:10; display:grid; grid-template-columns:1fr auto; gap:14px; align-items:center; padding:14px 18px; background:linear-gradient(100deg,var(--night),#344b9a 46%,var(--sky)); color:white; box-shadow:0 8px 24px rgba(95,111,191,.22); border-bottom:3px solid rgba(255,255,255,.42); }
-    header::after { content:""; position:absolute; inset:auto 22px -8px auto; width:118px; height:16px; border-radius:999px; background:linear-gradient(90deg,var(--sakura),var(--lemon),var(--mint)); opacity:.9; }
+    header::after { content:none; }
     .toolbar { display:flex; flex-wrap:wrap; justify-content:end; gap:8px; align-items:center; }
+    .agent-global-controls { display:flex; align-items:center; gap:8px; }
     main { max-width:1480px; margin:0 auto; padding:18px 18px 56px; }
     .status { display:flex; flex-wrap:wrap; gap:14px; color:var(--muted); font-size:13px; padding:10px 0 16px; }
     .status span { background:var(--panel-bg); border:1px solid var(--line); border-radius:999px; padding:6px 10px; }
@@ -478,6 +609,8 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .app { display:grid; grid-template-columns:310px minmax(0,1fr); min-height:100vh; }
     aside { position:sticky; top:0; height:100vh; overflow:auto; padding:20px; background:var(--panel-bg); border-right:1px solid var(--line); box-shadow:10px 0 28px rgba(95,111,191,.1); }
     aside::before { content:""; display:block; width:118px; height:14px; margin:0 0 14px auto; border-radius:999px; background:linear-gradient(90deg,var(--sakura),var(--lemon),var(--mint)); }
+    .app aside > label { display:block; margin-top:10px; color:var(--muted); font-size:13px; font-weight:700; }
+    .app aside > input,.app aside > select { display:block; width:100%; margin-top:4px; }
     main { min-width:0; padding:24px 26px 68px; }
     .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0; }
     .btn.primary,.btn.accept.active { background:linear-gradient(135deg,var(--mint),var(--sky)); color:#15324b; border-color:#8fd9d5; } .btn.reject.active { background:#ff8d9f; color:#fff; border-color:#ff8d9f; } .btn.manual.active { background:#f5bb4d; color:#3a2a00; border-color:#f5bb4d; }
@@ -488,7 +621,24 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .card-body { padding:14px; display:grid; gap:12px; } .field { display:grid; grid-template-columns:110px minmax(0,1fr); gap:10px; align-items:start; }
     .field b { color:var(--muted); font-size:13px; } .text { white-space:pre-wrap; overflow-wrap:anywhere; background:var(--target-bg); border:1px solid #e5e9f6; border-radius:8px; padding:9px 10px; }
     .suggestion .text { background:#effdf9; border-color:#bceee2; } textarea { min-height:72px; resize:vertical; }
-    @media (max-width: 900px) { .app { grid-template-columns:1fr; } aside { position:static; height:auto; } .field { grid-template-columns:1fr; } }`;
+    .conflict-box { display:grid; gap:8px; border:1px solid #ffd08a; border-radius:8px; background:#fff8ec; padding:10px; }
+    .conflict-box b { color:#9a6500; }
+    .conflict-box .toolbar { margin:0; }
+    .conflict-merge-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+    .conflict-merge-pane { display:grid; gap:4px; min-width:0; }
+    .conflict-merge-pane span { font-size:12px; color:var(--muted); font-weight:700; }
+    .conflict-merge-pane .text { max-height:120px; overflow:auto; border:1px solid #f4d28f; border-radius:6px; background:#fff; padding:8px; white-space:pre-wrap; }
+    .conflict-diff-old { background:#ffe4e6; color:#9f1239; text-decoration:line-through; }
+    .conflict-diff-new { background:#dcfce7; color:#166534; }
+    .conflict-history { display:grid; gap:6px; padding:8px; border:1px solid #f4d28f; border-radius:6px; background:#fffdfa; color:#6d4b13; font-size:12px; }
+    .conflict-history summary { cursor:pointer; font-weight:700; }
+    .conflict-history-row { display:grid; gap:3px; padding-top:6px; border-top:1px solid #f8e6bd; }
+    .conflict-history-row code { display:inline; color:#6d4b13; background:#fff8ec; }
+    .conflict-history-row .text { max-height:76px; overflow:auto; background:#fff; border-color:#f4d28f; }
+    .conflict-summary { display:grid; gap:6px; margin:10px 0; padding:10px; border:1px solid #ffd08a; border-radius:8px; background:#fff8ec; }
+    .conflict-summary b { color:#9a6500; }
+    .conflict-summary button { justify-content:flex-start; text-align:left; white-space:normal; }
+    @media (max-width: 900px) { .app { grid-template-columns:1fr; } aside { position:static; height:auto; } .field { grid-template-columns:1fr; } .conflict-merge-grid { grid-template-columns:1fr; } }`;
 
   return `
     :root { --bg:#eef8ff; --surface-a:#eef8ff; --surface-b:#f8fcff; --surface-c:#e2f4ff; --panel-bg:rgba(255,255,255,.9); --source-bg:#fbfdff; --target-bg:#f7fbff; --ink:#273046; --muted:#6d7896; --line:#cfdef2; --night:#2d5d9f; --sky:#72d3ff; --sakura:#9ad7ff; --mint:#b5ecff; --lemon:#eaf7ff; --manual:#9a6500; --focus:#dff3ff; --chip:#edf8ff; }
@@ -507,8 +657,6 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     button:hover,.btn:hover { border-color:var(--sky); transform:translateY(-1px); }
     button.primary { background:linear-gradient(135deg,var(--sakura),var(--sky)); border-color:#ffb4d6; color:#fff; font-weight:700; }
     .ribbon { display:inline-flex; align-items:center; gap:6px; border-radius:999px; padding:5px 10px; background:rgba(255,255,255,.22); border:1px solid rgba(255,255,255,.45); font-size:12px; font-weight:700; }
-    .agent-console-status { display:inline-flex; align-items:center; min-height:30px; padding:5px 9px; border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--muted); font-size:12px; font-weight:800; }
-    .agent-console-status[data-phase="waiting"],.agent-console-status[data-phase="streaming"] { color:#1f5b91; border-color:var(--sky); }
     .theme-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:10px 0; }
     .theme-controls strong { font-size:12px; color:var(--muted); }
     .theme-swatch { width:28px; min-width:28px; height:28px; min-height:28px; padding:0; border-radius:999px; border:2px solid rgba(255,255,255,.82); box-shadow:0 2px 8px rgba(95,111,191,.18); }
@@ -544,15 +692,22 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .prompt-section { display:grid; gap:8px; }
     .prompt-section strong { font-size:13px; color:#33405f; }
     .prompt-actions { display:flex; flex-wrap:wrap; gap:8px; justify-content:end; }
-    .agent-panel { display:grid; gap:10px; padding:12px; border:1px solid #b9d8f4; border-radius:8px; background:rgba(246,251,255,.92); }
-    .agent-window { position:fixed; z-index:34; right:20px; bottom:20px; width:min(720px,calc(100vw - 40px)); max-height:min(760px,calc(100vh - 40px)); overflow:auto; margin:0; background:rgba(246,251,255,.97); box-shadow:0 22px 60px rgba(30,54,105,.28); }
-    .agent-panel[hidden], .agent-pane[hidden] { display:none; }
-    .agent-panel-head,.agent-pane-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
-    .agent-panel-head strong { margin-right:auto; }
-    .agent-pane { display:grid; gap:8px; }
-    .agent-log { height:min(46vh,360px); min-height:180px; overflow:auto; margin:0; padding:10px; border:1px solid #244b70; border-radius:8px; background:#071523; color:#dbeafe; font:12px/1.45 Consolas,"Courier New",monospace; overscroll-behavior:contain; }
-    .agent-log .xterm { height:100%; padding:0; }
-    .agent-log .xterm-viewport { border-radius:6px; overflow-y:auto !important; }
+    .agent-artifacts { display:grid; gap:10px; margin:0 0 16px; padding:14px; border:1px solid var(--line); border-radius:8px; background:var(--panel-bg); box-shadow:0 10px 26px rgba(95,111,191,.08); }
+    .agent-artifacts header { position:static; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:0; color:var(--ink); background:none; box-shadow:none; border:0; }
+    .agent-artifacts header::after { content:none; }
+    .agent-artifact-list { display:grid; gap:10px; max-height:min(60vh,520px); overflow:auto; }
+    .artifact-card { display:grid; gap:6px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    .artifact-card header { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:14px; }
+    .artifact-meta { font-size:12px; color:var(--muted); word-break:break-all; }
+    .artifact-meta.warn { color:#b45309; }
+    .artifact-badge { font-size:11px; padding:1px 7px; border-radius:999px; border:1px solid var(--line); background:#fff; }
+    .artifact-badge.ok { color:#15803d; border-color:#86efac; background:#ecfdf5; }
+    .artifact-badge.warn { color:#b45309; border-color:#fcd34d; background:#fffbeb; }
+    .artifact-badge.block { color:#b91c1c; border-color:#fca5a5; background:#fef2f2; }
+    .artifact-blocking, .artifact-warnings { margin:4px 0 0; padding-left:18px; font-size:12px; line-height:1.4; }
+    .artifact-blocking li { color:#b91c1c; }
+    .artifact-warnings li { color:#92400e; }
+    .artifact-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:4px; }
     .glossary-tools { display:grid; gap:10px; margin:0 0 16px; padding:14px; border:1px solid var(--line); border-radius:8px; background:var(--panel-bg); box-shadow:0 10px 26px rgba(95,111,191,.08); }
     .glossary-tools header { position:static; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:0; color:var(--ink); background:none; box-shadow:none; border:0; }
     .glossary-tools header::after { content:none; }
@@ -572,8 +727,17 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .glossary-backdrop.open { opacity:1; pointer-events:auto; }
     .glossary-drawer { position:fixed; z-index:30; inset:0 auto 0 0; width:min(700px,calc(100vw - 22px)); max-width:100vw; margin:0; border-radius:0 8px 8px 0; overflow:auto; transform:translateX(-105%); transition:transform .18s ease; }
     .glossary-drawer.open { transform:translateX(0); }
+    #promptFolderTranslationOrder { min-height:120px; max-height:240px; resize:vertical; }
+    .prompt-preserve-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .prompt-preserve-heading button { width:34px; min-width:34px; min-height:34px; padding:0; font-size:20px; line-height:1; }
+    .prompt-preserve-rules { display:grid; gap:8px; }
+    .prompt-preserve-row { display:grid; grid-template-columns:minmax(110px,.65fr) minmax(220px,1.8fr) 72px 34px; gap:8px; align-items:center; }
+    .prompt-preserve-row input { width:100%; min-width:0; }
+    .prompt-preserve-row button { width:34px; min-width:34px; min-height:34px; padding:0; font-size:18px; line-height:1; }
+    @media (max-width:720px) { .prompt-preserve-row { grid-template-columns:1fr 72px 34px; } .prompt-preserve-row .prompt-preserve-label { grid-column:1 / -1; } }
     .glossary-drawer header strong { display:flex; align-items:center; gap:4px; }
     .glossary-drawer .glossary-actions { justify-content:flex-start; }
+    ${agentChatEmbedCss()}
     ${layout}`;
 }
 
@@ -593,22 +757,42 @@ function promptSettingsHtml(t: Record<string, string>): string {
         <header>
           <strong id="promptSettingsHeading">${t.promptSettingsTitle ?? "Prompt parameters"}</strong>
           <div class="prompt-actions">
+            <button id="resetPromptSettings" type="button">${t.promptSettingsReset ?? "Restore defaults"}</button>
             <button id="cancelPromptSettings" type="button">${t.promptSettingsCancel ?? "Cancel"}</button>
             <button id="applyPromptSettings" type="button" class="primary">${t.promptSettingsApply ?? "Generate prompt"}</button>
           </div>
         </header>
         <div class="prompt-grid">
-          <label><span>${t.languagePair ?? "Language pair"}</span><input id="promptLanguagePair" type="text"></label>
+          <label><span>${t.languagePair ?? "Language pair"}</span><input id="promptLanguagePair" type="text" placeholder="ja->zh-CN"></label>
           <label><span>${t.style ?? "Style"}</span><input id="promptStyle" type="text"></label>
           <label id="promptSplitSizeField"><span>${t.splitSize ?? "Split size"}</span><input id="promptSplitSize" type="number" min="1"></label>
-          <label id="promptSubagentField" class="prompt-check"><input id="promptSubagent" type="checkbox"><span>${t.subagent ?? "Subagent"}</span></label>
-          <label id="promptSubagentCountField"><span>${t.subagentCount ?? "Subagent count"}</span><input id="promptSubagentCount" type="number" min="1"></label>
           <label class="prompt-wide"><span>${t.workDescription ?? "Work description"}</span><textarea id="promptWorkDescription" spellcheck="false" placeholder="None"></textarea></label>
+          <label id="promptFolderTranslationOrderField" class="prompt-wide" hidden><span>${t.folderTranslationOrder ?? "File translation order"}</span><textarea id="promptFolderTranslationOrder" spellcheck="false"></textarea><small>${t.folderTranslationOrderHint ?? "Files inside braces have no order preference and remain in the dynamic worker queue. Move a file outside the braces to enforce written order."}</small></label>
+        </div>
+        <div class="prompt-section prompt-preserve-settings">
+          <div class="prompt-preserve-heading">
+            <strong>${t.customPreserveRules ?? "Custom regex preservation rules"}</strong>
+            <button id="addPromptCustomPreserveRule" type="button" title="${t.addCustomPreserveRule ?? "Add preservation rule"}" aria-label="${t.addCustomPreserveRule ?? "Add preservation rule"}">+</button>
+          </div>
+          <div id="promptCustomPreserveRules" class="prompt-preserve-rules"></div>
+          <small>${t.customPreserveRulesHint ?? "Every source match must remain verbatim in the translation."}</small>
+        </div>
+        <div class="prompt-section prompt-subagent-settings">
+          <strong>${t.subagentModel ?? "Subagent model"}</strong>
+          <div class="prompt-grid">
+            <label id="promptSubagentField" class="prompt-check"><input id="promptSubagent" type="checkbox"><span>${t.subagent ?? "Subagent"}</span></label>
+            <label id="promptSubagentCountField"><span>${t.subagentCount ?? "Subagent count"}</span><input id="promptSubagentCount" type="number" min="1"></label>
+            <label id="promptReviewSubagentCountField"><span>${t.reviewSubagentCount ?? "Review Agent count"}</span><input id="promptReviewSubagentCount" type="number" min="1" placeholder="${t.reviewSubagentCountFollowTranslation ?? "Follow translation Agent count"}"></label>
+            <label class="prompt-wide"><span>${t.subagentModel ?? "Subagent model"}</span><select id="promptSubagentModel"><option value="">${t.subagentModelFollowParent ?? "Follow main Agent"}</option></select><small id="promptSubagentModelStatus">${t.subagentModelFollowParent ?? "Follow main Agent"}</small></label>
+          </div>
         </div>
         <div id="translatePromptSettings" class="prompt-section">
           <strong>${t.promptSettingsTranslateTitle ?? "Translate parameters"}</strong>
           <div class="prompt-grid">
             <label class="prompt-wide"><span>${t.translateOutputDir ?? "Translation output folder"}</span><input id="promptTranslateOutputDir" type="text"></label>
+            <label class="prompt-check"><input id="promptGlossaryCandidates" type="checkbox"><span>${t.glossaryCandidates ?? "Glossary candidates"}</span></label>
+            <label class="prompt-check"><input id="promptCharacterBible" type="checkbox"><span>${t.characterBible ?? "Character bible"}</span></label>
+            <label class="prompt-check"><input id="promptReuseExistingTranslation" type="checkbox"><span>${t.reuseExistingTranslation ?? "Audit and reuse existing translation"}</span></label>
             <label id="promptSplitField" class="prompt-check"><input id="promptSplit" type="checkbox"><span>${t.split ?? "Split"}</span></label>
           </div>
         </div>
@@ -616,7 +800,7 @@ function promptSettingsHtml(t: Record<string, string>): string {
           <strong>${t.promptSettingsProofreadTitle ?? "Proofread parameters"}</strong>
           <div class="prompt-grid">
             <label class="prompt-wide"><span>${t.proofreadOutputDir ?? "Report output folder"}</span><input id="promptProofreadOutputDir" type="text"></label>
-            <label><span>${t.proofreadMode ?? "Proofread mode"}</span><select id="promptProofreadMode"><option value="split">split</option><option value="montecarlo">montecarlo</option></select></label>
+            <label id="promptProofreadModeField"><span>${t.proofreadMode ?? "Proofread mode"}</span><select id="promptProofreadMode"><option value="split">split</option><option value="montecarlo">montecarlo</option></select></label>
             <label><span>${t.candidateRatio ?? "H9 candidate ratio"}</span><input id="promptCandidateRatio" type="number" min="0.1" step="0.1"></label>
             <label class="prompt-montecarlo-field"><span>${t.montecarloSize ?? "Monte Carlo sample size"}</span><input id="promptMontecarloSize" type="number" min="1"></label>
             <label class="prompt-montecarlo-field"><span>${t.montecarloRoundMin ?? "Minimum rounds"}</span><input id="promptMontecarloRoundMin" type="number" min="1"></label>
@@ -630,12 +814,12 @@ function aiToolsHtml(t: Record<string, string>, workflow: ReturnType<typeof work
   const sourcePath = workflow.paths?.sourcePath ?? "";
   const translationPath = workflow.paths?.translationPath ?? "";
   const sourceIsEpub = /\.epub$/i.test(sourcePath);
-  const canSaveTxt = !sourceIsEpub && /\.txt$/i.test(translationPath);
+  const editableTranslationPath = workflow.paths?.editableTranslationPath ?? translationPath;
+  const canSaveTxt = /\.txt$/i.test(editableTranslationPath);
   return `<section id="aiTools" class="ai-tools">
       <header>
         <strong>${t.aiTools ?? "AI tools"}</strong>
         <div class="ai-actions">
-          <label>${t.agent ?? "Agent"} <select id="agentSelect"><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
           <button id="translatePrompt" type="button">${t.generateTranslatePrompt ?? "Generate translation prompt"}</button>
           <button id="proofreadPrompt" type="button">${t.generateProofreadPrompt ?? "Generate proofread prompt"}</button>
           <button id="generateReviewHtml" type="button">${t.generateReviewHtml ?? "Generate review HTML"}</button>
@@ -645,7 +829,7 @@ function aiToolsHtml(t: Record<string, string>, workflow: ReturnType<typeof work
           <label class="compact-select">${t.exportTxtMode ?? "TXT"} <select id="exportTxtMode"><option value="translation">${t.exportTxtMono ?? "Mono"}</option><option value="bilingual">${t.exportTxtBilingual ?? "Bilingual"}</option></select></label>
           <button id="exportTxt" type="button">${t.exportTxt ?? "Export TXT"}</button>
           ${sourceIsEpub ? `<button id="exportEpub" type="button">${t.exportEpub ?? "Export EPUB"}</button>` : ""}
-          ${canSaveTxt ? `<button id="saveTxt" type="button">${t.saveTxt ?? "Save TXT"}</button>` : ""}
+          <button id="saveTxt" type="button"${canSaveTxt ? "" : " hidden"}>${t.saveTxt ?? "Save TXT"}</button>
           <label class="compact-select">${t.lanSyncPin ?? "6-digit PIN"} <input id="lanSyncPin" type="text" inputmode="numeric" autocomplete="off" maxlength="6" pattern="\\d{6}" placeholder="000000" style="width:92px"></label>
           <button id="startLanSync" type="button">${t.lanSync ?? "LAN sync"}</button>
           <input id="syncTranslationInput" type="file" accept=".txt,text/plain" hidden>
@@ -663,22 +847,14 @@ function aiToolsHtml(t: Record<string, string>, workflow: ReturnType<typeof work
         </div>
         <p>${t.lanSyncExternal ?? "External tunnel"}: ${t.lanSyncExternalNote ?? "translation-workshop does not bundle public tunneling tools. If you use Cloudflare Tunnel, ngrok, or similar tools, point them to the local sync address."}</p>
       </div>
-      <div id="agentPanel" class="agent-panel agent-window" hidden>
-        <div class="agent-panel-head">
-          <strong>${t.callAgent ?? "Call Agent"}</strong>
-          <span id="interactiveAgentStatus" class="agent-console-status">${t.agentConsoleStopped ?? "Agent Console stopped."}</span>
-          <button id="collapseAgentPanel" type="button">${t.collapseAgentWindow ?? "Collapse window"}</button>
-        </div>
-        <div id="interactiveAgentPane" class="agent-pane">
-          <div class="agent-pane-actions">
-              <button id="startInteractiveAgent" type="button">${t.startInteractiveAgent ?? "Start console"}</button>
-              <button id="sendInteractiveAgentMessage" type="button" class="primary">${t.sendPromptToAgent ?? "Send to Agent"}</button>
-              <button id="stopInteractiveAgent" type="button">${t.stopAgentConsole ?? "Stop"}</button>
-            </div>
-          <div id="interactiveAgentOutput" class="agent-log" aria-label="${t.agentConsole ?? "Agent Console"}" data-empty="${escapeHtml(t.agentConsoleEmpty ?? "")}"></div>
-        </div>
-        <label>${t.agentPromptInput ?? "Prompt / message"}<textarea id="agentMessageInput" spellcheck="false"></textarea></label>
-      </div>
+      <section id="agentArtifactsPanel" class="agent-artifacts">
+        <header>
+          <strong>${t.agentArtifacts ?? "Agent translation artifacts"}</strong>
+          <button id="refreshAgentArtifacts" type="button">${t.refreshArtifacts ?? "Refresh"}</button>
+        </header>
+        <p class="ai-status" id="agentArtifactsStatus">${t.artifactsPanelIntro ?? "Scanning AI_translation/ for agent draft candidates."}</p>
+        <div id="agentArtifactsList" class="agent-artifact-list"></div>
+      </section>
       <textarea id="promptPreview" spellcheck="false" hidden></textarea>
     </section>`;
 }
@@ -705,6 +881,7 @@ function glossaryToolsHtml(t: Record<string, string>, entries: GlossaryEntry[]):
         <div class="glossary-actions">
           <button id="glossaryDrawerClose" type="button">${t.glossaryClose ?? "Close"}</button>
           <button id="importGlossary" type="button">${t.importGlossary ?? "Import glossary file"}</button>
+          <button id="importGeneratedGlossary" type="button" hidden>${t.importGeneratedGlossary ?? "Import Agent glossary candidates"}</button>
           <button id="syncGlossary" type="button">${t.syncGlossary ?? "Sync glossary"}</button>
           <button id="exportGlossary" type="button">${t.exportGlossary ?? "Export glossary"}</button>
           <button id="writeGlossary" type="button">${t.writeGlossary ?? "Write glossary"}</button>
@@ -730,7 +907,19 @@ const batchLabels: Record<UiLocale, Record<string, string>> = {
     matched: "\u5df2\u5339\u914d",
     missing: "\u672a\u627e\u5230\u540c\u540d\u8bd1\u6587",
     mismatch: "\u884c\u6570\u4e0d\u4e00\u81f4",
-    open: "\u5728\u65b0\u7a97\u53e3\u6253\u5f00"
+    open: "\u5728\u65b0\u6807\u7b7e\u9875\u6253\u5f00",
+    writeAllTxt: "\u6279\u91cf\u5199\u5165 TXT",
+    batchWriteRunning: "\u6b63\u5728\u5199\u5165\u5168\u90e8 TXT...",
+    batchWriteDone: "\u5df2\u5199\u5165 {count} \u4e2a TXT",
+    batchWriteFailed: "\u6279\u91cf\u5199\u5165\u5931\u8d25",
+    promptTitle: "\u6587\u4ef6\u5939\u6279\u91cf\u7ffb\u8bd1\u63d0\u793a\u8bcd",
+    promptHint: "\u8fd9\u662f\u9488\u5bf9\u5f53\u524d\u6587\u4ef6\u5939\u7684\u6279\u91cf\u7ffb\u8bd1\u63d0\u793a\u8bcd\uff0c\u4f1a\u6309\u6587\u4ef6\u5206\u522b\u5904\u7406\u3002",
+    copyPrompt: "\u590d\u5236\u63d0\u793a\u8bcd",
+    openAgent: "\u5728 Agent \u4e2d\u6253\u5f00",
+    agentOpened: "Agent \u5df2\u6253\u5f00\uff0c\u63d0\u793a\u8bcd\u5df2\u653e\u5165\u8f93\u5165\u6846",
+    agentOpenFailed: "\u65e0\u6cd5\u6253\u5f00 Agent",
+    copied: "\u5df2\u590d\u5236",
+    copyFailed: "\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u624b\u52a8\u9009\u4e2d\u63d0\u793a\u8bcd"
   },
   "en-US": {
     chooseFile: "Choose file",
@@ -741,25 +930,58 @@ const batchLabels: Record<UiLocale, Record<string, string>> = {
     matched: "Matched",
     missing: "No same-name translation",
     mismatch: "Line count mismatch",
-    open: "Open in new window"
+    open: "Open in new tab",
+    writeAllTxt: "Write all TXT",
+    batchWriteRunning: "Writing all TXT files...",
+    batchWriteDone: "Wrote {count} TXT files",
+    batchWriteFailed: "Batch TXT write failed",
+    promptTitle: "Folder batch translation prompt",
+    promptHint: "This prompt targets the selected folder and processes its files as separate translation artifacts.",
+    copyPrompt: "Copy prompt",
+    openAgent: "Open in Agent",
+    agentOpened: "Agent opened with the prompt in its composer",
+    agentOpenFailed: "Could not open Agent",
+    copied: "Copied",
+    copyFailed: "Copy failed; select the prompt manually"
   }
 };
 
-function statusText(status: BatchLineReviewIndexFile["status"], t: Record<string, string>): string {
-  if (status === "matched") return t.matched;
-  if (status === "line-count-mismatch") return t.mismatch;
-  return t.missing;
-}
+// v3 removed the obsolete outer batch prompt sidebar. v4 added the compact,
+// Host-backed batch TXT action. v5 flushes the active child before Host preflight.
+// v6 keeps match state internal instead of presenting stale same-name-file status.
+export const BATCH_LINE_REVIEW_PROTOCOL_VERSION = 6;
+export const BATCH_LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-batch-review-v${BATCH_LINE_REVIEW_PROTOCOL_VERSION}`;
 
 export function renderBatchLineReviewIndexHtml(options: BatchLineReviewIndexOptions): string {
   const locale = options.locale ?? "zh-CN";
   const t = batchLabels[locale];
   const firstFile = options.files[0];
+  const workflow = options.workflow
+    ? workflowData({ ...options.workflow, sourceKind: "folder" })
+    : undefined;
+  const folderTranslatePrompt = workflow?.prompts.translate ?? "";
+  const folderAgentRoute = workflow
+    ? {
+      outputDir: workflow.paths.outputDir,
+      locale,
+      languagePair: workflow.promptDefaults.languagePair,
+      sourcePath: workflow.paths.sourcePath,
+      sourceKind: "folder" as const,
+      translationPath: workflow.paths.translationPath,
+      inputMode: workflow.inputMode,
+      glossaryPath: workflow.paths.glossaryPath,
+      advanced: workflow.advanced,
+      initialPrompt: folderTranslatePrompt,
+      initialWorkflowIntent: "translation" as const,
+      initialLanguagePair: workflow.promptDefaults.languagePair
+    }
+    : undefined;
   return `<!doctype html>
 <html lang="${locale}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="translation-workshop-batch-review" content="${BATCH_LINE_REVIEW_PROTOCOL_MARKER}">
   <title>${escapeHtml(options.title)}</title>
   <style>
     :root { --bg:#eef8ff; --panel:#ffffffea; --ink:#26324d; --muted:#6d7896; --line:#cfe0f5; --sky:#72d3ff; --night:#2d5d9f; --ok:#74d6b7; --warn:#ffca6b; --bad:#ff9db9; }
@@ -769,13 +991,11 @@ export function renderBatchLineReviewIndexHtml(options: BatchLineReviewIndexOpti
     h1 { margin:0; font-size:18px; line-height:1.35; letter-spacing:0; }
     select,button { min-height:36px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); padding:7px 10px; font:inherit; }
     button { cursor:pointer; }
-    main { display:grid; min-height:calc(100vh - 66px); }
-    .badge { display:inline-flex; border-radius:999px; padding:3px 8px; font-size:12px; font-weight:700; background:#eef8ff; }
-    .badge.matched { background:#e8fff8; color:#146653; }
-    .badge.missing-translation { background:#fff3d9; color:#7a4e00; }
-    .badge.line-count-mismatch { background:#fff0f5; color:#8f2750; }
+    main { display:grid; grid-template-columns:minmax(0,1fr); min-height:calc(100vh - 66px); }
     .viewer { min-width:0; display:grid; grid-template-rows:auto minmax(0,1fr); }
     .viewerBar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:12px 14px; border-bottom:1px solid var(--line); background:#ffffffc9; }
+    .batchWriteStatus { min-width:0; color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
+    .batchWriteStatus.error { color:#a52850; }
     iframe { width:100%; height:100%; border:0; background:#fff; }
     @media (max-width: 960px) { header { grid-template-columns:1fr; } }
   </style>
@@ -783,44 +1003,79 @@ export function renderBatchLineReviewIndexHtml(options: BatchLineReviewIndexOpti
 <body>
   <header>
     <h1>${escapeHtml(options.title)}</h1>
-    <label>${t.chooseFile} <select id="fileSelect">${options.files.map((file, index) => `<option value="${index}">${escapeHtml(file.sourceName)} - ${escapeHtml(statusText(file.status, t))}</option>`).join("")}</select></label>
+    <label>${t.chooseFile} <select id="fileSelect">${options.files.map((file, index) => `<option value="${index}">${escapeHtml(file.sourceName)}</option>`).join("")}</select></label>
   </header>
   <main>
     <section class="viewer">
       <div class="viewerBar">
         <strong id="activeTitle">${escapeHtml(firstFile?.sourceName ?? "")}</strong>
-        <span id="activeStatus" class="badge ${escapeHtml(firstFile?.status ?? "")}">${escapeHtml(firstFile ? statusText(firstFile.status, t) : "")}</span>
         <button id="openActive" type="button">${t.open}</button>
+        <button id="writeAllTxt" type="button">${t.writeAllTxt}</button>
+        <span id="batchWriteStatus" class="batchWriteStatus" role="status" aria-live="polite"></span>
       </div>
       <iframe id="fileFrame" src="${escapeHtml(firstFile?.outputPath ?? "about:blank")}"></iframe>
     </section>
   </main>
-  <script id="batchData" type="application/json">${jsonScript({ files: options.files, labels: t })}</script>
+  <script id="batchData" type="application/json">${jsonScript({ files: options.files, labels: t, folderAgentRoute })}</script>
   <script>
 const data = JSON.parse(document.getElementById("batchData").textContent);
 const select = document.getElementById("fileSelect");
 const frame = document.getElementById("fileFrame");
 const title = document.getElementById("activeTitle");
-const badge = document.getElementById("activeStatus");
 function applyFile(index) {
   const file = data.files[index] || data.files[0];
   if (!file) return;
   select.value = String(index);
   frame.src = file.outputPath;
   title.textContent = file.sourceName;
-  badge.textContent = file.status === "matched" ? data.labels.matched : file.status === "line-count-mismatch" ? data.labels.mismatch : data.labels.missing;
-  badge.className = "badge " + file.status;
 }
 select.addEventListener("change", () => applyFile(Number(select.value || 0)));
-document.getElementById("openActive").addEventListener("click", () => {
+document.getElementById("openActive").addEventListener("click", async () => {
   const file = data.files[Number(select.value || 0)] || data.files[0];
-  if (file) window.open(file.outputPath, "_blank");
+  if (!file) return;
+  try {
+    const api = window.workshopHtml || window.workshop;
+    if (!api?.openPath) throw new Error("The Electron HTML tab host is unavailable.");
+    const targetUrl = new URL(file.outputPath, location.href).href;
+    const error = await api.openPath(targetUrl);
+    if (error) throw new Error(error);
+  } catch (error) {
+    console.error(error);
+    window.alert(String(error && error.message ? error.message : error));
+  }
+});
+document.getElementById("writeAllTxt").addEventListener("click", async () => {
+  const button = document.getElementById("writeAllTxt");
+  const status = document.getElementById("batchWriteStatus");
+  button.disabled = true;
+  status.className = "batchWriteStatus";
+  status.textContent = data.labels.batchWriteRunning;
+  try {
+    const api = window.workshopHtml || window.workshop;
+    if (!api?.writeBatchLineReviewTxt) throw new Error("The Electron batch TXT host is unavailable.");
+    const flushChild = frame.contentWindow?.flushTranslationWorkshopLineReviewState;
+    if (typeof flushChild === "function") await flushChild.call(frame.contentWindow);
+    const result = await api.writeBatchLineReviewTxt();
+    status.textContent = data.labels.batchWriteDone.replace("{count}", String(result?.written?.length || 0));
+  } catch (error) {
+    console.error(error);
+    status.className = "batchWriteStatus error";
+    status.textContent = data.labels.batchWriteFailed + ": " + String(error && error.message ? error.message : error);
+  } finally {
+    button.disabled = false;
+  }
 });
 applyFile(0);
   </script>
 </body>
 </html>`;
 }
+
+export const LINE_REVIEW_PROTOCOL_VERSION = 30;
+export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
+export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 8;
+export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
+export const PROMPT_SETTINGS_VERSION = 37;
 
 export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   const locale = options.locale ?? "zh-CN";
@@ -834,9 +1089,16 @@ export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="translation-workshop-line-review" content="${LINE_REVIEW_PROTOCOL_MARKER}">
+  <meta name="translation-workshop-prompt-settings" content="${PROMPT_SETTINGS_VERSION}">
   <title>${escapeHtml(options.title)}</title>
   <style>${animeThemeCss("line")}</style>
-  ${renderXtermBrowserAssets()}
+  <style>${animeThemeCss("line")}</style>
+  <style>
+    .yn-agent-row-menu { position:fixed; z-index:10000; min-width:210px; padding:4px; border:1px solid var(--border); border-radius:6px; background:var(--panel-bg); box-shadow:0 12px 28px rgba(15,23,42,.18); }
+    .yn-agent-row-menu button { width:100%; border:0; background:transparent; padding:8px 10px; text-align:left; color:var(--text); }
+    .yn-agent-row-menu button:hover { background:color-mix(in srgb, var(--sky) 18%, transparent); }
+  </style>
 </head>
 <body class="anime-workbench line-review">
   <header>
@@ -849,22 +1111,32 @@ export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
       <button id="next">${t.next}</button>
       <button id="restore">${t.restore}</button>
       <button id="export" class="primary">${t.exportJson}</button>
-      <button id="callAgent" type="button">${t.callAgent ?? "Call Agent"}</button>
+      <div class="agent-global-controls" aria-label="${t.agentChatSettingsTitle ?? "Agent settings"}">
+        <button id="agentChatSettingsGlobal" type="button">${t.agentChatSettings ?? "Settings"}</button>
+      </div>
+      <button id="openAgentChat" type="button" class="primary">${t.openAgentChat ?? "Agent chat"}</button>
+      <button id="agentChatPopout" type="button">${t.agentChatPopout ?? "New window"}</button>
+      <button id="agentChatPopoutBack" type="button" hidden>${t.back ?? "Back"}</button>
       <button id="glossaryDrawerToggle" type="button">${t.glossaryOpen ?? "Glossary"}</button>
       ${themeControlsHtml(t)}
     </div>
   </header>
   ${glossaryToolsHtml(t, workflow.glossaryEntries)}
-  <main>
-    ${aiToolsHtml(t, workflow)}
-    <div class="status">
-      <span>${t.total}: <strong id="totalCount">${rows.length}</strong></span>
-      <span>${t.changed}: <strong id="changedCount">0</strong></span>
-      <span><strong id="pageInfo"></strong></span>
+  <div class="line-review-shell">
+    <div class="line-review-main">
+      <main>
+        ${aiToolsHtml(t, workflow)}
+        <div class="status">
+          <span>${t.total}: <strong id="totalCount">${rows.length}</strong></span>
+          <span>${t.changed}: <strong id="changedCount">0</strong></span>
+          <span><strong id="pageInfo"></strong></span>
+        </div>
+        <section id="rows"></section>
+      </main>
     </div>
-    <section id="rows"></section>
-  </main>
-  <script id="reviewData" type="application/json">${jsonScript({ rows, pageSize: firstPage.pageSize, startPage: firstPage.page, labels: t, workflow })}</script>
+    ${agentChatEmbedHtml(t)}
+  </div>
+  <script id="reviewData" type="application/json">${jsonScript({ rows, pageSize: firstPage.pageSize, startPage: firstPage.page, labels: t, workflow, locale, lineReviewPath: options.lineReviewPath ?? "" })}</script>
   <script>${lineReviewScript()}</script>
 </body>
 </html>`;
@@ -894,6 +1166,24 @@ function readLineReviewState() {
   return {};
 }
 const state = readLineReviewState();
+state.documentRevision = Number.isInteger(Number(state.documentRevision)) ? Number(state.documentRevision) : 0;
+const lineReviewClientId = globalThis.crypto?.randomUUID?.()
+  || "line-review-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+const lineScopedStateKeys = ["edits", "status", "revisions", "revisionHistory", "auditIssues", "auditWhitelist"];
+const synchronizedDocumentStateKeys = [
+  "translationPath",
+  "translationPromptPath",
+  "syncedFile",
+  "syncedAt",
+  "savedTxtFile",
+  "savedTxtAt",
+  "savedEpubFile",
+  "savedEpubAt"
+];
+delete state.glossaryEntries;
+delete state.glossaryTargets;
+delete state.glossaryAliases;
+delete state.glossaryPath;
 state.edits ||= {};
 state.status ||= {};
 for (const line in state.status) {
@@ -903,10 +1193,13 @@ if (state.synced) delete state.synced;
 state.theme ||= {};
 state.auditIssues ||= {};
 state.auditWhitelist ||= {};
+state.revisions ||= {};
+state.revisionHistory ||= {};
 state.auditVisible ||= false;
 let syncedLines = workflow.hasInitialTranslation ? (workflow.initialTranslationLines || []) : [];
 let page = state.page || data.startPage || 1;
 let activeLine = state.activeLine || null;
+let projectGlossaryPath = workflow.paths?.glossaryPath || "";
 let restoringPosition = true;
 let searchTerm = "";
 let searchMatches = [];
@@ -915,18 +1208,291 @@ const rowsEl = document.getElementById("rows");
 const pageInput = document.getElementById("pageInput");
 const pageInfo = document.getElementById("pageInfo");
 const changedCount = document.getElementById("changedCount");
-function save() {
+let lastHostStateWrite = Promise.resolve();
+let applyingCanonicalState = false;
+let canonicalStateHydrated = false;
+let localLineMutationSequence = 0;
+const pendingLineMutations = new Map();
+let queuedLineReviewStateWrite = null;
+let lastTrackedHostStateRequest = null;
+const lineReviewSyncTrace = [];
+window.__ynLineReviewSyncTrace = lineReviewSyncTrace;
+function traceLineReviewSync(type, detail) {
+  lineReviewSyncTrace.push({ type, at: Date.now(), ...detail });
+  if (lineReviewSyncTrace.length > 80) lineReviewSyncTrace.splice(0, lineReviewSyncTrace.length - 80);
+}
+function normalizedLineReviewPath(value) {
+  return String(value || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+function sameLineReviewPath(value) {
+  const expected = data.lineReviewPath || currentLineReviewPath();
+  return normalizedLineReviewPath(value) === normalizedLineReviewPath(expected);
+}
+function storeLineReviewStateLocally() {
+  const serialized = JSON.stringify(state);
+  localStorage.setItem(key, serialized);
+  if (key !== legacyKey) localStorage.setItem(legacyKey, serialized);
+  return serialized;
+}
+function normalizedChangedLines(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(Number).filter(line => Number.isInteger(line) && line > 0))];
+}
+function capturePendingLineMutation(snapshot, changedLines, mutationId) {
+  for (const line of changedLines) {
+    const lineKey = String(line);
+    const values = {};
+    for (const mapKey of lineScopedStateKeys) {
+      const map = snapshot[mapKey] && typeof snapshot[mapKey] === "object" && !Array.isArray(snapshot[mapKey])
+        ? snapshot[mapKey]
+        : {};
+      values[mapKey] = Object.prototype.hasOwnProperty.call(map, lineKey)
+        ? { present: true, value: map[lineKey] }
+        : { present: false };
+    }
+    pendingLineMutations.set(lineKey, { mutationId, values });
+  }
+}
+function acknowledgePendingLineMutation(payload, changedLines) {
+  if (payload?.clientId !== lineReviewClientId || !payload?.mutationId) return;
+  for (const line of changedLines) {
+    const lineKey = String(line);
+    if (pendingLineMutations.get(lineKey)?.mutationId === payload.mutationId) {
+      pendingLineMutations.delete(lineKey);
+    }
+  }
+}
+function clearRejectedLineMutation(changedLines, mutationId) {
+  for (const line of changedLines) {
+    const lineKey = String(line);
+    if (pendingLineMutations.get(lineKey)?.mutationId === mutationId) {
+      pendingLineMutations.delete(lineKey);
+    }
+  }
+}
+function trackHostStateRequest(request) {
+  if (lastTrackedHostStateRequest === request) return request;
+  lastTrackedHostStateRequest = request;
+  lastHostStateWrite = Promise.all([lastHostStateWrite.catch(() => undefined), request]).then(() => undefined);
+  void lastHostStateWrite.catch(error => console.warn("translation-workshop could not persist line-review state", error));
+  return request;
+}
+function dispatchLineReviewStateWrite(persist, request) {
+  traceLineReviewSync("persist-start", {
+    mutationId: request.mutationId,
+    changedLines: request.changedLines,
+    edits: request.changedLines.map(line => [line, request.state.edits?.[line]])
+  });
+  return persist(request).then((result) => {
+    applyCanonicalLineReviewState(result);
+    return result;
+  }).catch((error) => {
+    clearRejectedLineMutation(request.changedLines, request.mutationId);
+    console.error("translation-workshop failed to persist line-review state", error);
+    throw error;
+  });
+}
+function dispatchQueuedLineReviewStateWrite() {
+  const pending = queuedLineReviewStateWrite;
+  if (!pending) return Promise.resolve();
+  queuedLineReviewStateWrite = null;
+  clearTimeout(pending.timer);
+  const request = dispatchLineReviewStateWrite(pending.persist, pending.request);
+  request.then(pending.resolve, pending.reject);
+  return request;
+}
+function queueLineReviewStateWrite(persist, request) {
+  const previous = queuedLineReviewStateWrite;
+  if (previous) clearTimeout(previous.timer);
+  let resolve = previous?.resolve;
+  let reject = previous?.reject;
+  const completion = previous?.completion || new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  const changedLines = [...new Set([...(previous?.request.changedLines || []), ...request.changedLines])];
+  const mergedRequest = { ...request, changedLines };
+  capturePendingLineMutation(mergedRequest.state, changedLines, mergedRequest.mutationId);
+  const pending = {
+    persist,
+    request: mergedRequest,
+    completion,
+    resolve,
+    reject,
+    timer: 0
+  };
+  pending.timer = setTimeout(() => {
+    void dispatchQueuedLineReviewStateWrite().catch(() => undefined);
+  }, 40);
+  queuedLineReviewStateWrite = pending;
+  return completion;
+}
+function flushQueuedLineReviewStateWrite() {
+  return dispatchQueuedLineReviewStateWrite();
+}
+function applyCanonicalLineMaps(incoming, changedLines, hydrate) {
+  for (const mapKey of lineScopedStateKeys) {
+    const incomingMap = incoming[mapKey] && typeof incoming[mapKey] === "object" && !Array.isArray(incoming[mapKey])
+      ? incoming[mapKey]
+      : {};
+    if (hydrate) {
+      state[mapKey] = { ...incomingMap };
+      continue;
+    }
+    state[mapKey] ||= {};
+    for (const line of changedLines) {
+      const lineKey = String(line);
+      if (Object.prototype.hasOwnProperty.call(incomingMap, lineKey)) state[mapKey][lineKey] = incomingMap[lineKey];
+      else delete state[mapKey][lineKey];
+    }
+  }
+}
+function overlayPendingLineMutations() {
+  for (const [lineKey, pending] of pendingLineMutations) {
+    for (const mapKey of lineScopedStateKeys) {
+      state[mapKey] ||= {};
+      const entry = pending.values[mapKey];
+      if (entry?.present) state[mapKey][lineKey] = entry.value;
+      else delete state[mapKey][lineKey];
+    }
+  }
+}
+function refreshRenderedCanonicalLines(changedLines, activeEditor) {
+  for (const line of changedLines) {
+    const rowElement = rowsEl.querySelector('.row[data-line="' + line + '"]');
+    const target = rowElement?.querySelector(".target");
+    const row = data.rows.find(item => Number(item.line) === Number(line));
+    if (!rowElement || !target || !row || target === activeEditor) continue;
+    target.textContent = rowValue(row);
+    const status = state.status[line] || row.status;
+    rowElement.classList.toggle("manual", status === "manual");
+    rowElement.classList.toggle("glossary", status === "glossary");
+  }
+  changedCount.textContent = Object.keys(state.edits).length;
+}
+async function refreshSyncedLinesFromCanonical(path, syncedAt) {
+  const filePath = String(path || "").trim();
+  const bridge = writeBridge();
+  if (!filePath || !bridge?.readTextFile || !/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(filePath)) return;
+  try {
+    const result = await bridge.readTextFile({ path: filePath });
+    if (state.syncedFile !== filePath || state.syncedAt !== syncedAt) return;
+    syncedLines = splitSyncedText(result.text || "");
+    await writeSyncedText(syncedLines.join("\n"));
+    applyingCanonicalState = true;
+    try {
+      render();
+    } finally {
+      applyingCanonicalState = false;
+    }
+  } catch (error) {
+    console.warn("translation-workshop could not refresh synchronized translation text", error);
+  }
+}
+function applyCanonicalLineReviewState(payload) {
+  const incoming = payload?.state;
+  if (!incoming || typeof incoming !== "object" || !sameLineReviewPath(payload?.lineReviewPath)) return;
+  const incomingRevision = Number(incoming.documentRevision || 0);
+  if (incomingRevision <= Number(state.documentRevision || 0)) return;
+  const changedLines = normalizedChangedLines(payload?.changedLines);
+  const changedStateKeys = Array.isArray(payload?.changedStateKeys) ? payload.changedStateKeys.map(String) : [];
+  const hydrate = !canonicalStateHydrated;
+  traceLineReviewSync("canonical-received", {
+    revision: incomingRevision,
+    mutationId: payload?.mutationId || "",
+    changedLines,
+    incomingEdits: changedLines.map(line => [line, incoming.edits?.[line]]),
+    pending: changedLines.map(line => [line, pendingLineMutations.get(String(line))?.mutationId || ""])
+  });
+  acknowledgePendingLineMutation(payload, changedLines);
+  const previousSyncedAt = state.syncedAt;
+  applyCanonicalLineMaps(incoming, changedLines, hydrate);
+  const stateKeysToApply = hydrate ? synchronizedDocumentStateKeys : changedStateKeys;
+  for (const key of stateKeysToApply) {
+    if (Object.prototype.hasOwnProperty.call(incoming, key)) state[key] = incoming[key];
+    else delete state[key];
+  }
+  canonicalStateHydrated = true;
+  state.documentRevision = incomingRevision;
+  overlayPendingLineMutations();
+  traceLineReviewSync("canonical-applied", {
+    revision: incomingRevision,
+    mutationId: payload?.mutationId || "",
+    edits: changedLines.map(line => [line, state.edits?.[line]]),
+    pending: changedLines.map(line => [line, pendingLineMutations.get(String(line))?.mutationId || ""])
+  });
+  const ownWrite = payload?.clientId === lineReviewClientId;
+  const refreshSyncedText = !ownWrite
+    && incoming.syncedAt
+    && incoming.syncedAt !== previousSyncedAt
+    && typeof incoming.syncedFile === "string";
+  try {
+    storeLineReviewStateLocally();
+  } catch (error) {
+    console.warn("translation-workshop could not store synchronized line-review state", error);
+  }
+  const activeEditor = document.activeElement?.closest?.(".target");
+  if (activeEditor) {
+    refreshRenderedCanonicalLines(hydrate ? pageRows().map(row => row.line) : changedLines, activeEditor);
+    return;
+  }
+  if (!hydrate && changedLines.length === 0 && changedStateKeys.length === 0) {
+    return;
+  }
+  if (ownWrite && changedLines.length > 0) {
+    return;
+  }
+  applyingCanonicalState = true;
+  try {
+    render();
+  } finally {
+    applyingCanonicalState = false;
+  }
+  if (refreshSyncedText) void refreshSyncedLinesFromCanonical(incoming.syncedFile, incoming.syncedAt);
+}
+function save(changedLines = [], changedStateKeys = []) {
   state.page = page;
   if (!restoringPosition) state.scrollY = scrollY;
   state.activeLine = activeLine;
   try {
-    const serialized = JSON.stringify(state);
-    localStorage.setItem(key, serialized);
-    if (key !== legacyKey) localStorage.setItem(legacyKey, serialized);
+    const serialized = storeLineReviewStateLocally();
+    const persist = invokeBridge()?.persistHtmlState;
+    if (persist) {
+      const snapshot = JSON.parse(serialized);
+      const normalizedLines = normalizedChangedLines(changedLines);
+      const mutationId = normalizedLines.length > 0
+        ? lineReviewClientId + ":" + (++localLineMutationSequence)
+        : "";
+      const persistRequest = {
+        kind: "line",
+        lineReviewPath: data.lineReviewPath || "",
+        state: snapshot,
+        changedLines: normalizedLines,
+        changedStateKeys: Array.isArray(changedStateKeys) ? changedStateKeys.map(String) : [],
+        clientId: lineReviewClientId,
+        mutationId
+      };
+      const request = normalizedLines.length > 0 && changedStateKeys.length === 0
+        ? queueLineReviewStateWrite(persist, persistRequest)
+        : flushQueuedLineReviewStateWrite().then(() => {
+          if (mutationId) capturePendingLineMutation(snapshot, normalizedLines, mutationId);
+          return dispatchLineReviewStateWrite(persist, persistRequest);
+        });
+      trackHostStateRequest(request);
+    }
   } catch (error) {
     console.warn("translation-workshop could not persist small UI state", error);
   }
+  return lastHostStateWrite;
 }
+window.flushTranslationWorkshopLineReviewState = async () => {
+  await flushQueuedLineReviewStateWrite();
+  return save();
+};
+const unsubscribeLineReviewState = invokeBridge()?.onLineReviewStateUpdate?.((payload) => {
+  applyCanonicalLineReviewState(payload);
+});
+setTimeout(() => { void save(); }, 0);
 function rowValue(row) {
   const syncedValue = syncedLines[row.line - 1];
   return state.edits[row.line] ?? (syncedValue !== undefined ? syncedValue : row.translation ?? "");
@@ -973,21 +1539,67 @@ function render() {
       '<button class="audit-marker' + markerClass + '" type="button" title="' + escapeHtml(markerTitle) + '">' + escapeHtml(markerText) + '</button>' +
       '</article>';
   }).join("");
-  save();
+  scheduleAgentInterfaceContextPublish();
+  if (!applyingCanonicalState) save();
 }
 function escapeHtml(text) { return String(text).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])); }
-rowsEl.addEventListener("input", (event) => {
-  const target = event.target.closest(".target");
+function recordLineRevision(line, text, status, source) {
+  const key = String(line);
+  state.revisions ||= {};
+  state.revisionHistory ||= {};
+  const revision = Number(state.revisions[key] || 0) + 1;
+  state.revisions[key] = revision;
+  const history = Array.isArray(state.revisionHistory[key]) ? state.revisionHistory[key] : [];
+  const entry = { revision, text: String(text ?? ""), status: String(status || ""), source: String(source || "edit") };
+  const last = history[history.length - 1];
+  if (!last || last.text !== entry.text || last.status !== entry.status || last.source !== entry.source) {
+    history.push(entry);
+  }
+  // Keep bounded local history; canonical state is persisted by the Electron host.
+  state.revisionHistory[key] = history.slice(-12);
+  return revision;
+}
+const composingTargets = new WeakSet();
+const lastPersistedTargetText = new WeakMap();
+function updateEditedTarget(target, persist) {
   if (!target) return;
   const row = target.closest(".row");
+  if (!row) return;
   const line = row.dataset.line;
+  if (lanSyncStopping || lanSyncStarting) {
+    const canonicalRow = data.rows.find(item => String(item.line) === String(line));
+    target.textContent = canonicalRow ? rowValue(canonicalRow) : "";
+    return;
+  }
+  const text = target.textContent || "";
   activeLine = line;
-  state.edits[line] = target.textContent;
+  state.edits[line] = text;
   state.status[line] = "manual";
   row.classList.add("manual");
   changedCount.textContent = Object.keys(state.edits).length;
-  save();
-  queueLanSyncPatch({ type: "line-edit", line: Number(line), text: target.textContent, status: "manual" });
+  if (!persist || lastPersistedTargetText.get(target) === text) {
+    scheduleAgentInterfaceContextPublish();
+    return;
+  }
+  lastPersistedTargetText.set(target, text);
+  recordLineRevision(line, text, "manual", "desktop-edit");
+  persistLineReviewPatch({ type: "line-edit", line: Number(line), text, status: "manual" });
+  scheduleAgentInterfaceContextPublish();
+}
+rowsEl.addEventListener("compositionstart", (event) => {
+  const target = event.target.closest?.(".target");
+  if (target) composingTargets.add(target);
+});
+rowsEl.addEventListener("compositionend", (event) => {
+  const target = event.target.closest?.(".target");
+  if (!target) return;
+  composingTargets.delete(target);
+  updateEditedTarget(target, true);
+});
+rowsEl.addEventListener("input", (event) => {
+  const target = event.target.closest?.(".target");
+  if (!target) return;
+  updateEditedTarget(target, !event.isComposing && !composingTargets.has(target));
 });
 rowsEl.addEventListener("focusin", (event) => {
   const target = event.target.closest(".target");
@@ -995,13 +1607,24 @@ rowsEl.addEventListener("focusin", (event) => {
   const row = target.closest(".row");
   activeLine = row?.dataset.line || activeLine;
   save();
+  scheduleAgentInterfaceContextPublish();
+});
+rowsEl.addEventListener("focusout", (event) => {
+  const target = event.target.closest?.(".target");
+  const line = Number(target?.closest?.(".row")?.dataset.line || 0);
+  queueMicrotask(() => {
+    if (document.activeElement?.closest?.(".target")) return;
+    if (line > 0) refreshRenderedCanonicalLines([line], null);
+  });
 });
 rowsEl.addEventListener("click", (event) => {
   const marker = event.target.closest(".audit-marker");
   if (!marker) return;
   const row = marker.closest(".row");
   const line = Number(row?.dataset.line || 0);
-  if (line > 0) toggleAuditWhitelistLine(line);
+  if (line > 0) void toggleAuditWhitelistLine(line).catch(error => {
+    console.error("translation-workshop failed to update the audit whitelist", error);
+  });
 });
 document.getElementById("prev").onclick = () => { page -= 1; render(); scrollTo(0, 0); };
 document.getElementById("next").onclick = () => { page += 1; render(); scrollTo(0, 0); };
@@ -1011,16 +1634,17 @@ function restoreCurrentLine() {
   const rowEl = active?.closest(".row") || (activeLine ? Array.from(rowsEl.querySelectorAll(".row")).find(row => row.dataset.line === String(activeLine)) : null);
   const line = rowEl?.dataset.line || activeLine;
   if (!line) return;
+  if (lanSyncStopping || lanSyncStarting) return;
   delete state.edits[line];
   delete state.status[line];
   const row = data.rows.find(item => String(item.line) === String(line));
   const targetEl = rowEl?.querySelector(".target");
   if (targetEl) targetEl.textContent = row ? rowValue(row) : "";
+  recordLineRevision(line, row ? rowValue(row) : "", row?.status || "", "desktop-restore");
   rowEl?.classList.remove("manual");
   rowEl?.classList.remove("glossary");
   changedCount.textContent = Object.keys(state.edits).length;
-  save();
-  queueLanSyncPatch({ type: "line-restore", line: Number(line) });
+  persistLineReviewPatch({ type: "line-restore", line: Number(line) });
 }
 document.getElementById("restore").onclick = restoreCurrentLine;
 document.getElementById("export").onclick = () => {
@@ -1089,11 +1713,6 @@ addEventListener("hashchange", () => {
 });
 const aiStatus = document.getElementById("aiStatus");
 const promptPreview = document.getElementById("promptPreview");
-const agentPanel = document.getElementById("agentPanel");
-const agentMessageInput = document.getElementById("agentMessageInput");
-const interactiveAgentOutput = document.getElementById("interactiveAgentOutput");
-const interactiveAgentStatus = document.getElementById("interactiveAgentStatus");
-const agentSelect = document.getElementById("agentSelect");
 const promptSettingsPanel = document.getElementById("promptSettingsPanel");
 const promptSettingsHeading = document.getElementById("promptSettingsHeading");
 const translatePromptSettings = document.getElementById("translatePromptSettings");
@@ -1103,19 +1722,31 @@ const promptStyle = document.getElementById("promptStyle");
 const promptWorkDescription = document.getElementById("promptWorkDescription");
 const promptTranslateOutputDir = document.getElementById("promptTranslateOutputDir");
 const promptProofreadOutputDir = document.getElementById("promptProofreadOutputDir");
+const promptGlossaryCandidates = document.getElementById("promptGlossaryCandidates");
+const promptCharacterBible = document.getElementById("promptCharacterBible");
+const promptReuseExistingTranslation = document.getElementById("promptReuseExistingTranslation");
 const promptSplit = document.getElementById("promptSplit");
 const promptSplitSize = document.getElementById("promptSplitSize");
 const promptSplitField = document.getElementById("promptSplitField");
 const promptSplitSizeField = document.getElementById("promptSplitSizeField");
+const promptFolderTranslationOrder = document.getElementById("promptFolderTranslationOrder");
+const promptFolderTranslationOrderField = document.getElementById("promptFolderTranslationOrderField");
+const promptCustomPreserveRules = document.getElementById("promptCustomPreserveRules");
+const addPromptCustomPreserveRule = document.getElementById("addPromptCustomPreserveRule");
 const promptSubagent = document.getElementById("promptSubagent");
 const promptSubagentField = document.getElementById("promptSubagentField");
 const promptSubagentCount = document.getElementById("promptSubagentCount");
 const promptSubagentCountField = document.getElementById("promptSubagentCountField");
+const promptReviewSubagentCount = document.getElementById("promptReviewSubagentCount");
+const promptReviewSubagentCountField = document.getElementById("promptReviewSubagentCountField");
 const promptProofreadMode = document.getElementById("promptProofreadMode");
+const promptProofreadModeField = document.getElementById("promptProofreadModeField");
 const promptCandidateRatio = document.getElementById("promptCandidateRatio");
 const promptMontecarloSize = document.getElementById("promptMontecarloSize");
 const promptMontecarloRoundMin = document.getElementById("promptMontecarloRoundMin");
 const promptMontecarloRoundMax = document.getElementById("promptMontecarloRoundMax");
+const promptSubagentModel = document.getElementById("promptSubagentModel");
+const promptSubagentModelStatus = document.getElementById("promptSubagentModelStatus");
 const startLanSyncButton = document.getElementById("startLanSync");
 const lanSyncPanel = document.getElementById("lanSyncPanel");
 const lanSyncLinks = document.getElementById("lanSyncLinks");
@@ -1123,167 +1754,152 @@ const lanSyncPinInput = document.getElementById("lanSyncPin");
 const copyLanSyncLinkButton = document.getElementById("copyLanSyncLink");
 const stopLanSyncButton = document.getElementById("stopLanSync");
 let activePromptKind = "translate";
-let agentRawOutput = "";
-let agentConsoleAgent = workflow.defaultAgent || "codex";
-let agentConsoleSessionId = "";
-let agentConsoleQuietTimer = 0;
-let agentConsoleAwaitingReply = false;
-let agentTerminal = undefined;
-let agentFitAddon = undefined;
-const agentTranscriptLimit = 2000000;
 let lanSyncToken = "";
 let lanSyncPrimaryUrl = "";
-const lanSyncTimers = new Map();
-function createAgentTerminal() {
-  if (agentTerminal) return agentTerminal;
-  if (!interactiveAgentOutput) return undefined;
-  const TerminalCtor = window.Terminal?.Terminal || window.Terminal;
-  if (!TerminalCtor) {
-    interactiveAgentOutput.textContent = interactiveAgentOutput.dataset.empty || "";
-    return undefined;
-  }
-  interactiveAgentOutput.textContent = "";
-  agentTerminal = new TerminalCtor({
-    cursorBlink: true,
-    convertEol: false,
-    fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
-    fontSize: 12,
-    lineHeight: 1.2,
-    scrollback: 8000,
-    theme: {
-      background: "#071523",
-      foreground: "#dbeafe",
-      cursor: "#ffffff",
-      selectionBackground: "#355c7d"
-    }
-  });
-  const FitAddonCtor = window.FitAddon?.FitAddon || window.FitAddon;
-  if (FitAddonCtor) {
-    agentFitAddon = new FitAddonCtor();
-    agentTerminal.loadAddon(agentFitAddon);
-  }
-  agentTerminal.open(interactiveAgentOutput);
-  agentTerminal.onData((rawInput) => {
-    if (String(rawInput || "").includes("\r")) {
-      agentConsoleAwaitingReply = true;
-      setInteractiveAgentStatus("waiting");
-    }
-    const bridge = invokeBridge();
-    if (bridge?.writeAgentConsoleInput) void bridge.writeAgentConsoleInput(rawInput);
-  });
-  fitAgentTerminal();
-  return agentTerminal;
-}
-function fitAgentTerminal() {
-  if (!agentTerminal) return;
-  try {
-    agentFitAddon?.fit?.();
-    const bridge = invokeBridge();
-    if (bridge?.resizeAgentConsole) void bridge.resizeAgentConsole({ cols: agentTerminal.cols, rows: agentTerminal.rows });
-  } catch {
-    // xterm cannot measure before the panel is visible.
-  }
-}
-function isAgentTerminalNearBottom() {
-  const buffer = agentTerminal?.buffer?.active;
-  if (buffer && agentTerminal?.rows) {
-    return buffer.baseY - buffer.viewportY <= agentTerminal.rows + 2;
-  }
-  if (!interactiveAgentOutput) return true;
-  return interactiveAgentOutput.scrollHeight - interactiveAgentOutput.scrollTop - interactiveAgentOutput.clientHeight < 48;
-}
-function scrollAgentTerminalToBottom(force = false) {
-  if (!force && !isAgentTerminalNearBottom()) return;
-  agentTerminal?.scrollToBottom?.();
-}
-function renderAgentConsoleOutput() {
-  const terminal = createAgentTerminal();
-  if (!terminal) return;
-  fitAgentTerminal();
-  terminal.reset?.();
-  if (agentRawOutput) terminal.write(agentRawOutput);
-  scrollAgentTerminalToBottom(true);
-}
-function appendAgentConsoleOutput(chunk) {
-  const terminal = createAgentTerminal();
-  if (terminal && chunk) {
-    fitAgentTerminal();
-    const shouldFollow = isAgentTerminalNearBottom();
-    terminal.write(chunk);
-    scrollAgentTerminalToBottom(shouldFollow);
-  }
-}
-function resetAgentConsoleTranscript() {
-  agentRawOutput = "";
-  agentTerminal?.reset?.();
-  agentTerminal?.clear?.();
-}
-function setInteractiveAgentStatus(key) {
-  if (!interactiveAgentStatus) return;
-  const labels = data.labels || {};
-  const text = key === "waiting"
-    ? (labels.agentConsoleWaiting || "Waiting for Agent reply...")
-    : key === "streaming"
-      ? (labels.agentConsoleStreaming || "Agent is writing...")
-      : key === "quiet"
-        ? (labels.agentConsoleQuiet || "Output is quiet; likely finished.")
-        : key === "running"
-          ? (labels.agentConsoleRunning || "Console running")
-          : (labels.agentConsoleStopped || "Agent Console stopped.");
-  interactiveAgentStatus.textContent = text;
-  interactiveAgentStatus.dataset.phase = key;
-}
-function markInteractiveAgentStreaming() {
-  if (!agentConsoleAwaitingReply) {
-    setInteractiveAgentStatus("running");
-    return;
-  }
-  setInteractiveAgentStatus("streaming");
-  if (agentConsoleQuietTimer) clearTimeout(agentConsoleQuietTimer);
-  agentConsoleQuietTimer = setTimeout(() => {
-    agentConsoleAwaitingReply = false;
-    setInteractiveAgentStatus("quiet");
-  }, 2200);
-}
-if (agentSelect) {
-  agentSelect.value = workflow.defaultAgent || "codex";
-}
+let lanSyncStarting = false;
+let lanSyncStopping = false;
+const lanSyncPendingPatches = new Map();
 function setAiStatus(text) {
   if (aiStatus) aiStatus.textContent = text || "";
 }
-const promptSettingsStorageKey = key + ":prompt-settings-v2";
-function promptStoredDefaults() {
-  const defaults = workflow.promptDefaults || {};
+let projectPromptSettings = {};
+const promptSettingsVersion = ${PROMPT_SETTINGS_VERSION};
+const projectPromptSettingKeys = [
+  "languagePair", "style", "workDescription", "workflowTemplateId",
+  "translateOutputDir", "proofreadOutputDir", "split", "splitSize",
+  "folderTranslationOrder", "glossaryCandidates", "characterBible", "reuseExistingTranslation",
+  "proofreadMode", "candidateRatio", "montecarloSize", "montecarloRoundMin",
+  "montecarloRoundMax", "subagentEnabled", "subagentCount", "reviewSubagentCount",
+  "subagentProviderId", "subagentModelId", "customPreserveRules", "promptSettingsVersion"
+];
+function optionalPositivePromptNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : undefined;
+}
+function normalizedPromptDefaults(defaults = {}) {
   return {
     languagePair: defaults.languagePair || "ja->zh-CN",
     style: defaults.style || "game",
     workDescription: defaults.workDescription || "",
+    workflowTemplateId: defaults.workflowTemplateId || "",
     translateOutputDir: defaults.translateOutputDir || "",
     proofreadOutputDir: defaults.proofreadOutputDir || "",
     split: defaults.split !== false,
-    splitSize: Number(defaults.splitSize || 2000),
-    subagent: defaults.subagent === true,
-    subagentCount: Number(defaults.subagentCount || 3),
+    splitSize: Number(defaults.splitSize || 1000),
+    folderTranslationOrder: defaults.folderTranslationOrder || "",
+    folderSourceDocuments: Array.isArray(defaults.folderSourceDocuments)
+      ? defaults.folderSourceDocuments
+      : undefined,
+    customPreserveRules: Array.isArray(defaults.customPreserveRules) ? defaults.customPreserveRules : [],
+    glossaryCandidates: defaults.glossaryCandidates !== false,
+    characterBible: defaults.characterBible !== false,
+    reuseExistingTranslation: defaults.reuseExistingTranslation === true,
     proofreadMode: defaults.proofreadMode === "montecarlo" ? "montecarlo" : "split",
     candidateRatio: Number(defaults.candidateRatio || 1.5),
     montecarloSize: Number(defaults.montecarloSize || 3000),
     montecarloRoundMin: Number(defaults.montecarloRoundMin || 2),
-    montecarloRoundMax: Number(defaults.montecarloRoundMax || 5)
+    montecarloRoundMax: Number(defaults.montecarloRoundMax || 5),
+    subagentEnabled: defaults.subagentEnabled !== false,
+    subagentCount: optionalPositivePromptNumber(defaults.subagentCount),
+    reviewSubagentCount: optionalPositivePromptNumber(defaults.reviewSubagentCount),
+    subagentProviderId: defaults.subagentProviderId || "",
+    subagentModelId: defaults.subagentModelId || "",
+    promptSettingsVersion
+  };
+}
+function promptStoredDefaults() {
+  return normalizedPromptDefaults(workflow.promptDefaults || {});
+}
+function defaultFolderTranslationOrder(documents) {
+  const documentIds = (Array.isArray(documents) ? documents : [])
+    .map((document) => String(document?.id || "").trim().replace(/\\/g, "/"))
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, "en"));
+  return documentIds.length > 0
+    ? ["{", ...documentIds.map((documentId) => JSON.stringify(documentId)), "}"].join("\n")
+    : "";
+}
+function promptFactoryDefaults() {
+  const defaults = normalizedPromptDefaults(workflow.factoryPromptDefaults || {});
+  const folderTranslationOrder = defaultFolderTranslationOrder(defaults.folderSourceDocuments);
+  delete defaults.folderSourceDocuments;
+  return {
+    ...defaults,
+    folderTranslationOrder,
+    customPreserveRules: [],
+    subagentCount: null,
+    reviewSubagentCount: null,
+    subagentProviderId: "",
+    subagentModelId: "",
+    promptSettingsVersion
   };
 }
 function readStoredPromptSettings() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(promptSettingsStorageKey) || "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
+  return projectPromptSettings;
 }
 function promptSettingsValue() {
   return { ...promptStoredDefaults(), ...readStoredPromptSettings() };
 }
-function writeStoredPromptSettings(settings) {
-  localStorage.setItem(promptSettingsStorageKey, JSON.stringify(settings));
+async function writeStoredPromptSettings(settings) {
+  projectPromptSettings = { ...settings };
+  await persistProjectState(settings);
+}
+
+function promptSettingsFromProjectState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const settings = {};
+  for (const settingKey of projectPromptSettingKeys) {
+    if (Object.prototype.hasOwnProperty.call(value, settingKey)) settings[settingKey] = value[settingKey];
+  }
+  const storedVersion = optionalPositivePromptNumber(settings.promptSettingsVersion) || 0;
+  if (storedVersion < promptSettingsVersion) {
+    // Older HTML materialized the inherited review-worker fallback as an explicit
+    // project value. Clear it once; users can set a real override in the new field.
+    settings.reviewSubagentCount = null;
+    settings.promptSettingsVersion = promptSettingsVersion;
+  }
+  return settings;
+}
+
+function normalizedProjectOutputDir(value) {
+  return String(value || "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLocaleLowerCase();
+}
+
+function applyProjectPromptSettings(value) {
+  projectPromptSettings = promptSettingsFromProjectState(value);
+  const needsPromptSettingsMigration = Number(value?.promptSettingsVersion || 0) < promptSettingsVersion;
+  const glossaryPath = String(value?.glossaryPath || "").trim();
+  if (glossaryPath) {
+    projectGlossaryPath = glossaryPath;
+    workflowPaths().glossaryPath = glossaryPath;
+  }
+  fillPromptSettingsForm();
+  updatePromptSettingsVisibility();
+  if (needsPromptSettingsMigration) {
+    void writeStoredPromptSettings(projectPromptSettings).catch((error) => {
+      setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
+    });
+  }
+}
+
+async function hydrateProjectPromptSettings() {
+  const outputDir = String(workflow.paths?.outputDir || "").trim();
+  const bridge = writeBridge();
+  if (!outputDir || outputDir.startsWith("[") || !bridge?.readProjectState) return;
+  try {
+    applyProjectPromptSettings(await bridge.readProjectState(outputDir));
+    if (bridge.readProjectAssets) {
+      const assets = await bridge.readProjectAssets({ outputDir });
+      const glossaryPath = String(assets?.paths?.glossary || boundGlossaryPath()).trim();
+      if (syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), glossaryPath || "project glossary", true)) {
+        if (glossaryPath) setBoundGlossaryPath(glossaryPath);
+      }
+    } else if (boundGlossaryPath()) {
+      await syncGlossaryFromBoundFile();
+    }
+  } catch (error) {
+    setAiStatus("Project settings load failed: " + (error?.message || String(error)));
+  }
 }
 function setFieldValue(field, value) {
   if (field) field.value = value ?? "";
@@ -1295,24 +1911,115 @@ function numberFromField(field, fallback) {
   const value = Number(field?.value);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
+function canonicalPromptRegexFlags(value) {
+  const requested = String(value ?? "u").trim();
+  for (const flag of requested) {
+    if (!"imsu".includes(flag)) throw new Error("Unsupported regex flag '" + flag + "'. Use only i, m, s, or u.");
+  }
+  return [..."imsu"].filter((flag) => requested.includes(flag)).join("");
+}
+function readPromptCustomPreserveRules() {
+  if (!promptCustomPreserveRules) return [];
+  return [...promptCustomPreserveRules.querySelectorAll(".prompt-preserve-row")].map((row, index) => {
+    const label = String(row.querySelector(".prompt-preserve-label")?.value || "").trim();
+    const pattern = String(row.querySelector(".prompt-preserve-pattern")?.value || "").trim();
+    const flags = canonicalPromptRegexFlags(row.querySelector(".prompt-preserve-flags")?.value);
+    if (!pattern) return null;
+    let regex;
+    try {
+      regex = new RegExp(pattern, flags + "g");
+    } catch (error) {
+      throw new Error("Invalid custom preserve rule " + (index + 1) + ": " + (error?.message || String(error)));
+    }
+    if (regex.test("")) throw new Error("Invalid custom preserve rule " + (index + 1) + ": regular expression must not match an empty string.");
+    return { ...(label ? { label } : {}), pattern, flags };
+  }).filter(Boolean);
+}
+function appendPromptCustomPreserveRule(rule = {}) {
+  if (!promptCustomPreserveRules) return;
+  const row = document.createElement("div");
+  row.className = "prompt-preserve-row";
+  const label = document.createElement("input");
+  label.className = "prompt-preserve-label";
+  label.type = "text";
+  label.placeholder = data.labels.customPreserveRuleLabel || "Label";
+  label.value = String(rule.label || "");
+  const pattern = document.createElement("input");
+  pattern.className = "prompt-preserve-pattern";
+  pattern.type = "text";
+  pattern.spellcheck = false;
+  pattern.placeholder = data.labels.customPreserveRulePattern || "Regular expression";
+  pattern.value = String(rule.pattern || "");
+  const flags = document.createElement("input");
+  flags.className = "prompt-preserve-flags";
+  flags.type = "text";
+  flags.placeholder = data.labels.customPreserveRuleFlags || "Flags";
+  flags.value = String(rule.flags ?? "u");
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "\u00d7";
+  remove.title = data.labels.removeCustomPreserveRule || "Remove preservation rule";
+  remove.setAttribute("aria-label", remove.title);
+  for (const field of [label, pattern, flags]) field.addEventListener("input", () => scheduleProjectPromptSettingsWrite(160));
+  remove.addEventListener("click", () => {
+    row.remove();
+    scheduleProjectPromptSettingsWrite();
+  });
+  row.append(label, pattern, flags, remove);
+  promptCustomPreserveRules.appendChild(row);
+  if (!rule.pattern) pattern.focus();
+}
+function setPromptCustomPreserveRules(rules) {
+  if (!promptCustomPreserveRules) return;
+  promptCustomPreserveRules.replaceChildren();
+  for (const rule of Array.isArray(rules) ? rules : []) appendPromptCustomPreserveRule(rule);
+}
+function renderPromptCustomPreserveRules(rules) {
+  setPromptCustomPreserveRules(rules);
+}
+addPromptCustomPreserveRule?.addEventListener("click", () => appendPromptCustomPreserveRule());
+function promptSubagentSelection() {
+  const value = String(promptSubagentModel?.value || "").trim();
+  const separator = value.indexOf(":");
+  if (separator <= 0 || separator === value.length - 1) return {
+    subagentProviderId: "",
+    subagentModelId: ""
+  };
+  return {
+    subagentProviderId: value.slice(0, separator),
+    subagentModelId: value.slice(separator + 1)
+  };
+}
 function currentPromptSettings() {
   const defaults = promptStoredDefaults();
-  const proofreadMode = promptProofreadMode?.value === "montecarlo" ? "montecarlo" : "split";
+  const folderPrompt = workflow.paths?.promptSourceKind === "folder";
+  const proofreadMode = folderPrompt
+    ? "split"
+    : promptProofreadMode?.value === "montecarlo" ? "montecarlo" : "split";
   return {
     languagePair: promptLanguagePair?.value.trim() || defaults.languagePair,
     style: promptStyle?.value.trim() || defaults.style,
     workDescription: promptWorkDescription?.value.trim() || "",
+    workflowTemplateId: defaults.workflowTemplateId || "",
     translateOutputDir: promptTranslateOutputDir?.value.trim() || defaults.translateOutputDir,
     proofreadOutputDir: promptProofreadOutputDir?.value.trim() || defaults.proofreadOutputDir,
     split: promptSplit?.checked !== false,
     splitSize: numberFromField(promptSplitSize, defaults.splitSize),
-    subagent: proofreadMode === "montecarlo" ? false : promptSubagent?.checked === true,
-    subagentCount: numberFromField(promptSubagentCount, defaults.subagentCount),
+    folderTranslationOrder: promptFolderTranslationOrder?.value.trim() || defaults.folderTranslationOrder || "",
+    customPreserveRules: readPromptCustomPreserveRules(),
+    glossaryCandidates: promptGlossaryCandidates?.checked !== false,
+    characterBible: promptCharacterBible?.checked !== false,
+    reuseExistingTranslation: promptReuseExistingTranslation?.checked === true,
     proofreadMode,
     candidateRatio: Number(promptCandidateRatio?.value || defaults.candidateRatio) || defaults.candidateRatio,
     montecarloSize: numberFromField(promptMontecarloSize, defaults.montecarloSize),
     montecarloRoundMin: numberFromField(promptMontecarloRoundMin, defaults.montecarloRoundMin),
-    montecarloRoundMax: numberFromField(promptMontecarloRoundMax, defaults.montecarloRoundMax)
+    montecarloRoundMax: numberFromField(promptMontecarloRoundMax, defaults.montecarloRoundMax),
+    subagentEnabled: promptSubagent?.checked !== false,
+    subagentCount: optionalPositivePromptNumber(promptSubagentCount?.value) ?? null,
+    reviewSubagentCount: optionalPositivePromptNumber(promptReviewSubagentCount?.value) ?? null,
+    promptSettingsVersion,
+    ...promptSubagentSelection()
   };
 }
 function fillPromptSettingsForm() {
@@ -1322,20 +2029,77 @@ function fillPromptSettingsForm() {
   setFieldValue(promptWorkDescription, settings.workDescription);
   setFieldValue(promptTranslateOutputDir, settings.translateOutputDir);
   setFieldValue(promptProofreadOutputDir, settings.proofreadOutputDir);
+  setFieldChecked(promptGlossaryCandidates, settings.glossaryCandidates);
+  setFieldChecked(promptCharacterBible, settings.characterBible);
+  setFieldChecked(promptReuseExistingTranslation, settings.reuseExistingTranslation);
   setFieldChecked(promptSplit, settings.split);
   setFieldValue(promptSplitSize, settings.splitSize);
-  setFieldChecked(promptSubagent, settings.subagent);
-  setFieldValue(promptSubagentCount, settings.subagentCount);
-  setFieldValue(promptProofreadMode, settings.proofreadMode);
+  setFieldValue(promptFolderTranslationOrder, settings.folderTranslationOrder);
+  setPromptCustomPreserveRules(settings.customPreserveRules);
+  setFieldValue(promptProofreadMode, workflow.paths?.promptSourceKind === "folder" ? "split" : settings.proofreadMode);
   setFieldValue(promptCandidateRatio, settings.candidateRatio);
   setFieldValue(promptMontecarloSize, settings.montecarloSize);
   setFieldValue(promptMontecarloRoundMin, settings.montecarloRoundMin);
   setFieldValue(promptMontecarloRoundMax, settings.montecarloRoundMax);
+  setFieldChecked(promptSubagent, settings.subagentEnabled);
+  setFieldValue(promptSubagentCount, settings.subagentCount);
+  setFieldValue(promptReviewSubagentCount, settings.reviewSubagentCount);
+  if (promptSubagentModel) {
+    const providerId = String(settings.subagentProviderId || "").trim();
+    const modelId = String(settings.subagentModelId || "").trim();
+    promptSubagentModel.value = providerId && modelId ? providerId + ":" + modelId : "";
+  }
+}
+function setPromptSubagentModelStatus(text) {
+  if (promptSubagentModelStatus) promptSubagentModelStatus.textContent = text || "";
+}
+function appendPromptSubagentOption(select, entry) {
+  const value = entry.providerId + ":" + entry.modelId;
+  if ([...select.options].some((option) => option.value === value)) return;
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = (entry.providerName || entry.providerId) + " / " + (entry.modelName || entry.modelId);
+  select.appendChild(option);
+}
+async function loadPromptSubagentModels() {
+  if (!promptSubagentModel) return;
+  const bridge = invokeBridge();
+  const outputDir = String(workflow.paths?.outputDir || "").trim();
+  promptSubagentModel.replaceChildren(new Option(
+    data.labels.subagentModelFollowParent || "Follow main Agent",
+    ""
+  ));
+  if (!bridge?.listAgentConfiguredModels || !outputDir) {
+    setPromptSubagentModelStatus(data.labels.subagentModelUnavailable || "No configured model found; subagents will follow the main Agent");
+    promptSubagentModel.value = "";
+    return;
+  }
+  setPromptSubagentModelStatus(data.labels.subagentModelLoading || "Loading configured Pi models...");
+  try {
+    const models = await bridge.listAgentConfiguredModels({ outputDir });
+    for (const model of models) appendPromptSubagentOption(promptSubagentModel, model);
+    const stored = promptSettingsValue();
+    const selected = stored.subagentProviderId && stored.subagentModelId
+      ? stored.subagentProviderId + ":" + stored.subagentModelId
+      : "";
+    promptSubagentModel.value = [...promptSubagentModel.options].some((option) => option.value === selected) ? selected : "";
+    setPromptSubagentModelStatus(promptSubagentModel.value
+      ? promptSubagentModel.options[promptSubagentModel.selectedIndex]?.textContent || ""
+      : (data.labels.subagentModelFollowParent || "Follow main Agent"));
+  } catch (error) {
+    promptSubagentModel.value = "";
+    setPromptSubagentModelStatus(
+      (data.labels.subagentModelUnavailable || "No configured model found; subagents will follow the main Agent")
+      + ": " + (error?.message || String(error))
+    );
+  }
 }
 function updatePromptSettingsVisibility() {
   const isProofread = activePromptKind === "proofread";
   const isTranslate = !isProofread;
-  const isMontecarlo = isProofread && promptProofreadMode?.value === "montecarlo";
+  const isFolderPrompt = workflow.paths?.promptSourceKind === "folder";
+  if (isFolderPrompt && promptProofreadMode) promptProofreadMode.value = "split";
+  const isMontecarlo = isProofread && !isFolderPrompt && promptProofreadMode?.value === "montecarlo";
   const isSplitProofread = isProofread && !isMontecarlo;
   const isTranslateSplit = isTranslate && promptSplit?.checked !== false;
   if (promptSettingsHeading) {
@@ -1345,86 +2109,179 @@ function updatePromptSettingsVisibility() {
   }
   if (translatePromptSettings) translatePromptSettings.hidden = isProofread;
   if (proofreadPromptSettings) proofreadPromptSettings.hidden = !isProofread;
+  if (promptProofreadModeField) promptProofreadModeField.hidden = isProofread && isFolderPrompt;
   if (promptSplitField) promptSplitField.hidden = !isTranslate;
   if (promptSplitSizeField) promptSplitSizeField.hidden = !(isTranslateSplit || isSplitProofread);
-  if (promptSubagentField) promptSubagentField.hidden = isMontecarlo;
+  if (promptFolderTranslationOrderField) {
+    promptFolderTranslationOrderField.hidden = !isFolderPrompt;
+  }
+  const subagentsEnabled = promptSubagent?.checked !== false;
+  if (promptSubagentField) promptSubagentField.hidden = false;
+  if (promptSubagentCountField) promptSubagentCountField.hidden = !subagentsEnabled;
+  if (promptSubagentCount) promptSubagentCount.disabled = !subagentsEnabled;
+  if (promptReviewSubagentCountField) promptReviewSubagentCountField.hidden = !subagentsEnabled;
+  if (promptReviewSubagentCount) promptReviewSubagentCount.disabled = !subagentsEnabled;
+  if (promptSubagentModel) promptSubagentModel.disabled = !subagentsEnabled;
   document.querySelectorAll(".prompt-montecarlo-field").forEach((field) => {
     field.hidden = !isMontecarlo;
   });
-  if (promptSubagent) {
-    promptSubagent.disabled = isMontecarlo;
-    if (isMontecarlo) promptSubagent.checked = false;
-  }
-  if (promptSubagentCountField) {
-    promptSubagentCountField.hidden = isMontecarlo || promptSubagent?.checked !== true;
-  }
 }
+
+let promptSettingsWriteTimer = 0;
+function scheduleProjectPromptSettingsWrite(delay = 0) {
+  window.clearTimeout(promptSettingsWriteTimer);
+  promptSettingsWriteTimer = window.setTimeout(() => {
+    promptSettingsWriteTimer = 0;
+    try {
+      const settings = currentPromptSettings();
+      void writeStoredPromptSettings(settings).catch((error) => {
+        setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
+      });
+    } catch (error) {
+      setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
+    }
+  }, delay);
+}
+for (const field of [
+  promptLanguagePair, promptStyle, promptWorkDescription,
+  promptTranslateOutputDir, promptProofreadOutputDir, promptSplitSize,
+  promptFolderTranslationOrder, promptSubagentCount, promptReviewSubagentCount, promptCandidateRatio,
+  promptMontecarloSize, promptMontecarloRoundMin, promptMontecarloRoundMax
+]) {
+  field?.addEventListener("input", () => scheduleProjectPromptSettingsWrite(160));
+}
+for (const field of [
+  promptGlossaryCandidates, promptCharacterBible, promptReuseExistingTranslation, promptSplit, promptSubagent,
+  promptProofreadMode, promptSubagentModel
+]) {
+  field?.addEventListener("change", () => {
+    updatePromptSettingsVisibility();
+    scheduleProjectPromptSettingsWrite();
+  });
+}
+
 function openPromptSettings(kind) {
   activePromptKind = kind;
   fillPromptSettingsForm();
   updatePromptSettingsVisibility();
   if (promptSettingsPanel) promptSettingsPanel.hidden = false;
+  void loadPromptSubagentModels();
   setAiStatus("");
 }
 function closePromptSettings() {
   if (promptSettingsPanel) promptSettingsPanel.hidden = true;
 }
-async function buildPromptFromSettings() {
-  const settings = currentPromptSettings();
-  writeStoredPromptSettings(settings);
-  const bridge = invokeBridge();
-  let generated = "";
-  if (bridge?.buildPrompt) {
-    try {
-      generated = await bridge.buildPrompt({
-        kind: activePromptKind,
-        agent: agentSelect?.value || workflow.defaultAgent || "codex",
-        sourcePath: workflow.paths?.promptSourcePath || workflow.paths?.sourcePath || "",
-        translationPath: boundPromptTranslationPath(),
-        outputDir: workflow.paths?.outputDir || "",
-        glossaryPath: boundGlossaryPath(),
-        inputMode: workflow.promptInputMode || workflow.inputMode || "separate",
-        advanced: settings
-      });
-    } catch (error) {
-      setAiStatus((data.labels.promptGenerationFailed || "Prompt generation failed") + ": " + (error?.message || String(error)));
-    }
+async function resetPromptSettings() {
+  window.clearTimeout(promptSettingsWriteTimer);
+  promptSettingsWriteTimer = 0;
+  const previousSettings = { ...projectPromptSettings };
+  try {
+    await writeStoredPromptSettings(promptFactoryDefaults());
+    fillPromptSettingsForm();
+    updatePromptSettingsVisibility();
+    setPromptSubagentModelStatus(data.labels.subagentModelFollowParent || "Follow main Agent");
+    setAiStatus(data.labels.promptSettingsResetDone || "Default parameters restored");
+  } catch (error) {
+    projectPromptSettings = previousSettings;
+    fillPromptSettingsForm();
+    updatePromptSettingsVisibility();
+    setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
   }
-  if (!generated) {
-    generated = activeAgentPrompts()[activePromptKind] || "";
-  }
-  setPromptText(promptWithAuditWhitelist(generated));
-  closePromptSettings();
-  openAgentPanel();
-  agentMessageInput?.focus();
 }
-function openAgentPanel() {
-  if (agentPanel) agentPanel.hidden = false;
-  ensureAgentMessageInput();
-  createAgentTerminal();
-  requestAnimationFrame(() => {
-    fitAgentTerminal();
-    agentTerminal?.focus?.();
-  });
-  void refreshInteractiveAgentSnapshot();
+async function buildPromptFromSettings() {
+  let settings;
+  window.clearTimeout(promptSettingsWriteTimer);
+  promptSettingsWriteTimer = 0;
+  try {
+    settings = currentPromptSettings();
+    await writeStoredPromptSettings(settings);
+  } catch (error) {
+    setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
+    return;
+  }
+  const bridge = invokeBridge();
+  if (!bridge?.buildPrompt) {
+    setAiStatus((data.labels.promptGenerationFailed || "Prompt generation failed") + ": Electron prompt bridge is unavailable.");
+    return;
+  }
+  let generated = "";
+  try {
+    generated = await bridge.buildPrompt({
+      kind: activePromptKind,
+      sourcePath: workflow.paths?.promptSourcePath || workflow.paths?.sourcePath || "",
+      sourceKind: workflow.paths?.promptSourceKind || workflow.paths?.sourceKind || "file",
+      translationPath: boundPromptTranslationPath(),
+      outputDir: workflow.paths?.outputDir || "",
+      glossaryPath: boundGlossaryPath(),
+      inputMode: workflow.promptInputMode || workflow.inputMode || "separate",
+      advanced: settings
+    });
+  } catch (error) {
+    setAiStatus((data.labels.promptGenerationFailed || "Prompt generation failed") + ": " + (error?.message || String(error)));
+    return;
+  }
+  if (!generated.trim()) {
+    setAiStatus((data.labels.promptGenerationFailed || "Prompt generation failed") + ": Empty prompt returned by Electron host.");
+    return;
+  }
+  setPromptText(generated);
+  closePromptSettings();
+  try {
+    await openAgentChatForPrompt();
+  } catch (error) {
+    setAiStatus("Agent prompt insertion failed: " + (error?.message || String(error)));
+  }
+}
+async function openAgentChatForPrompt() {
+  const promptText = promptPreview.value || "";
+  const settings = currentPromptSettings();
+  const defaults = promptStoredDefaults();
+  const workflowMetadata = {
+    workflowIntent: activePromptKind === "proofread" ? "proofread" : "translation",
+    languagePair: settings.languagePair,
+    style: settings.style,
+    workDescription: settings.workDescription,
+    glossaryPath: boundGlossaryPath(),
+    glossaryCandidates: settings.glossaryCandidates,
+    characterBible: settings.characterBible,
+    reuseExistingTranslation: settings.reuseExistingTranslation,
+    auditWhitelistLines: auditWhitelistLines(),
+    customPreserveRules: settings.customPreserveRules,
+    subagentEnabled: settings.subagentEnabled,
+    subagentCount: settings.subagentCount,
+    reviewSubagentCount: settings.reviewSubagentCount,
+    subagentProviderId: settings.subagentProviderId,
+    subagentModelId: settings.subagentModelId,
+    translationSplitSize: settings.splitSize,
+    folderTranslationOrder: settings.folderTranslationOrder,
+    folderSourceDocuments: defaults.folderSourceDocuments,
+    proofreadMode: settings.proofreadMode,
+    proofreadSplitSize: settings.splitSize,
+    proofreadMontecarloSize: settings.montecarloSize,
+    proofreadMontecarloRoundMin: settings.montecarloRoundMin,
+    proofreadMontecarloRoundMax: settings.montecarloRoundMax
+  };
+  const agentHost = window.__ynAgentChatPiWebEmbedded;
+  if (agentHost?.replaceText) {
+    await agentHost.replaceText(promptText, workflowMetadata);
+  } else if (agentHost?.insertText) {
+    await agentHost.insertText(promptText, workflowMetadata);
+  } else {
+    throw new Error("Agent embedded host is unavailable.");
+  }
 }
 function ensureAgentMessageInput() {
   if (!promptPreview.value) {
     activePromptKind = "translate";
-    promptPreview.value = promptWithAuditWhitelist(activeAgentPrompts().translate || "");
+    promptPreview.value = activeAgentPrompts().translate || "";
   }
-  if (agentMessageInput && !agentMessageInput.value.trim()) {
-    agentMessageInput.value = promptPreview.value;
-  }
-  return agentMessageInput?.value || promptPreview.value;
+  return promptPreview.value;
 }
 function setPromptText(text) {
   promptPreview.value = text || "";
-  if (agentMessageInput) agentMessageInput.value = promptPreview.value;
 }
 function activeAgentPrompts() {
-  const agent = agentSelect?.value || workflow.defaultAgent || "codex";
-  return workflow.prompts?.[agent] || workflow.prompts?.codex || {};
+  return workflow.prompts || {};
 }
 function auditWhitelistPathLabel() {
   const outputDir = workflow.paths?.outputDir || "";
@@ -1434,20 +2291,10 @@ function auditWhitelistPathLabel() {
 function auditWhitelistLines() {
   return Object.keys(state.auditWhitelist || {}).map(Number).filter(line => Number.isInteger(line) && line > 0).sort((left, right) => left - right);
 }
-function auditWhitelistInstruction() {
-  const lines = auditWhitelistLines();
-  if (lines.length === 0) return "";
-  const template = data.labels.auditPromptNote || "Audit whitelist lines are recorded at {path}; line numbers: {lines}. Skip these lines in every proofreading/audit report.";
-  return "\n\n" + template.replace("{path}", auditWhitelistPathLabel()).replace("{lines}", lines.join(", "));
-}
-function promptWithAuditWhitelist(prompt) {
-  return String(prompt || "") + auditWhitelistInstruction();
-}
 const syncDbName = "translation-workshop-html-cache";
 const syncStoreName = "line-sync-v1";
 const syncTextKey = key + ":translation-text";
 // Bump when embedded prompts or prompt-related HTML behavior changes; old HTML will auto-upgrade.
-const promptSettingsVersion = 8;
 function splitSyncedText(text) {
   return String(text ?? "").replace(/\r\n/g, "\n").replace(/\r$/, "").replace(/\n$/, "").split("\n");
 }
@@ -1521,6 +2368,9 @@ document.getElementById("proofreadPrompt")?.addEventListener("click", () => {
 document.getElementById("applyPromptSettings")?.addEventListener("click", () => {
   void buildPromptFromSettings();
 });
+document.getElementById("resetPromptSettings")?.addEventListener("click", () => {
+  void resetPromptSettings();
+});
 document.getElementById("cancelPromptSettings")?.addEventListener("click", closePromptSettings);
 promptProofreadMode?.addEventListener("change", updatePromptSettingsVisibility);
 promptSplit?.addEventListener("change", updatePromptSettingsVisibility);
@@ -1571,14 +2421,25 @@ async function generateReviewHtmlFromReport(preferredReportPath) {
     });
     if (result?.fallbackPrompt) {
       setPromptText(result.fallbackPrompt);
-      openAgentPanel();
-      agentMessageInput?.focus();
+      await openAgentChatForPrompt();
       setAiStatus(data.labels.reviewFormatFallback || "The AI report failed format validation. A repair prompt was generated.");
       return;
     }
     setAiStatus((data.labels.reviewGenerated || "Review HTML generated") + ": " + (result?.outputPath || "") + " (" + (result?.proposalCount || 0) + ")");
-    if (result?.outputPath && bridge.openPath) {
-      await bridge.openPath(result.outputPath);
+    if (result?.outputPath && bridge.openReviewHtml) {
+      if (bridge.updateProjectState) {
+        await bridge.updateProjectState({
+          outputDir,
+          patch: {
+            lastHtml: result.outputPath,
+            lastOutput: result.outputPath,
+            lastProposalReviewHtml: result.outputPath,
+            reportPath: result.reportPath || reportPath,
+            lineReviewPath: result.lineReviewPath || currentLineReviewPath()
+          }
+        });
+      }
+      await bridge.openReviewHtml({ htmlPath: result.outputPath, outputDir });
     }
   } catch (error) {
     setAiStatus((data.labels.reviewGenerationFailed || "Review HTML generation failed") + ": " + (error?.message || String(error)));
@@ -1587,7 +2448,6 @@ async function generateReviewHtmlFromReport(preferredReportPath) {
 document.getElementById("generateReviewHtml")?.addEventListener("click", () => generateReviewHtmlFromReport());
 document.getElementById("copyPrompt")?.addEventListener("click", async () => {
   ensureAgentMessageInput();
-  promptPreview.value = agentMessageInput?.value || promptPreview.value;
   promptPreview.select();
   try {
     await navigator.clipboard.writeText(promptPreview.value);
@@ -1596,18 +2456,167 @@ document.getElementById("copyPrompt")?.addEventListener("click", async () => {
   }
   setAiStatus(data.labels.copied || "Copied");
 });
-agentMessageInput?.addEventListener("input", () => {
-  promptPreview.value = agentMessageInput.value;
-});
-agentMessageInput?.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    void sendInteractiveAgentMessage();
-  }
-});
 function invokeBridge() {
   return window.workshopHtml || window.parent?.workshopHtml || window.workshop || window.parent?.workshop;
 }
+let agentInterfacePublishFrame = 0;
+let agentRowMenu = null;
+let agentSelectedSourceText = "";
+function renderedRowFromPoint(y) {
+  const main = document.querySelector(".line-review-main");
+  const rect = main?.getBoundingClientRect();
+  if (!rect) return null;
+  const x = Math.max(rect.left + 8, Math.min(rect.right - 8, rect.left + rect.width / 2));
+  return document.elementFromPoint(x, y)?.closest?.(".row") || null;
+}
+function visibleLineRange() {
+  const main = document.querySelector(".line-review-main");
+  const rect = main?.getBoundingClientRect();
+  const rows = Array.from(rowsEl.querySelectorAll(".row"));
+  if (!rect || rows.length === 0) return {};
+  const first = renderedRowFromPoint(Math.max(0, rect.top) + 8) || rows[0];
+  const last = renderedRowFromPoint(Math.min(window.innerHeight, rect.bottom) - 8) || rows[rows.length - 1];
+  return {
+    visibleLineStart: Number(first?.dataset.line || 0) || undefined,
+    visibleLineEnd: Number(last?.dataset.line || 0) || undefined
+  };
+}
+function focusedInterfaceLine() {
+  const line = Number(activeLine || 0);
+  if (!line) return undefined;
+  const row = data.rows.find(item => Number(item.line) === line);
+  if (!row) return undefined;
+  return {
+    line,
+    source: row.source || "",
+    translation: rowValue(row),
+    status: state.status[line] || row.status || "",
+    selectedSourceText: agentSelectedSourceText || undefined
+  };
+}
+async function publishAgentInterfaceContext() {
+  const bridge = invokeBridge();
+  const outputDir = String(workflow.paths?.outputDir || "").trim();
+  if (!bridge?.publishAgentInterfaceContext || !outputDir || outputDir.startsWith("[")) return;
+  const main = document.querySelector(".line-review-main");
+  try {
+    const result = await bridge.publishAgentInterfaceContext({
+      version: 1,
+      outputDir,
+      htmlPath: currentHtmlPath(),
+      pageKind: "line-review",
+      sourcePath: workflow.paths?.sourcePath || "",
+      translationPath: boundTranslationPath() || workflow.paths?.translationPath || "",
+      page,
+      pageSize,
+      scrollTop: main?.scrollTop || window.scrollY || 0,
+      activeLine: Number(activeLine || 0) || undefined,
+      ...visibleLineRange(),
+      focusedLine: focusedInterfaceLine(),
+      updatedAt: Date.now()
+    });
+    if (!result?.ok) throw new Error(result?.message || "YN interface context was rejected.");
+  } catch (error) {
+    console.warn("translation-workshop could not publish YN interface context", error);
+  }
+}
+function scheduleAgentInterfaceContextPublish() {
+  if (agentInterfacePublishFrame) return;
+  agentInterfacePublishFrame = requestAnimationFrame(() => {
+    agentInterfacePublishFrame = 0;
+    void publishAgentInterfaceContext();
+  });
+}
+function closeAgentRowMenu() {
+  agentRowMenu?.remove();
+  agentRowMenu = null;
+}
+function sourceSelectionText(sourceElement) {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return "";
+  const selectionRange = selection.getRangeAt(0);
+  if (!selectionRange.intersectsNode(sourceElement)) return "";
+  const sourceRange = document.createRange();
+  sourceRange.selectNodeContents(sourceElement);
+  if (selectionRange.comparePoint(sourceElement, 0) < 0) {
+    sourceRange.setStart(selectionRange.startContainer, selectionRange.startOffset);
+  }
+  if (selectionRange.comparePoint(sourceElement, sourceElement.childNodes.length) > 0) {
+    sourceRange.setEnd(selectionRange.endContainer, selectionRange.endOffset);
+  }
+  return sourceRange.toString().trim();
+}
+function askAgentAboutRow(rowElement, selectedSourceText = "") {
+  const line = Number(rowElement?.dataset.line || 0);
+  const row = data.rows.find(item => Number(item.line) === line);
+  if (!row) return;
+  activeLine = String(line);
+  agentSelectedSourceText = selectedSourceText;
+  save([Number(line)]);
+  scheduleAgentInterfaceContextPublish();
+  const prompt = selectedSourceText
+    ? data.locale === "en-US"
+      ? "Please check this source excerpt I deliberately selected against the current YN page and adjacent context, answer my translation question, and suggest a better translation when needed:\\n\\n" + selectedSourceText
+      : "请结合当前 YN 页面和相邻上下文检查以下我主动选择的原文片段，回答我的翻译问题；如有必要，请给出更合适的译文：\\n\\n" + selectedSourceText
+    : data.locale === "en-US"
+      ? "Please read the line I just selected in the current YN page, check its translation against the adjacent context, and suggest a better translation when needed."
+      : "请读取我刚刚在当前 YN 页面选中的行，结合相邻上下文检查翻译；如有必要，请给出更合适的译文。";
+  const embedded = window.__ynAgentChatPiWebEmbedded || window.parent?.__ynAgentChatPiWebEmbedded;
+  if (embedded?.insertText) {
+    void Promise.resolve(embedded.insertText(prompt));
+    return;
+  }
+  invokeBridge()?.openAgentChatWindow?.({
+    outputDir: workflow.paths?.outputDir,
+    locale: data.locale,
+    languagePair: promptSettingsValue().languagePair,
+    lineReviewPath: currentLineReviewPath(),
+    sourcePath: workflow.paths?.sourcePath,
+    translationPath: boundTranslationPath() || workflow.paths?.translationPath,
+    initialPrompt: prompt
+  });
+}
+rowsEl.addEventListener("contextmenu", (event) => {
+  const source = event.target.closest?.(".source");
+  if (!source) return;
+  event.preventDefault();
+  closeAgentRowMenu();
+  const row = source.closest(".row");
+  const selectedSourceText = sourceSelectionText(source);
+  agentRowMenu = document.createElement("div");
+  agentRowMenu.className = "yn-agent-row-menu";
+  agentRowMenu.style.left = Math.min(event.clientX, window.innerWidth - 230) + "px";
+  agentRowMenu.style.top = Math.min(event.clientY, window.innerHeight - 52) + "px";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = selectedSourceText
+    ? data.labels.askAgentSelection || "Send selected source to Agent"
+    : data.labels.askAgentTranslation || "Ask Agent about this translation";
+  button.addEventListener("click", () => {
+    closeAgentRowMenu();
+    askAgentAboutRow(row, selectedSourceText);
+  });
+  agentRowMenu.appendChild(button);
+  document.body.appendChild(agentRowMenu);
+});
+document.addEventListener("pointerdown", (event) => {
+  if (agentRowMenu && !agentRowMenu.contains(event.target)) {
+    closeAgentRowMenu();
+    if (agentSelectedSourceText) {
+      agentSelectedSourceText = "";
+      scheduleAgentInterfaceContextPublish();
+    }
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeAgentRowMenu();
+});
+document.querySelector(".line-review-main")?.addEventListener("scroll", () => {
+  closeAgentRowMenu();
+  scheduleAgentInterfaceContextPublish();
+}, { passive: true });
+document.addEventListener("visibilitychange", scheduleAgentInterfaceContextPublish);
+const agentInterfaceHeartbeat = window.setInterval(scheduleAgentInterfaceContextPublish, 2000);
 function lanSyncRowPayload() {
   return data.rows.map(row => ({
     line: row.line,
@@ -1641,6 +2650,7 @@ function renderLanSyncLinks(result) {
   lanSyncPanel.hidden = false;
 }
 async function startLanSync() {
+  if (lanSyncToken || lanSyncStarting || lanSyncStopping) return;
   const bridge = invokeBridge();
   if (!bridge?.startLanSync) {
     setAiStatus(data.labels.lanSyncNeedsApp || "LAN sync requires opening this HTML inside translation-workshop.");
@@ -1652,12 +2662,12 @@ async function startLanSync() {
     lanSyncPinInput?.focus?.();
     return;
   }
+  lanSyncStarting = true;
   try {
     const result = await bridge.startLanSync({
       pin,
       htmlPath: currentHtmlPath(),
       outputDir: workflow.paths?.outputDir || "",
-      agent: agentSelect?.value || workflow.defaultAgent || "codex",
       title: document.title || "translation-workshop",
       lineDocument: lanSyncLineDocumentPayload(),
       pageSize,
@@ -1668,20 +2678,73 @@ async function startLanSync() {
     setAiStatus((data.labels.lanSyncStarted || "LAN sync started") + ": " + (lanSyncPrimaryUrl || result?.localUrl || ""));
   } catch (error) {
     setAiStatus((data.labels.lanSyncFailed || "LAN sync failed") + ": " + (error?.message || String(error)));
+  } finally {
+    lanSyncStarting = false;
   }
 }
+function reportLineReviewPersistFailure(error) {
+  const message = error?.message || String(error);
+  console.error("translation-workshop failed to persist a line-review edit", error);
+  setAiStatus((data.labels.lanSyncFailed || "LAN sync failed") + ": " + message);
+}
+function persistLineReviewPatch(patch) {
+  const line = Number(patch?.line || 0);
+  let request;
+  if (lanSyncToken) {
+    try {
+      storeLineReviewStateLocally();
+    } catch (error) {
+      reportLineReviewPersistFailure(error);
+    }
+    request = queueLanSyncPatch(patch);
+  } else {
+    request = save(line > 0 ? [line] : []);
+  }
+  void Promise.resolve(request).catch(reportLineReviewPersistFailure);
+  return request;
+}
+async function dispatchPendingLanSyncPatch(key) {
+  const pending = lanSyncPendingPatches.get(key);
+  if (!pending) return;
+  lanSyncPendingPatches.delete(key);
+  clearTimeout(pending.timer);
+  try {
+    const result = await pending.bridge.sendLanSyncPatch({
+      token: pending.token,
+      patch: { ...pending.patch, clientId: "desktop", timestamp: new Date().toISOString() }
+    });
+    if (!result?.ok) throw new Error("The Electron host rejected the LAN edit.");
+    for (const waiter of pending.waiters) waiter.resolve(result);
+  } catch (error) {
+    for (const waiter of pending.waiters) waiter.reject(error);
+    throw error;
+  }
+}
+function flushPendingLanSyncPatches() {
+  return Promise.all([...lanSyncPendingPatches.keys()].map(dispatchPendingLanSyncPatch));
+}
 function queueLanSyncPatch(patch) {
-  if (!lanSyncToken) return;
+  if (lanSyncStopping) return Promise.reject(new Error("LAN sync is stopping; wait for it to finish before editing."));
+  if (!lanSyncToken) return Promise.reject(new Error("LAN sync is not active."));
   const bridge = invokeBridge();
-  if (!bridge?.sendLanSyncPatch) return;
+  if (!bridge?.sendLanSyncPatch) return Promise.reject(new Error("LAN sync is unavailable in this window."));
   const line = Number(patch.line || 0);
-  clearTimeout(lanSyncTimers.get(line));
-  lanSyncTimers.set(line, setTimeout(() => {
-    bridge.sendLanSyncPatch({
+  const key = String(line);
+  return new Promise((resolve, reject) => {
+    const previous = lanSyncPendingPatches.get(key);
+    if (previous) clearTimeout(previous.timer);
+    const pending = {
       token: lanSyncToken,
-      patch: { ...patch, clientId: "desktop", timestamp: new Date().toISOString() }
-    }).catch(() => {});
-  }, patch.type === "line-edit" ? 250 : 0));
+      bridge,
+      patch,
+      waiters: [...(previous?.waiters || []), { resolve, reject }],
+      timer: 0
+    };
+    pending.timer = setTimeout(() => {
+      void dispatchPendingLanSyncPatch(key).catch(reportLineReviewPersistFailure);
+    }, patch.type === "line-edit" ? 250 : 0);
+    lanSyncPendingPatches.set(key, pending);
+  });
 }
 function applyRemoteLanSyncPatch(payload) {
   if (!payload || payload.token !== lanSyncToken) return;
@@ -1697,168 +2760,280 @@ function applyRemoteLanSyncPatch(payload) {
     state.status[line] = patch.status || "manual";
   }
   activeLine = String(line);
-  save();
   const target = rowsEl.querySelector('.row[data-line="' + line + '"] .target');
   if (target && document.activeElement !== target) {
     target.textContent = rowValue({ line });
   }
   changedCount.textContent = Object.keys(state.edits).length;
 }
+function applyRemoteLanSyncCommand(payload) {
+  if (!payload || payload.token !== lanSyncToken) return;
+  if (payload.command?.type !== "open-agent-os") return;
+  window.__ynAgentChatPiWebEmbedded?.open?.();
+}
 invokeBridge()?.onLanSyncPatch?.(applyRemoteLanSyncPatch);
+invokeBridge()?.onLanSyncCommand?.(applyRemoteLanSyncCommand);
+
+// --- Agent translation artifacts: discovery + line-aligned import draft ----
+// Per RFC 5.4: agent initial-translation writes a candidate TXT under
+// AI_translation/. The host discovers it, runs the deterministic validator,
+// and lets the user import it as a DRAFT (line-review localStorage edits only).
+// Import never overwrites the bound translation TXT. On blocking errors the
+// import button is replaced by a repair entry point.
+const agentArtifactsPanel = document.getElementById("agentArtifactsPanel");
+const agentArtifactsList = document.getElementById("agentArtifactsList");
+const agentArtifactsStatus = document.getElementById("agentArtifactsStatus");
+const refreshAgentArtifactsButton = document.getElementById("refreshAgentArtifacts");
+
+function setArtifactStatus(text) {
+  if (agentArtifactsStatus) agentArtifactsStatus.textContent = text || "";
+}
+
+function artifactValidationBadge(validation) {
+  if (!validation) return "";
+  if (validation.ok) {
+    const w = validation.warnings.length;
+    const okLabel = data.labels.artifactOkBadge || "OK";
+    const warnLabel = data.labels.artifactWarningBadge || "warnings";
+    const warnSpan = w > 0 ? '<span class="artifact-badge warn">' + w + ' ' + warnLabel + '</span>' : "";
+    return '<span class="artifact-badge ok">' + escapeHtml(okLabel) + '</span>' + warnSpan;
+  }
+  const blockLabel = data.labels.artifactBlockingBadge || "blocking";
+  return '<span class="artifact-badge block">' + validation.blocking.length + ' ' + escapeHtml(blockLabel) + '</span>';
+}
+
+function artifactCardHtml(artifact, validation) {
+  const source = artifact.sourcePath || "";
+  const sourceLabel = data.labels.artifactSourceLabel || "Source";
+  const sourceLine = source
+    ? '<div class="artifact-meta">' + escapeHtml(sourceLabel) + ': ' + escapeHtml(source) + '</div>'
+    : '<div class="artifact-meta warn">' + escapeHtml(data.labels.artifactSourceUnmatched || "Source not matched") + '</div>';
+  const blockingList = (validation?.blocking || []).map(function (f) { return '<li>' + escapeHtml(f.detail) + '</li>'; }).join("");
+  const warningList = (validation?.warnings || []).slice(0, 8).map(function (f) { return '<li>' + escapeHtml(f.detail) + '</li>'; }).join("");
+  const canImport = validation?.ok && !!source;
+  const importBtn = canImport
+    ? '<button type="button" class="primary artifact-import" data-path="' + escapeHtml(artifact.path) + '" data-source="' + escapeHtml(source) + '">' + escapeHtml(data.labels.importAsDraft || "Import as draft") + '</button>'
+    : '<button type="button" class="artifact-repair" data-path="' + escapeHtml(artifact.path) + '">' + escapeHtml(data.labels.openRepair || "Jump to issue line") + '</button>';
+  const repairBtn = !validation?.ok
+    ? '<button type="button" class="artifact-repair-prompt" data-path="' + escapeHtml(artifact.path) + '" data-source="' + escapeHtml(source) + '">' + escapeHtml(data.labels.generateRepairPrompt || "Generate repair prompt") + '</button>'
+    : "";
+  const openBtn = '<button type="button" class="artifact-open" data-path="' + escapeHtml(artifact.path) + '">' + escapeHtml(data.labels.openArtifact || "Open artifact") + '</button>';
+  const blockingUl = blockingList ? '<ul class="artifact-blocking">' + blockingList + '</ul>' : "";
+  const warningUl = warningList ? '<ul class="artifact-warnings">' + warningList + '</ul>' : "";
+  return '<article class="artifact-card">'
+    + '<header><strong>' + escapeHtml(artifact.basename) + '</strong> ' + artifactValidationBadge(validation) + '</header>'
+    + '<div class="artifact-meta">' + escapeHtml(artifact.path) + '</div>'
+    + sourceLine
+    + blockingUl
+    + warningUl
+    + '<div class="artifact-actions">' + importBtn + repairBtn + openBtn + '</div>'
+    + '</article>';
+}
+
+const artifactValidations = new Map();
+
+function artifactLanguagePair() {
+  return promptSettingsValue().languagePair || workflow.promptDefaults?.languagePair || "ja->zh-CN";
+}
+
+async function discoverAgentArtifacts() {
+  if (!agentArtifactsPanel) return;
+  agentArtifactsPanel.hidden = false;
+  const bridge = invokeBridge();
+  if (!bridge?.discoverAgentArtifacts) {
+    setArtifactStatus(data.labels.artifactsBridgeMissing || "Open this HTML inside translation-workshop to discover agent artifacts.");
+    if (agentArtifactsList) agentArtifactsList.innerHTML = "";
+    return;
+  }
+  const projectDir = workflow.paths?.outputDir || "";
+  if (!projectDir || (projectDir.startsWith("[") && projectDir.endsWith("]"))) {
+    setArtifactStatus(data.labels.artifactsNeedOutputDir || "Set an output folder to discover agent artifacts.");
+    if (agentArtifactsList) agentArtifactsList.innerHTML = "";
+    return;
+  }
+  setArtifactStatus(data.labels.scanningArtifacts || "Scanning for agent artifacts…");
+  artifactValidations.clear();
+  try {
+    const sourcePath = workflow.paths?.validationSourcePath || workflow.paths?.sourcePath || "";
+    const locale = data.locale || document.documentElement.lang || "zh-CN";
+    const artifacts = await bridge.discoverAgentArtifacts({
+      projectDir,
+      sourcePaths: sourcePath ? [sourcePath] : []
+    });
+    if (artifacts.length === 0) {
+      setArtifactStatus(data.labels.noArtifacts || "No candidate translation artifacts found under AI_translation/.");
+      if (agentArtifactsList) agentArtifactsList.innerHTML = "";
+      return;
+    }
+    setArtifactStatus(String(data.labels.artifactsRescanned || "Rescanned {count} artifact(s) from disk.").replace("{count}", String(artifacts.length)));
+    if (agentArtifactsList) agentArtifactsList.innerHTML = "";
+    for (const artifact of artifacts) {
+      let validation = null;
+      if (artifact.sourcePath) {
+        try {
+          validation = await bridge.validateAgentArtifact({
+            projectDir,
+            sourcePath: artifact.sourcePath,
+            candidatePath: artifact.path,
+            locale,
+            languagePair: artifactLanguagePair()
+          });
+        } catch (error) {
+          validation = {
+            ok: false,
+            blocking: [{ detail: (data.labels.artifactValidationFailed || "Validation failed") + ": " + (error?.message || String(error)) }],
+            warnings: []
+          };
+        }
+      }
+      artifactValidations.set(artifact.path, validation);
+      const card = document.createElement("div");
+      card.innerHTML = artifactCardHtml(artifact, validation);
+      agentArtifactsList.appendChild(card.firstChild);
+    }
+  } catch (error) {
+    setArtifactStatus((data.labels.artifactScanFailed || "Artifact scan failed") + ": " + (error?.message || String(error)));
+  }
+}
+
+async function importArtifactAsDraft(candidatePath, sourcePath) {
+  const bridge = invokeBridge();
+  if (!bridge?.buildAgentImportPlan) return;
+  setAiStatus(data.labels.importingDraft || "Importing candidate as draft…");
+  try {
+    const plan = await bridge.buildAgentImportPlan({
+      projectDir: workflow.paths?.outputDir || "",
+      sourcePath,
+      candidatePath,
+      locale: data.locale || "zh-CN",
+      languagePair: artifactLanguagePair()
+    });
+    if (!plan.ok) {
+      setAiStatus((data.labels.importBlocked || "Import blocked by validation") + ": " + (plan.validation.blocking[0]?.detail || ""));
+      return;
+    }
+    const importedLines = [];
+    for (const line in plan.edits) {
+      state.edits[line] = String(plan.edits[line] ?? "");
+      state.status[line] = plan.status[line] || "machine";
+      importedLines.push(Number(line));
+    }
+    save(importedLines);
+    render();
+    if (/\.txt$/i.test(candidatePath)) {
+      const canonicalEditablePath = /\.epub$/i.test(workflow.paths?.sourcePath || "")
+        ? workflow.paths?.editableTranslationPath || ""
+        : "";
+      setBoundTranslationPath(canonicalEditablePath || candidatePath, canonicalEditablePath || candidatePath);
+    } else {
+      updateSaveTxtVisibility();
+    }
+    setAiStatus((data.labels.importedDraft || "Imported as draft") + " " + String(data.labels.importedDraftNote || "({count} lines).").replace("{count}", String(plan.lineCount)));
+  } catch (error) {
+    setAiStatus((data.labels.importFailed || "Import failed") + ": " + (error?.message || String(error)));
+  }
+}
+
+function openLineRepair(candidatePath) {
+  const validation = artifactValidations.get(candidatePath);
+  const firstLine = (validation?.blocking || []).find(function (finding) {
+    return Number.isInteger(finding.line) && finding.line > 0;
+  });
+  if (firstLine?.line && jumpToLine(firstLine.line)) {
+    setAiStatus(String(data.labels.repairJumpedToLine || "Jumped to line {line}").replace("{line}", String(firstLine.line)));
+    return;
+  }
+  const sourceCount = validation?.sourceLineCount;
+  const candidateCount = validation?.candidateLineCount;
+  if (sourceCount && candidateCount && sourceCount !== candidateCount) {
+    setAiStatus(String(data.labels.repairLineCountHint || "Line count mismatch")
+      .replace("{source}", String(sourceCount))
+      .replace("{candidate}", String(candidateCount)));
+    return;
+  }
+  setAiStatus(validation?.blocking?.[0]?.detail || data.labels.importBlocked || "Import blocked");
+}
+
+async function generateRepairPrompt(candidatePath, sourcePath) {
+  const bridge = invokeBridge();
+  if (!bridge?.buildAgentRepairPrompt) return;
+  try {
+    const prompt = await bridge.buildAgentRepairPrompt({
+      projectDir: workflow.paths?.outputDir || "",
+      sourcePath,
+      candidatePath,
+      locale: data.locale || "zh-CN"
+    });
+    setPromptText(prompt);
+    await openAgentChatForPrompt();
+    setAiStatus(data.labels.repairPromptReady || "Repair prompt ready in the prompt box.");
+  } catch (error) {
+    setAiStatus((data.labels.repairPromptFailed || "Repair prompt generation failed") + ": " + (error?.message || String(error)));
+  }
+}
+
+agentArtifactsList?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) return;
+  const path = target.getAttribute("data-path") || "";
+  const source = target.getAttribute("data-source") || "";
+  if (target.classList.contains("artifact-import")) {
+    void importArtifactAsDraft(path, source);
+  } else if (target.classList.contains("artifact-repair")) {
+    openLineRepair(path);
+  } else if (target.classList.contains("artifact-repair-prompt")) {
+    void generateRepairPrompt(path, source);
+  } else if (target.classList.contains("artifact-open")) {
+    invokeBridge()?.openPath?.(path).catch(() => {});
+  }
+});
+
+refreshAgentArtifactsButton?.addEventListener("click", () => { void discoverAgentArtifacts(); });
+
+// Discover on demand via Refresh — avoid blocking every line-review open.
+// --- end agent translation artifacts ----------------------------------------
+
 startLanSyncButton?.addEventListener("click", () => { void startLanSync(); });
 copyLanSyncLinkButton?.addEventListener("click", () => {
   if (!lanSyncPrimaryUrl) return;
   navigator.clipboard?.writeText(lanSyncPrimaryUrl).then(() => setAiStatus(data.labels.copied || "Copied")).catch(() => {});
 });
-stopLanSyncButton?.addEventListener("click", () => {
+stopLanSyncButton?.addEventListener("click", async () => {
+  if (lanSyncStopping || lanSyncStarting) return;
+  lanSyncStopping = true;
   const token = lanSyncToken;
-  lanSyncToken = "";
-  lanSyncPanel.hidden = true;
-  if (token) invokeBridge()?.stopLanSync?.(token).catch(() => {});
-  setAiStatus(data.labels.lanSyncStopped || "LAN sync stopped");
-});
-async function refreshInteractiveAgentSnapshot() {
-  const bridge = invokeBridge();
-  if (!bridge?.agentConsoleStatus) return;
   try {
-    const snapshot = await bridge.agentConsoleStatus();
-    if (!snapshot?.running) return;
-    if (snapshot.agent) agentConsoleAgent = snapshot.agent;
-    if (snapshot.id && snapshot.id !== agentConsoleSessionId) {
-      agentConsoleSessionId = snapshot.id;
-      resetAgentConsoleTranscript();
+    await flushPendingLanSyncPatches();
+    if (token) {
+      const result = await invokeBridge()?.stopLanSync?.(token);
+      if (result && result.ok === false) throw new Error("The Electron host could not stop LAN sync.");
     }
-    if (interactiveAgentOutput && snapshot?.output) {
-      agentRawOutput = snapshot.output;
-      renderAgentConsoleOutput();
-    }
-    setInteractiveAgentStatus("running");
-  } catch {
-    // Older app bridges do not expose resumable console snapshots.
-  }
-}
-async function startInteractiveAgent() {
-  openAgentPanel();
-  const bridge = invokeBridge();
-  if (!bridge?.startAgentConsole) {
-    setAiStatus(data.labels.agentConsoleNeedsApp || "Open this HTML in translation-workshop to send the prompt to Agent.");
-    return false;
-  }
-  const outputDir = workflow.paths?.outputDir || "";
-  if (!outputDir || outputDir.startsWith("[")) {
-    setAiStatus(data.labels.agentConsoleNeedsOutput || "Output folder is required.");
-    return false;
-  }
-  try {
-    const requestedAgent = agentSelect?.value || workflow.defaultAgent || "codex";
-    agentConsoleAgent = requestedAgent;
-    const started = await bridge.startAgentConsole({
-      agent: requestedAgent,
-      outputDir,
-      cols: agentTerminal?.cols || 120,
-      rows: agentTerminal?.rows || 32
-    });
-    if (!started?.ok) {
-      setAiStatus((data.labels.agentLaunchFailed || "Agent launch failed") + ": " + (started?.message || ""));
-      return false;
-    }
-    if (started?.status?.id && started.status.id !== agentConsoleSessionId) {
-      agentConsoleSessionId = started.status.id;
-      resetAgentConsoleTranscript();
-    }
-    if (started?.status?.agent) agentConsoleAgent = started.status.agent;
-    setInteractiveAgentStatus("running");
-    setAiStatus(started?.message || (data.labels.agentLaunched || "Agent launched"));
-    return true;
+    lanSyncToken = "";
+    lanSyncPanel.hidden = true;
+    setAiStatus(data.labels.lanSyncStopped || "LAN sync stopped");
   } catch (error) {
-    setAiStatus((data.labels.agentLaunchFailed || "Agent launch failed") + ": " + (error?.message || String(error)));
-    return false;
-  }
-}
-async function sendInteractiveAgentMessage() {
-  const promptText = ensureAgentMessageInput();
-  const bridge = invokeBridge();
-  if (!bridge?.sendAgentConsoleInput) {
-    setAiStatus(data.labels.agentConsoleNeedsApp || "Open this HTML in translation-workshop to send the prompt to Agent.");
-    return;
-  }
-  const started = await startInteractiveAgent();
-  if (!started) return;
-  try {
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    agentConsoleAwaitingReply = true;
-    setInteractiveAgentStatus("waiting");
-    if (agentMessageInput) agentMessageInput.value = "";
-    promptPreview.value = "";
-    const result = await bridge.sendAgentConsoleInput(promptText);
-    if (!result?.ok) {
-      agentConsoleAwaitingReply = false;
-      if (agentMessageInput) agentMessageInput.value = promptText;
-      promptPreview.value = promptText;
-    }
-    setAiStatus(result?.ok
-      ? result.promptPath
-        ? (data.labels.promptSentViaFile || "Prompt saved to file") + ": " + result.promptPath
-        : (data.labels.promptSentToAgent || "Prompt sent to Agent")
-      : (result?.message || data.labels.agentLaunchFailed || "Agent launch failed"));
-  } catch (error) {
-    setAiStatus((data.labels.agentLaunchFailed || "Agent launch failed") + ": " + (error?.message || String(error)));
-  }
-}
-document.getElementById("callAgent")?.addEventListener("click", () => openAgentPanel());
-document.getElementById("collapseAgentPanel")?.addEventListener("click", () => {
-  if (agentPanel) agentPanel.hidden = true;
-});
-window.addEventListener("resize", () => fitAgentTerminal());
-document.getElementById("startInteractiveAgent")?.addEventListener("click", startInteractiveAgent);
-document.getElementById("sendInteractiveAgentMessage")?.addEventListener("click", sendInteractiveAgentMessage);
-document.getElementById("stopInteractiveAgent")?.addEventListener("click", async () => {
-  const bridge = invokeBridge();
-  try {
-    await bridge?.stopAgentConsole?.();
-    setInteractiveAgentStatus("stopped");
-    setAiStatus(data.labels.agentConsoleStopped || "Agent Console stopped.");
-  } catch (error) {
-    setAiStatus((data.labels.agentLaunchFailed || "Agent launch failed") + ": " + (error?.message || String(error)));
+    reportLineReviewPersistFailure(error);
+  } finally {
+    lanSyncStopping = false;
   }
 });
-{
-  const bridge = invokeBridge();
-  if (bridge?.onAgentConsoleData && interactiveAgentOutput) {
-    bridge.onAgentConsoleData((payload) => {
-      if (payload.id && payload.id !== agentConsoleSessionId) {
-        agentConsoleSessionId = payload.id;
-        resetAgentConsoleTranscript();
-      }
-      agentRawOutput = (agentRawOutput + payload.data).slice(-agentTranscriptLimit);
-      markInteractiveAgentStreaming();
-      appendAgentConsoleOutput(payload.data);
-    });
-  }
-  if (bridge?.onAgentConsoleExit) {
-    bridge.onAgentConsoleExit((payload) => {
-      agentConsoleAwaitingReply = false;
-      setInteractiveAgentStatus("stopped");
-      setAiStatus((data.labels.agentConsoleStopped || "Agent Console stopped.") + ": " + (payload.exitCode ?? ""));
-    });
-  }
-  void refreshInteractiveAgentSnapshot();
-}
 async function syncLines(lines, label) {
   syncedLines = lines;
   delete state.synced;
   let importedCount = 0;
+  const synchronizedLines = [];
   for (let index = 0; index < data.rows.length; index += 1) {
     const lineNo = data.rows[index].line;
     if (lines[index] !== undefined && state.status[lineNo] !== "manual") {
       delete state.edits[lineNo];
       delete state.status[lineNo];
       importedCount += 1;
+      synchronizedLines.push(lineNo);
     }
   }
   state.syncedFile = label;
   state.syncedAt = new Date().toISOString();
-  save();
+  save(synchronizedLines, ["syncedFile", "syncedAt"]);
   render();
   setAiStatus((data.labels.synced || "Translation synced") + ": " + label + " (" + importedCount + "/" + data.rows.length + ")");
   try {
@@ -1982,20 +3157,52 @@ function downloadTxt() {
   URL.revokeObjectURL(a.href);
 }
 function boundTranslationPath() {
-  return state.translationPath || workflow.paths?.translationPath || "";
+  return state.translationPath || workflow.paths?.editableTranslationPath || workflow.paths?.translationPath || "";
+}
+function canWriteBoundTxt() {
+  const path = boundTranslationPath();
+  return Boolean(path && !path.startsWith("[") && /\.txt$/i.test(path));
+}
+function updateSaveTxtVisibility() {
+  const button = document.getElementById("saveTxt");
+  if (!button) return;
+  button.hidden = !canWriteBoundTxt();
+}
+function ensureSaveTxtButton() {
+  if (document.getElementById("saveTxt")) return;
+  const exportBtn = document.getElementById("exportTxt");
+  if (!exportBtn) return;
+  const button = document.createElement("button");
+  button.id = "saveTxt";
+  button.type = "button";
+  button.hidden = true;
+  button.textContent = data.labels.saveTxt || "Save TXT";
+  exportBtn.insertAdjacentElement("afterend", button);
+  button.addEventListener("click", () => { void writeCurrentTranslationFile(); });
 }
 function boundPromptTranslationPath() {
+  if (workflow.paths?.promptSourceKind === "folder") {
+    return workflow.paths?.promptTranslationPath || "";
+  }
   return state.translationPromptPath || workflow.paths?.promptTranslationPath || boundTranslationPath();
 }
 function workflowPaths() {
   workflow.paths ||= {};
   return workflow.paths;
 }
-function updateProjectState(patch) {
+async function persistProjectState(patch) {
   const outputDir = workflow.paths?.outputDir || "";
   const bridge = writeBridge();
-  if (!outputDir || !bridge?.updateProjectState) return;
-  void bridge.updateProjectState({ outputDir, patch });
+  if (!outputDir) return;
+  if (!bridge?.updateProjectState) {
+    throw new Error("Project settings bridge is unavailable.");
+  }
+  await bridge.updateProjectState({ outputDir, patch });
+}
+function updateProjectState(patch) {
+  void persistProjectState(patch).catch((error) => {
+    setAiStatus((data.labels.projectStateSaveFailed || "Project state save failed") + ": " + (error?.message || String(error)));
+  });
 }
 function setBoundTranslationPath(path, promptPath) {
   const value = String(path || "").trim();
@@ -2005,13 +3212,27 @@ function setBoundTranslationPath(path, promptPath) {
   state.translationPromptPath = promptValue;
   const paths = workflowPaths();
   paths.translationPath = value;
+  paths.editableTranslationPath = value;
   paths.promptTranslationPath = promptValue;
-  save();
+  save([], ["translationPath", "translationPromptPath"]);
   updateProjectState({ translationPath: value, promptTranslationPath: promptValue });
+  updateSaveTxtVisibility();
 }
 function writeBridge() {
   return window.workshopHtml || window.parent?.workshopHtml;
 }
+const unsubscribeProjectState = writeBridge()?.onProjectStateUpdate?.((payload) => {
+  if (normalizedProjectOutputDir(payload?.outputDir) !== normalizedProjectOutputDir(workflow.paths?.outputDir)) return;
+  applyProjectPromptSettings(payload?.state || payload?.patch);
+  const glossaryPath = String(payload?.state?.glossaryPath || payload?.patch?.glossaryPath || "").trim();
+  if (glossaryPath) {
+    projectGlossaryPath = glossaryPath;
+    workflowPaths().glossaryPath = glossaryPath;
+    void syncGlossaryFromBoundFile();
+  }
+});
+window.addEventListener("beforeunload", () => unsubscribeProjectState?.(), { once: true });
+void hydrateProjectPromptSettings();
 async function writeCurrentTranslationFile() {
   const targetPath = boundTranslationPath();
   if (!targetPath) {
@@ -2028,7 +3249,7 @@ async function writeCurrentTranslationFile() {
     state.savedTxtFile = result?.path || targetPath;
     state.savedTxtAt = new Date().toISOString();
     setBoundTranslationPath(state.savedTxtFile, state.savedTxtFile);
-    save();
+    save([], ["savedTxtFile", "savedTxtAt"]);
     setAiStatus((data.labels.txtWritten || "TXT written") + ": " + state.savedTxtFile);
   } catch (error) {
     setAiStatus((data.labels.txtWriteFailed || "TXT write failed") + ": " + (error?.message || String(error)));
@@ -2049,7 +3270,7 @@ async function writeCurrentEpubCopy() {
     const result = await bridge.writeEpubFile({ templatePath, lines: currentTargetLines(), outputDir: workflow.paths?.outputDir, ...(workflow.epubExport || {}) });
     state.savedEpubFile = result?.path || "";
     state.savedEpubAt = new Date().toISOString();
-    save();
+    save([], ["savedEpubFile", "savedEpubAt"]);
     setAiStatus((data.labels.epubWritten || "EPUB exported") + ": " + state.savedEpubFile);
   } catch (error) {
     setAiStatus((data.labels.epubWriteFailed || "EPUB export failed") + ": " + (error?.message || String(error)));
@@ -2077,10 +3298,9 @@ document.getElementById("syncTranslationInput")?.addEventListener("change", asyn
 document.getElementById("exportTxt")?.addEventListener("click", downloadTxt);
 document.getElementById("saveTxt")?.addEventListener("click", writeCurrentTranslationFile);
 document.getElementById("exportEpub")?.addEventListener("click", writeCurrentEpubCopy);
-let glossaryEntries = state.glossaryEntries || workflow.glossaryEntries || [];
-state.glossaryTargets ||= {};
-state.glossaryAliases ||= {};
-state.glossaryPath ||= workflow.paths?.glossaryPath || "";
+let glossaryEntries = workflow.glossaryEntries || [];
+let glossaryTargets = {};
+let glossaryAliasesByIndex = {};
 const glossaryDrawer = document.getElementById("glossaryTools");
 const glossaryBackdrop = document.getElementById("glossaryBackdrop");
 const glossaryListEl = document.getElementById("glossaryList");
@@ -2088,16 +3308,76 @@ const glossaryCountEl = document.getElementById("glossaryCount");
 const glossaryHelpEl = document.getElementById("glossaryHelp");
 const glossarySearchEl = document.getElementById("glossarySearch");
 const glossarySearchMetaEl = document.getElementById("glossarySearchMeta");
+const importGeneratedGlossaryButton = document.getElementById("importGeneratedGlossary");
 const glossaryRenderBatchSize = 120;
 let glossaryVisibleCount = glossaryRenderBatchSize;
 function setGlossaryDrawer(open) {
   glossaryDrawer?.classList.toggle("open", open);
   glossaryBackdrop?.classList.toggle("open", open);
   glossaryDrawer?.setAttribute("aria-hidden", open ? "false" : "true");
+  if (open) void refreshGeneratedGlossaryStatus();
 }
 document.getElementById("glossaryDrawerToggle")?.addEventListener("click", () => setGlossaryDrawer(true));
 document.getElementById("glossaryDrawerClose")?.addEventListener("click", () => setGlossaryDrawer(false));
 glossaryBackdrop?.addEventListener("click", () => setGlossaryDrawer(false));
+function normalizedWorkspacePath(value) {
+  return String(value || "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLocaleLowerCase();
+}
+function applyGeneratedGlossaryStatus(status) {
+  if (!importGeneratedGlossaryButton) return;
+  const pending = Number(status?.pending?.glossaryCandidates || 0);
+  const importable = Boolean(status?.actions?.importGlossaryCandidates && pending > 0);
+  importGeneratedGlossaryButton.hidden = !importable;
+  importGeneratedGlossaryButton.textContent = importable
+    ? (data.labels.importGeneratedGlossary || "Import Agent glossary candidates") + " (" + pending + ")"
+    : (data.labels.importGeneratedGlossary || "Import Agent glossary candidates");
+}
+async function refreshGeneratedGlossaryStatus() {
+  const outputDir = workflow.paths?.outputDir || "";
+  const bridge = writeBridge();
+  if (!outputDir || outputDir.startsWith("[") || !bridge?.readWorkspaceAssetsStatus) {
+    applyGeneratedGlossaryStatus(undefined);
+    return;
+  }
+  try {
+    applyGeneratedGlossaryStatus(await bridge.readWorkspaceAssetsStatus({ outputDir }));
+  } catch (error) {
+    setAiStatus((data.labels.generatedGlossaryImportFailed || "Agent glossary candidate import failed") + ": " + (error?.message || String(error)));
+  }
+}
+async function importGeneratedGlossary() {
+  const outputDir = workflow.paths?.outputDir || "";
+  const bridge = writeBridge();
+  if (!outputDir || outputDir.startsWith("[") || !bridge?.importGeneratedGlossaryCandidates) return;
+  try {
+    const result = await bridge.importGeneratedGlossaryCandidates({ outputDir });
+    const glossary = result?.assets?.glossary;
+    const glossaryPath = result?.assets?.paths?.glossary || "";
+    if (!syncGlossaryFromText(JSON.stringify(glossary || { entries: [] }), glossaryPath || "project glossary", true)) return;
+    if (glossaryPath) setBoundGlossaryPath(glossaryPath);
+    applyGeneratedGlossaryStatus({ pending: { glossaryCandidates: 0 }, actions: { importGlossaryCandidates: false } });
+    setAiStatus((data.labels.generatedGlossaryImported || "Agent glossary candidates imported") + ": " + Number(result?.counts?.added || 0));
+  } catch (error) {
+    setAiStatus((data.labels.generatedGlossaryImportFailed || "Agent glossary candidate import failed") + ": " + (error?.message || String(error)));
+  }
+}
+importGeneratedGlossaryButton?.addEventListener("click", () => { void importGeneratedGlossary(); });
+const unsubscribeWorkspaceAssets = writeBridge()?.onWorkspaceAssetsStatus?.((payload) => {
+  if (normalizedWorkspacePath(payload?.outputDir) !== normalizedWorkspacePath(workflow.paths?.outputDir)) return;
+  applyGeneratedGlossaryStatus(payload?.status);
+});
+window.addEventListener("beforeunload", () => unsubscribeWorkspaceAssets?.(), { once: true });
+const unsubscribeProjectAssets = writeBridge()?.onProjectAssetsUpdate?.((payload) => {
+  if (normalizedWorkspacePath(payload?.outputDir) !== normalizedWorkspacePath(workflow.paths?.outputDir)) return;
+  const glossaryPath = String(payload?.assets?.paths?.glossary || "").trim();
+  const glossary = payload?.assets?.glossary;
+  if (glossaryPath && glossary && syncGlossaryFromText(JSON.stringify(glossary), glossaryPath, true)) {
+    setBoundGlossaryPath(glossaryPath);
+  } else if (!payload?.assets) {
+    void syncGlossaryFromBoundFile();
+  }
+});
+window.addEventListener("beforeunload", () => unsubscribeProjectAssets?.(), { once: true });
 function uniqueGlossaryTerms(values) {
   const seen = new Set();
   const terms = [];
@@ -2111,27 +3391,26 @@ function uniqueGlossaryTerms(values) {
   return terms;
 }
 function glossaryTarget(index) {
-  const custom = state.glossaryTargets?.[index];
+  const custom = glossaryTargets[index];
   return typeof custom === "string" ? custom : (glossaryEntries[index]?.target || "");
 }
 function glossaryAliases(index) {
-  const aliases = state.glossaryAliases?.[index];
-  return Array.isArray(aliases) ? aliases : [];
+  const aliases = glossaryAliasesByIndex[index];
+  if (Array.isArray(aliases)) return aliases;
+  return Array.isArray(glossaryEntries[index]?.aliases) ? glossaryEntries[index].aliases : [];
 }
 function currentGlossaryEntries() {
-  return glossaryEntries.map((entry, index) => ({ source: entry.source, target: glossaryTarget(index) }))
+  return glossaryEntries.map((entry, index) => ({ ...entry, target: glossaryTarget(index), aliases: glossaryAliases(index) }))
     .filter(entry => entry.source && entry.target);
 }
 function boundGlossaryPath() {
-  return state.glossaryPath || workflow.paths?.glossaryPath || "";
+  return projectGlossaryPath || workflow.paths?.glossaryPath || "";
 }
 function setBoundGlossaryPath(path) {
   const value = String(path || "").trim();
   if (!value) return;
-  state.glossaryPath = value;
+  projectGlossaryPath = value;
   workflowPaths().glossaryPath = value;
-  save();
-  updateProjectState({ glossaryPath: value });
 }
 function glossarySearchQuery() {
   return String(glossarySearchEl?.value || "").trim().toLocaleLowerCase();
@@ -2295,22 +3574,55 @@ function recomputeAuditIssueForLine(line) {
     delete state.auditIssues[line];
   }
 }
-function toggleAuditWhitelistLine(line) {
+function removeMechanicalAuditIssues(targetState, line) {
+  const issues = Array.isArray(targetState.auditIssues?.[line]) ? targetState.auditIssues[line] : [];
+  const next = issues.filter(issue => {
+    const code = String(issue?.code || "").trim();
+    const severity = String(issue?.severity || "").trim();
+    const source = String(issue?.source || "").trim();
+    return !(/^M0(?:-|$)/i.test(code) || /^M0$/i.test(severity) || source === "host-mechanical-scan");
+  });
+  targetState.auditIssues ||= {};
+  if (next.length > 0) targetState.auditIssues[line] = next;
+  else delete targetState.auditIssues[line];
+}
+async function toggleAuditWhitelistLine(line) {
+  const previousWhitelist = { ...(state.auditWhitelist || {}) };
+  const previousIssues = Array.isArray(state.auditIssues?.[line]) ? [...state.auditIssues[line]] : undefined;
   if (auditLineWhitelisted(line)) {
     delete state.auditWhitelist[line];
     recomputeAuditIssueForLine(line);
   } else {
     state.auditWhitelist[line] = true;
-    delete state.auditIssues[line];
+    removeMechanicalAuditIssues(state, line);
   }
   state.auditVisible = true;
-  save();
-  render();
-  writeAuditWhitelistFile();
+  applyingCanonicalState = true;
+  try {
+    render();
+  } finally {
+    applyingCanonicalState = false;
+  }
+  try {
+    await writeAuditWhitelistFile([line]);
+  } catch (error) {
+    state.auditWhitelist = previousWhitelist;
+    state.auditIssues ||= {};
+    if (previousIssues) state.auditIssues[line] = previousIssues;
+    else delete state.auditIssues[line];
+    applyingCanonicalState = true;
+    try {
+      render();
+    } finally {
+      applyingCanonicalState = false;
+    }
+    throw error;
+  }
 }
-async function writeAuditWhitelistFile() {
+async function writeAuditWhitelistFile(changedLines = []) {
   const bridge = writeBridge();
   if (!bridge?.writeAuditWhitelistFile) {
+    await save(changedLines, ["auditVisible"]);
     setAiStatus((data.labels.auditWhitelistWritten || "Audit whitelist written") + ": " + auditWhitelistPathLabel() + " (" + auditWhitelistLines().join(", ") + ")");
     return;
   }
@@ -2318,11 +3630,16 @@ async function writeAuditWhitelistFile() {
     const result = await bridge.writeAuditWhitelistFile({
       outputDir: workflow.paths?.outputDir,
       sourcePath: workflow.paths?.sourcePath,
-      lines: auditWhitelistLines()
+      lines: auditWhitelistLines(),
+      lineReviewPath: data.lineReviewPath,
+      lineState: state,
+      changedLines
     });
+    applyCanonicalLineReviewState(result);
     setAiStatus((data.labels.auditWhitelistWritten || "Audit whitelist written") + ": " + (result?.path || auditWhitelistPathLabel()));
   } catch (error) {
     setAiStatus((data.labels.auditWhitelistWriteFailed || "Audit whitelist write failed") + ": " + (error?.message || String(error)));
+    throw error;
   }
 }
 function runGlossaryAudit() {
@@ -2349,13 +3666,14 @@ function runGlossaryAudit() {
     }
   }
   state.auditVisible = true;
-  save();
+  save(data.rows.map(row => row.line));
   render();
   setAiStatus((data.labels.auditGlossaryFinished || "Term audit finished") + ": " + affectedLines + " lines / " + issueCount + " H3");
 }
 function applyGlossaryItems(scope, items) {
   let changedLines = 0;
   let replacementCount = 0;
+  const changedLineNumbers = [];
   const rows = scope === "page" ? pageRows() : data.rows;
   for (const row of rows) {
     const lineNo = row.line;
@@ -2369,9 +3687,10 @@ function applyGlossaryItems(scope, items) {
       state.status[lineNo] = "glossary";
       changedLines += 1;
       replacementCount += rowReplacementCount;
+      changedLineNumbers.push(lineNo);
     }
   }
-  save();
+  save(changedLineNumbers);
   render();
   setAiStatus((data.labels.glossaryApplied || "Glossary replacements applied") + ": " + changedLines + " lines / " + replacementCount + " replacements");
 }
@@ -2385,7 +3704,7 @@ function applyGlossaryReplacements(scope) {
   }
   applyGlossaryItems(scope, glossaryReplacementItems());
 }
-function applyEditedGlossaryTerm(input) {
+async function applyEditedGlossaryTerm(input) {
   const index = Number(input.dataset.glossaryIndex);
   const entry = glossaryEntries[index];
   if (!entry) return;
@@ -2396,10 +3715,38 @@ function applyEditedGlossaryTerm(input) {
     return;
   }
   if (nextTarget === previousTarget) return;
-  state.glossaryTargets[index] = nextTarget;
-  state.glossaryAliases[index] = uniqueGlossaryTerms([...glossaryAliases(index), previousTarget, entry.target]).filter(term => term !== nextTarget);
-  input.dataset.currentTarget = nextTarget;
-  save();
+  const nextAliases = uniqueGlossaryTerms([...glossaryAliases(index), previousTarget, entry.target]).filter(term => term !== nextTarget);
+  const bridge = writeBridge();
+  const outputDir = workflow.paths?.outputDir || "";
+  if (!outputDir || !bridge?.updateProjectGlossaryEntry) {
+    input.value = previousTarget;
+    input.dataset.currentTarget = previousTarget;
+    setAiStatus(data.labels.glossaryWriteNeedsApp || "Open this HTML in translation-workshop to write glossary.");
+    return;
+  }
+  try {
+    const assets = await bridge.updateProjectGlossaryEntry({
+      outputDir,
+      entry: {
+        source: entry.source,
+        target: nextTarget,
+        aliases: nextAliases
+      }
+    });
+    const glossaryPath = String(assets?.paths?.glossary || boundGlossaryPath()).trim();
+    if (!syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), glossaryPath || "project glossary", true)) {
+      throw new Error("Canonical project glossary response could not be applied.");
+    }
+    if (glossaryPath) setBoundGlossaryPath(glossaryPath);
+  } catch (error) {
+    input.value = previousTarget;
+    input.dataset.currentTarget = previousTarget;
+    setAiStatus((data.labels.glossaryWriteFailed || "Glossary write failed") + ": " + (error?.message || String(error)));
+    return;
+  }
+  const canonicalIndex = glossaryEntries.findIndex(item => String(item.source || "").trim().toLocaleLowerCase() === String(entry.source || "").trim().toLocaleLowerCase());
+  const appliedIndex = canonicalIndex >= 0 ? canonicalIndex : index;
+  const appliedEntry = glossaryEntries[appliedIndex] || entry;
   const fromText = previousTarget || entry.target || entry.source;
   const message = (data.labels.glossaryChangeConfirm || "Replace \"{from}\" with \"{to}\"? Manual rows will be skipped.")
     .replace("{from}", fromText)
@@ -2409,10 +3756,10 @@ function applyEditedGlossaryTerm(input) {
     return;
   }
   applyGlossaryItems("all", [{
-    entry,
-    index,
+    entry: appliedEntry,
+    index: appliedIndex,
     target: nextTarget,
-    candidates: replacementCandidatesForEntry(entry, index, nextTarget, [previousTarget, entry.target])
+    candidates: replacementCandidatesForEntry(appliedEntry, appliedIndex, nextTarget, [previousTarget, entry.target])
   }]);
 }
 function cleanGlossaryTerm(value) {
@@ -2475,18 +3822,24 @@ function parseGlossaryTextLocal(text) {
     return true;
   });
 }
-function syncGlossaryFromText(text, label) {
+function syncGlossaryFromText(text, label, allowEmpty = false) {
   const parsed = parseGlossaryTextLocal(text);
   if (parsed.length === 0) {
+    if (allowEmpty) {
+      glossaryEntries = [];
+      glossaryTargets = {};
+      glossaryAliasesByIndex = {};
+      renderGlossaryEntries();
+      setAiStatus((data.labels.glossarySynced || "Glossary synced") + ": " + label + " (0)");
+      return true;
+    }
     if (glossaryHelpEl) glossaryHelpEl.textContent = data.labels.glossaryEmpty || "No glossary loaded";
     setAiStatus((data.labels.glossaryNoEntries || "No glossary entries parsed") + ": " + label);
     return false;
   }
   glossaryEntries = parsed;
-  state.glossaryEntries = parsed;
-  state.glossaryTargets = {};
-  state.glossaryAliases = {};
-  save();
+  glossaryTargets = {};
+  glossaryAliasesByIndex = {};
   renderGlossaryEntries();
   setAiStatus((data.labels.glossarySynced || "Glossary synced") + ": " + label + " (" + parsed.length + ")");
   return true;
@@ -2494,6 +3847,19 @@ function syncGlossaryFromText(text, label) {
 async function syncGlossaryFromBoundFile() {
   const glossaryPath = boundGlossaryPath();
   const bridge = writeBridge();
+  const outputDir = workflow.paths?.outputDir || "";
+  if (outputDir && bridge?.readProjectAssets) {
+    try {
+      const assets = await bridge.readProjectAssets({ outputDir });
+      const projectPath = String(assets?.paths?.glossary || glossaryPath).trim();
+      if (syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), projectPath || "project glossary", true)) {
+        if (projectPath) setBoundGlossaryPath(projectPath);
+      }
+    } catch (error) {
+      setAiStatus((data.labels.glossaryReadFailed || "Glossary sync failed") + ": " + (error?.message || String(error)));
+    }
+    return;
+  }
   if (!glossaryPath) {
     setAiStatus(data.labels.glossarySyncMissingTarget || "This HTML has no bound glossary file. Import a glossary first.");
     return;
@@ -2505,7 +3871,7 @@ async function syncGlossaryFromBoundFile() {
   try {
     const result = await bridge.readTextFile({ path: glossaryPath });
     const nextPath = result?.path || glossaryPath;
-    if (syncGlossaryFromText(result?.text || "", nextPath)) {
+    if (syncGlossaryFromText(result?.text || "", nextPath, true)) {
       setBoundGlossaryPath(nextPath);
     }
   } catch (error) {
@@ -2521,6 +3887,15 @@ async function importGlossaryFromFile() {
   const filePath = await bridge.openFile(glossaryFileFilters);
   if (!filePath) return;
   try {
+    const outputDir = workflow.paths?.outputDir || "";
+    if (outputDir && bridge.importProjectGlossaryFile) {
+      const assets = await bridge.importProjectGlossaryFile({ outputDir, path: filePath });
+      const glossaryPath = String(assets?.paths?.glossary || "").trim();
+      if (syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), glossaryPath || filePath, true)) {
+        setBoundGlossaryPath(glossaryPath || filePath);
+      }
+      return;
+    }
     const result = await bridge.readTextFile({ path: filePath });
     const nextPath = result?.path || filePath;
     if (syncGlossaryFromText(result?.text || "", nextPath)) {
@@ -2534,7 +3909,7 @@ function glossaryFileText() {
   const entries = currentGlossaryEntries();
   const glossaryPath = boundGlossaryPath();
   if (/\.json$/i.test(glossaryPath)) {
-    return JSON.stringify(entries, null, 2);
+    return JSON.stringify({ entries }, null, 2);
   }
   return entries.map(entry => entry.source + "\t" + entry.target).join("\n");
 }
@@ -2558,14 +3933,19 @@ async function writeCurrentGlossaryFile() {
     return;
   }
   const bridge = writeBridge();
-  if (!bridge?.writeGlossaryFile) {
+  const outputDir = workflow.paths?.outputDir || "";
+  if (!outputDir || !bridge?.replaceProjectGlossary) {
     setAiStatus((data.labels.glossaryWriteNeedsApp || "Open this HTML in translation-workshop to write glossary.") + ": " + glossaryPath);
     return;
   }
   try {
-    const result = await bridge.writeGlossaryFile({ path: glossaryPath, text: glossaryFileText(), outputDir: workflow.paths?.outputDir });
-    setBoundGlossaryPath(result?.path || glossaryPath);
-    setAiStatus((data.labels.glossaryWritten || "Glossary written") + ": " + (result?.path || glossaryPath));
+    const assets = await bridge.replaceProjectGlossary({ outputDir, entries: currentGlossaryEntries() });
+    const projectPath = String(assets?.paths?.glossary || glossaryPath).trim();
+    if (!syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), projectPath || "project glossary", true)) {
+      throw new Error("Canonical project glossary response could not be applied.");
+    }
+    setBoundGlossaryPath(projectPath);
+    setAiStatus((data.labels.glossaryWritten || "Glossary written") + ": " + projectPath);
   } catch (error) {
     setAiStatus((data.labels.glossaryWriteFailed || "Glossary write failed") + ": " + (error?.message || String(error)));
   }
@@ -2587,7 +3967,7 @@ glossaryListEl?.addEventListener("change", (event) => {
   pendingGlossaryFocusIndex = null;
   setTimeout(() => {
     const changedIndex = Number(input.dataset.glossaryIndex);
-    applyEditedGlossaryTerm(input);
+    void applyEditedGlossaryTerm(input);
     restorePendingGlossaryFocus(nextFocusIndex, changedIndex);
   }, 0);
 });
@@ -2649,8 +4029,17 @@ document.querySelectorAll("[data-theme-color]").forEach((button) => {
 document.getElementById("customThemeColor")?.addEventListener("input", (event) => {
   applyTheme({ ...(state.theme || themePalettes.sky), "--sakura": event.target.value, "--surface-a": event.target.value + "22" });
 });
-addEventListener("beforeunload", save);
+addEventListener("beforeunload", () => {
+  window.clearInterval(agentInterfaceHeartbeat);
+  unsubscribeLineReviewState?.();
+  state.page = page;
+  state.scrollY = scrollY;
+  state.activeLine = activeLine;
+  storeLineReviewStateLocally();
+});
 render();
+ensureSaveTxtButton();
+updateSaveTxtVisibility();
 restoreSyncedText();
 requestAnimationFrame(() => {
   const line = lineFromLocationHash();
@@ -2662,6 +4051,7 @@ requestAnimationFrame(() => {
     save();
   });
 });
+${agentChatEmbedScript()}
 `;
 }
 
@@ -2674,16 +4064,19 @@ export function renderProposalReviewHtml(options: ProposalReviewHtmlOptions): st
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="translation-workshop-proposal-review" content="${PROPOSAL_REVIEW_PROTOCOL_MARKER}">
   <title>${escapeHtml(options.title)}</title>
   <style>${animeThemeCss("proposal")}</style>
 </head>
 <body class="anime-workbench proposal-review">
+  <div class="proposal-review-shell">
   <div class="app">
     <aside>
       <h1>${t.reviewTitle}</h1>
       <p class="subtle">${escapeHtml(options.title)}</p>
       ${themeControlsHtml(t)}
       <label>${t.search}</label><input id="search" type="search">
+      <label>${t.documentFilter}</label><select id="documentFilter"></select>
       <label>${t.issueFilter}</label><select id="issueFilter"></select>
       <label>${t.page}</label><input id="pageInput" type="number" min="1" value="${firstPage.page}">
       <div class="toolbar">
@@ -2697,6 +4090,12 @@ export function renderProposalReviewHtml(options: ProposalReviewHtmlOptions): st
         <button class="btn" id="connectLineReview">${t.connectLineReview}</button>
         <button class="btn primary" id="applyProposalChanges">${t.applyProposalChanges}</button>
       </div>
+      <div class="toolbar">
+        <button class="btn primary" id="openAgentChat" type="button">${t.openAgentChat ?? "Agent chat"}</button>
+        <button class="btn" id="agentChatPopout" type="button">${t.agentChatPopout ?? "New window"}</button>
+        <button class="btn" id="agentChatPopoutBack" type="button" hidden>${t.back ?? "Back"}</button>
+      </div>
+      <div id="conflictSummary" class="conflict-summary" hidden></div>
       <div class="toolbar">
         <label>${t.lanSyncPin ?? "6-digit PIN"}<input id="lanSyncPin" type="text" inputmode="numeric" autocomplete="off" maxlength="6" pattern="\\d{6}" placeholder="000000"></label>
         <button class="btn" id="startLanSync">${t.lanSync ?? "LAN sync"}</button>
@@ -2716,7 +4115,9 @@ export function renderProposalReviewHtml(options: ProposalReviewHtmlOptions): st
     </aside>
     <main><section id="cards" class="cards"></section></main>
   </div>
-  <script id="proposalData" type="application/json">${jsonScript({ proposals: options.proposals, pageSize: firstPage.pageSize, startPage: firstPage.page, labels: t, outputDir: options.outputDir ?? "", reportPath: options.reportPath ?? "", lineReviewPath: options.lineReviewPath ?? "" })}</script>
+  ${agentChatEmbedHtml(t)}
+  </div>
+  <script id="proposalData" type="application/json">${jsonScript({ proposals: options.proposals, pageSize: firstPage.pageSize, startPage: firstPage.page, labels: t, locale, outputDir: options.outputDir ?? "", reportPath: options.reportPath ?? "", lineReviewPath: options.lineReviewPath ?? "" })}</script>
   <script>${proposalReviewScript()}</script>
 </body>
 </html>`;
@@ -2729,6 +4130,13 @@ const key = "translation-workshop:proposal:" + location.pathname;
 const state = JSON.parse(localStorage.getItem(key) || "{}");
 state.decisions ||= {};
 state.theme ||= {};
+let proposalApplyInFlight;
+const proposalApplyTrace = [];
+window.__ynProposalApplyTrace = proposalApplyTrace;
+function traceProposalApply(type, detail = {}) {
+  proposalApplyTrace.push({ type, at: Date.now(), ...detail });
+  if (proposalApplyTrace.length > 80) proposalApplyTrace.splice(0, proposalApplyTrace.length - 80);
+}
 let page = state.page || data.startPage || 1;
 const pageSize = data.pageSize || 1000;
 const cards = document.getElementById("cards");
@@ -2736,7 +4144,9 @@ const pageInput = document.getElementById("pageInput");
 const pageInfo = document.getElementById("pageInfo");
 const proposalStatus = document.getElementById("proposalStatus");
 const searchInput = document.getElementById("search");
+const documentFilter = document.getElementById("documentFilter");
 const issueFilter = document.getElementById("issueFilter");
+const conflictSummary = document.getElementById("conflictSummary");
 const startLanSyncButton = document.getElementById("startLanSync");
 const lanSyncPinInput = document.getElementById("lanSyncPin");
 const lanSyncPanel = document.getElementById("lanSyncPanel");
@@ -2745,14 +4155,37 @@ const copyLanSyncLinkButton = document.getElementById("copyLanSyncLink");
 const stopLanSyncButton = document.getElementById("stopLanSync");
 let lanSyncToken = "";
 let lanSyncPrimaryUrl = "";
-const lanSyncTimers = new Map();
+let lanSyncStarting = false;
+let lanSyncStopping = false;
+const lanSyncPendingPatches = new Map();
 function escapeHtml(text) { return String(text ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])); }
-function save() {
+function storeProposalStateLocally() {
   state.page = page;
   state.scrollY = scrollY;
+  state.documentFilter = activeDocumentFilter();
   state.issueFilter = activeIssueFilter();
   localStorage.setItem(key, JSON.stringify(state));
 }
+function reportProposalStateSaveFailure(error) {
+  console.warn("translation-workshop could not persist proposal UI state", error);
+  setProposalStatus((data.labels.lanSyncFailed || "Save failed") + ": " + (error?.message || String(error)));
+}
+function save() {
+  try {
+    storeProposalStateLocally();
+  } catch (error) {
+    reportProposalStateSaveFailure(error);
+  }
+  try {
+    const request = htmlBridge()?.persistHtmlState?.({ kind: "proposal", state });
+    if (request) void Promise.resolve(request).then(result => {
+      if (result?.ok === false) throw new Error("The Electron host rejected the proposal state write.");
+    }).catch(reportProposalStateSaveFailure);
+  } catch (error) {
+    reportProposalStateSaveFailure(error);
+  }
+}
+setTimeout(save, 0);
 function setProposalStatus(text) { if (proposalStatus) proposalStatus.textContent = text; }
 function proposalCode(item) {
   const text = [item.id, item.problemType].filter(Boolean).join(" ");
@@ -2764,6 +4197,44 @@ function proposalCode(item) {
 function proposalSeverity(item) {
   const code = proposalCode(item).charAt(0).toUpperCase();
   return ["H", "M", "L"].includes(code) ? code : "M";
+}
+function proposalDocumentKey(item) {
+  return String(item?.documentId || item?.sourcePath || "").trim().replace(/\\/g, "/");
+}
+function proposalDocumentLabel(item) {
+  const documentId = String(item?.documentId || "").trim();
+  if (documentId) return documentId.replace(/\\/g, "/");
+  const sourcePath = String(item?.sourcePath || "").trim().replace(/\\/g, "/");
+  return sourcePath ? sourcePath.split("/").pop() : (data.labels.allDocuments || "All documents");
+}
+function groupProposalsByDocument(items = data.proposals) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = proposalDocumentKey(item) || "__single__";
+    const group = groups.get(key) || { key, label: proposalDocumentLabel(item), items: [] };
+    group.items.push(item);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+function documentFilterOptions() {
+  return [{ key: "", label: data.labels.allDocuments || "All documents" }, ...groupProposalsByDocument()
+    .map(group => ({ key: group.key, label: group.label }))
+    .sort((left, right) => left.label.localeCompare(right.label))];
+}
+function renderDocumentFilterOptions() {
+  if (!documentFilter) return;
+  const selected = String(state.documentFilter || "");
+  documentFilter.innerHTML = documentFilterOptions().map(option => (
+    '<option value="' + escapeHtml(option.key) + '"' + (option.key === selected ? " selected" : "") + '>' + escapeHtml(option.label) + '</option>'
+  )).join("");
+  if (![...documentFilter.options].some(option => option.value === selected)) {
+    documentFilter.value = "";
+    state.documentFilter = "";
+  }
+}
+function activeDocumentFilter() {
+  return String(documentFilter ? documentFilter.value : state.documentFilter || "").trim();
 }
 function issueTypeOptions() {
   const exactCodes = [...new Set(data.proposals.map(proposalCode))].sort((left, right) => {
@@ -2790,7 +4261,18 @@ function renderIssueFilterOptions() {
   }
 }
 function activeIssueFilter() {
-  return String(issueFilter?.value || state.issueFilter || "").trim().toUpperCase();
+  const value = issueFilter ? issueFilter.value : state.issueFilter;
+  return String(value || "").trim().toUpperCase();
+}
+function isMechanicalScan(item) {
+  const id = String(item?.id || "").trim();
+  const problemType = String(item?.problemType || "").trim();
+  const type = String(item?.type || "").trim();
+  return item?.kind === "mechanical_scan"
+    || /^M0(?:-|$)/i.test(id)
+    || /^M0(?:\s|-|$)/i.test(problemType)
+    || /(?:^|[\s:/_-])mechanical[\s_-]*scan(?:$|[\s:/_-])/i.test(type)
+    || /(?:^|[\s:/_-])mechanical[\s_-]*scan(?:$|[\s:/_-])/i.test(problemType);
 }
 function proposalSearchText(item) {
   return JSON.stringify(item).toLowerCase();
@@ -2798,12 +4280,14 @@ function proposalSearchText(item) {
 function filteredItems() {
   const q = String(searchInput?.value || "").trim().toLowerCase();
   const type = activeIssueFilter();
+  const documentId = activeDocumentFilter();
   return data.proposals.filter(item => {
     const code = proposalCode(item);
     const severity = proposalSeverity(item);
+    const documentMatches = !documentId || proposalDocumentKey(item) === documentId;
     const typeMatches = !type || code === type || severity === type;
     const searchMatches = !q || proposalSearchText(item).includes(q);
-    return typeMatches && searchMatches;
+    return documentMatches && typeMatches && searchMatches;
   });
 }
 function pageItems(items) { return items.slice((page - 1) * pageSize, page * pageSize); }
@@ -2814,6 +4298,7 @@ function render() {
   pageInput.value = page;
   pageInfo.textContent = data.labels.page + " " + page + " / " + totalPages + " · " + data.labels.total + ": " + visibleItems.length + " / " + data.proposals.length;
   const visiblePageItems = pageItems(visibleItems);
+  renderConflictSummary();
   if (visiblePageItems.length === 0) {
     cards.innerHTML = '<p class="subtle">' + escapeHtml(data.labels.searchNoMatches || "No matches") + '</p>';
     save();
@@ -2822,11 +4307,30 @@ function render() {
   cards.innerHTML = visiblePageItems.map(item => {
     const decision = effectiveProposalDecision(item);
     const lineLabel = item.line ? (data.labels.lineNumber || "Line") + " " + item.line : (data.labels.lineNumber || "Line") + " ?";
+    const documentChip = proposalDocumentKey(item)
+      ? '<span class="chip document-chip">' + escapeHtml(proposalDocumentLabel(item)) + '</span>'
+      : '';
+    if (isMechanicalScan(item)) {
+      const statusLabel = decision.status === "accepted"
+        ? (data.labels.mechanicalConfirmed || "Confirmed as an issue")
+        : decision.status === "rejected"
+          ? (data.labels.mechanicalFalsePositive || "False positive")
+          : "unreviewed";
+      return '<article class="card mechanical-scan-card" data-id="' + escapeHtml(item.id) + '" data-line="' + escapeHtml(item.line || "") + '">' +
+        '<div class="card-head"><strong>' + escapeHtml(data.labels.mechanicalScan || "Mechanical scan") + '</strong>' + documentChip + '<span class="chip line-chip">' + escapeHtml(lineLabel) + '</span><span class="chip status-chip">' + escapeHtml(statusLabel) + '</span></div>' +
+        '<div class="card-body">' +
+        field(data.labels.source, item.src) + field(data.labels.current, item.current) + field(data.labels.problem, item.problem) +
+        '<div class="toolbar"><button class="btn accept ' + (decision.status === "accepted" ? "active" : "") + '" data-mechanical-action="confirm">' + escapeHtml(data.labels.mechanicalConfirm || "Confirm issue") + '</button>' +
+        '<button class="btn reject ' + (decision.status === "rejected" ? "active" : "") + '" data-mechanical-action="false-positive">' + escapeHtml(data.labels.mechanicalFalsePositive || "False positive") + '</button>' +
+        '<button class="btn jump-line" data-jump-line="' + escapeHtml(item.line || "") + '">' + (data.labels.jumpLine || "Jump to line") + '</button></div>' +
+        '</div></article>';
+    }
     return '<article class="card" data-id="' + escapeHtml(item.id) + '" data-line="' + escapeHtml(item.line || "") + '">' +
-      '<div class="card-head"><strong>' + escapeHtml(item.id) + '</strong><span class="chip line-chip">' + escapeHtml(lineLabel) + '</span><span class="chip status-chip">' + escapeHtml(decision.status || "unreviewed") + '</span></div>' +
+      '<div class="card-head"><strong>' + escapeHtml(item.id) + '</strong>' + documentChip + '<span class="chip line-chip">' + escapeHtml(lineLabel) + '</span><span class="chip status-chip">' + escapeHtml(decision.status || "unreviewed") + '</span></div>' +
       '<div class="card-body">' +
       field(data.labels.source, item.src) + field(data.labels.current, item.current) + field(data.labels.problemType, item.problemType) + field(data.labels.problem, item.problem) + field(data.labels.suggestion, item.suggestion, "suggestion") +
       '<textarea placeholder="' + data.labels.manual + '">' + escapeHtml(decision.manualText || "") + '</textarea>' +
+      conflictControls(item, decision) +
       '<div class="toolbar"><button class="btn accept ' + (decision.status === "accepted" ? "active" : "") + '" data-action="accepted">' + data.labels.accept + '</button>' +
       '<button class="btn reject ' + (decision.status === "rejected" ? "active" : "") + '" data-action="rejected">' + data.labels.reject + '</button>' +
       '<button class="btn manual ' + (decision.status === "manual" ? "active" : "") + '" data-action="manual">' + data.labels.manual + '</button>' +
@@ -2836,14 +4340,87 @@ function render() {
   save();
 }
 function field(label, value, cls = "") { return '<div class="field ' + cls + '"><b>' + label + '</b><div class="text">' + escapeHtml(value) + '</div></div>'; }
+function conflictControls(item, decision) {
+  if (decision.status !== "conflict") return "";
+  const reason = decision.conflictReason ? " · " + decision.conflictReason : "";
+  const currentText = decision.conflictCurrentText || item.current || item.oldText || "";
+  const agentText = proposalSuggestionText(item);
+  return '<div class="conflict-box"><b>' + escapeHtml(data.labels.conflict || "Conflict") + escapeHtml(reason) + '</b>' +
+    conflictHistoryHtml(item, decision) +
+    '<div class="conflict-merge-grid">' +
+    conflictMergePane(data.labels.source || "Source", item.src, "source") +
+    conflictMergePane(data.labels.current || "Current translation", currentText, "current", agentText) +
+    conflictMergePane(data.labels.suggestion || "Suggested translation", agentText, "agent", currentText) +
+    '</div>' +
+    '<div class="toolbar">' +
+    '<button class="btn reject" data-conflict-action="keep-current">' + escapeHtml(data.labels.keepCurrent || "Keep current") + '</button>' +
+    '<button class="btn accept" data-conflict-action="accept-agent">' + escapeHtml(data.labels.acceptAgent || "Accept Agent") + '</button>' +
+    '<button class="btn manual" data-conflict-action="manual-merge">' + escapeHtml(data.labels.manualMerge || "Manual merge") + '</button>' +
+    '</div></div>';
+}
+function conflictHistoryHtml(item, decision) {
+  const base = Number(item.baseRevision);
+  const current = Number(decision.conflictCurrentRevision);
+  const meta = [];
+  if (Number.isInteger(base) && base >= 0) meta.push("base r" + base);
+  if (Number.isInteger(current) && current >= 0) meta.push("current r" + current);
+  const history = Array.isArray(decision.conflictRevisionHistory) ? decision.conflictRevisionHistory.slice(-6) : [];
+  const label = data.labels.revisionHistory || "Revision history";
+  if (history.length === 0) {
+    return meta.length ? '<div class="conflict-history">' + escapeHtml(label + " · " + meta.join(" / ")) + '</div>' : "";
+  }
+  return '<details class="conflict-history" open><summary>' + escapeHtml(label + (meta.length ? " · " + meta.join(" / ") : "")) + '</summary>' +
+    history.map(entry => '<div class="conflict-history-row"><code>r' + escapeHtml(entry.revision ?? "?") + ' · ' + escapeHtml(entry.source || "edit") + ' · ' + escapeHtml(entry.status || "") + '</code><div class="text">' + escapeHtml(entry.text || "") + '</div></div>').join("") +
+    '</details>';
+}
+function conflictMergePane(label, value, kind, compareValue = "") {
+  return '<div class="conflict-merge-pane" data-conflict-preview="' + escapeHtml(kind) + '"><span>' + escapeHtml(label) + '</span><div class="text">' + conflictDiffHtml(value, compareValue, kind) + '</div></div>';
+}
+function conflictDiffHtml(value, compareValue, kind) {
+  const text = String(value || "");
+  const other = String(compareValue || "");
+  if (!other || text === other || (kind !== "current" && kind !== "agent")) return escapeHtml(text);
+  let start = 0;
+  while (start < text.length && start < other.length && text[start] === other[start]) start += 1;
+  let endText = text.length;
+  let endOther = other.length;
+  while (endText > start && endOther > start && text[endText - 1] === other[endOther - 1]) {
+    endText -= 1;
+    endOther -= 1;
+  }
+  const cls = kind === "current" ? "conflict-diff-old" : "conflict-diff-new";
+  return escapeHtml(text.slice(0, start)) +
+    '<mark class="' + cls + '">' + escapeHtml(text.slice(start, endText)) + '</mark>' +
+    escapeHtml(text.slice(endText));
+}
+function conflictItems() {
+  return data.proposals.filter(item => decisionFor(item).status === "conflict");
+}
+function renderConflictSummary() {
+  if (!conflictSummary) return;
+  const items = conflictItems();
+  if (items.length === 0) {
+    conflictSummary.hidden = true;
+    conflictSummary.innerHTML = "";
+    return;
+  }
+  conflictSummary.hidden = false;
+  conflictSummary.innerHTML = '<b>' + escapeHtml(data.labels.conflictList || "Conflicts") + ': ' + items.length + '</b>' +
+    items.map(item => {
+      const line = item.line ? (data.labels.lineNumber || "Line") + " " + item.line : (data.labels.lineNumber || "Line") + " ?";
+      return '<button type="button" class="btn" data-conflict-jump="' + escapeHtml(item.id) + '">' +
+        escapeHtml(item.id + " · " + line) +
+        '</button>';
+    }).join("");
+}
 function domId(value) {
   return String(value || "").replace(/[^A-Za-z0-9_-]/g, "-");
 }
 function reviewSourceKey() {
   return "proposal-review:" + (data.reportPath || location.pathname);
 }
-function lineReviewPathname() {
-  const raw = String(data.lineReviewPath || "").trim();
+function lineReviewPathname(pathValue = data.lineReviewPath) {
+  const raw = String(pathValue || "").trim();
   if (!raw) return "";
   if (/^[a-z][a-z0-9+.-]*:/i.test(raw) && !/^[A-Za-z]:[\\/]/.test(raw)) {
     try { return new URL(raw).pathname; } catch { return ""; }
@@ -2852,12 +4429,12 @@ function lineReviewPathname() {
   if (/^[A-Za-z]:\//.test(normalized)) return "/" + normalized;
   return normalized.startsWith("/") ? normalized : "/" + normalized;
 }
-function lineReviewStorageKey() {
-  const pathname = lineReviewPathname();
+function lineReviewStorageKey(pathValue = data.lineReviewPath) {
+  const pathname = lineReviewPathname(pathValue);
   return pathname ? "translation-workshop:line:" + pathname : "";
 }
-function lineReviewTargetForLine(line) {
-  const raw = String(data.lineReviewPath || "").trim();
+function lineReviewTargetForLine(line, pathValue = data.lineReviewPath) {
+  const raw = String(pathValue || "").trim();
   if (!raw) return "";
   const numericLine = Number(line || 0);
   if (!Number.isInteger(numericLine) || numericLine <= 0) return raw;
@@ -2873,8 +4450,8 @@ function lineReviewTargetForLine(line) {
   }
   return raw.replace(/#.*$/, "") + "#line=" + numericLine;
 }
-function lineReviewFileUrl(line) {
-  const target = lineReviewTargetForLine(line);
+function lineReviewFileUrl(line, pathValue = data.lineReviewPath) {
+  const target = lineReviewTargetForLine(line, pathValue);
   if (!target || /^file:/i.test(target)) return target;
   const hashIndex = target.indexOf("#");
   const pathPart = hashIndex >= 0 ? target.slice(0, hashIndex) : target;
@@ -2882,8 +4459,8 @@ function lineReviewFileUrl(line) {
   const normalized = pathPart.replace(/\\/g, "/");
   return "file:///" + normalized.replace(/^\/+/, "") + hash;
 }
-function lineReviewFilePath() {
-  const raw = String(data.lineReviewPath || "").trim().replace(/#.*$/, "");
+function lineReviewFilePath(pathValue = data.lineReviewPath) {
+  const raw = String(pathValue || "").trim().replace(/#.*$/, "");
   if (!raw) return "";
   if (/^file:/i.test(raw)) {
     try {
@@ -2904,7 +4481,7 @@ function currentProposalHtmlPath() {
     .replace(/^\/([A-Za-z]:[\\/])/, "$1")
     .replace(/\//g, "\\");
 }
-let linkedLineReviewRowsPromise = null;
+const linkedLineReviewDocumentPromises = new Map();
 function parseLineReviewRowsFromHtml(html) {
   const match = String(html || "").match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/i);
   if (!match) return [];
@@ -2915,20 +4492,54 @@ function parseLineReviewRowsFromHtml(html) {
     return [];
   }
 }
-async function readLinkedLineReviewRows() {
-  if (linkedLineReviewRowsPromise) return linkedLineReviewRowsPromise;
-  linkedLineReviewRowsPromise = (async () => {
+async function resolveProposalLineReviewDocument(item = data.proposals[0]) {
+  const documentKey = proposalDocumentKey(item) || "__single__";
+  if (linkedLineReviewDocumentPromises.has(documentKey)) return linkedLineReviewDocumentPromises.get(documentKey);
+  const promise = (async () => {
     const bridge = htmlBridge();
-    const targetPath = lineReviewFilePath();
-    if (!targetPath || !bridge?.readTextFile) return [];
+    if (bridge?.resolveProposalLineReviewDocument) {
+      const resolved = await bridge.resolveProposalLineReviewDocument({
+        outputDir: data.outputDir || "",
+        reportPath: data.reportPath || "",
+        lineReviewPath: data.lineReviewPath || "",
+        documentId: item?.documentId || "",
+        sourcePath: item?.sourcePath || "",
+        translationPath: item?.translationPath || "",
+        locale: data.locale === "en-US" ? "en-US" : "zh-CN"
+      });
+      if (Array.isArray(resolved?.rows) && resolved.rows.length > 0) {
+        return { ...resolved, state: resolved.state || {} };
+      }
+    }
+    const targetPath = lineReviewFilePath(data.lineReviewPath);
+    if (!targetPath) return { rows: [], state: {} };
+    if (bridge?.readLineReviewDocument) {
+      const document = await bridge.readLineReviewDocument({ lineReviewPath: targetPath });
+      if (Array.isArray(document?.rows) && document.rows.length > 0) {
+        return { rows: document.rows, state: document.state || {}, lineReviewPath: targetPath };
+      }
+    }
+    if (!bridge?.readTextFile) return { rows: [], state: {} };
     try {
       const result = await bridge.readTextFile({ path: targetPath });
-      return parseLineReviewRowsFromHtml(result?.text || "");
+      return { rows: parseLineReviewRowsFromHtml(result?.text || ""), state: {}, lineReviewPath: targetPath };
     } catch {
-      return [];
+      return { rows: [], state: {} };
     }
   })();
-  return linkedLineReviewRowsPromise;
+  linkedLineReviewDocumentPromises.set(documentKey, promise);
+  try {
+    return await promise;
+  } catch (error) {
+    linkedLineReviewDocumentPromises.delete(documentKey);
+    throw error;
+  }
+}
+async function readLinkedLineReviewDocument(item = data.proposals[0]) {
+  return resolveProposalLineReviewDocument(item);
+}
+async function readLinkedLineReviewRows(item = data.proposals[0]) {
+  return (await readLinkedLineReviewDocument(item)).rows;
 }
 function comparableText(value) {
   return String(value || "").normalize("NFKC").replace(/\s+/g, "").trim().toLowerCase();
@@ -2959,30 +4570,121 @@ function lineReviewRowFor(rows, line) {
   if (!Number.isInteger(numericLine) || numericLine <= 0) return undefined;
   return rows.find(row => Number(row.line) === numericLine) || rows[numericLine - 1];
 }
-function proposalSafetyCheck(item, lineState, rows) {
+function currentLineReviewText(row, lineState, line) {
+  return String(lineState?.edits?.[line] ?? row?.translation ?? "");
+}
+function currentProposalLineText(item, lineState, rows) {
+  const line = Number(item.line);
+  return currentLineReviewText(lineReviewRowFor(rows, line), lineState, line);
+}
+function lineReviewRevision(lineState, line) {
+  const revision = Number(lineState?.revisions?.[line] ?? 0);
+  return Number.isInteger(revision) && revision >= 0 ? revision : 0;
+}
+function lineReviewRevisionHistory(lineState, line) {
+  return Array.isArray(lineState?.revisionHistory?.[line]) ? lineState.revisionHistory[line].slice(-12) : [];
+}
+function recordTargetLineRevision(lineState, line, text, status, source) {
+  const key = String(line);
+  lineState.revisions ||= {};
+  lineState.revisionHistory ||= {};
+  const revision = Number(lineState.revisions[key] || 0) + 1;
+  lineState.revisions[key] = revision;
+  const history = Array.isArray(lineState.revisionHistory[key]) ? lineState.revisionHistory[key] : [];
+  const entry = { revision, text: String(text ?? ""), status: String(status || ""), source: String(source || "proposal") };
+  const last = history[history.length - 1];
+  if (!last || last.text !== entry.text || last.status !== entry.status || last.source !== entry.source) history.push(entry);
+  lineState.revisionHistory[key] = history.slice(-12);
+  return revision;
+}
+function proposalSafetyCheck(item, lineState, rows, options = {}) {
   const line = Number(item.line);
   const row = lineReviewRowFor(rows, line);
   if (!row) return { ok: false, reason: "missing-line" };
   const sourceScore = item.src ? textSimilarity(item.src, row.source) : 1;
   if (sourceScore < 0.8) return { ok: false, reason: "source-mismatch" };
+  const currentText = currentLineReviewText(row, lineState, line);
+  const suggestionText = proposalSuggestionText(item);
+  if (suggestionText && textSimilarity(suggestionText, currentText) >= 0.98) {
+    return { ok: true, reason: "", alreadyApplied: true };
+  }
+  if (options.allowStaleTarget === true) return { ok: true, reason: "" };
+  const oldText = String(item.oldText || item.current || "");
+  if (oldText && textSimilarity(oldText, currentText) < 0.8) {
+    return { ok: false, reason: "patch-conflict" };
+  }
+  const baseRevision = Number(item.baseRevision);
+  if (Number.isInteger(baseRevision) && baseRevision >= 0 && lineReviewRevision(lineState, line) !== baseRevision) {
+    return { ok: false, reason: "base-revision-conflict" };
+  }
   return { ok: true, reason: "" };
 }
-function readLineReviewState() {
-  const storageKey = lineReviewStorageKey();
+function reconcileStoredProposalConflicts(lineState, rows, documentKey = "", setDecision = (id, decision) => {
+  state.decisions[id] = decision;
+}) {
+  let changed = false;
+  for (const item of data.proposals) {
+    if (documentKey && (proposalDocumentKey(item) || "__single__") !== documentKey) continue;
+    const decision = state.decisions[item.id];
+    if (decision?.status !== "conflict") continue;
+    if (!proposalSafetyCheck(item, lineState, rows).ok) continue;
+    setDecision(item.id, { status: "accepted", manualText: "" });
+    changed = true;
+  }
+  return changed;
+}
+function readLineReviewState(canonicalState, pathValue = data.lineReviewPath) {
+  const storageKey = lineReviewStorageKey(pathValue);
   if (!storageKey) {
     setProposalStatus(data.labels.lineReviewMissing || "No linked line review HTML");
     return undefined;
   }
-  let lineState = {};
-  try {
-    lineState = JSON.parse(localStorage.getItem(storageKey) || "{}") || {};
-  } catch {
-    lineState = {};
+  let lineState = canonicalState && typeof canonicalState === "object" ? canonicalState : undefined;
+  if (!lineState) {
+    try {
+      lineState = JSON.parse(localStorage.getItem(storageKey) || "{}") || {};
+    } catch {
+      lineState = {};
+    }
   }
   lineState.edits ||= {};
   lineState.status ||= {};
   lineState.auditIssues ||= {};
-  return { storageKey, lineState };
+  lineState.auditWhitelist ||= {};
+  lineState.revisions ||= {};
+  lineState.revisionHistory ||= {};
+  return { storageKey, lineState, lineReviewPath: String(pathValue || data.lineReviewPath || "") };
+}
+function cloneLineReviewTarget(target) {
+  return {
+    ...target,
+    lineState: JSON.parse(JSON.stringify(target.lineState || {}))
+  };
+}
+function cloneProposalDecision(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+function proposalDecisionsEqual(left, right) {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+function setProposalDecisionForApply(changes, id, decision) {
+  if (!changes.has(id)) {
+    changes.set(id, {
+      hadBefore: Object.prototype.hasOwnProperty.call(state.decisions, id),
+      before: cloneProposalDecision(state.decisions[id]),
+      applied: undefined
+    });
+  }
+  const next = cloneProposalDecision(decision);
+  changes.get(id).applied = next;
+  state.decisions[id] = next;
+}
+function rollbackProposalDecisionChanges(changes) {
+  for (const [id, change] of changes) {
+    if (!proposalDecisionsEqual(state.decisions[id], change.applied)) continue;
+    if (change.hadBefore) state.decisions[id] = cloneProposalDecision(change.before);
+    else delete state.decisions[id];
+  }
 }
 function htmlBridge() {
   return window.workshopHtml || window.parent?.workshopHtml || window.workshop;
@@ -3010,6 +4712,7 @@ function renderLanSyncLinks(result) {
   lanSyncPanel.hidden = false;
 }
 async function startLanSync() {
+  if (lanSyncToken || lanSyncStarting || lanSyncStopping) return;
   const bridge = htmlBridge();
   if (!bridge?.startLanSync) {
     setProposalStatus(data.labels.lanSyncNeedsApp || "LAN sync requires opening this HTML inside translation-workshop.");
@@ -3021,24 +4724,27 @@ async function startLanSync() {
     lanSyncPinInput?.focus?.();
     return;
   }
-  const linkedRows = await readLinkedLineReviewRows();
-  const linkedState = readLineReviewState()?.lineState || {};
+  lanSyncStarting = true;
   try {
+    const selectedDocumentId = activeDocumentFilter();
+    const selectedProposal = data.proposals.find(item => !selectedDocumentId || proposalDocumentKey(item) === selectedDocumentId) || data.proposals[0];
+    const linkedDocument = await readLinkedLineReviewDocument(selectedProposal);
+    const linkedRows = linkedDocument.rows;
+    const linkedState = readLineReviewState(linkedDocument.state)?.lineState || {};
     const result = await bridge.startLanSync({
       pin,
       htmlPath: currentProposalHtmlPath(),
       outputDir: data.outputDir || "",
-      agent: "codex",
       title: document.title || "translation-workshop",
       locale: document.documentElement.lang === "en-US" ? "en-US" : "zh-CN",
       pageSize,
-      lineReviewPath: data.lineReviewPath,
+      lineReviewPath: linkedDocument?.lineReviewPath || data.lineReviewPath,
       lineDocument: linkedRows.length > 0 ? {
-        title: data.lineReviewPath || (data.labels.lineReviewLinked || "Line review"),
+        title: linkedDocument?.lineReviewPath || data.lineReviewPath || (data.labels.lineReviewLinked || "Line review"),
         rows: lanSyncLineRowsPayload(linkedRows),
         state: linkedState,
         pageSize,
-        lineReviewPath: data.lineReviewPath
+        lineReviewPath: linkedDocument?.lineReviewPath || data.lineReviewPath
       } : undefined,
       proposalDocument: {
         title: document.title || "translation-workshop",
@@ -3046,28 +4752,78 @@ async function startLanSync() {
         state,
         pageSize,
         reportPath: data.reportPath,
-        lineReviewPath: data.lineReviewPath
+        lineReviewPath: linkedDocument?.lineReviewPath || data.lineReviewPath
       }
     });
     lanSyncToken = result?.token || "";
+    lanSyncStopping = false;
     renderLanSyncLinks(result);
     setProposalStatus((data.labels.lanSyncStarted || "LAN sync started") + ": " + (lanSyncPrimaryUrl || result?.localUrl || ""));
   } catch (error) {
     setProposalStatus((data.labels.lanSyncFailed || "LAN sync failed") + ": " + (error?.message || String(error)));
+  } finally {
+    lanSyncStarting = false;
   }
 }
+function reportProposalLanSyncFailure(error) {
+  console.error("translation-workshop failed to persist LAN proposal state", error);
+  setProposalStatus((data.labels.lanSyncFailed || "LAN sync failed") + ": " + (error?.message || String(error)));
+}
+async function dispatchPendingProposalLanSyncPatch(key) {
+  const pending = lanSyncPendingPatches.get(key);
+  if (!pending) return;
+  lanSyncPendingPatches.delete(key);
+  clearTimeout(pending.timer);
+  try {
+    const result = await pending.bridge.sendLanSyncPatch({
+      token: pending.token,
+      patch: { ...pending.patch, clientId: "desktop", timestamp: new Date().toISOString() }
+    });
+    if (!result?.ok) throw new Error("The Electron host rejected the LAN proposal decision.");
+    for (const waiter of pending.waiters) waiter.resolve(result);
+  } catch (error) {
+    for (const waiter of pending.waiters) waiter.reject(error);
+    throw error;
+  }
+}
+function flushPendingProposalLanSyncPatches() {
+  return Promise.all([...lanSyncPendingPatches.keys()].map(dispatchPendingProposalLanSyncPatch));
+}
 function queueLanSyncPatch(patch) {
-  if (!lanSyncToken) return;
+  if (lanSyncStopping) return Promise.reject(new Error("LAN sync is stopping; wait for it to finish before changing a decision."));
+  if (!lanSyncToken) return Promise.reject(new Error("LAN sync is not active."));
   const bridge = htmlBridge();
-  if (!bridge?.sendLanSyncPatch) return;
+  if (!bridge?.sendLanSyncPatch) return Promise.reject(new Error("LAN sync is unavailable in this window."));
   const key = patch.type === "proposal-decision" ? "proposal:" + patch.proposalId : "line:" + patch.line;
-  clearTimeout(lanSyncTimers.get(key));
-  lanSyncTimers.set(key, setTimeout(() => {
-    bridge.sendLanSyncPatch({
+  return new Promise((resolve, reject) => {
+    const previous = lanSyncPendingPatches.get(key);
+    if (previous) clearTimeout(previous.timer);
+    const pending = {
       token: lanSyncToken,
-      patch: { ...patch, clientId: "desktop", timestamp: new Date().toISOString() }
-    }).catch(() => {});
-  }, patch.type === "proposal-decision" ? 200 : 0));
+      bridge,
+      patch,
+      waiters: [...(previous?.waiters || []), { resolve, reject }],
+      timer: 0
+    };
+    pending.timer = setTimeout(() => {
+      void dispatchPendingProposalLanSyncPatch(key).catch(reportProposalLanSyncFailure);
+    }, patch.type === "proposal-decision" ? 200 : 0);
+    lanSyncPendingPatches.set(key, pending);
+  });
+}
+function persistOrSyncProposalDecision(patch) {
+  if (!lanSyncToken) {
+    save();
+    return;
+  }
+  try {
+    storeProposalStateLocally();
+  } catch (error) {
+    console.warn("translation-workshop could not store synchronized proposal state", error);
+  }
+  const request = queueLanSyncPatch(patch);
+  void request.catch(reportProposalLanSyncFailure);
+  return request;
 }
 function applyRemoteLanSyncPatch(payload) {
   if (!payload || payload.token !== lanSyncToken) return;
@@ -3076,22 +4832,38 @@ function applyRemoteLanSyncPatch(payload) {
   if (patch.type === "proposal-decision") {
     const proposalId = String(patch.proposalId || "");
     if (!proposalId) return;
-    state.decisions[proposalId] = { status: patch.status || "manual", manualText: patch.manualText || "" };
-    save();
+    state.decisions[proposalId] = {
+      ...(state.decisions[proposalId] || {}),
+      status: patch.status || "manual",
+      manualText: patch.manualText || "",
+      overrideConflict: patch.overrideConflict === true,
+      conflictReason: patch.conflictReason || ""
+    };
+    try {
+      storeProposalStateLocally();
+    } catch (error) {
+      console.warn("translation-workshop could not store synchronized proposal state", error);
+    }
     render();
   }
 }
-async function persistLineReviewState(target, line) {
+function applyRemoteLanSyncCommand(payload) {
+  if (!payload || payload.token !== lanSyncToken) return;
+  if (payload.command?.type !== "open-agent-os") return;
+  window.__ynAgentChatPiWebEmbedded?.open?.();
+}
+async function persistLineReviewState(target, lines) {
   localStorage.setItem(target.storageKey, JSON.stringify(target.lineState));
   const bridge = htmlBridge();
-  if (!bridge?.applyLineReviewState || !data.lineReviewPath) {
+  if (!bridge?.applyLineReviewState || !target.lineReviewPath) {
     return false;
   }
   try {
     await bridge.applyLineReviewState({
-      lineReviewPath: data.lineReviewPath,
+      lineReviewPath: target.lineReviewPath,
       lineState: target.lineState,
-      line
+      line: Array.isArray(lines) ? lines[0] : lines,
+      lines: Array.isArray(lines) ? lines : (lines ? [lines] : undefined)
     });
     return true;
   } catch (error) {
@@ -3110,14 +4882,30 @@ function rawDecisionFor(item) {
 }
 function effectiveProposalDecision(item, rawDecision) {
   const decision = rawDecision || rawDecisionFor(item);
+  if (isMechanicalScan(item)) {
+    if (decision.status === "accepted" || decision.status === "rejected") {
+      return { ...decision, manualText: "" };
+    }
+    return { ...decision, status: "unreviewed", manualText: "" };
+  }
   const manualText = String(decision.manualText || "").trim();
   if (manualText) return { ...decision, status: "manual" };
+  if (decision.status === "conflict") return { ...decision, status: "conflict", manualText: "" };
   if (decision.status === "rejected") return { ...decision, status: "rejected", manualText: "" };
-  if (!proposalSuggestionText(item)) return { ...decision, status: "unreviewed", manualText: "" };
-  return { ...decision, status: "accepted", manualText: "" };
+  if (decision.status === "accepted" && proposalSuggestionText(item)) {
+    return { ...decision, status: "accepted", manualText: "" };
+  }
+  return { ...decision, status: "unreviewed", manualText: "" };
 }
 function decisionFor(item) {
   return effectiveProposalDecision(item);
+}
+function decisionForProposalApply(item) {
+  const decision = decisionFor(item);
+  if (decision.status === "unreviewed" && proposalSuggestionText(item)) {
+    return { ...decision, status: "accepted", manualText: "" };
+  }
+  return decision;
 }
 function applyDecisionVisual(card, decision) {
   const chip = card.querySelector(".status-chip");
@@ -3139,7 +4927,7 @@ function issueFromProposal(item) {
 function removeReviewIssues(lineState, line, proposalId) {
   const issues = Array.isArray(lineState.auditIssues[line]) ? lineState.auditIssues[line] : [];
   const source = reviewSourceKey();
-  const next = issues.filter(issue => issue.source !== source && issue.proposalId !== proposalId);
+  const next = issues.filter(issue => issue.source !== source || issue.proposalId !== proposalId);
   if (next.length > 0) lineState.auditIssues[line] = next;
   else delete lineState.auditIssues[line];
 }
@@ -3161,25 +4949,27 @@ function markProposalIssue(lineState, item) {
   lineState.auditIssues[line].push(issue);
   return true;
 }
-async function openLinkedLineReview(line) {
-  if (!data.lineReviewPath) {
+async function openLinkedLineReview(line, pathValue = data.lineReviewPath) {
+  if (!pathValue) {
     setProposalStatus(data.labels.lineReviewMissing || "No linked line review HTML");
     return;
   }
   const bridge = htmlBridge();
-  const target = line ? lineReviewTargetForLine(line) : data.lineReviewPath;
+  const target = line ? lineReviewTargetForLine(line, pathValue) : pathValue;
   try {
     if (bridge?.openPath) {
       await bridge.openPath(target);
     } else {
-      window.open(lineReviewFileUrl(line), "_blank");
+      window.open(lineReviewFileUrl(line, pathValue), "_blank");
     }
   } catch (error) {
     setProposalStatus((data.labels.proposalOpenFailed || "Failed to open line HTML") + ": " + (error?.message || String(error)));
   }
 }
 async function jumpToLineReviewLine(item) {
-  const target = readLineReviewState();
+  const linkedDocument = await readLinkedLineReviewDocument(item);
+  const pathValue = linkedDocument?.lineReviewPath || data.lineReviewPath;
+  const target = readLineReviewState(linkedDocument?.state, pathValue);
   let persisted = false;
   if (target) {
     target.lineState.auditVisible = true;
@@ -3187,125 +4977,466 @@ async function jumpToLineReviewLine(item) {
     persisted = await persistLineReviewState(target, item.line);
   }
   if (!persisted) {
-    await openLinkedLineReview(item.line);
+    await openLinkedLineReview(item.line, pathValue);
   }
+}
+function removeMechanicalScanIssue(lineState, line, proposalId) {
+  const issues = Array.isArray(lineState.auditIssues[line]) ? lineState.auditIssues[line] : [];
+  const next = issues.filter(issue => !(
+    issue.proposalId === proposalId && String(issue.code || "").toUpperCase() === "M0"
+  ));
+  if (next.length > 0) lineState.auditIssues[line] = next;
+  else delete lineState.auditIssues[line];
+}
+async function resolveMechanicalScan(item, action) {
+  const line = Number(item?.line || 0);
+  if (!isMechanicalScan(item) || !Number.isInteger(line) || line <= 0) return;
+  const linkedDocument = await readLinkedLineReviewDocument(item);
+  const target = readLineReviewState(linkedDocument?.state, linkedDocument?.lineReviewPath || data.lineReviewPath);
+  if (!target) return;
+  const lineState = target.lineState;
+  lineState.auditVisible = true;
+  lineState.auditWhitelist ||= {};
+  if (action === "false-positive") {
+    lineState.auditWhitelist[line] = true;
+    removeMechanicalScanIssue(lineState, line, item.id);
+  } else {
+    delete lineState.auditWhitelist[line];
+    markProposalIssue(lineState, item);
+  }
+  const bridge = htmlBridge();
+  let persisted = false;
+  if (bridge?.writeAuditWhitelistFile && data.outputDir && target.lineReviewPath) {
+    const whitelistLines = Object.entries(lineState.auditWhitelist)
+      .filter(([, enabled]) => enabled === true)
+      .map(([value]) => Number(value))
+      .filter(value => Number.isInteger(value) && value > 0)
+      .sort((left, right) => left - right);
+    const result = await bridge.writeAuditWhitelistFile({
+      outputDir: data.outputDir,
+      documentId: proposalDocumentKey(item),
+      sourcePath: item.sourcePath || "",
+      lines: whitelistLines,
+      lineReviewPath: target.lineReviewPath,
+      lineState,
+      changedLines: [line]
+    });
+    if (result?.ok === false) throw new Error("Audit whitelist write failed.");
+    if (result?.state && typeof result.state === "object") {
+      Object.assign(lineState, result.state);
+      localStorage.setItem(target.storageKey, JSON.stringify(lineState));
+    }
+    persisted = true;
+  }
+  if (!persisted) persisted = await persistLineReviewState(target, line);
+  state.decisions[item.id] = {
+    status: action === "false-positive" ? "rejected" : "accepted",
+    manualText: ""
+  };
+  save();
+  render();
+  setProposalStatus(action === "false-positive"
+    ? (data.labels.mechanicalSuppressed || "False positive saved and hidden from the main review")
+    : (data.labels.mechanicalConfirmed || "Confirmed as an issue"));
+  if (!persisted) await openLinkedLineReview(line, target.lineReviewPath);
+}
+async function persistProposalDocumentStates(commits) {
+  if (commits.length === 0) return true;
+  const bridge = htmlBridge();
+  if (!bridge?.applyProposalLineReviewStates) {
+    throw new Error("Atomic proposal apply requires the Electron Host transaction API.");
+  }
+  const result = await bridge.applyProposalLineReviewStates({
+      documents: commits.map(commit => ({
+        reportPath: data.reportPath || "",
+        documentId: commit.document?.documentId || proposalDocumentKey(commit.item),
+        sourcePath: commit.document?.sourcePath || commit.item?.sourcePath || "",
+        translationPath: commit.document?.translationPath || commit.item?.translationPath || "",
+        lineReviewPath: commit.target.lineReviewPath,
+        lineState: commit.target.lineState,
+        changedLines: [...commit.affectedLines],
+        changedStateKeys: ["auditVisible"],
+        expectedLineRevisions: commit.expectedLineRevisions
+      }))
+    });
+    if (result?.ok === false) {
+      throw new Error(result.error || "The Electron host rejected the cross-file proposal update.");
+    }
+    const savedDocuments = Array.isArray(result?.documents) ? result.documents : [];
+    if (savedDocuments.length !== commits.length) {
+      throw new Error("The Electron host returned an incomplete proposal commit result.");
+    }
+    for (let index = 0; index < commits.length; index += 1) {
+      const commit = commits[index];
+      const saved = savedDocuments[index];
+      const expectedPath = String(commit.target.lineReviewPath || "").replace(/\\/g, "/").toLowerCase();
+      const savedPath = String(saved?.lineReviewPath || "").replace(/\\/g, "/").toLowerCase();
+      if (!saved?.state || typeof saved.state !== "object" || savedPath !== expectedPath) {
+        throw new Error("The Electron host returned a mismatched proposal commit result.");
+      }
+      const canonicalState = JSON.parse(JSON.stringify(saved.state));
+      for (const key of Object.keys(commit.target.lineState)) delete commit.target.lineState[key];
+      Object.assign(commit.target.lineState, canonicalState);
+      if (commit.document) {
+        commit.document.state ||= {};
+        for (const key of Object.keys(commit.document.state)) delete commit.document.state[key];
+        Object.assign(commit.document.state, canonicalState);
+      }
+    }
+    for (const commit of commits) {
+      try {
+        localStorage.setItem(commit.target.storageKey, JSON.stringify(commit.target.lineState));
+      } catch (error) {
+        reportProposalStateSaveFailure(error);
+      }
+    }
+  return true;
 }
 async function connectLineReview() {
-  const target = readLineReviewState();
-  if (!target) return;
-  clearReviewIssues(target.lineState);
-  target.lineState.auditVisible = true;
+  const commits = [];
   let marked = 0;
-  for (const item of data.proposals) {
-    const line = Number(item.line);
-    const decision = decisionFor(item);
-    if (!Number.isInteger(line) || line <= 0 || decision.status === "rejected") continue;
-    if (markProposalIssue(target.lineState, item)) marked += 1;
+  for (const group of groupProposalsByDocument()) {
+    const linkedDocument = await readLinkedLineReviewDocument(group.items[0]);
+    const baseTarget = readLineReviewState(linkedDocument?.state, linkedDocument?.lineReviewPath || data.lineReviewPath);
+    if (!baseTarget) continue;
+    const target = cloneLineReviewTarget(baseTarget);
+    const affectedLines = new Set(Object.entries(target.lineState.auditIssues || {})
+      .filter(([, issues]) => Array.isArray(issues) && issues.some(issue => issue.source === reviewSourceKey()))
+      .map(([line]) => Number(line))
+      .filter(line => Number.isInteger(line) && line > 0));
+    clearReviewIssues(target.lineState);
+    target.lineState.auditVisible = true;
+    for (const item of group.items) {
+      const line = Number(item.line);
+      const decision = decisionFor(item);
+      if (!Number.isInteger(line) || line <= 0 || decision.status === "rejected") continue;
+      if (markProposalIssue(target.lineState, item)) {
+        marked += 1;
+        affectedLines.add(line);
+      }
+    }
+    const expectedLineRevisions = Object.fromEntries(
+      [...affectedLines].map(line => [line, lineReviewRevision(baseTarget.lineState, line)])
+    );
+    commits.push({ target, affectedLines, expectedLineRevisions, document: linkedDocument, item: group.items[0] });
   }
-  const persisted = await persistLineReviewState(target);
+  await persistProposalDocumentStates(commits);
   setProposalStatus((data.labels.lineReviewLinked || "Line review HTML marked") + ": " + marked);
-  if (!persisted) {
-    await openLinkedLineReview();
-  }
 }
 function proposalReplacementText(item, decision) {
+  if (isMechanicalScan(item)) return "";
+  if (decision.status === "conflict") return "";
   if (decision.status === "rejected") return "";
   if (decision.status === "manual") return String(decision.manualText || "").trim();
   if (decision.status === "accepted") return proposalSuggestionText(item);
   return "";
 }
-async function applyProposalChanges() {
-  const target = readLineReviewState();
-  if (!target) return;
-  const lineRows = await readLinkedLineReviewRows();
-  target.lineState.auditVisible = true;
+function applyProposalChanges() {
+  if (proposalApplyInFlight) return proposalApplyInFlight;
+  proposalApplyInFlight = applyProposalChangesOnce().finally(() => {
+    proposalApplyInFlight = undefined;
+  });
+  return proposalApplyInFlight;
+}
+async function applyProposalChangesOnce() {
   let applied = 0;
   let skipped = 0;
   let safetySkipped = 0;
-  let firstAppliedLine = 0;
-  for (const item of data.proposals) {
-    const line = Number(item.line);
-    const decision = decisionFor(item);
-    const text = proposalReplacementText(item, decision);
-    if (!Number.isInteger(line) || line <= 0 || !text) {
-      skipped += 1;
-      continue;
+  let conflictSkipped = 0;
+  const commits = [];
+  const decisionChanges = new Map();
+  try {
+    const bridge = htmlBridge();
+    if (bridge?.prepareProposalLineReviewBatch) {
+      const prepared = await bridge.prepareProposalLineReviewBatch({
+        outputDir: data.outputDir || "",
+        reportPath: data.reportPath || "",
+        lineReviewPath: data.lineReviewPath || "",
+        locale: data.locale === "en-US" ? "en-US" : "zh-CN",
+        documents: groupProposalsByDocument().map(group => ({
+          documentId: group.items[0]?.documentId || "",
+          sourcePath: group.items[0]?.sourcePath || "",
+          translationPath: group.items[0]?.translationPath || ""
+        }))
+      });
+      if (prepared?.ok === false) {
+        throw new Error(prepared.error || "The Electron host rejected batch proposal preparation.");
+      }
+      if (prepared?.batch === true) linkedLineReviewDocumentPromises.clear();
+      traceProposalApply("batch-prepared", {
+        batch: prepared?.batch === true,
+        synchronized: Number(prepared?.synchronized || 0),
+        migrated: Number(prepared?.migrated || 0)
+      });
     }
-    const safety = proposalSafetyCheck(item, target.lineState, lineRows);
-    if (!safety.ok) {
-      skipped += 1;
-      safetySkipped += 1;
-      continue;
+    traceProposalApply("start", {
+      proposals: data.proposals.length,
+      documents: groupProposalsByDocument().length
+    });
+    for (const group of groupProposalsByDocument()) {
+      const candidates = group.items.filter(item => {
+        const line = Number(item.line);
+        const decision = decisionForProposalApply(item);
+        return Number.isInteger(line) && line > 0
+          && !isMechanicalScan(item)
+          && (decision.status === "accepted" || decision.status === "manual")
+          && Boolean(String(decision.manualText || "").trim() || proposalSuggestionText(item));
+      });
+      skipped += group.items.length - candidates.length;
+      if (candidates.length === 0) continue;
+      const linkedDocument = await readLinkedLineReviewDocument(candidates[0]);
+      const baseTarget = readLineReviewState(linkedDocument?.state, linkedDocument?.lineReviewPath || data.lineReviewPath);
+      if (!baseTarget) {
+        skipped += candidates.length;
+        continue;
+      }
+      const target = cloneLineReviewTarget(baseTarget);
+      const lineRows = linkedDocument?.rows || [];
+      reconcileStoredProposalConflicts(target.lineState, lineRows, group.key, (id, next) => {
+        setProposalDecisionForApply(decisionChanges, id, next);
+      });
+      target.lineState.auditVisible = true;
+      target.lineState.revisions ||= {};
+      const affectedLines = new Set();
+      const expectedLineRevisions = {};
+      for (const item of candidates) {
+        const line = Number(item.line);
+        const decision = decisionForProposalApply(item);
+        const text = proposalReplacementText(item, decision);
+        if (!text) {
+          skipped += 1;
+          continue;
+        }
+        const safety = proposalSafetyCheck(item, target.lineState, lineRows, {
+          allowStaleTarget: decision.status === "manual" || decision.overrideConflict === true
+        });
+        if (!safety.ok) {
+          skipped += 1;
+          safetySkipped += 1;
+          if (safety.reason === "patch-conflict" || safety.reason === "base-revision-conflict") {
+            conflictSkipped += 1;
+            setProposalDecisionForApply(decisionChanges, item.id, {
+              ...decision,
+              status: "conflict",
+              manualText: "",
+              conflictReason: safety.reason,
+              conflictCurrentText: currentProposalLineText(item, target.lineState, lineRows),
+              conflictCurrentRevision: lineReviewRevision(target.lineState, line),
+              conflictRevisionHistory: lineReviewRevisionHistory(target.lineState, line)
+            });
+          }
+          continue;
+        }
+        if (safety.alreadyApplied === true) {
+          expectedLineRevisions[line] ??= lineReviewRevision(baseTarget.lineState, line);
+          removeReviewIssues(target.lineState, line, item.id);
+          affectedLines.add(line);
+          setProposalDecisionForApply(decisionChanges, item.id, { ...decision, status: "accepted", manualText: "" });
+          applied += 1;
+          continue;
+        }
+        expectedLineRevisions[line] ??= lineReviewRevision(baseTarget.lineState, line);
+        target.lineState.edits[line] = text;
+        target.lineState.status[line] = "manual";
+        recordTargetLineRevision(target.lineState, line, text, "manual", "proposal-apply");
+        removeReviewIssues(target.lineState, line, item.id);
+        affectedLines.add(line);
+        if (decision.status !== "manual") {
+          setProposalDecisionForApply(decisionChanges, item.id, {
+            ...decision,
+            status: "accepted",
+            manualText: decision.manualText || ""
+          });
+        }
+        applied += 1;
+      }
+      if (affectedLines.size > 0) {
+        commits.push({
+          target,
+          affectedLines,
+          expectedLineRevisions,
+          document: linkedDocument,
+          item: candidates[0]
+        });
+      }
     }
-    target.lineState.edits[line] = text;
-    target.lineState.status[line] = "manual";
-    removeReviewIssues(target.lineState, line, item.id);
-    if (decision.status !== "manual") {
-      state.decisions[item.id] = { ...decision, status: "accepted", manualText: decision.manualText || "" };
-    }
-    if (!firstAppliedLine) firstAppliedLine = line;
-    applied += 1;
+    traceProposalApply("staged", {
+      commits: commits.length,
+      applied,
+      skipped,
+      safetySkipped,
+      conflictSkipped
+    });
+    await persistProposalDocumentStates(commits);
+    save();
+    render();
+    const safetyNote = safetySkipped > 0 ? " / " + (data.labels.proposalSafetySkipped || "failed safety check") + ": " + safetySkipped : "";
+    const conflictNote = conflictSkipped > 0 ? " / " + (data.labels.proposalConflictSkipped || "conflicts") + ": " + conflictSkipped : "";
+    setProposalStatus((data.labels.proposalChangesApplied || "Proposals applied") + ": " + applied + " / " + (data.labels.proposalApplySkipped || "skipped") + ": " + skipped + safetyNote + conflictNote);
+    traceProposalApply("committed", { commits: commits.length, applied, skipped, safetySkipped, conflictSkipped });
+  } catch (error) {
+    rollbackProposalDecisionChanges(decisionChanges);
+    render();
+    traceProposalApply("failed", { error: error?.message || String(error) });
+    throw error;
   }
-  const persisted = await persistLineReviewState(target, firstAppliedLine || undefined);
-  save();
-  render();
-  const safetyNote = safetySkipped > 0 ? " / " + (data.labels.proposalSafetySkipped || "failed safety check") + ": " + safetySkipped : "";
-  setProposalStatus((data.labels.proposalChangesApplied || "Proposals applied") + ": " + applied + " / " + (data.labels.proposalApplySkipped || "skipped") + ": " + skipped + safetyNote);
-  if (!persisted) {
-    await openLinkedLineReview(firstAppliedLine);
+}
+async function applyProposalChangesFromButton() {
+  const button = document.getElementById("applyProposalChanges");
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  setProposalStatus(data.labels.proposalApplyRunning || "Applying proposals");
+  try {
+    await applyProposalChanges();
+  } catch (error) {
+    console.error("translation-workshop failed to apply proposals", error);
+    setProposalStatus((data.labels.proposalApplyFailed || "Failed to apply proposals") + ": " + (error?.message || String(error)));
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 cards.addEventListener("click", event => {
+  const mechanicalButton = event.target.closest("button[data-mechanical-action]");
+  if (mechanicalButton) {
+    const item = proposalById(mechanicalButton.closest(".card")?.dataset.id);
+    if (item) {
+      void resolveMechanicalScan(item, mechanicalButton.dataset.mechanicalAction).catch(error => {
+        setProposalStatus((data.labels.proposalOpenFailed || "Failed to update line review") + ": " + (error?.message || String(error)));
+      });
+    }
+    return;
+  }
   const jumpButton = event.target.closest("button[data-jump-line]");
   if (jumpButton) {
     const item = proposalById(jumpButton.closest(".card")?.dataset.id);
     if (item) void jumpToLineReviewLine(item);
     return;
   }
+  const conflictButton = event.target.closest("button[data-conflict-action]");
+  if (conflictButton) {
+    if (lanSyncStopping) {
+      reportProposalLanSyncFailure(new Error("LAN sync is stopping; wait before changing a decision."));
+      return;
+    }
+    const card = conflictButton.closest(".card");
+    const id = card?.dataset.id || "";
+    const item = proposalById(id);
+    if (!item) return;
+    const textarea = card.querySelector("textarea");
+    const action = conflictButton.dataset.conflictAction;
+    const previous = state.decisions[id] || {};
+    let rawDecision = previous;
+    if (action === "keep-current") {
+      rawDecision = { ...previous, status: "rejected", manualText: "" };
+    } else if (action === "accept-agent") {
+      rawDecision = { ...previous, status: "accepted", manualText: "", overrideConflict: true };
+    } else if (action === "manual-merge") {
+      if (textarea && !textarea.value.trim()) textarea.value = proposalSuggestionText(item);
+      rawDecision = { ...previous, status: "manual", manualText: textarea?.value || proposalSuggestionText(item), overrideConflict: true };
+      textarea?.focus();
+    }
+    state.decisions[id] = rawDecision;
+    const decision = effectiveProposalDecision(item, rawDecision);
+    applyDecisionVisual(card, decision);
+    persistOrSyncProposalDecision({
+      type: "proposal-decision",
+      proposalId: id,
+      status: decision.status,
+      manualText: decision.manualText || rawDecision.manualText || "",
+      overrideConflict: rawDecision.overrideConflict === true,
+      conflictReason: rawDecision.conflictReason || ""
+    });
+    render();
+    return;
+  }
   const button = event.target.closest("button[data-action]");
   if (!button) return;
+  if (lanSyncStopping) {
+    reportProposalLanSyncFailure(new Error("LAN sync is stopping; wait before changing a decision."));
+    return;
+  }
   const card = button.closest(".card");
   const id = card.dataset.id;
   const item = proposalById(id);
   if (!item) return;
-  const rawDecision = { status: button.dataset.action, manualText: card.querySelector("textarea").value };
+  const previous = state.decisions[id] || {};
+  const rawDecision = { ...previous, status: button.dataset.action, manualText: card.querySelector("textarea").value };
   state.decisions[id] = rawDecision;
   const decision = effectiveProposalDecision(item, rawDecision);
   applyDecisionVisual(card, decision);
-  save();
-  queueLanSyncPatch({ type: "proposal-decision", proposalId: id, status: decision.status, manualText: decision.manualText || rawDecision.manualText || "" });
+  persistOrSyncProposalDecision({
+    type: "proposal-decision",
+    proposalId: id,
+    status: decision.status,
+    manualText: decision.manualText || rawDecision.manualText || "",
+    overrideConflict: rawDecision.overrideConflict === true,
+    conflictReason: rawDecision.conflictReason || ""
+  });
 });
 cards.addEventListener("input", event => {
   if (event.target.tagName !== "TEXTAREA") return;
+  if (lanSyncStopping) {
+    reportProposalLanSyncFailure(new Error("LAN sync is stopping; wait before changing a decision."));
+    return;
+  }
   const card = event.target.closest(".card");
   const item = proposalById(card.dataset.id);
   if (!item) return;
-  const rawDecision = { status: "manual", manualText: event.target.value };
+  const previous = state.decisions[card.dataset.id] || {};
+  const rawDecision = { ...previous, status: "manual", manualText: event.target.value };
   state.decisions[card.dataset.id] = rawDecision;
   const decision = effectiveProposalDecision(item, rawDecision);
   applyDecisionVisual(card, decision);
-  save();
-  queueLanSyncPatch({ type: "proposal-decision", proposalId: card.dataset.id, status: decision.status, manualText: event.target.value });
+  persistOrSyncProposalDecision({
+    type: "proposal-decision",
+    proposalId: card.dataset.id,
+    status: decision.status,
+    manualText: event.target.value,
+    overrideConflict: rawDecision.overrideConflict === true,
+    conflictReason: rawDecision.conflictReason || ""
+  });
+});
+conflictSummary?.addEventListener("click", event => {
+  const button = event.target.closest("button[data-conflict-jump]");
+  if (!button) return;
+  searchInput.value = button.dataset.conflictJump || "";
+  page = 1;
+  render();
+  scrollTo(0, 0);
 });
 document.getElementById("prev").onclick = () => { page -= 1; render(); scrollTo(0, 0); };
 document.getElementById("next").onclick = () => { page += 1; render(); scrollTo(0, 0); };
 document.getElementById("jump").onclick = () => { page = Number(pageInput.value || 1); render(); scrollTo(0, 0); };
 searchInput.oninput = () => { page = 1; render(); scrollTo(0, 0); };
+documentFilter.onchange = () => { page = 1; state.documentFilter = activeDocumentFilter(); render(); scrollTo(0, 0); };
 issueFilter.onchange = () => { page = 1; state.issueFilter = activeIssueFilter(); render(); scrollTo(0, 0); };
 document.getElementById("connectLineReview")?.addEventListener("click", connectLineReview);
-document.getElementById("applyProposalChanges")?.addEventListener("click", applyProposalChanges);
+document.getElementById("applyProposalChanges")?.addEventListener("click", () => { void applyProposalChangesFromButton(); });
 htmlBridge()?.onLanSyncPatch?.(applyRemoteLanSyncPatch);
+htmlBridge()?.onLanSyncCommand?.(applyRemoteLanSyncCommand);
 startLanSyncButton?.addEventListener("click", () => { void startLanSync(); });
 copyLanSyncLinkButton?.addEventListener("click", () => {
   if (!lanSyncPrimaryUrl) return;
   navigator.clipboard?.writeText(lanSyncPrimaryUrl).then(() => setProposalStatus(data.labels.copied || "Copied")).catch(() => {});
 });
-stopLanSyncButton?.addEventListener("click", () => {
+stopLanSyncButton?.addEventListener("click", async () => {
+  if (lanSyncStopping || lanSyncStarting) return;
+  lanSyncStopping = true;
   const token = lanSyncToken;
-  lanSyncToken = "";
-  if (lanSyncPanel) lanSyncPanel.hidden = true;
-  if (token) htmlBridge()?.stopLanSync?.(token).catch(() => {});
-  setProposalStatus(data.labels.lanSyncStopped || "LAN sync stopped");
+  try {
+    await flushPendingProposalLanSyncPatches();
+    if (token) {
+      const result = await htmlBridge()?.stopLanSync?.(token);
+      if (result && result.ok === false) throw new Error("The Electron host could not stop LAN sync.");
+    }
+    lanSyncToken = "";
+    lanSyncStopping = false;
+    if (lanSyncPanel) lanSyncPanel.hidden = true;
+    setProposalStatus(data.labels.lanSyncStopped || "LAN sync stopped");
+  } catch (error) {
+    lanSyncStopping = false;
+    reportProposalLanSyncFailure(error);
+  }
 });
 document.getElementById("export").onclick = () => {
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
@@ -3334,8 +5465,27 @@ document.getElementById("customThemeColor")?.addEventListener("input", (event) =
   applyTheme({ ...(state.theme || themePalettes.sky), "--sakura": event.target.value, "--surface-a": event.target.value + "22" });
 });
 addEventListener("beforeunload", save);
+renderDocumentFilterOptions();
 renderIssueFilterOptions();
 render();
 requestAnimationFrame(() => scrollTo(0, state.scrollY || 0));
+const initialDocumentGroup = groupProposalsByDocument().find(group => !activeDocumentFilter() || group.key === activeDocumentFilter());
+void (async () => {
+  if (!initialDocumentGroup) return false;
+  const linkedDocument = await readLinkedLineReviewDocument(initialDocumentGroup.items[0]);
+  const target = readLineReviewState(linkedDocument?.state, linkedDocument?.lineReviewPath || data.lineReviewPath);
+  return Boolean(target && reconcileStoredProposalConflicts(
+    target.lineState,
+    linkedDocument?.rows || [],
+    initialDocumentGroup.key
+  ));
+})().then((changed) => {
+  if (!changed) return;
+  save();
+  render();
+}).catch((error) => {
+  setProposalStatus((data.labels.proposalOpenFailed || "Failed to open line HTML") + ": " + (error?.message || String(error)));
+});
+${agentChatEmbedScript()}
 `;
 }

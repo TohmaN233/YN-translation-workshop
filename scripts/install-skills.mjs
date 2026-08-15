@@ -1,24 +1,26 @@
 #!/usr/bin/env node
-import { cp, lstat, mkdir, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const codexSkills = ["translate-text", "proofread-translation"];
-const claudeCommands = ["translate-text.md", "proofread-translation.md"];
-const proofreadValidatorPath = ["skills", "codex", "proofread-translation", "scripts", "validate-fix-proposal.mjs"];
+const runtimeSkills = ["translate-text", "proofread-translation"];
 const githubRawBase = "https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main";
 const codexSkillFiles = {
   "translate-text": [
     "SKILL.md",
-    "agents/openai.yaml",
-    "references/translation-workflow.md"
+    "references/translation-workflow.md",
+    "references/subagent-task-template.md"
   ],
   "proofread-translation": [
     "SKILL.md",
-    "agents/openai.yaml",
     "references/proofread-workflow.md",
-    "scripts/validate-fix-proposal.mjs"
+    "references/subagent-task-template.md"
   ]
+};
+
+const skillReferences = {
+  "translate-text": "references/translation-workflow.md",
+  "proofread-translation": "references/proofread-workflow.md"
 };
 
 function defaultRepoPath() {
@@ -71,7 +73,7 @@ function usage() {
   return [
     "translation-workshop-skills",
     "",
-    "Install bundled translation-workshop skills into global Agent config folders.",
+    "Export bundled translation-workshop skills into optional external Agent config folders.",
     "",
     "Usage:",
     "  node /path/to/translation-workshop/scripts/install-skills.mjs --agent all --global --replace",
@@ -81,7 +83,7 @@ function usage() {
     "  curl -fsSL https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global --replace",
     "",
     "Options:",
-    "  --agent codex|claude|all",
+    "  --agent codex|claude|all   External install target, not the runtime skill source.",
     "  --global, -g",
     "  --github       Download skill files from the GitHub repository instead of a local checkout.",
     "  --replace      Back up then update existing bundled skill targets.",
@@ -160,6 +162,47 @@ async function copyFile(source, destination, options) {
   return { status: existing ? "updated" : "installed", backupPath, reason: "" };
 }
 
+function stripFrontmatter(text) {
+  return text.replace(/^---[\s\S]*?---\s*/m, "").trim();
+}
+
+function renderClaudeCommand(skillName, skillText, referenceText, templateText) {
+  const title = skillName === "translate-text" ? "Translate Text" : "Proofread Translation";
+  return [
+    `# ${title}`,
+    "",
+    "This command exports the same YN Translation Workshop bundled skill used by the app runtime.",
+    "Use the workflow below as the task contract.",
+    "",
+    "## Skill",
+    "",
+    stripFrontmatter(skillText),
+    "",
+    "## Workflow Reference",
+    "",
+    referenceText.trim(),
+    "",
+    "## Subagent Task Template",
+    "",
+    templateText.trim(),
+    ""
+  ].join("\n");
+}
+
+async function writeGeneratedClaudeCommand(operation, destination, options) {
+  const existing = await pathInfo(destination);
+  if (existing && !options.replace) {
+    return { status: "skipped", backupPath: "", reason: "target already exists" };
+  }
+  const skillText = await readFile(operation.skillSource, "utf8");
+  const referenceText = await readFile(operation.referenceSource, "utf8");
+  const templateText = await readFile(operation.templateSource, "utf8");
+  const backupPath = existing ? await backupExistingTarget(options.home, destination, options.backupId) : "";
+  await mkdir(path.dirname(destination), { recursive: true });
+  await writeFile(destination, renderClaudeCommand(operation.skillName, skillText, referenceText, templateText), "utf8");
+  return { status: existing ? "updated" : "installed", backupPath, reason: "" };
+}
+
 function rawUrl(rawBase, ...parts) {
   return `${rawBase.replace(/\/+$/, "")}/${parts.map((part) => encodeURIComponent(part).replace(/%2F/g, "/")).join("/")}`;
 }
@@ -182,6 +225,33 @@ async function copyRemoteFile(source, destination, options) {
   return { status: existing ? "updated" : "installed", backupPath, reason: "" };
 }
 
+async function fetchText(source) {
+  if (typeof fetch !== "function") {
+    throw new Error("GitHub install requires Node.js 18 or newer.");
+  }
+  const response = await fetch(source);
+  if (!response.ok) {
+    throw new Error(`Failed to download ${source}: ${response.status} ${response.statusText}`);
+  }
+  return response.text();
+}
+
+async function writeRemoteGeneratedClaudeCommand(operation, destination, options) {
+  const existing = await pathInfo(destination);
+  if (existing && !options.replace) {
+    return { status: "skipped", backupPath: "", reason: "target already exists" };
+  }
+  const [skillText, referenceText] = await Promise.all([
+    fetchText(operation.skillSource),
+    fetchText(operation.referenceSource)
+  ]);
+  const templateText = await fetchText(operation.templateSource);
+  const backupPath = existing ? await backupExistingTarget(options.home, destination, options.backupId) : "";
+  await mkdir(path.dirname(destination), { recursive: true });
+  await writeFile(destination, renderClaudeCommand(operation.skillName, skillText, referenceText, templateText), "utf8");
+  return { status: existing ? "updated" : "installed", backupPath, reason: "" };
+}
+
 export function installPlan({ repo, home, agent }) {
   const normalizedAgent = agent === "codex" || agent === "claude" || agent === "all" ? agent : "";
   if (!normalizedAgent) {
@@ -192,27 +262,26 @@ export function installPlan({ repo, home, agent }) {
   }
   const operations = [];
   if (normalizedAgent === "codex" || normalizedAgent === "all") {
-    for (const name of codexSkills) {
+    for (const name of runtimeSkills) {
       operations.push({
         kind: "directory",
-        source: path.join(repo, "skills", "codex", name),
+        source: path.join(repo, "skills", name),
         destination: path.join(home, ".codex", "skills", name)
       });
     }
   }
   if (normalizedAgent === "claude" || normalizedAgent === "all") {
-    for (const name of claudeCommands) {
+    for (const skillName of runtimeSkills) {
       operations.push({
-        kind: "file",
-        source: path.join(repo, "skills", "claude", "commands", name),
-        destination: path.join(home, ".claude", "commands", name)
+        kind: "generated-claude-command",
+        skillName,
+        source: path.join(repo, "skills", skillName),
+        skillSource: path.join(repo, "skills", skillName, "SKILL.md"),
+        referenceSource: path.join(repo, "skills", skillName, skillReferences[skillName]),
+        templateSource: path.join(repo, "skills", skillName, "references", "subagent-task-template.md"),
+        destination: path.join(home, ".claude", "commands", `${skillName}.md`)
       });
     }
-    operations.push({
-      kind: "file",
-      source: path.join(repo, ...proofreadValidatorPath),
-      destination: path.join(home, ".claude", "translation-workshop", "scripts", "validate-fix-proposal.mjs")
-    });
   }
   return operations;
 }
@@ -231,25 +300,24 @@ export function githubInstallPlan({ rawBase, home, agent }) {
       for (const file of files) {
         operations.push({
           kind: "remote-file",
-          source: rawUrl(rawBase, "skills", "codex", skillName, file),
+          source: rawUrl(rawBase, "skills", skillName, file),
           destination: path.join(home, ".codex", "skills", skillName, ...file.split("/"))
         });
       }
     }
   }
   if (normalizedAgent === "claude" || normalizedAgent === "all") {
-    for (const name of claudeCommands) {
+    for (const skillName of runtimeSkills) {
       operations.push({
-        kind: "remote-file",
-        source: rawUrl(rawBase, "skills", "claude", "commands", name),
-        destination: path.join(home, ".claude", "commands", name)
+        kind: "remote-generated-claude-command",
+        skillName,
+        source: rawUrl(rawBase, "skills", skillName),
+        skillSource: rawUrl(rawBase, "skills", skillName, "SKILL.md"),
+        referenceSource: rawUrl(rawBase, "skills", skillName, skillReferences[skillName]),
+        templateSource: rawUrl(rawBase, "skills", skillName, "references", "subagent-task-template.md"),
+        destination: path.join(home, ".claude", "commands", `${skillName}.md`)
       });
     }
-    operations.push({
-      kind: "remote-file",
-      source: rawUrl(rawBase, ...proofreadValidatorPath),
-      destination: path.join(home, ".claude", "translation-workshop", "scripts", "validate-fix-proposal.mjs")
-    });
   }
   return operations;
 }
@@ -268,6 +336,10 @@ export async function installSkills(options) {
       result = await copyDirectory(operation.source, operation.destination, copyOptions);
     } else if (operation.kind === "remote-file") {
       result = await copyRemoteFile(operation.source, operation.destination, copyOptions);
+    } else if (operation.kind === "generated-claude-command") {
+      result = await writeGeneratedClaudeCommand(operation, operation.destination, copyOptions);
+    } else if (operation.kind === "remote-generated-claude-command") {
+      result = await writeRemoteGeneratedClaudeCommand(operation, operation.destination, copyOptions);
     } else {
       result = await copyFile(operation.source, operation.destination, copyOptions);
     }

@@ -47,8 +47,8 @@ function parseJsonGlossary(text: string): GlossaryEntry[] | undefined {
   try {
     const parsed = JSON.parse(text) as unknown;
     const entries: GlossaryEntry[] = [];
-    if (Array.isArray(parsed)) {
-      for (const item of parsed) {
+    const appendArray = (items: unknown[]) => {
+      for (const item of items) {
         if (Array.isArray(item)) {
           const source = cleanTerm(item[0]);
           const target = cleanTerm(item[1]);
@@ -62,10 +62,19 @@ function parseJsonGlossary(text: string): GlossaryEntry[] | undefined {
           if (entry) entries.push(entry);
         }
       }
+    };
+    if (Array.isArray(parsed)) {
+      appendArray(parsed);
       return entries;
     }
     if (parsed && typeof parsed === "object") {
-      for (const [source, target] of Object.entries(parsed as Record<string, unknown>)) {
+      const object = parsed as Record<string, unknown>;
+      const collection = object.entries ?? object.glossary ?? object.terms;
+      if (Array.isArray(collection)) {
+        appendArray(collection);
+        return entries;
+      }
+      for (const [source, target] of Object.entries(object)) {
         if (typeof target === "string") {
           const entry = { source: cleanTerm(source), target: cleanTerm(target) };
           if (entry.source && entry.target) entries.push(entry);

@@ -19,11 +19,11 @@ This project is designed for three kinds of users:
 
 Recommended for Windows users:
 
-**`translation-workshop.Setup.exe`**
+**`translation-workshop-Setup-2.0.0-x64.exe`**
 
 If you do not want to install it, use the portable build:
 
-**`translation-workshop.exe`**
+**`translation-workshop-Portable-2.0.0-x64.exe`**
 
 Release page:  
 <https://github.com/TohmaN233/YN-translation-workshop/releases>
@@ -31,6 +31,14 @@ Release page:
 On Windows, if command-line Chinese text appears garbled, you can download and run [`set_utf8.reg`](./set_utf8.reg) to make consoles use UTF-8 by default. If you are unsure, open it in Notepad first and inspect the contents before running it.
 
 ## Update Info
+
+### v2.0.0
+
+- **Native Pi Agent OS**: Agent UI, sessions, streaming messages, tools, thinking, subagents, and long-session compaction now use the Pi / pi-web foundation. The legacy YN job runtime is no longer on the product path.
+- **Translation and proofreading workflows**: folder jobs, persistent parallel workers, bounded validation, repair, glossary and character-bible assets, and structured proofreading findings are integrated.
+- **Web references**: the Agent can read public HTTP(S) pages through the native Pi `fetchWebReference` tool. Wikipedia uses the MediaWiki API, generic pages are parsed into readable text, and cached references are shared with translation/proofreading subagents.
+- **Update checks**: installed builds check GitHub Releases silently after startup and expose `Help > Check for Updates...`; installed builds can download and install after restart, while portable builds open the release page for manual updates.
+- **Release verification**: Windows installer and portable artifacts carry version `2.0.0` and include GitHub Releases update metadata.
 
 ### v1.1.1
 

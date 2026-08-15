@@ -1,36 +1,112 @@
-import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, webContents, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, Menu, session, shell, webContents, type MenuItemConstructorOptions } from "electron";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createRequire } from "node:module";
 
-import { formatInteractiveAgentMessage } from "../shared/core/agentConsoleInput.ts";
 import { buildTimestampedBackupPath } from "../shared/core/backups.ts";
-import { buildAgentPromptFileMessage, shouldSendAgentPromptViaFile } from "../shared/core/agentPromptTransport.ts";
 import { parseBilingualPairs } from "../shared/core/bilingualPairs.ts";
-import { executableNames, resolveCliFromPath } from "../shared/core/cliResolver.ts";
 import { matchFolderFiles, type FolderLineFile } from "../shared/core/folderMatch.ts";
 import { parseGlossaryText, type GlossaryEntry } from "../shared/core/glossary.ts";
 import { renderBatchLineReviewIndexHtml, renderLineReviewHtml, renderProposalReviewHtml, type BatchLineReviewIndexFile, type UiLocale } from "../shared/core/html.ts";
 import {
   embeddedProposalLinks,
-  rewriteProposalReviewLineReviewPathContent,
-  upgradeLegacyLineReviewHtmlContent,
-  upgradeLegacyProposalReviewHtmlContent
+  rewriteProposalReviewLineReviewPathContent
 } from "../shared/core/legacyHtml.ts";
 import { rankProofreadReportCandidates, type ProofreadReportCandidate } from "../shared/core/reportDiscovery.ts";
-import { parseProofreadMarkdown } from "../shared/core/reviewReport.ts";
-import { buildGithubSkillInstallCommand, buildLocalSkillInstallArgs, buildLocalSkillInstallCommand, type SkillInstallAgent } from "../shared/core/skillInstall.ts";
+import { parseProofreadReport } from "../shared/core/reviewReport.ts";
 import { buildPrompt, type PromptAdvancedOptions, type PromptBuildOptions } from "../shared/core/prompts.ts";
+import { splitTextLines } from "../shared/validation/translationValidator.ts";
+import { formatFolderTranslationOrder } from "./agent/piNative/folderTranslationPlan.ts";
+import { setPiSessionHtmlViewerTabsRef, subscribePiSessionBroadcast } from "./agent/piNative/broadcast.ts";
+import { openAgentChatWindow } from "./agent/piNative/agentChatWindowHost.ts";
+import { piNativeSessionService } from "./agent/piNative/sessionService.ts";
+import { configureWebReferenceBrowserFetch } from "./agent/piNative/webReference.ts";
+import { configureGlobalAgentDataDir } from "./agent/agentDataDir.ts";
+import {
+  subscribeActiveWorkspaceAssetsStatus,
+  subscribeWorkspaceAssetsStatus,
+  type WorkspaceAssetsStatus
+} from "./agent/workspaceAssets.ts";
+import { writeClipboardTextVerified } from "./clipboardText.ts";
+import { mergeAuditWhitelistDocument } from "./auditWhitelist.ts";
+import {
+  bindBatchLineReviewTranslations,
+  batchLineReviewOwnsChild,
+  canonicalBatchLineReviewIndexPath,
+  prepareBatchLineReviewTxtWrites,
+  readBatchLineReviewChildren,
+  readBatchLineReviewCurrentBindings,
+  resolveLineReviewSidecarStatePath
+} from "./batchLineReviewTxt.ts";
+import {
+  acceptLineReviewMutationSequence,
+  assertExpectedLineRevisions,
+  mergeCanonicalLineReviewState,
+  mergeLegacyProposalLineReviewState,
+  normalizeChangedLineNumbers,
+  normalizeChangedStateKeys
+} from "./lineReviewStateSync.ts";
+import { writeTextFileAtomically, writeTextFilesAtomically } from "./atomicFile.ts";
+import { resolveTranslationCandidatePath, withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
 import { readEpubText } from "./epubReader.ts";
 import { createTranslatedEpub } from "./epubWriter.ts";
-
-const agentTranscriptLimit = 2_000_000;
+import { collectSourceTreeFiles } from "./sourceFileTree.ts";
+import { upgradeLegacyReviewHtmlTree } from "./reviewHtmlUpgrade.ts";
+import {
+  discoverProjectReviewTargets,
+  readRecentProjectDir,
+  writeRecentProjectDir
+} from "./projectOpenState.ts";
+import { patchProjectState, readProjectState, saveProjectState, subscribeProjectState } from "./projectState.ts";
+import {
+  lanSyncJson,
+  lanSyncLabels,
+  lanSyncLandingHtml,
+  lanSyncResponse,
+  lanSyncSessionNotFoundHtml
+} from "./lanSyncHttp.ts";
+import {
+  broadcastLanSyncPatch,
+  commitLanSyncPatch,
+  hashLanSyncPin,
+  isLanSyncAuthorized,
+  isValidLanSyncPin,
+  lanSyncAuthTokenFrom,
+  lanSyncSessionPayload,
+  normalizeLanSyncCommand,
+  persistLanSyncDocumentPatch,
+  readLanSyncBody,
+  registerLanSyncSession,
+  stopLanSyncSession
+} from "./lanSyncRuntime.ts";
+import {
+  assertLanSyncStartOwnership,
+  lanSyncLineTranslationCount,
+  normalizeLanSyncLineDocument,
+  normalizeLanSyncOutputDir,
+  normalizeLanSyncProposalDocument,
+  normalizeLanSyncRows,
+  normalizeLanSyncState,
+  normalizeLinkedHtmlFilePath,
+  readLinkedLineReviewDocument,
+  type LanSyncLineDocument,
+  type LanSyncLineRow,
+  type LanSyncCommand,
+  type LanSyncPatch,
+  type LanSyncSession,
+  type LanSyncStartArgs
+} from "./lanSyncState.ts";
+import { createLanAgentGateway, lanAgentBridgeScript, normalizeLanAgentRequest } from "./lanAgentRemote.ts";
+import {
+  getAgentProviderConfig,
+  listAgentConfiguredModels,
+  saveAgentProviderConfig
+} from "./ipc/agentProviderHandlers.ts";
+import { checkForUpdatesManually, initializeAutoUpdates, repositoryUrl, scheduleStartupUpdateCheck } from "./updateService.ts";
 
 interface GenerateLineHtmlArgs {
   sourcePath: string;
@@ -68,84 +144,7 @@ interface ProposalReviewFallbackResult {
 interface OpenReviewHtmlArgs {
   htmlPath?: string;
   outputDir?: string;
-}
-
-interface LanSyncLineRow {
-  line: number;
-  source: string;
-  translation?: string;
-  status?: string;
-}
-
-interface LanSyncPatch {
-  type: "line-edit" | "line-restore" | "proposal-decision";
-  line?: number;
-  proposalId?: string;
-  text?: string;
-  status?: string;
-  manualText?: string;
-  clientId?: string;
-  timestamp?: string;
-}
-
-interface LanSyncLineDocument {
-  title?: string;
-  rows: LanSyncLineRow[];
-  state: Record<string, unknown>;
-  pageSize?: number;
-  lineReviewPath?: string;
-}
-
-interface LanSyncProposalItem {
-  id: string;
-  line?: number;
-  src?: string;
-  current?: string;
-  problemType?: string;
-  problem?: string;
-  suggestion?: string;
-  status?: string;
-}
-
-interface LanSyncProposalDocument {
-  title?: string;
-  proposals: LanSyncProposalItem[];
-  state: Record<string, unknown>;
-  pageSize?: number;
-  reportPath?: string;
-  lineReviewPath?: string;
-}
-
-interface LanSyncStartArgs {
-  title?: string;
-  pin?: string;
-  htmlPath?: string;
-  outputDir?: string;
-  agent?: "codex" | "claude";
-  rows?: LanSyncLineRow[];
-  state?: Record<string, unknown>;
-  lineReviewPath?: string;
-  lineDocument?: Partial<LanSyncLineDocument>;
-  proposalDocument?: Partial<LanSyncProposalDocument>;
-  locale?: UiLocale;
-  pageSize?: number;
-}
-
-interface LanSyncSession {
-  token: string;
-  ownerWebContentsId: number;
-  title: string;
-  pinHash: string;
-  authTokens: Set<string>;
-  outputDir?: string;
-  agent: "codex" | "claude";
-  documents: {
-    line?: LanSyncLineDocument;
-    proposal?: LanSyncProposalDocument;
-  };
-  locale: UiLocale;
-  createdAt: string;
-  clients: Set<ServerResponse>;
+  activate?: boolean;
 }
 
 interface WriteTextFileArgs {
@@ -158,16 +157,14 @@ interface ReadTextFileArgs {
   path?: string;
 }
 
-interface WriteGlossaryFileArgs {
-  path?: string;
-  text?: string;
-  outputDir?: string;
-}
-
 interface WriteAuditWhitelistFileArgs {
   outputDir?: string;
+  documentId?: string;
   sourcePath?: string;
   lines?: number[];
+  lineReviewPath?: string;
+  lineState?: unknown;
+  changedLines?: number[];
 }
 
 interface WriteEpubFileArgs {
@@ -179,91 +176,50 @@ interface WriteEpubFileArgs {
   pairSize?: number;
 }
 
-interface AgentConsoleStartArgs {
-  agent?: "codex" | "claude";
-  outputDir?: string;
-  cols?: number;
-  rows?: number;
-}
-
-interface AgentConsoleInputArgs {
-  data?: string;
-}
-
-interface AgentConsoleInputResult {
-  ok: boolean;
-  message?: string;
-  promptPath?: string;
-}
-
-interface AgentConsoleResizeArgs {
-  cols?: number;
-  rows?: number;
-}
-
-interface SkillInstallArgs {
-  agent?: SkillInstallAgent;
-}
-
 type PromptBuildArgs = Partial<PromptBuildOptions>;
-
-interface AgentInstallCheck {
-  agent: "codex" | "claude";
-  cliFound: boolean;
-  cliPath: string;
-  skillsFound: boolean;
-  installedSkillPaths: string[];
-  missingSkillPaths: string[];
-}
-
-interface SkillInstallStatus {
-  selectedAgent: "codex" | "claude";
-  home: string;
-  anyCliFound: boolean;
-  selected: AgentInstallCheck;
-  agents: {
-    codex: AgentInstallCheck;
-    claude: AgentInstallCheck;
-  };
-}
-
-interface PtyProcess {
-  onData(callback: (data: string) => void): void;
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void): void;
-  write(data: string): void;
-  resize(cols: number, rows: number): void;
-  kill(signal?: string): void;
-}
-
-interface NodePtyModule {
-  spawn(file: string, args: string[], options: {
-    cwd: string;
-    cols: number;
-    rows: number;
-    name: string;
-    env: NodeJS.ProcessEnv;
-  }): PtyProcess;
-}
-
-interface InteractiveAgentSession {
-  id: string;
-  agent: "codex" | "claude";
-  outputDir: string;
-  startedAt: string;
-  pty: PtyProcess;
-  outputBuffer: string;
-  recentOutput?: string;
-  dismissedUpdatePrompt?: boolean;
-  dismissedTrustPrompt?: boolean;
-  lastDeniedClaudeMemoryPrompt?: string;
-  cleanupPaths?: string[];
-}
 
 interface ApplyLineReviewStateArgs {
   lineReviewPath?: string;
   lineState?: unknown;
   line?: number;
+  lines?: number[];
   activate?: boolean;
+}
+
+interface ResolveProposalLineReviewDocumentArgs {
+  outputDir?: string;
+  reportPath?: string;
+  lineReviewPath?: string;
+  documentId?: string;
+  sourcePath?: string;
+  translationPath?: string;
+  locale?: UiLocale;
+}
+
+interface PrepareProposalLineReviewBatchArgs {
+  outputDir?: string;
+  reportPath?: string;
+  lineReviewPath?: string;
+  locale?: UiLocale;
+  documents?: Array<{
+    documentId?: string;
+    sourcePath?: string;
+    translationPath?: string;
+  }>;
+}
+
+interface ApplyProposalLineReviewStatesArgs {
+  documents?: Array<{
+    reportPath?: string;
+    documentId?: string;
+    sourcePath?: string;
+    translationPath?: string;
+    lineReviewPath?: string;
+    lineState?: unknown;
+    changedLines?: number[];
+    changedStateKeys?: string[];
+    expectedLineRevisions?: Record<string, number>;
+  }>;
 }
 
 interface HtmlCandidate {
@@ -275,16 +231,119 @@ interface HtmlCandidate {
 type BilingualFileKind = "txt" | "epub";
 
 const isDev = process.env.TRANSLATION_WORKSHOP_DEV === "1";
-const repositoryUrl = "https://github.com/TohmaN233/YN-translation-workshop";
-const require = createRequire(import.meta.url);
-const htmlViewerTabs = new Map<string, { filePath: string; hash: string; title: string; view: BrowserView }>();
+const electronVerificationHeadless = process.env.YN_ELECTRON_VERIFY_HEADLESS === "1";
+const electronVerificationOffscreen = process.env.YN_ELECTRON_VERIFY_OFFSCREEN === "1";
+const portableSmokeMarkerPath = (() => {
+  const prefix = "--yn-portable-smoke=";
+  const argument = process.argv.find((value) => value.startsWith(prefix));
+  const markerPath = String(process.env.YN_PORTABLE_SMOKE_MARKER
+    || argument?.slice(prefix.length)
+    || "").trim();
+  if (!markerPath) return undefined;
+  if (!markerPath || !path.isAbsolute(markerPath)) {
+    throw new Error("Portable smoke verification requires an absolute marker path.");
+  }
+  return path.resolve(markerPath);
+})();
+
+async function recordPortableSmoke(stage: string, detail?: unknown): Promise<void> {
+  if (!portableSmokeMarkerPath) return;
+  await writeFile(`${portableSmokeMarkerPath}.trace.json`, `${JSON.stringify({
+    stage,
+    timestamp: new Date().toISOString(),
+    pid: process.pid,
+    ...(detail === undefined ? {} : { detail })
+  }, null, 2)}\n`, "utf8");
+}
+
+if (portableSmokeMarkerPath) {
+  app.disableHardwareAcceleration();
+  const smokeRuntimeDir = path.dirname(portableSmokeMarkerPath);
+  app.setPath("userData", path.join(smokeRuntimeDir, "user-data"));
+  app.setPath("cache", path.join(smokeRuntimeDir, "cache"));
+}
+type HtmlViewerTab = {
+  filePath: string;
+  hash: string;
+  title: string;
+  view: BrowserView;
+  workspaceDir?: string;
+  loadPromise?: Promise<void>;
+};
+const htmlViewerTabs = new Map<string, HtmlViewerTab>();
+const htmlStateWriteQueues = new Map<string, Promise<void>>();
+const htmlStateMutationSequences = new Map<string, Map<string, number>>();
+setPiSessionHtmlViewerTabsRef(htmlViewerTabs);
 let htmlViewerWindow: BrowserWindow | undefined;
+let htmlViewerWindowClosing = false;
+let mainAppWindow: BrowserWindow | undefined;
 let activeHtmlViewerTab = "";
 const htmlViewerTabBarHeight = 44;
-let interactiveAgentSession: InteractiveAgentSession | undefined;
 let lanSyncServer: Server | undefined;
 let lanSyncPort = 0;
 const lanSyncSessions = new Map<string, LanSyncSession>();
+const lanSyncOwnerDestroyedHandlers = new Map<number, () => void>();
+const lanAgentGateway = createLanAgentGateway({
+  sessionService: piNativeSessionService,
+  providerService: {
+    getConfig: getAgentProviderConfig,
+    listConfiguredModels: listAgentConfiguredModels,
+    saveConfig: saveAgentProviderConfig
+  }
+});
+
+function normalizedAgentWorkspace(workspaceDir: string): string {
+  const resolved = path.resolve(workspaceDir);
+  return (path.basename(resolved).toLowerCase() === ".translation-workshop" ? path.dirname(resolved) : resolved).toLowerCase();
+}
+
+function broadcastLanAgent(
+  eventName: "agent-event" | "agent-state" | "agent-provider",
+  workspaceDir: string,
+  payload: unknown,
+  global = false
+): void {
+  const normalizedWorkspace = normalizedAgentWorkspace(workspaceDir);
+  const data = `event: ${eventName}\ndata: ${lanSyncJson(payload)}\n\n`;
+  for (const session of lanSyncSessions.values()) {
+    if (!session.outputDir || (!global && normalizedAgentWorkspace(session.outputDir) !== normalizedWorkspace)) continue;
+    for (const client of [...session.clients]) {
+      if (client.destroyed) session.clients.delete(client);
+      else client.write(data);
+    }
+  }
+}
+
+piNativeSessionService.subscribeEvents((payload) => broadcastLanAgent("agent-event", payload.workspaceDir, payload));
+piNativeSessionService.subscribeState((workspaceDir, state, selectionChange) => broadcastLanAgent("agent-state", workspaceDir, {
+  workspaceDir,
+  state,
+  selectionChange
+}));
+subscribePiSessionBroadcast((channel, payload) => {
+  if (channel !== "agent-provider:update" || !payload || typeof payload !== "object") return;
+  const update = payload as { scope?: unknown; workspaceDir?: unknown };
+  if (typeof update.workspaceDir !== "string") return;
+  broadcastLanAgent("agent-provider", update.workspaceDir, payload, update.scope === "global");
+});
+let activeWorkspaceAssets: { outputDir: string; status: WorkspaceAssetsStatus } | undefined;
+
+subscribeWorkspaceAssetsStatus((outputDir, status) => {
+  for (const contents of webContents.getAllWebContents()) {
+    if (!contents.isDestroyed()) contents.send("agent-assets:workspaceUpdate", { outputDir, status });
+  }
+});
+
+subscribeProjectState((outputDir, state, patch) => {
+  for (const contents of webContents.getAllWebContents()) {
+    if (!contents.isDestroyed()) contents.send("project:stateUpdate", { outputDir, state, patch });
+  }
+});
+
+subscribeActiveWorkspaceAssetsStatus((outputDir, status) => {
+  activeWorkspaceAssets = { outputDir, status };
+  configureApplicationMenu();
+});
 
 async function openHtmlFromDialog(): Promise<void> {
   const result = await dialog.showOpenDialog({
@@ -313,6 +372,17 @@ function configureApplicationMenu(): void {
             void openHtmlFromDialog();
           }
         },
+        ...(activeWorkspaceAssets?.status.available.characterBible ? [{
+          id: "open-character-bible",
+          label: "Open Character Bible",
+          click: () => {
+            const characterBiblePath = activeWorkspaceAssets?.status.paths.characterBible;
+            if (!characterBiblePath) throw new Error("The active workspace has no completed character bible path.");
+            void shell.openPath(characterBiblePath).then((error) => {
+              if (error) dialog.showErrorBox("Open Character Bible", error);
+            });
+          }
+        } satisfies MenuItemConstructorOptions] : []),
         { type: "separator" },
         process.platform === "darwin" ? { role: "close" } : { role: "quit" }
       ]
@@ -354,6 +424,17 @@ function configureApplicationMenu(): void {
       label: "Help",
       submenu: [
         {
+          label: "Check for Updates...",
+          click: () => {
+            void checkForUpdatesManually();
+          }
+        },
+        {
+          label: `Version ${app.getVersion()}`,
+          enabled: false
+        },
+        { type: "separator" },
+        {
           label: "GitHub Repository",
           click: () => {
             void shell.openExternal(repositoryUrl);
@@ -381,356 +462,6 @@ function configureApplicationMenu(): void {
   }
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
-
-function lanSyncLabels(locale: UiLocale): Record<string, string> {
-  if (locale === "en-US") {
-    return {
-      title: "translation-workshop shared workspace",
-      loading: "Loading...",
-      previous: "Previous",
-      next: "Next",
-      go: "Go",
-      page: "Page",
-      total: "Total",
-      search: "Search",
-      searchPlaceholder: "Search source, translation, issue, or suggestion",
-      searchNoMatches: "No matches.",
-      controlsOpen: "Show tools",
-      controlsClose: "Hide tools",
-      saved: "Synced",
-      offline: "Disconnected",
-      line: "Line",
-      source: "Source",
-      translation: "Translation",
-      current: "Current translation",
-      issueType: "Issue type",
-      issue: "Issue",
-      suggestion: "Suggested fix",
-      accept: "Accept",
-      reject: "Reject",
-      manual: "Manual edit",
-      unreviewed: "Unreviewed",
-      lineTab: "Line review",
-      proposalTab: "Proposal review",
-      empty: "No document in this shared session.",
-      pinTitle: "Enter PIN",
-      pinHelp: "Use the fixed 6-digit PIN shown in the desktop app.",
-      pinPlaceholder: "6-digit PIN",
-      unlock: "Unlock",
-      pinInvalid: "PIN must be 6 digits.",
-      pinFailed: "PIN verification failed.",
-      agentConsole: "Agent Console",
-      agentOpen: "Open",
-      agentClose: "Collapse",
-      agentCodex: "Codex",
-      agentClaude: "Claude Code",
-      agentStart: "Start Agent",
-      agentStop: "Stop",
-      agentSend: "Send",
-      agentInput: "Prompt / message",
-      agentOutput: "Agent output",
-      agentNeedsOutput: "This shared session has no bound output folder, so Agent cannot be started.",
-      agentStarted: "Agent started",
-      agentStopped: "Agent stopped",
-      agentOutputReady: "Agent has output"
-    };
-  }
-  return {
-    title: "translation-workshop 共享工作区",
-    loading: "加载中...",
-    previous: "上一页",
-    next: "下一页",
-    go: "跳转",
-    page: "页码",
-    total: "总数",
-    search: "搜索",
-    searchPlaceholder: "搜索原文、译文、问题或建议",
-    searchNoMatches: "没有匹配结果。",
-    controlsOpen: "展开工具",
-    controlsClose: "收起工具",
-    saved: "已同步",
-    offline: "连接已断开",
-    line: "行",
-    source: "源文",
-    translation: "译文",
-    current: "当前译文",
-    issueType: "问题类型",
-    issue: "问题说明",
-    suggestion: "建议译文",
-    accept: "接受",
-    reject: "拒绝",
-    manual: "人工改写",
-    unreviewed: "未审阅",
-    lineTab: "正文校对",
-    proposalTab: "审阅建议",
-    empty: "当前共享会话没有文档。",
-    pinTitle: "输入 PIN",
-    pinHelp: "请输入桌面端设置的固定 6 位 PIN。",
-    pinPlaceholder: "6 位 PIN",
-    unlock: "解锁",
-    pinInvalid: "PIN 必须是 6 位数字。",
-    pinFailed: "PIN 验证失败。",
-    agentConsole: "Agent 控制台",
-    agentOpen: "展开",
-    agentClose: "收起",
-    agentCodex: "Codex",
-    agentClaude: "Claude Code",
-    agentStart: "启动 Agent",
-    agentStop: "停止",
-    agentSend: "发送",
-    agentInput: "提示词 / 消息",
-    agentOutput: "Agent 输出",
-    agentNeedsOutput: "当前共享会话没有绑定输出文件夹，无法启动 Agent。",
-    agentStarted: "Agent 已启动",
-    agentStopped: "Agent 已停止",
-    agentOutputReady: "Agent 有新输出"
-  };
-}
-
-function lanSyncJson(value: unknown): string {
-  return JSON.stringify(value).replace(/</g, "\\u003c");
-}
-
-function lanSyncResponse(res: ServerResponse, status: number, body: string, contentType: string): void {
-  res.writeHead(status, {
-    "Content-Type": contentType,
-    "Cache-Control": "no-store",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
-  });
-  res.end(body);
-}
-
-function lanSyncEscapeHtml(value: unknown): string {
-  return String(value ?? "").replace(/[&<>"]/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;"
-  }[character] ?? character));
-}
-
-function lanSyncLandingHtml(): string {
-  const sessions = [...lanSyncSessions.values()];
-  const links = sessions
-    .map((session) => `<li><a href="/s/${encodeURIComponent(session.token)}">${lanSyncEscapeHtml(session.title || "translation-workshop")}</a></li>`)
-    .join("");
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>translation-workshop</title>
-  <style>
-    body { margin:0; padding:28px; font:16px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#263452; background:#f5fbff; }
-    main { max-width:680px; margin:auto; padding:24px; border:1px solid #d8e7f8; border-radius:12px; background:#fff; box-shadow:0 16px 38px rgba(78,105,150,.12); }
-    h1 { margin:0 0 12px; font-size:24px; }
-    p { margin:8px 0; color:#66708b; }
-    a { color:#1f6fb2; font-weight:700; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>translation-workshop</h1>
-    ${sessions.length > 0
-      ? `<p>请选择当前同步会话。外部穿透工具只给根地址时，也可以从这里进入。</p><ul>${links}</ul>`
-      : `<p>没有正在运行的同步会话。请先在桌面端 HTML 中启动局域网同步。</p>`}
-    <p>如果你使用 Cloudflare Tunnel/ngrok，请把穿透目标指向桌面端显示的本地同步端口。</p>
-  </main>
-</body>
-</html>`;
-}
-
-function lanSyncSessionNotFoundHtml(requestedPath: string): string {
-  const sessions = [...lanSyncSessions.values()];
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Session not found</title>
-  <style>
-    body { margin:0; padding:28px; font:16px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#263452; background:#fff7f7; }
-    main { max-width:720px; margin:auto; padding:24px; border:1px solid #f2c4c4; border-radius:12px; background:#fff; box-shadow:0 16px 38px rgba(150,78,78,.12); }
-    code { padding:2px 5px; border-radius:5px; background:#f7eef0; }
-    a { color:#1f6fb2; font-weight:700; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Session not found</h1>
-    <p>找不到这个同步会话：<code>${lanSyncEscapeHtml(requestedPath)}</code></p>
-    <p>如果你正在使用 Cloudflare Tunnel/ngrok，请确认公网地址后面保留了桌面端链接中的 <code>/s/...</code> 路径。</p>
-    <p>当前正在运行的会话数：${sessions.length}。${sessions.length === 1 ? `可以尝试打开 <a href="/s/${encodeURIComponent(sessions[0].token)}">当前会话</a>。` : `可以返回 <a href="/">同步入口</a>。`}</p>
-  </main>
-</body>
-</html>`;
-}
-
-function normalizeLanSyncState(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function normalizeLanSyncRows(value: unknown): LanSyncLineRow[] {
-  return Array.isArray(value)
-    ? value
-        .map((row) => {
-          const source = row && typeof row === "object" ? row as Partial<LanSyncLineRow> : {};
-          return {
-            line: Number(source.line),
-            source: String(source.source ?? ""),
-            translation: source.translation === undefined ? undefined : String(source.translation),
-            status: source.status === undefined ? undefined : String(source.status)
-          };
-        })
-        .filter((row) => Number.isInteger(row.line) && row.line > 0)
-    : [];
-}
-
-function normalizeLanSyncProposals(value: unknown): LanSyncProposalItem[] {
-  return Array.isArray(value)
-    ? value
-        .map((item, index) => {
-          const source = item && typeof item === "object" ? item as Partial<LanSyncProposalItem> : {};
-          return {
-            id: String(source.id || `P-${index + 1}`),
-            line: Number.isInteger(Number(source.line)) && Number(source.line) > 0 ? Number(source.line) : undefined,
-            src: source.src === undefined ? undefined : String(source.src),
-            current: source.current === undefined ? undefined : String(source.current),
-            problemType: source.problemType === undefined ? undefined : String(source.problemType),
-            problem: source.problem === undefined ? undefined : String(source.problem),
-            suggestion: source.suggestion === undefined ? undefined : String(source.suggestion),
-            status: source.status === undefined ? undefined : String(source.status)
-          };
-        })
-        .filter((item) => item.id)
-    : [];
-}
-
-function normalizeLanSyncLineDocument(args: LanSyncStartArgs): LanSyncLineDocument | undefined {
-  const source = args.lineDocument && typeof args.lineDocument === "object" ? args.lineDocument : {};
-  const rows = normalizeLanSyncRows(source.rows ?? args.rows);
-  if (rows.length === 0) {
-    return undefined;
-  }
-  return {
-    title: typeof source.title === "string" && source.title.trim() ? source.title : args.title,
-    rows,
-    state: normalizeLanSyncState(source.state ?? args.state),
-    pageSize: Number.isInteger(Number(source.pageSize ?? args.pageSize)) && Number(source.pageSize ?? args.pageSize) > 0
-      ? Number(source.pageSize ?? args.pageSize)
-      : undefined,
-    lineReviewPath: typeof source.lineReviewPath === "string" && source.lineReviewPath.trim()
-      ? source.lineReviewPath
-      : typeof args.lineReviewPath === "string" && args.lineReviewPath.trim()
-        ? args.lineReviewPath
-        : undefined
-  };
-}
-
-function normalizeLinkedHtmlFilePath(value: string, basePath?: string): string {
-  const raw = value.trim().replace(/#.*$/, "");
-  if (!raw) {
-    return "";
-  }
-  if (/^file:/i.test(raw)) {
-    try {
-      const pathname = decodeURIComponent(new URL(raw).pathname || "");
-      return /^\/[A-Za-z]:\//.test(pathname) ? pathname.slice(1) : pathname;
-    } catch {
-      return "";
-    }
-  }
-  const normalized = raw.replace(/\\/g, "/");
-  if (/^[A-Za-z]:\//.test(normalized)) {
-    return normalized;
-  }
-  if (path.isAbsolute(raw)) {
-    return raw;
-  }
-  const baseDir = basePath && path.isAbsolute(basePath) ? path.dirname(basePath) : "";
-  return baseDir ? path.resolve(baseDir, raw) : "";
-}
-
-function workspaceRootFromContainedPath(value?: string): string {
-  if (!value) {
-    return "";
-  }
-  const filePath = normalizeLinkedHtmlFilePath(value);
-  if (!filePath || !path.isAbsolute(filePath)) {
-    return "";
-  }
-  const normalized = path.normalize(filePath);
-  const parts = normalized.split(path.sep);
-  const index = parts.findIndex((part) => part.toLowerCase() === ".translation-workshop");
-  if (index > 0) {
-    return parts.slice(0, index).join(path.sep) || path.parse(normalized).root;
-  }
-  return path.dirname(normalized);
-}
-
-function normalizeLanSyncOutputDir(args: LanSyncStartArgs, line?: LanSyncLineDocument, proposal?: LanSyncProposalDocument): string | undefined {
-  const direct = typeof args.outputDir === "string" ? args.outputDir.trim() : "";
-  if (direct && path.isAbsolute(direct)) {
-    return direct;
-  }
-  const inferred = [
-    workspaceRootFromContainedPath(proposal?.reportPath),
-    workspaceRootFromContainedPath(proposal?.lineReviewPath),
-    workspaceRootFromContainedPath(line?.lineReviewPath),
-    workspaceRootFromContainedPath(typeof args.htmlPath === "string" ? args.htmlPath : undefined)
-  ].find((item) => item && path.isAbsolute(item));
-  return inferred || undefined;
-}
-
-function parseLineReviewRowsFromHtmlContent(html: string): LanSyncLineRow[] {
-  const match = html.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/i);
-  if (!match) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(match[1]) as { rows?: unknown };
-    return normalizeLanSyncRows(parsed.rows);
-  } catch {
-    return [];
-  }
-}
-
-async function readLinkedLineReviewDocument(lineReviewPath: string, basePath?: string): Promise<LanSyncLineDocument | undefined> {
-  const filePath = normalizeLinkedHtmlFilePath(lineReviewPath, basePath);
-  if (!filePath || !path.isAbsolute(filePath) || !existsSync(filePath)) {
-    return undefined;
-  }
-  const info = await stat(filePath);
-  if (info.size > 80 * 1024 * 1024) {
-    return undefined;
-  }
-  const rows = parseLineReviewRowsFromHtmlContent(await readFile(filePath, "utf8"));
-  if (rows.length === 0) {
-    return undefined;
-  }
-  return {
-    title: path.basename(filePath),
-    rows,
-    state: {},
-    pageSize: 1000,
-    lineReviewPath: filePath
-  };
-}
-
-function lanSyncLineTranslationCount(document: LanSyncLineDocument | undefined): number {
-  if (!document) {
-    return 0;
-  }
-  const edits = document.state.edits && typeof document.state.edits === "object"
-    ? document.state.edits as Record<string, unknown>
-    : {};
-  return document.rows.filter((row) => {
-    const edited = edits[String(row.line)];
-    return String(edited ?? row.translation ?? "").trim().length > 0;
-  }).length;
 }
 
 async function readOpenLineReviewDocument(lineReviewPath: string, basePath?: string): Promise<LanSyncLineDocument | undefined> {
@@ -788,159 +519,24 @@ async function readOpenLineReviewDocument(lineReviewPath: string, basePath?: str
   }
 }
 
-function normalizeLanSyncProposalDocument(args: LanSyncStartArgs): LanSyncProposalDocument | undefined {
-  const source = args.proposalDocument && typeof args.proposalDocument === "object" ? args.proposalDocument : undefined;
-  if (!source) {
-    return undefined;
-  }
-  const proposals = normalizeLanSyncProposals(source.proposals);
-  if (proposals.length === 0) {
-    return undefined;
-  }
-  return {
-    title: typeof source.title === "string" && source.title.trim() ? source.title : args.title,
-    proposals,
-    state: normalizeLanSyncState(source.state),
-    pageSize: Number.isInteger(Number(source.pageSize ?? args.pageSize)) && Number(source.pageSize ?? args.pageSize) > 0
-      ? Number(source.pageSize ?? args.pageSize)
-      : undefined,
-    reportPath: typeof source.reportPath === "string" && source.reportPath.trim() ? source.reportPath : undefined,
-    lineReviewPath: typeof source.lineReviewPath === "string" && source.lineReviewPath.trim()
-      ? source.lineReviewPath
-      : typeof args.lineReviewPath === "string" && args.lineReviewPath.trim()
-        ? args.lineReviewPath
-        : undefined
-  };
-}
-
-function hashLanSyncPin(pin: string): string {
-  return createHash("sha256").update(pin, "utf8").digest("hex");
-}
-
-function isValidLanSyncPin(pin: unknown): pin is string {
-  return typeof pin === "string" && /^\d{6}$/.test(pin);
-}
-
-function lanSyncAuthTokenFrom(url: URL, body?: { authToken?: unknown }): string {
-  const fromQuery = url.searchParams.get("auth");
-  if (fromQuery) {
-    return fromQuery;
-  }
-  return typeof body?.authToken === "string" ? body.authToken : "";
-}
-
-function isLanSyncAuthorized(session: LanSyncSession, token: string): boolean {
-  return Boolean(token && session.authTokens.has(token));
-}
-
-function lanSyncSessionPayload(session: LanSyncSession): Record<string, unknown> {
-  const line = session.documents.line;
-  const proposal = session.documents.proposal;
-  return {
-    title: session.title,
-    agent: session.agent,
-    outputDir: session.outputDir,
-    rows: line?.rows ?? [],
-    state: line?.state ?? {},
-    pageSize: line?.pageSize ?? 1000,
-    documents: {
-      line: line ? {
-        title: line.title,
-        rows: line.rows,
-        state: line.state,
-        pageSize: line.pageSize ?? 1000,
-        lineReviewPath: line.lineReviewPath
-      } : undefined,
-      proposal: proposal ? {
-        title: proposal.title,
-        proposals: proposal.proposals,
-        state: proposal.state,
-        pageSize: proposal.pageSize ?? 1000,
-        reportPath: proposal.reportPath,
-        lineReviewPath: proposal.lineReviewPath
-      } : undefined
+async function persistLanSyncPatch(session: LanSyncSession, patch: LanSyncPatch): Promise<void> {
+  await persistLanSyncDocumentPatch(session, patch, {
+    persistLine: async (lineDocument, line) => {
+      await applyLineReviewStateToView({
+        lineReviewPath: lineDocument.lineReviewPath!,
+        lineState: lineDocument.state,
+        line,
+        activate: false
+      });
     },
-    labels: lanSyncLabels(session.locale),
-    createdAt: session.createdAt
-  };
-}
-
-function applyLanSyncPatchToSession(session: LanSyncSession, patch: LanSyncPatch): void {
-  if (patch.type === "proposal-decision") {
-    const proposalId = String(patch.proposalId || "").trim();
-    const proposal = session.documents.proposal;
-    if (!proposalId || !proposal) {
-      return;
+    persistProposal: async (proposalDocument) => {
+      const statePath = await htmlSidecarStatePath(proposalDocument.proposalReviewPath!, "proposal");
+      if (!statePath) {
+        throw new Error("Unable to resolve the proposal review sidecar state path.");
+      }
+      await writeHtmlSidecarState(statePath, proposalDocument.state);
     }
-    const decisions = (proposal.state.decisions && typeof proposal.state.decisions === "object")
-      ? proposal.state.decisions as Record<string, unknown>
-      : {};
-    proposal.state.decisions = decisions;
-    decisions[proposalId] = {
-      status: patch.status || "manual",
-      manualText: patch.manualText === undefined ? "" : String(patch.manualText)
-    };
-    return;
-  }
-  const lineDocument = session.documents.line;
-  if (!lineDocument) {
-    return;
-  }
-  const line = Number(patch.line || 0);
-  if (!Number.isInteger(line) || line <= 0) {
-    return;
-  }
-  const edits = (lineDocument.state.edits && typeof lineDocument.state.edits === "object")
-    ? lineDocument.state.edits as Record<string, unknown>
-    : {};
-  const status = (lineDocument.state.status && typeof lineDocument.state.status === "object")
-    ? lineDocument.state.status as Record<string, unknown>
-    : {};
-  lineDocument.state.edits = edits;
-  lineDocument.state.status = status;
-  lineDocument.state.activeLine = String(line);
-  if (patch.type === "line-restore") {
-    delete edits[String(line)];
-    delete status[String(line)];
-    return;
-  }
-  edits[String(line)] = String(patch.text ?? "");
-  status[String(line)] = patch.status || "manual";
-}
-
-async function persistLanSyncLinePatch(session: LanSyncSession, patch: LanSyncPatch): Promise<void> {
-  if (patch.type !== "line-edit" && patch.type !== "line-restore") {
-    return;
-  }
-  const lineDocument = session.documents.line;
-  if (!lineDocument?.lineReviewPath) {
-    return;
-  }
-  const line = Number(patch.line || 0);
-  if (!Number.isInteger(line) || line <= 0) {
-    return;
-  }
-  try {
-    await applyLineReviewStateToView({
-      lineReviewPath: lineDocument.lineReviewPath,
-      lineState: lineDocument.state,
-      line,
-      activate: false
-    });
-  } catch {
-    // The live mobile session remains usable even if the linked desktop tab cannot be opened.
-  }
-}
-
-function broadcastLanSyncPatch(session: LanSyncSession, patch: LanSyncPatch): void {
-  const data = `event: patch\ndata: ${lanSyncJson({ patch })}\n\n`;
-  for (const client of [...session.clients]) {
-    if (client.destroyed) {
-      session.clients.delete(client);
-      continue;
-    }
-    client.write(data);
-  }
+  });
 }
 
 function sendLanSyncPatchToOwner(session: LanSyncSession, patch: LanSyncPatch): void {
@@ -950,27 +546,22 @@ function sendLanSyncPatchToOwner(session: LanSyncSession, patch: LanSyncPatch): 
   });
 }
 
-function stopLanSyncSession(session: LanSyncSession): void {
-  for (const client of session.clients) {
-    client.write(`event: stop\ndata: ${lanSyncJson({ ok: true })}\n\n`);
-    client.end();
-  }
-  lanSyncSessions.delete(session.token);
-}
-
-async function readLanSyncBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > 1024 * 1024) {
-      throw new Error("Request body is too large.");
+function sendLanSyncCommandToOwner(session: LanSyncSession, command: LanSyncCommand): boolean {
+  const owner = webContents.fromId(session.ownerWebContentsId);
+  if (!owner || owner.isDestroyed()) return false;
+  const ownerWindow = BrowserWindow.getAllWindows().find((window) => {
+    return window.webContents.id === owner.id
+      || window.getBrowserViews().some((view) => view.webContents.id === owner.id);
+  });
+  if (ownerWindow) {
+    if (ownerWindow.isMinimized()) ownerWindow.restore();
+    if (!electronVerificationHeadless) {
+      ownerWindow.show();
+      ownerWindow.focus();
     }
-    chunks.push(buffer);
   }
-  const text = Buffer.concat(chunks).toString("utf8");
-  return text ? JSON.parse(text) as unknown : {};
+  owner.send("lan-sync:command", { token: session.token, command });
+  return true;
 }
 
 function mobileWorkspaceHtml(session: LanSyncSession): string {
@@ -982,8 +573,6 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>translation-workshop shared workspace</title>
-  <link rel="stylesheet" href="/assets/xterm/xterm.css">
-  <script src="/assets/xterm/xterm.js"></script>
   <style>
     :root { color-scheme: light; --ink:#26324d; --muted:#6d7893; --line:#cfe0f7; --sky:#77c8ff; --panel:#ffffffec; --bg:#edf8ff; }
     * { box-sizing:border-box; }
@@ -1016,28 +605,15 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
     .actions button.active { border-color:#77c8ff; background:#eaf8ff; font-weight:700; }
     textarea { width:100%; min-width:0; max-width:100%; min-height:92px; resize:vertical; line-height:1.5; overflow-wrap:anywhere; }
     select { font:inherit; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); padding:8px 10px; }
-    .agent { display:grid; gap:8px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#f8fbff; }
-    .agent-head { display:flex; align-items:center; gap:8px; }
-    .agent-head strong { margin-right:auto; }
-    .agent-head .status { flex:1 1 auto; min-width:0; min-height:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; text-align:right; }
-    .agent-body { display:grid; gap:8px; max-height:62vh; overflow:auto; overscroll-behavior:contain; }
-    .agent.collapsed .agent-body { display:none; }
-    .agent textarea { min-height:72px; }
-    .agent-log { height:min(42vh,380px); min-height:260px; overflow:auto; padding:4px; border-radius:8px; background:#071523; color:#dbeafe; font:12px/1.35 Consolas,"Cascadia Mono","Courier New",monospace; overscroll-behavior:contain; }
-    .agent-log .xterm { height:100%; }
-    .agent-log .xterm-viewport { overflow-y:auto !important; }
     .status { color:var(--muted); min-height:22px; }
+    #agentPanel { height:calc(100dvh - 60px); min-height:520px; background:#f7f9fd; overflow:hidden; }
+    #remoteAgentRoot { width:100%; height:100%; }
     @media (max-width: 640px) {
       header { gap:6px; padding:8px 10px; }
       .header-top h1 { display:none; }
       .tabs { flex:1 1 auto; min-width:0; }
       .tabs button { flex:1 1 0; min-width:0; padding:7px 8px; }
       .controls-toggle { min-height:36px; }
-      .agent-body { max-height:64vh; }
-      .agent-log { height:42vh; min-height:260px; }
-      .agent textarea { min-height:58px; }
-      .agent .bar { gap:6px; }
-      .agent .bar button, .agent .bar select, #agentSend { padding:7px 8px; }
     }
     [hidden] { display:none !important; }
   </style>
@@ -1059,28 +635,13 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
       <div class="tabs">
         <button id="lineTab" type="button">Line review</button>
         <button id="proposalTab" type="button">Proposal review</button>
+        <button id="agentTab" type="button">Agent</button>
       </div>
       <button id="controlsToggle" class="controls-toggle" type="button" aria-expanded="false">⌄</button>
     </div>
     <div id="headerDrawer" class="header-drawer" hidden>
+      <div class="bar"><button id="openDesktopAgent" type="button">Open desktop Agent</button></div>
       <label class="search-box"><span id="searchLabel">Search</span><input id="searchInput" type="search"></label>
-      <section class="agent collapsed" id="agentPanel">
-        <div class="agent-head">
-          <strong id="agentTitle">Agent Console</strong>
-          <span id="agentStatus" class="status"></span>
-          <button id="agentToggle" type="button">Open</button>
-        </div>
-        <div class="agent-body" id="agentBody" hidden>
-          <div class="bar">
-            <select id="agentSelect"><option value="codex">Codex</option><option value="claude">Claude Code</option></select>
-            <button id="agentStart" type="button">Start Agent</button>
-            <button id="agentStop" type="button">Stop</button>
-          </div>
-          <div id="agentOutput" class="agent-log"></div>
-          <textarea id="agentInput" spellcheck="false" placeholder="Prompt / message"></textarea>
-          <button id="agentSend" type="button">Send</button>
-        </div>
-      </section>
       <div class="bar">
         <button id="prev" type="button">Previous</button>
         <span><span id="pageLabel">Page</span> <input id="pageInput" type="number" min="1" value="1"></span>
@@ -1091,6 +652,7 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
     </div>
   </header>
   <main id="rows"></main>
+  <section id="agentPanel" hidden><div id="remoteAgentRoot"></div></section>
   </section>
   <script>
 const token = ${lanSyncJson(token)};
@@ -1116,115 +678,28 @@ const searchInput = document.getElementById("searchInput");
 const headerDrawer = document.getElementById("headerDrawer");
 const controlsToggle = document.getElementById("controlsToggle");
 const agentPanel = document.getElementById("agentPanel");
-const agentBody = document.getElementById("agentBody");
-const agentToggle = document.getElementById("agentToggle");
-const agentSelect = document.getElementById("agentSelect");
-const agentStatus = document.getElementById("agentStatus");
-const agentOutput = document.getElementById("agentOutput");
-const agentInput = document.getElementById("agentInput");
-let agentOutputText = "";
-let agentTerminal = undefined;
-let agentHasUnreadOutput = false;
-const agentTranscriptLimit = 2000000;
+let agentMounted = false;
 function t(key, fallback) { return labels[key] || fallback; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])); }
 function rowValue(row) { return lineState.edits?.[row.line] ?? row.translation ?? ""; }
+function recordLineRevision(line, text, status, source) {
+  const key = String(line);
+  lineState.revisions ||= {};
+  lineState.revisionHistory ||= {};
+  const revision = Number(lineState.revisions[key] || 0) + 1;
+  lineState.revisions[key] = revision;
+  const history = Array.isArray(lineState.revisionHistory[key]) ? lineState.revisionHistory[key] : [];
+  const entry = { revision, text: String(text ?? ""), status: String(status || ""), source: String(source || "lan") };
+  const last = history[history.length - 1];
+  if (!last || last.text !== entry.text || last.status !== entry.status || last.source !== entry.source) history.push(entry);
+  lineState.revisionHistory[key] = history.slice(-12);
+}
 function setStatus(text) { statusEl.textContent = text; }
-function setAgentStatus(text) { agentStatus.textContent = text || ""; }
 function setControlsExpanded(expanded) {
   headerDrawer.hidden = !expanded;
   controlsToggle.textContent = expanded ? "⌃" : "⌄";
   controlsToggle.title = expanded ? t("controlsClose", "Hide tools") : t("controlsOpen", "Show tools");
   controlsToggle.setAttribute("aria-expanded", String(expanded));
-}
-function isAgentExpanded() { return !agentPanel.classList.contains("collapsed"); }
-function setAgentExpanded(expanded) {
-  agentPanel.classList.toggle("collapsed", !expanded);
-  agentBody.hidden = !expanded;
-  agentToggle.textContent = expanded ? t("agentClose", "Collapse") : t("agentOpen", "Open");
-  if (expanded) {
-    agentHasUnreadOutput = false;
-    setTimeout(() => {
-      ensureAgentTerminal();
-      renderAgentOutput();
-    }, 20);
-  }
-}
-function ensureAgentTerminal() {
-  if (!isAgentExpanded()) return undefined;
-  if (agentTerminal) return agentTerminal;
-  const TerminalCtor = window.Terminal?.Terminal || window.Terminal;
-  if (!TerminalCtor) {
-    agentOutput.textContent = agentOutputText;
-    return undefined;
-  }
-  agentOutput.textContent = "";
-  agentTerminal = new TerminalCtor({
-    cursorBlink: false,
-    convertEol: false,
-    fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
-    fontSize: 12,
-    lineHeight: 1.2,
-    scrollback: 5000,
-    theme: { background: "#071523", foreground: "#dbeafe", cursor: "#ffffff", selectionBackground: "#355c7d" }
-  });
-  agentTerminal.open(agentOutput);
-  resizeAgentTerminal();
-  return agentTerminal;
-}
-function resizeAgentTerminal() {
-  if (!agentTerminal || !agentOutput) return;
-  const width = Math.max(0, agentOutput.clientWidth - 8);
-  const height = Math.max(0, agentOutput.clientHeight - 8);
-  if (!width || !height) return;
-  const cols = Math.max(96, Math.min(160, Math.floor(width / 7.2)));
-  const rows = Math.max(24, Math.min(40, Math.floor(height / 14.4)));
-  try { agentTerminal.resize(cols, rows); } catch {}
-}
-function isAgentTerminalNearBottom() {
-  const buffer = agentTerminal?.buffer?.active;
-  if (buffer && agentTerminal?.rows) {
-    return buffer.baseY - buffer.viewportY <= agentTerminal.rows + 2;
-  }
-  return agentOutput.scrollHeight - agentOutput.scrollTop - agentOutput.clientHeight < 48;
-}
-function scrollAgentTerminalToBottom(force = false) {
-  if (!force && !isAgentTerminalNearBottom()) return;
-  if (agentTerminal?.scrollToBottom) {
-    try { agentTerminal.scrollToBottom(); return; } catch {}
-  }
-  agentOutput.scrollTop = agentOutput.scrollHeight;
-}
-function renderAgentOutput() {
-  if (!isAgentExpanded()) return;
-  const terminal = ensureAgentTerminal();
-  if (terminal) {
-    resizeAgentTerminal();
-    terminal.reset?.();
-    if (agentOutputText) terminal.write(agentOutputText);
-    scrollAgentTerminalToBottom(true);
-  } else {
-    agentOutput.textContent = agentOutputText;
-    agentOutput.scrollTop = agentOutput.scrollHeight;
-  }
-}
-function appendAgentOutput(text) {
-  agentOutputText = (agentOutputText + String(text || "")).slice(-agentTranscriptLimit);
-  if (!isAgentExpanded()) {
-    agentHasUnreadOutput = true;
-    setAgentStatus(t("agentOutputReady", "Agent has output"));
-    return;
-  }
-  const terminal = ensureAgentTerminal();
-  if (terminal) {
-    resizeAgentTerminal();
-    const shouldFollow = isAgentTerminalNearBottom();
-    terminal.write(String(text || ""));
-    scrollAgentTerminalToBottom(shouldFollow);
-  } else {
-    agentOutput.textContent = agentOutputText;
-    agentOutput.scrollTop = agentOutput.scrollHeight;
-  }
 }
 function applyAuthLabels() {
   document.getElementById("pinTitle").textContent = t("pinTitle", "Enter PIN");
@@ -1233,73 +708,26 @@ function applyAuthLabels() {
   document.getElementById("unlockButton").textContent = t("unlock", "Unlock");
 }
 function authed(path) { return path + (path.includes("?") ? "&" : "?") + "auth=" + encodeURIComponent(authToken); }
-async function postAgent(path, body = {}) {
-  const result = await fetch(authed(path), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  const payload = await result.json().catch(() => ({}));
-  if (!result.ok || payload.ok === false) throw new Error(payload.message || result.statusText);
-  return payload;
-}
-async function refreshAgentStatus() {
-  const snapshot = await fetch(authed("/api/agent/status/" + encodeURIComponent(token))).then(res => res.json());
-  if (snapshot?.output && snapshot.output !== agentOutputText) {
-    agentOutputText = snapshot.output;
-    if (isAgentExpanded()) renderAgentOutput();
-    else if (agentOutputText) {
-      agentHasUnreadOutput = true;
-      setAgentStatus(t("agentOutputReady", "Agent has output"));
-    }
-  }
-  if (snapshot?.agent) agentSelect.value = snapshot.agent;
-  setAgentStatus(snapshot?.running ? (agentHasUnreadOutput ? t("agentOutputReady", "Agent has output") : t("agentStarted", "Agent started")) : "");
-}
-async function startAgent() {
-  try {
-    const payload = await postAgent("/api/agent/start/" + encodeURIComponent(token), {
-      agent: agentSelect.value,
-      cols: Math.max(96, agentTerminal?.cols || 120),
-      rows: Math.max(24, agentTerminal?.rows || 32)
-    });
-    setAgentStatus(payload.message || t("agentStarted", "Agent started"));
-    if (payload.status?.output) {
-      agentOutputText = payload.status.output;
-      renderAgentOutput();
-    }
-    return true;
-  } catch (error) {
-    setAgentStatus(error?.message || String(error));
-    return false;
-  }
-}
-async function sendAgentInput() {
-  const text = agentInput.value;
-  if (!text.trim()) return;
-  try {
-    if (!await startAgent()) return;
-    agentInput.value = "";
-    const payload = await postAgent("/api/agent/input/" + encodeURIComponent(token), { text });
-    setAgentStatus(payload.promptPath ? payload.promptPath : t("saved", "Synced"));
-  } catch (error) {
-    agentInput.value = text;
-    setAgentStatus(error?.message || String(error));
-  }
-}
-async function stopAgent() {
-  try {
-    await postAgent("/api/agent/stop/" + encodeURIComponent(token), {});
-    setAgentStatus(t("agentStopped", "Agent stopped"));
-  } catch (error) {
-    setAgentStatus(error?.message || String(error));
-  }
-}
 function setTab(kind) {
   activeKind = kind;
+  const agentActive = kind === "agent";
+  rowsEl.hidden = agentActive;
+  agentPanel.hidden = !agentActive;
   searchInput.value = searchByKind[activeKind] || "";
   document.getElementById("lineTab").classList.toggle("active", kind === "line");
   document.getElementById("proposalTab").classList.toggle("active", kind === "proposal");
+  document.getElementById("agentTab").classList.toggle("active", agentActive);
+  if (agentActive) {
+    setControlsExpanded(false);
+    if (!agentMounted) {
+      agentMounted = true;
+      window.mountRemoteYnAgent(document.getElementById("remoteAgentRoot")).catch(error => {
+        agentMounted = false;
+        agentPanel.textContent = String(error?.message || error);
+      });
+    }
+    return;
+  }
   render();
 }
 function activeSearch() {
@@ -1368,15 +796,27 @@ function renderProposal() {
   }).join("") : '<article>' + escapeHtml(activeSearch() ? t("searchNoMatches", "No matches.") : t("empty", "No document in this shared session.")) + '</article>';
 }
 function render() {
+  if (activeKind === "agent") return;
   if (activeKind === "proposal") renderProposal();
   else renderLine();
 }
 async function postPatch(patch) {
-  await fetch(authed("/api/patch/" + encodeURIComponent(token)), {
+  const response = await fetch(authed("/api/patch/" + encodeURIComponent(token)), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ...patch, clientId, timestamp: new Date().toISOString() })
   });
+  if (!response.ok) throw new Error(await response.text() || t("syncFailed", "Could not sync change."));
+  return response.json();
+}
+async function postCommand(command) {
+  const response = await fetch(authed("/api/command/" + encodeURIComponent(token)), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...command, clientId, timestamp: new Date().toISOString() })
+  });
+  if (!response.ok) throw new Error(await response.text() || t("openDesktopAgentFailed", "Could not open desktop Agent"));
+  return response.json();
 }
 let timers = new Map();
 rowsEl.addEventListener("input", event => {
@@ -1403,6 +843,7 @@ rowsEl.addEventListener("input", event => {
   lineState.status ||= {};
   lineState.edits[line] = textarea.value;
   lineState.status[line] = "manual";
+  recordLineRevision(line, textarea.value, "manual", "lan-edit");
   clearTimeout(timers.get(line));
   timers.set(line, setTimeout(() => {
     postPatch({ type: "line-edit", line, text: textarea.value, status: "manual" })
@@ -1442,9 +883,11 @@ function applyPatch(patch) {
   if (patch.type === "line-restore") {
     delete lineState.edits[line];
     delete lineState.status[line];
+    recordLineRevision(line, rowValue({ line }), "", "remote-restore");
   } else {
     lineState.edits[line] = String(patch.text ?? "");
     lineState.status[line] = patch.status || "manual";
+    recordLineRevision(line, lineState.edits[line], lineState.status[line], "remote-edit");
   }
   const visible = rowsEl.querySelector('article[data-line="' + line + '"] textarea');
   if (visible && document.activeElement !== visible) visible.value = rowValue({ line });
@@ -1488,26 +931,18 @@ async function boot() {
   document.getElementById("jump").textContent = t("go", "Go");
   document.getElementById("lineTab").textContent = t("lineTab", "Line review");
   document.getElementById("proposalTab").textContent = t("proposalTab", "Proposal review");
+  document.getElementById("agentTab").textContent = t("agentTab", "Agent");
+  document.getElementById("openDesktopAgent").textContent = t("openDesktopAgent", "Open desktop Agent");
   setControlsExpanded(false);
-  document.getElementById("agentTitle").textContent = t("agentConsole", "Agent Console");
-  document.getElementById("agentStart").textContent = t("agentStart", "Start Agent");
-  document.getElementById("agentStop").textContent = t("agentStop", "Stop");
-  document.getElementById("agentSend").textContent = t("agentSend", "Send");
-  document.getElementById("agentInput").placeholder = t("agentInput", "Prompt / message");
-  agentSelect.value = session.agent || "codex";
   document.getElementById("lineTab").hidden = lineRows.length === 0;
   document.getElementById("proposalTab").hidden = proposalItems.length === 0;
   activeKind = proposalItems.length > 0 && lineRows.length === 0 ? "proposal" : "line";
   document.getElementById("gate").hidden = true;
   document.getElementById("app").hidden = false;
-  setAgentExpanded(false);
   setTab(activeKind);
   render();
-  await refreshAgentStatus().catch(() => {});
   const events = new EventSource(authed("/events/" + encodeURIComponent(token)));
   events.addEventListener("patch", event => applyPatch(JSON.parse(event.data).patch));
-  events.addEventListener("agent-console", event => appendAgentOutput(JSON.parse(event.data).data || ""));
-  events.addEventListener("agent-exit", event => setAgentStatus(t("agentStopped", "Agent stopped") + ": " + (JSON.parse(event.data).exitCode ?? "")));
   events.onerror = () => setStatus(t("offline", "Disconnected"));
 }
 document.getElementById("prev").onclick = () => { pageByKind[activeKind] = (pageByKind[activeKind] || 1) - 1; render(); scrollTo(0, 0); };
@@ -1521,22 +956,18 @@ searchInput.addEventListener("input", () => {
 });
 document.getElementById("lineTab").onclick = () => setTab("line");
 document.getElementById("proposalTab").onclick = () => setTab("proposal");
+document.getElementById("agentTab").onclick = () => setTab("agent");
+window.addEventListener("yn-remote-agent-close", () => setTab(lineRows.length ? "line" : "proposal"));
 controlsToggle.onclick = () => setControlsExpanded(headerDrawer.hidden);
-document.getElementById("agentStart").onclick = () => { void startAgent(); };
-document.getElementById("agentStop").onclick = () => { void stopAgent(); };
-document.getElementById("agentSend").onclick = () => { void sendAgentInput(); };
-agentToggle.onclick = () => setAgentExpanded(agentPanel.classList.contains("collapsed"));
-agentInput.addEventListener("keydown", event => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    void sendAgentInput();
+document.getElementById("openDesktopAgent").onclick = async () => {
+  setStatus(t("openingDesktopAgent", "Opening desktop Agent..."));
+  try {
+    await postCommand({ type: "open-agent-os" });
+    setStatus(t("openedDesktopAgent", "Desktop Agent opened"));
+  } catch (error) {
+    setStatus(t("openDesktopAgentFailed", "Could not open desktop Agent") + ": " + String(error?.message || error));
   }
-});
-window.addEventListener("resize", () => {
-  if (!isAgentExpanded()) return;
-  resizeAgentTerminal();
-  scrollAgentTerminalToBottom();
-});
+};
 document.getElementById("pinForm").addEventListener("submit", async event => {
   event.preventDefault();
   const pin = String(document.getElementById("pinInput").value || "").trim();
@@ -1558,6 +989,9 @@ boot().catch(error => {
   document.getElementById("pinStatus").textContent = String(error?.message || error);
 });
   </script>
+  <script>${lanAgentBridgeScript(token, { outputDir: `lan:${token}`, locale: session.locale })}</script>
+  <link rel="stylesheet" href="/agent-assets/agent.css">
+  <script type="module" src="/agent-assets/agent-embedded.js"></script>
 </body>
 </html>`;
 }
@@ -1589,6 +1023,29 @@ async function ensureLanSyncServer(): Promise<void> {
       const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
       const parts = url.pathname.split("/");
       const route = parts[1] || "";
+      if (req.method === "GET" && route === "agent-assets") {
+        const requested = decodeURIComponent(parts.slice(2).join("/"));
+        if (!requested || path.basename(requested) !== requested) {
+          lanSyncResponse(res, 400, "Invalid asset path.", "text/plain; charset=utf-8");
+          return;
+        }
+        const assetsDir = path.join(app.getAppPath(), "dist", "renderer", "assets");
+        const files = await readdir(assetsDir);
+        const fileName = requested === "agent-embedded.js"
+          ? files.find((file) => file.startsWith("agent-embedded-") && file.endsWith(".js"))
+          : requested === "agent.css"
+            ? files.find((file) => file.startsWith("styles-") && file.endsWith(".css"))
+            : files.includes(requested) ? requested : undefined;
+        if (!fileName) {
+          lanSyncResponse(res, 404, "Agent asset not found.", "text/plain; charset=utf-8");
+          return;
+        }
+        const contentType = fileName.endsWith(".css")
+          ? "text/css; charset=utf-8"
+          : fileName.endsWith(".js") ? "text/javascript; charset=utf-8" : "application/octet-stream";
+        lanSyncResponse(res, 200, await readFile(path.join(assetsDir, fileName), "utf8"), contentType);
+        return;
+      }
       if (req.method === "GET" && (route === "" || route === "index.html")) {
         const sessions = [...lanSyncSessions.values()];
         if (sessions.length === 1) {
@@ -1600,25 +1057,14 @@ async function ensureLanSyncServer(): Promise<void> {
           res.end();
           return;
         }
-        lanSyncResponse(res, 200, lanSyncLandingHtml(), "text/html; charset=utf-8");
+        lanSyncResponse(res, 200, lanSyncLandingHtml(lanSyncSessions.values()), "text/html; charset=utf-8");
         return;
       }
-      if (req.method === "GET" && route === "assets" && parts[2] === "xterm") {
-        const filename = path.basename(parts[3] || "");
-        if (!["xterm.css", "xterm.js", "addon-fit.js"].includes(filename)) {
-          lanSyncResponse(res, 404, "Not found.", "text/plain; charset=utf-8");
-          return;
-        }
-        const assetPath = path.join(app.getAppPath(), "assets", "vendor", "xterm", filename);
-        const contentType = filename.endsWith(".css") ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8";
-        lanSyncResponse(res, 200, await readFile(assetPath, "utf8"), contentType);
-        return;
-      }
-      const token = route === "api" && parts[2] === "agent" ? parts[4] : route === "api" ? parts[3] : parts[2];
+      const token = route === "api" ? parts[3] : parts[2];
       const session = token ? lanSyncSessions.get(decodeURIComponent(token)) : undefined;
       if (!session) {
         if (req.method === "GET" && (route === "s" || route === "")) {
-          lanSyncResponse(res, 404, lanSyncSessionNotFoundHtml(url.pathname), "text/html; charset=utf-8");
+          lanSyncResponse(res, 404, lanSyncSessionNotFoundHtml(url.pathname, lanSyncSessions.values()), "text/html; charset=utf-8");
           return;
         }
         lanSyncResponse(res, 404, "Session not found.", "text/plain; charset=utf-8");
@@ -1647,14 +1093,6 @@ async function ensureLanSyncServer(): Promise<void> {
         lanSyncResponse(res, 200, lanSyncJson(lanSyncSessionPayload(session)), "application/json; charset=utf-8");
         return;
       }
-      if (req.method === "GET" && route === "api" && parts[2] === "agent" && parts[3] === "status") {
-        if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url))) {
-          lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
-          return;
-        }
-        lanSyncResponse(res, 200, lanSyncJson(interactiveConsoleSnapshot()), "application/json; charset=utf-8");
-        return;
-      }
       if (req.method === "GET" && route === "events") {
         if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url))) {
           lanSyncResponse(res, 401, "Unauthorized.", "text/plain; charset=utf-8");
@@ -1664,11 +1102,23 @@ async function ensureLanSyncServer(): Promise<void> {
           "Content-Type": "text/event-stream; charset=utf-8",
           "Cache-Control": "no-cache, no-transform",
           "Connection": "keep-alive",
+          "Keep-Alive": "timeout=120",
+          "X-Accel-Buffering": "no",
           "Access-Control-Allow-Origin": "*"
         });
+        res.socket?.setKeepAlive(true, 15_000);
         session.clients.add(res);
         res.write(`event: hello\ndata: ${lanSyncJson({ ok: true })}\n\n`);
-        req.on("close", () => session.clients.delete(res));
+        const heartbeat = setInterval(() => {
+          if (res.destroyed) return;
+          res.write(`: heartbeat ${Date.now()}\n\n`);
+        }, 15_000);
+        const cleanup = () => {
+          clearInterval(heartbeat);
+          session.clients.delete(res);
+        };
+        res.once("close", cleanup);
+        res.once("error", cleanup);
         return;
       }
       if (req.method === "POST" && route === "api" && url.pathname.includes("/api/patch/")) {
@@ -1684,59 +1134,47 @@ async function ensureLanSyncServer(): Promise<void> {
           text: typeof body.text === "string" ? body.text : "",
           status: typeof body.status === "string" ? body.status : "manual",
           manualText: typeof body.manualText === "string" ? body.manualText : "",
+          overrideConflict: typeof body.overrideConflict === "boolean" ? body.overrideConflict : undefined,
+          conflictReason: typeof body.conflictReason === "string" ? body.conflictReason : undefined,
           clientId: typeof body.clientId === "string" ? body.clientId : "remote",
           timestamp: typeof body.timestamp === "string" ? body.timestamp : new Date().toISOString()
         };
-        applyLanSyncPatchToSession(session, patch);
-        await persistLanSyncLinePatch(session, patch);
-        sendLanSyncPatchToOwner(session, patch);
-        broadcastLanSyncPatch(session, patch);
+        await commitLanSyncPatch(session, patch, persistLanSyncPatch, (committedSession, committedPatch) => {
+          sendLanSyncPatchToOwner(committedSession, committedPatch);
+          broadcastLanSyncPatch(committedSession, committedPatch);
+        });
         lanSyncResponse(res, 200, lanSyncJson({ ok: true }), "application/json; charset=utf-8");
         return;
       }
-      if (req.method === "POST" && route === "api" && parts[2] === "agent" && parts[3] === "start") {
-        const body = await readLanSyncBody(req) as { authToken?: unknown; agent?: unknown; cols?: unknown; rows?: unknown };
+      if (req.method === "POST" && route === "api" && url.pathname.includes("/api/agent/")) {
+        const body = await readLanSyncBody(req) as { authToken?: unknown } & Record<string, unknown>;
         if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url, body))) {
           lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
           return;
         }
-        if (!session.outputDir) {
-          lanSyncResponse(res, 400, lanSyncJson({ ok: false, message: lanSyncLabels(session.locale).agentNeedsOutput }), "application/json; charset=utf-8");
+        const request = normalizeLanAgentRequest(body);
+        if (!request) {
+          lanSyncResponse(res, 400, lanSyncJson({ ok: false, message: "Unsupported Agent request." }), "application/json; charset=utf-8");
           return;
         }
-        const result = await startInteractiveAgentConsole({
-          agent: body.agent === "claude" ? "claude" : session.agent,
-          outputDir: session.outputDir,
-          cols: Number(body.cols || 100),
-          rows: Number(body.rows || 28)
-        });
-        lanSyncResponse(res, result.ok ? 200 : 500, lanSyncJson(result), "application/json; charset=utf-8");
+        const result = await lanAgentGateway.invoke(session.outputDir, request);
+        lanSyncResponse(res, 200, lanSyncJson(result), "application/json; charset=utf-8");
         return;
       }
-      if (req.method === "POST" && route === "api" && parts[2] === "agent" && parts[3] === "input") {
-        const body = await readLanSyncBody(req) as { authToken?: unknown; text?: unknown };
+      if (req.method === "POST" && route === "api" && url.pathname.includes("/api/command/")) {
+        const body = await readLanSyncBody(req) as { authToken?: unknown } & Record<string, unknown>;
         if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url, body))) {
           lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
           return;
         }
-        if (!interactiveAgentSession) {
-          lanSyncResponse(res, 400, lanSyncJson({ ok: false, message: "No interactive Agent Console is running." }), "application/json; charset=utf-8");
+        const command = normalizeLanSyncCommand(body);
+        if (!command) {
+          lanSyncResponse(res, 400, lanSyncJson({ ok: false, message: "Unsupported command." }), "application/json; charset=utf-8");
           return;
         }
-        const result = await submitInteractiveAgentInput(interactiveAgentSession, typeof body.text === "string" ? body.text : "");
-        lanSyncResponse(res, result.ok ? 200 : 500, lanSyncJson(result), "application/json; charset=utf-8");
-        return;
-      }
-      if (req.method === "POST" && route === "api" && parts[2] === "agent" && parts[3] === "stop") {
-        const body = await readLanSyncBody(req) as { authToken?: unknown };
-        if (!isLanSyncAuthorized(session, lanSyncAuthTokenFrom(url, body))) {
-          lanSyncResponse(res, 401, lanSyncJson({ ok: false }), "application/json; charset=utf-8");
+        if (!sendLanSyncCommandToOwner(session, command)) {
+          lanSyncResponse(res, 409, lanSyncJson({ ok: false, message: "Desktop workspace is unavailable." }), "application/json; charset=utf-8");
           return;
-        }
-        if (interactiveAgentSession) {
-          const running = interactiveAgentSession;
-          interactiveAgentSession = undefined;
-          running.pty.kill();
         }
         lanSyncResponse(res, 200, lanSyncJson({ ok: true }), "application/json; charset=utf-8");
         return;
@@ -1813,53 +1251,147 @@ async function findLatestHtml(htmlDir: string): Promise<string> {
   return candidates[0]?.path ?? "";
 }
 
+async function existingHtmlPath(candidate: unknown, workspaceDir: string): Promise<string> {
+  if (typeof candidate !== "string" || !candidate.trim()) {
+    return "";
+  }
+  const normalized = normalizeLinkedHtmlFilePath(candidate);
+  const candidates = [
+    normalized,
+    normalized ? path.join(workspaceDir, "html", path.basename(normalized)) : ""
+  ].filter(Boolean);
+  for (const filePath of candidates) {
+    if (!isSameOrInside(workspaceDir, filePath)) continue;
+    try {
+      if ((await stat(filePath)).isFile()) return filePath;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return "";
+}
+
+async function htmlSidecarStatePath(filePath: string, kind: "line" | "proposal"): Promise<string> {
+  if (kind === "line") return resolveLineReviewSidecarStatePath(filePath);
+  const workspaceDir = workspaceDirFromKnownPath(filePath);
+  return workspaceDir ? path.join(workspaceDir, "state", `${kind}-${path.basename(filePath)}.json`) : "";
+}
+
+async function writeHtmlSidecarState(statePath: string, state: unknown): Promise<void> {
+  const key = path.resolve(statePath).toLowerCase();
+  const previous = htmlStateWriteQueues.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(async () => {
+    await mkdir(path.dirname(statePath), { recursive: true });
+    await writeTextFileAtomically(statePath, JSON.stringify(state ?? {}, null, 2));
+  });
+  htmlStateWriteQueues.set(key, current);
+  try {
+    await current;
+  } finally {
+    if (htmlStateWriteQueues.get(key) === current) htmlStateWriteQueues.delete(key);
+  }
+}
+
+async function updateHtmlSidecarState(
+  statePath: string,
+  update: (current: Record<string, unknown>) => Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const key = path.resolve(statePath).toLowerCase();
+  const previous = htmlStateWriteQueues.get(key) ?? Promise.resolve();
+  let updated: Record<string, unknown> = {};
+  const current = previous.catch(() => undefined).then(async () => {
+    const existing = await readJsonObject(statePath) ?? {};
+    updated = update(existing);
+    await mkdir(path.dirname(statePath), { recursive: true });
+    await writeTextFileAtomically(statePath, JSON.stringify(updated, null, 2));
+  });
+  htmlStateWriteQueues.set(key, current);
+  try {
+    await current;
+    return updated;
+  } finally {
+    if (htmlStateWriteQueues.get(key) === current) htmlStateWriteQueues.delete(key);
+  }
+}
+
+async function ensureTransactionalTextTarget(filePath: string, initialText: string): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await stat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    try {
+      await writeFile(filePath, initialText, { encoding: "utf8", flag: "wx" });
+    } catch (writeError) {
+      if ((writeError as NodeJS.ErrnoException).code !== "EEXIST") throw writeError;
+    }
+  }
+}
+
+function broadcastLineReviewState(payload: Record<string, unknown>): void {
+  for (const tab of htmlViewerTabs.values()) {
+    if (!tab.view.webContents.isDestroyed()) {
+      tab.view.webContents.send("html:lineReviewStateUpdate", payload);
+    }
+  }
+}
+
+async function drainHtmlSidecarStateWrites(): Promise<void> {
+  while (htmlStateWriteQueues.size > 0) {
+    await Promise.all([...htmlStateWriteQueues.values()]);
+  }
+}
+
+async function withHtmlStateWriteLocks<T>(statePaths: string[], task: () => Promise<T>): Promise<T> {
+  const keys = [...new Set(statePaths.map((statePath) => path.resolve(statePath).toLowerCase()))].sort();
+  const locks = keys.map((key) => {
+    const previous = htmlStateWriteQueues.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => undefined).then(() => held);
+    htmlStateWriteQueues.set(key, tail);
+    return { key, previous, release, tail };
+  });
+  await Promise.all(locks.map((lock) => lock.previous.catch(() => undefined)));
+  try {
+    return await task();
+  } finally {
+    for (const lock of locks) lock.release();
+    for (const lock of locks) {
+      if (htmlStateWriteQueues.get(lock.key) === lock.tail) htmlStateWriteQueues.delete(lock.key);
+    }
+  }
+}
+
 async function isLineReviewHtml(targetPath: string | undefined): Promise<boolean> {
   if (!targetPath) {
     return false;
   }
   try {
     const html = await readFile(targetPath, "utf8");
-    return html.includes("line-review") && html.includes('id="reviewData"');
+    return /<script\s+id=["']reviewData["']\s+type=["']application\/json["']>/i.test(html);
   } catch {
     return false;
   }
 }
 
-async function findLatestLineReviewHtml(htmlDir: string): Promise<string> {
-  const candidates: HtmlCandidate[] = [];
-  async function visit(folderPath: string, depth: number): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(folderPath, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    await Promise.all(entries.map(async (entry) => {
-      const fullPath = path.join(folderPath, entry.name);
-      if (entry.isDirectory()) {
-        await visit(fullPath, depth + 1);
-        return;
-      }
-      if (!entry.isFile() || !/^line-review.*\.html$/i.test(entry.name)) {
-        return;
-      }
-      if (!(await isLineReviewHtml(fullPath))) {
-        return;
-      }
-      const info = await stat(fullPath);
-      candidates.push({ path: fullPath, modifiedMs: info.mtimeMs, depth });
-    }));
+async function isBatchLineReviewHtml(targetPath: string | undefined): Promise<boolean> {
+  if (!targetPath) return false;
+  try {
+    await readBatchLineReviewChildren(path.resolve(targetPath));
+    return true;
+  } catch {
+    return false;
   }
-  await visit(htmlDir, 0);
-  candidates.sort((left, right) => right.modifiedMs - left.modifiedMs || left.depth - right.depth || left.path.localeCompare(right.path));
-  return candidates[0]?.path ?? "";
 }
 
 async function findLinkedLineReviewHtml(outputDir: string, explicitPath?: string): Promise<string | undefined> {
   const { workspaceDir } = normalizeProjectFolder(outputDir);
   const state = await readJsonObject(path.join(workspaceDir, "state.json"));
   const project = await readJsonObject(path.join(workspaceDir, "project.json"));
-  const latestLineReview = await findLatestLineReviewHtml(path.join(workspaceDir, "html"));
+  const latestLineReview = (await discoverProjectReviewTargets(workspaceDir)).lineReviewHtml;
   const candidates = [
     explicitPath,
     typeof state?.lastHtml === "string" ? state.lastHtml : undefined,
@@ -1868,11 +1400,694 @@ async function findLinkedLineReviewHtml(outputDir: string, explicitPath?: string
     latestLineReview
   ];
   for (const candidate of candidates) {
+    const linked = await lineReviewCandidateInWorkspace(candidate, workspaceDir);
+    if (linked) return linked;
+  }
+  return undefined;
+}
+
+function normalizedProposalDocumentId(value: unknown): string {
+  return typeof value === "string" ? value.trim().replace(/\\/g, "/").toLowerCase() : "";
+}
+
+function validProposalDocumentId(value: string): boolean {
+  const normalized = value.trim().replace(/\\/g, "/");
+  return Boolean(normalized)
+    && !path.isAbsolute(normalized)
+    && !normalized.split("/").some((part) => part === "..");
+}
+
+async function proposalRoutingFromReport(args: ResolveProposalLineReviewDocumentArgs): Promise<{
+  documentId: string;
+  sourcePath: string;
+  translationPath?: string;
+}> {
+  if (!args.reportPath || !path.isAbsolute(args.reportPath)) {
+    throw new Error("An absolute proofread report path is required.");
+  }
+  const reportText = await readFile(args.reportPath, "utf8");
+  const proposals = parseProofreadReport(reportText, args.reportPath);
+  if (proposals.length === 0) throw new Error("The proofread report has no findings to route.");
+  let folderScopeRoot = "";
+  let folderReport = false;
+  if (reportText.trimStart().startsWith("{")) {
+    try {
+      const report = JSON.parse(reportText) as {
+        schemaVersion?: unknown;
+        scope?: { kind?: unknown; sourcePath?: unknown };
+        findings?: unknown;
+      };
+      if (report.schemaVersion === "2.0") {
+        folderReport = true;
+        if (report.scope?.kind !== "folder" || typeof report.scope.sourcePath !== "string" || !path.isAbsolute(report.scope.sourcePath)) {
+          throw new Error("Folder proofread report has an invalid absolute folder scope.");
+        }
+        folderScopeRoot = path.resolve(report.scope.sourcePath);
+        const outputDir = typeof args.outputDir === "string" && path.isAbsolute(args.outputDir)
+          ? path.resolve(args.outputDir)
+          : "";
+        if (!outputDir) throw new Error("Folder proofread routing requires an absolute project output directory.");
+        const extractedRoot = outputDir
+          ? path.join(normalizeProjectFolder(outputDir).workspaceDir, "extracted-text")
+          : "";
+        if (!Array.isArray(report.findings)) {
+          throw new Error("Folder proofread report findings must be an array.");
+        }
+        const routeByDocumentId = new Map<string, { sourcePath: string; translationPath: string }>();
+        for (const [index, rawFinding] of report.findings.entries()) {
+          if (!rawFinding || typeof rawFinding !== "object" || Array.isArray(rawFinding)) {
+            throw new Error(`Folder proofread finding ${index + 1} is not an object.`);
+          }
+          const finding = rawFinding as Record<string, unknown>;
+          const documentId = typeof finding.documentId === "string" ? finding.documentId : "";
+          const sourcePath = typeof finding.sourcePath === "string" && path.isAbsolute(finding.sourcePath)
+            ? path.resolve(finding.sourcePath)
+            : "";
+          const translationPath = typeof finding.translationPath === "string" && path.isAbsolute(finding.translationPath)
+            ? path.resolve(finding.translationPath)
+            : "";
+          if (!validProposalDocumentId(documentId) || !sourcePath || !(
+            isSameOrInside(folderScopeRoot, sourcePath)
+            || Boolean(extractedRoot && isSameOrInside(extractedRoot, sourcePath))
+          )) {
+            throw new Error(`Folder proofread finding is outside its declared document scope: ${documentId || sourcePath || "unknown"}`);
+          }
+          if (!translationPath || !isSameOrInside(outputDir, translationPath)) {
+            throw new Error(`Folder proofread finding has an invalid project translation path: ${documentId || "unknown"}`);
+          }
+          const routeKey = normalizedProposalDocumentId(documentId);
+          const previousRoute = routeByDocumentId.get(routeKey);
+          if (previousRoute && (
+            !sameFilePath(previousRoute.sourcePath, sourcePath)
+            || !sameFilePath(previousRoute.translationPath, translationPath)
+          )) {
+            throw new Error(`Folder proofread document id maps to multiple file routes: ${documentId}`);
+          }
+          routeByDocumentId.set(routeKey, { sourcePath, translationPath });
+        }
+      }
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error("Proofread findings JSON is invalid.", { cause: error });
+      throw error;
+    }
+  }
+  const requestedId = normalizedProposalDocumentId(args.documentId);
+  const requestedSource = typeof args.sourcePath === "string" && path.isAbsolute(args.sourcePath)
+    ? path.resolve(args.sourcePath)
+    : "";
+  const matching = proposals.filter((item) => {
+    const itemId = normalizedProposalDocumentId(item.documentId);
+    const itemSource = typeof item.sourcePath === "string" && path.isAbsolute(item.sourcePath)
+      ? path.resolve(item.sourcePath)
+      : "";
+    return requestedId ? itemId === requestedId : requestedSource ? sameFilePath(itemSource, requestedSource) : true;
+  });
+  const routed = matching[0];
+  if (!routed) throw new Error(`Proofread document was not found in the aggregate report: ${args.documentId || args.sourcePath || "unknown"}`);
+  const sourcePath = typeof routed.sourcePath === "string" && path.isAbsolute(routed.sourcePath)
+    ? path.resolve(routed.sourcePath)
+    : requestedSource;
+  if (!sourcePath) throw new Error("The proofread finding is missing its absolute source path.");
+  const documentId = String(routed.documentId || args.documentId || path.basename(sourcePath));
+  const routedTranslationPath = typeof routed.translationPath === "string" && path.isAbsolute(routed.translationPath)
+    ? path.resolve(routed.translationPath)
+    : undefined;
+  const translationPath = folderReport
+    ? routedTranslationPath
+    : routedTranslationPath ?? (typeof args.translationPath === "string" && path.isAbsolute(args.translationPath)
+      ? path.resolve(args.translationPath)
+      : undefined);
+  if (folderReport && !translationPath) {
+    throw new Error(`Folder proofread finding is missing its absolute translation path: ${documentId}`);
+  }
+  if (folderScopeRoot && !validProposalDocumentId(documentId)) {
+    throw new Error(`Folder proofread document id is invalid: ${documentId}`);
+  }
+  if (requestedSource && !sameFilePath(requestedSource, sourcePath)) {
+    throw new Error(`Proofread document source does not match its aggregate report route: ${documentId}`);
+  }
+  const requestedTranslation = typeof args.translationPath === "string" && path.isAbsolute(args.translationPath)
+    ? path.resolve(args.translationPath)
+    : "";
+  if (requestedTranslation && translationPath && !sameFilePath(requestedTranslation, translationPath)) {
+    throw new Error(`Proofread document translation does not match its aggregate report route: ${documentId}`);
+  }
+  return { documentId, sourcePath, ...(translationPath ? { translationPath } : {}) };
+}
+
+async function proposalLineReviewCandidates(outputDir: string, explicitPath?: string): Promise<string[]> {
+  const { workspaceDir } = normalizeProjectFolder(outputDir);
+  const [state, project, discovered] = await Promise.all([
+    readJsonObject(path.join(workspaceDir, "state.json")),
+    readJsonObject(path.join(workspaceDir, "project.json")),
+    discoverProjectReviewTargets(workspaceDir)
+  ]);
+  return [...new Set([
+    explicitPath,
+    typeof state?.lastHtml === "string" ? state.lastHtml : undefined,
+    typeof project?.lineReviewPath === "string" ? project.lineReviewPath : undefined,
+    typeof project?.lastLineReviewHtml === "string" ? project.lastLineReviewHtml : undefined,
+    discovered.lineReviewHtml
+  ].filter((value): value is string => Boolean(value && path.isAbsolute(value))))];
+}
+
+async function lineReviewRouting(lineReviewPath: string): Promise<{ sourcePaths: string[]; translationPaths: string[] }> {
+  try {
+    const html = await readFile(lineReviewPath, "utf8");
+    const match = html.match(/<script id=["']reviewData["'] type=["']application\/json["']>([\s\S]*?)<\/script>/i);
+    if (!match) return { sourcePaths: [], translationPaths: [] };
+    const parsed = JSON.parse(match[1]) as { workflow?: { paths?: Record<string, unknown> } };
+    const paths = parsed.workflow?.paths ?? {};
+    const absolute = (names: string[]) => [...new Set(names
+      .map((name) => paths[name])
+      .filter((value): value is string => typeof value === "string" && path.isAbsolute(value))
+      .map((value) => path.resolve(value)))];
+    return {
+      sourcePaths: absolute(["sourcePath", "validationSourcePath", "sourcePromptPath"]),
+      translationPaths: absolute(["translationPath", "editableTranslationPath", "translationPromptPath"])
+    };
+  } catch {
+    return { sourcePaths: [], translationPaths: [] };
+  }
+}
+
+async function assertLineReviewMatchesProposalRouting(
+  lineReviewPath: string,
+  routing: { documentId: string; sourcePath: string; translationPath?: string }
+): Promise<void> {
+  const binding = await lineReviewRouting(lineReviewPath);
+  if (!binding.sourcePaths.some((candidate) => sameFilePath(candidate, routing.sourcePath))) {
+    throw new Error(
+      `Line-review HTML is not bound to proofread document ${routing.documentId}: expected ${routing.sourcePath}; got ${binding.sourcePaths.join(", ") || "no source binding"}.`
+    );
+  }
+  if (routing.translationPath && !binding.translationPaths.some((candidate) => sameFilePath(candidate, routing.translationPath))) {
+    throw new Error(`Line-review HTML translation is not bound to proofread document ${routing.documentId}.`);
+  }
+}
+
+interface EmbeddedLineReviewWorkflow {
+  inputMode?: unknown;
+  promptInputMode?: unknown;
+  paths?: Record<string, unknown>;
+  glossaryEntries?: unknown;
+  bilingualPair?: unknown;
+  epubExport?: unknown;
+  advanced?: unknown;
+}
+
+interface BatchProposalSynchronizationPlan {
+  documentId: string;
+  sourcePath: string;
+  translationPath: string;
+  translationLineCount: number;
+  childPath: string;
+  html: string;
+  statePath?: string;
+  stateText?: string;
+  legacyPaths: string[];
+}
+
+interface LegacyProposalLineReviewArtifact {
+  htmlPath: string;
+  statePath: string;
+  state?: Record<string, unknown>;
+  translationPath?: string;
+  modifiedMs: number;
+}
+
+function lineReviewPayloadFromHtml(html: string, lineReviewPath: string): {
+  workflow?: EmbeddedLineReviewWorkflow;
+} {
+  const match = html.match(/<script id=["']reviewData["'] type=["']application\/json["']>([\s\S]*?)<\/script>/i);
+  if (!match) throw new Error(`Line-review HTML is missing reviewData: ${lineReviewPath}`);
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("reviewData is not an object");
+    }
+    return parsed as { workflow?: EmbeddedLineReviewWorkflow };
+  } catch (error) {
+    throw new Error(`Line-review HTML has invalid reviewData: ${lineReviewPath}`, { cause: error });
+  }
+}
+
+function embeddedWorkflowPath(workflow: EmbeddedLineReviewWorkflow | undefined, key: string): string | undefined {
+  const value = workflow?.paths?.[key];
+  return typeof value === "string" && value.trim() && !value.startsWith("[") ? value : undefined;
+}
+
+async function readOptionalJsonObjectStrict(filePath: string): Promise<Record<string, unknown> | undefined> {
+  let text: string;
+  try {
+    text = await readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Line-review state is invalid JSON: ${filePath}`, { cause: error });
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Line-review state is not an object: ${filePath}`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+async function existingFile(filePath: string): Promise<boolean> {
+  try {
+    return (await stat(filePath)).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function discoverLegacyProposalLineReviews(
+  outputDir: string
+): Promise<LegacyProposalLineReviewArtifact[]> {
+  const workspaceDir = normalizeProjectFolder(outputDir).workspaceDir;
+  const legacyDir = path.join(workspaceDir, "html", "proposal-line-review");
+  let entries;
+  try {
+    entries = await readdir(legacyDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return Promise.all(entries
+    .filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === ".html")
+    .map(async (entry): Promise<LegacyProposalLineReviewArtifact> => {
+      const htmlPath = path.join(legacyDir, entry.name);
+      const statePath = await resolveLineReviewSidecarStatePath(htmlPath);
+      const [html, htmlInfo, stateInfo] = await Promise.all([
+        readFile(htmlPath, "utf8"),
+        stat(htmlPath),
+        stat(statePath).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+          throw error;
+        })
+      ]);
+      const state = await readOptionalJsonObjectStrict(statePath).catch((error) => {
+        console.warn(`[proposal-migration] Ignoring invalid duplicate state ${statePath}`, error);
+        return undefined;
+      });
+      const workflow = (() => {
+        try {
+          return lineReviewPayloadFromHtml(html, htmlPath).workflow;
+        } catch (error) {
+          console.warn(`[proposal-migration] Duplicate HTML has no readable route ${htmlPath}`, error);
+          return undefined;
+        }
+      })();
+      const htmlBinding = embeddedWorkflowPath(workflow, "translationPath")
+        ?? embeddedWorkflowPath(workflow, "editableTranslationPath");
+      const stateBinding = typeof state?.translationPath === "string"
+        && path.isAbsolute(state.translationPath)
+        ? path.resolve(state.translationPath)
+        : undefined;
+      return {
+        htmlPath,
+        statePath,
+        state,
+        translationPath: htmlBinding && path.isAbsolute(htmlBinding)
+          ? path.resolve(htmlBinding)
+          : stateBinding,
+        modifiedMs: Math.max(htmlInfo.mtimeMs, stateInfo?.mtimeMs ?? 0)
+      };
+    }));
+}
+
+function proposalLineReviewArtifactPath(
+  outputDir: string,
+  routing: { documentId: string; sourcePath: string; translationPath?: string }
+): string {
+  const workspaceDir = normalizeProjectFolder(outputDir).workspaceDir;
+  const digest = createHash("sha256")
+    .update(`${routing.sourcePath}\0${routing.translationPath ?? ""}`)
+    .digest("hex")
+    .slice(0, 16);
+  const safeName = path.basename(routing.documentId).replace(/[^A-Za-z0-9._-]+/g, "-") || "document.txt";
+  return path.join(workspaceDir, "html", "proposal-line-review", `${digest}-${safeName}.html`);
+}
+
+async function planCanonicalBatchChildState(args: {
+  outputDir: string;
+  routing: { documentId: string; sourcePath: string; translationPath: string };
+  childPath: string;
+  translationPromptPath?: string;
+  legacyArtifacts: LegacyProposalLineReviewArtifact[];
+}): Promise<Pick<BatchProposalSynchronizationPlan, "statePath" | "stateText" | "legacyPaths">> {
+  const canonicalStatePath = await resolveLineReviewSidecarStatePath(args.childPath);
+  const canonicalState = canonicalStatePath
+    ? await readOptionalJsonObjectStrict(canonicalStatePath) ?? {}
+    : {};
+  const currentBinding = typeof canonicalState.translationPath === "string" && path.isAbsolute(canonicalState.translationPath)
+    ? path.resolve(canonicalState.translationPath)
+    : undefined;
+  if (currentBinding && !sameFilePath(currentBinding, args.routing.translationPath)) {
+    throw new Error(
+      `Canonical batch child ${args.routing.documentId} has a conflicting sidecar translation binding: ${currentBinding}.`
+    );
+  }
+
+  const exactLegacyPath = proposalLineReviewArtifactPath(args.outputDir, args.routing);
+  if (sameFilePath(exactLegacyPath, args.childPath)) return { legacyPaths: [] };
+  const legacyArtifacts = args.legacyArtifacts
+    .filter((artifact) => artifact.translationPath
+      && sameFilePath(artifact.translationPath, args.routing.translationPath)
+      && !sameFilePath(artifact.htmlPath, args.childPath));
+  if (!legacyArtifacts.some((artifact) => sameFilePath(artifact.htmlPath, exactLegacyPath))) {
+    const exactStatePath = await resolveLineReviewSidecarStatePath(exactLegacyPath);
+    const [htmlExists, exactState, htmlInfo, stateInfo] = await Promise.all([
+      existingFile(exactLegacyPath),
+      readOptionalJsonObjectStrict(exactStatePath),
+      stat(exactLegacyPath).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw error;
+      }),
+      stat(exactStatePath).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw error;
+      })
+    ]);
+    if (htmlExists || exactState) {
+      legacyArtifacts.push({
+        htmlPath: exactLegacyPath,
+        statePath: exactStatePath,
+        state: exactState,
+        translationPath: args.routing.translationPath,
+        modifiedMs: Math.max(htmlInfo?.mtimeMs ?? 0, stateInfo?.mtimeMs ?? 0)
+      });
+    }
+  }
+  if (legacyArtifacts.length === 0) return { legacyPaths: [] };
+
+  legacyArtifacts.sort((left, right) => left.modifiedMs - right.modifiedMs
+    || left.htmlPath.localeCompare(right.htmlPath));
+  let mergedState = canonicalState;
+  for (const artifact of legacyArtifacts) {
+    if (artifact.state) {
+      mergedState = mergeLegacyProposalLineReviewState(mergedState, artifact.state);
+    }
+  }
+  mergedState = {
+    ...mergedState,
+    translationPath: args.routing.translationPath,
+    ...(args.translationPromptPath ? { translationPromptPath: args.translationPromptPath } : {})
+  };
+  return {
+    statePath: canonicalStatePath,
+    stateText: `${JSON.stringify(mergedState, null, 2)}\n`,
+    legacyPaths: legacyArtifacts.flatMap((artifact) => [artifact.htmlPath, artifact.statePath])
+  };
+}
+
+async function buildSynchronizedBatchChild(args: {
+  outputDir: string;
+  documentId: string;
+  sourcePath: string;
+  translationPath: string;
+  childPath: string;
+  locale: UiLocale;
+  legacyArtifacts: LegacyProposalLineReviewArtifact[];
+}): Promise<BatchProposalSynchronizationPlan> {
+  const workspaceDir = normalizeProjectFolder(args.outputDir).workspaceDir;
+  const existingHtml = await readFile(args.childPath, "utf8");
+  const payload = lineReviewPayloadFromHtml(existingHtml, args.childPath);
+  const workflow = payload.workflow;
+  const sourceBinding = embeddedWorkflowPath(workflow, "sourcePath");
+  if (!sourceBinding || !sameFilePath(sourceBinding, args.sourcePath)) {
+    throw new Error(`Batch child ${args.documentId} is not bound to its indexed source file.`);
+  }
+  const [sourceDocument, translationDocument] = await Promise.all([
+    readLineDocumentForWorkflow(args.sourcePath, "auto", workspaceDir, "source"),
+    readTranslationDocumentForWorkflow(args.translationPath, workspaceDir)
+  ]);
+  const sourceLineCount = splitTextLines(sourceDocument.text).length;
+  const translationLineCount = splitTextLines(translationDocument.text).length;
+  if (sourceLineCount !== translationLineCount) {
+    throw new Error(
+      `Cannot synchronize ${args.documentId}: source has ${sourceLineCount} lines but translation has ${translationLineCount}.`
+    );
+  }
+  const editableTranslationPath = translationDocument.kind === "epub"
+    ? translationDocument.promptPath
+    : args.translationPath;
+  const promptSourcePath = embeddedWorkflowPath(workflow, "promptSourcePath")
+    ?? sourceDocument.promptPath
+    ?? args.sourcePath;
+  const promptTranslationPath = embeddedWorkflowPath(workflow, "promptTranslationPath")
+    ?? translationDocument.promptPath
+    ?? editableTranslationPath;
+  const rendered = renderLineReviewHtml({
+    title: `${args.documentId} line review`,
+    sourceText: sourceDocument.text,
+    translationText: translationDocument.text,
+    pageSize: 1000,
+    locale: args.locale,
+    lineReviewPath: args.childPath,
+    workflow: {
+      sourcePath: args.sourcePath,
+      validationSourcePath: embeddedWorkflowPath(workflow, "validationSourcePath")
+        ?? sourceDocument.promptPath
+        ?? args.sourcePath,
+      sourceKind: workflow?.paths?.sourceKind === "folder" ? "folder" : "file",
+      translationPath: args.translationPath,
+      editableTranslationPath,
+      sourcePromptPath: promptSourcePath,
+      promptSourceKind: workflow?.paths?.promptSourceKind === "folder" ? "folder" : "file",
+      translationPromptPath: promptTranslationPath,
+      outputDir: args.outputDir,
+      glossaryPath: embeddedWorkflowPath(workflow, "glossaryPath"),
+      glossaryEntries: Array.isArray(workflow?.glossaryEntries)
+        ? workflow.glossaryEntries as GlossaryEntry[]
+        : [],
+      inputMode: workflow?.inputMode === "bilingual" ? "bilingual" : "separate",
+      promptInputMode: workflow?.promptInputMode === "bilingual" ? "bilingual" : "separate",
+      advanced: workflow?.advanced && typeof workflow.advanced === "object"
+        ? workflow.advanced as PromptAdvancedOptions
+        : undefined,
+      bilingualPair: workflow?.bilingualPair && typeof workflow.bilingualPair === "object"
+        ? workflow.bilingualPair as { sourcePosition: number; translationPosition: number; pairSize?: 2 }
+        : undefined,
+      epubExport: workflow?.epubExport && typeof workflow.epubExport === "object"
+        ? workflow.epubExport as { mode: "all" | "pair-position"; replacePosition?: number; pairSize?: number }
+        : undefined
+    }
+  });
+  const statePlan = await planCanonicalBatchChildState({
+    outputDir: args.outputDir,
+    routing: args,
+    childPath: args.childPath,
+    translationPromptPath: translationDocument.promptPath ?? editableTranslationPath,
+    legacyArtifacts: args.legacyArtifacts
+  });
+  return {
+    documentId: args.documentId,
+    sourcePath: args.sourcePath,
+    translationPath: args.translationPath,
+    translationLineCount,
+    childPath: args.childPath,
+    html: rendered,
+    ...statePlan
+  };
+}
+
+async function synchronizeBatchProposalLineReviews(args: {
+  outputDir: string;
+  batchIndexPath: string;
+  locale: UiLocale;
+  onlyDocumentId?: string;
+  routeOverrides?: Map<string, { sourcePath: string; translationPath: string }>;
+}): Promise<{ synchronized: number; migrated: number }> {
+  const workspaceDir = normalizeProjectFolder(args.outputDir).workspaceDir;
+  if (!isSameOrInside(workspaceDir, args.batchIndexPath)) {
+    throw new Error("The batch line-review index is outside the current project workspace.");
+  }
+  const children = await readBatchLineReviewCurrentBindings(args.batchIndexPath);
+  const requestedKey = normalizedProposalDocumentId(args.onlyDocumentId);
+  const selected = requestedKey
+    ? children.filter((child) => normalizedProposalDocumentId(child.documentId) === requestedKey)
+    : children;
+  if (requestedKey && selected.length !== 1) {
+    throw new Error(`Batch line-review index does not own document ${args.onlyDocumentId}.`);
+  }
+  const legacyArtifacts = await discoverLegacyProposalLineReviews(args.outputDir);
+  const plans = await Promise.all(selected.map(async (child) => {
+    const override = args.routeOverrides?.get(normalizedProposalDocumentId(child.documentId));
+    if (override && !sameFilePath(override.sourcePath, child.sourcePath)) {
+      throw new Error(`Proofread report source does not match batch child ${child.documentId}.`);
+    }
+    if (override && child.translationBinding === "explicit"
+      && !sameFilePath(override.translationPath, child.translationPath)) {
+      throw new Error(`Proofread report translation does not match the current batch child ${child.documentId}.`);
+    }
+    const translationPath = override?.translationPath ?? child.translationPath;
+    return buildSynchronizedBatchChild({
+      outputDir: args.outputDir,
+      documentId: child.documentId,
+      sourcePath: child.sourcePath,
+      translationPath,
+      childPath: child.childPath,
+      locale: args.locale,
+      legacyArtifacts
+    });
+  }));
+  const indexHtml = await readFile(args.batchIndexPath, "utf8");
+  const boundIndexHtml = bindBatchLineReviewTranslations(indexHtml, plans.map((plan) => ({
+    documentId: plan.documentId,
+    translationPath: plan.translationPath,
+    translationLineCount: plan.translationLineCount
+  })));
+  for (const plan of plans) {
+    if (plan.statePath && plan.stateText) await ensureTransactionalTextTarget(plan.statePath, "{}\n");
+  }
+  await writeTextFilesAtomically([
+    ...plans.map((plan) => ({ targetPath: plan.childPath, text: plan.html })),
+    { targetPath: args.batchIndexPath, text: boundIndexHtml },
+    ...plans.flatMap((plan) => plan.statePath && plan.stateText
+      ? [{ targetPath: plan.statePath, text: plan.stateText }]
+      : [])
+  ]);
+  const cleanupPaths = [...new Set(plans.flatMap((plan) => plan.legacyPaths)
+    .filter((candidate) => !plans.some((plan) => sameFilePath(plan.childPath, candidate))))];
+  let migrated = 0;
+  for (const cleanupPath of cleanupPaths) {
+    if (await existingFile(cleanupPath)) {
+      await rm(cleanupPath);
+      migrated += 1;
+    }
+  }
+  const legacyDir = path.join(workspaceDir, "html", "proposal-line-review");
+  try {
+    if ((await readdir(legacyDir)).length === 0) await rm(legacyDir, { recursive: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const tab = [...htmlViewerTabs.values()].find((item) => sameFilePath(item.filePath, args.batchIndexPath));
+  if (tab && !tab.view.webContents.isDestroyed()) {
+    await new Promise<void>((resolve, reject) => {
+      const done = () => {
+        tab.view.webContents.removeListener("did-fail-load", failed);
+        resolve();
+      };
+      const failed = (_event: Electron.Event, errorCode: number, errorDescription: string) => {
+        tab.view.webContents.removeListener("did-finish-load", done);
+        reject(new Error(`Failed to reload synchronized batch review: ${errorCode} ${errorDescription}`));
+      };
+      tab.view.webContents.once("did-finish-load", done);
+      tab.view.webContents.once("did-fail-load", failed);
+      tab.view.webContents.reloadIgnoringCache();
+    });
+  }
+  return { synchronized: plans.length, migrated };
+}
+
+async function existingProposalLineReview(
+  outputDir: string,
+  explicitPath: string | undefined,
+  routing: { documentId: string; sourcePath: string; translationPath?: string },
+  locale: UiLocale
+): Promise<string | undefined> {
+  for (const candidate of await proposalLineReviewCandidates(outputDir, explicitPath)) {
     if (await isLineReviewHtml(candidate)) {
-      return candidate;
+      try {
+        await assertLineReviewMatchesProposalRouting(candidate, routing);
+        return candidate;
+      } catch {
+        // This line-review document belongs to another report item.
+      }
+      continue;
+    }
+    let children: Awaited<ReturnType<typeof readBatchLineReviewChildren>>;
+    try {
+      children = await readBatchLineReviewChildren(candidate);
+    } catch (error) {
+      if (explicitPath && sameFilePath(candidate, explicitPath)) {
+        throw new Error(`The linked batch line-review index is invalid: ${candidate}`, { cause: error });
+      }
+      // Not a batch line-review index.
+      continue;
+    }
+    const match = children.find((child) => (
+      normalizedProposalDocumentId(child.documentId) === normalizedProposalDocumentId(routing.documentId)
+      || sameFilePath(child.sourcePath, routing.sourcePath)
+    ));
+    if (match && await isLineReviewHtml(match.childPath)) {
+      try {
+        await assertLineReviewMatchesProposalRouting(match.childPath, routing);
+        return match.childPath;
+      } catch {
+        if (!routing.translationPath) {
+          throw new Error(`Proofread document ${routing.documentId} is missing its translation route.`);
+        }
+      }
+      await synchronizeBatchProposalLineReviews({
+        outputDir,
+        batchIndexPath: candidate,
+        locale,
+        onlyDocumentId: match.documentId,
+        routeOverrides: new Map([[normalizedProposalDocumentId(match.documentId), {
+          sourcePath: routing.sourcePath,
+          translationPath: routing.translationPath
+        }]])
+      });
+      await assertLineReviewMatchesProposalRouting(match.childPath, routing);
+      return match.childPath;
     }
   }
   return undefined;
+}
+
+async function generateProposalLineReview(
+  outputDir: string,
+  routing: { documentId: string; sourcePath: string; translationPath?: string },
+  locale: UiLocale
+): Promise<string> {
+  const workspaceDir = await ensureWorkspace(outputDir);
+  const sourceDocument = await readLineDocumentForWorkflow(routing.sourcePath, "auto", workspaceDir, "source");
+  const translationDocument = routing.translationPath
+    ? await readTranslationDocumentForWorkflow(routing.translationPath, workspaceDir)
+    : undefined;
+  const editableTranslationPath = translationDocument?.kind === "epub"
+    ? translationDocument.promptPath
+    : routing.translationPath;
+  const lineReviewPath = proposalLineReviewArtifactPath(outputDir, routing);
+  await mkdir(path.dirname(lineReviewPath), { recursive: true });
+  await writeTextFileAtomically(lineReviewPath, renderLineReviewHtml({
+    title: `${routing.documentId} line review`,
+    sourceText: sourceDocument.text,
+    translationText: translationDocument?.text,
+    pageSize: 1000,
+    locale,
+    lineReviewPath,
+    workflow: {
+      sourcePath: routing.sourcePath,
+      validationSourcePath: sourceDocument.promptPath ?? routing.sourcePath,
+      sourceKind: "file",
+      translationPath: routing.translationPath,
+      editableTranslationPath,
+      sourcePromptPath: sourceDocument.promptPath,
+      translationPromptPath: translationDocument?.promptPath ?? editableTranslationPath,
+      outputDir,
+      inputMode: "separate",
+      epubExport: routing.sourcePath.toLowerCase().endsWith(".epub") ? { mode: "all" } : undefined
+    }
+  }));
+  return lineReviewPath;
+}
+
+async function readProposalLineReviewDocument(lineReviewPath: string): Promise<LanSyncLineDocument> {
+  const document = await readLinkedLineReviewDocument(lineReviewPath);
+  if (!document) throw new Error(`Line-review document could not be read: ${lineReviewPath}`);
+  const statePath = await resolveLineReviewSidecarStatePath(lineReviewPath);
+  document.state = statePath ? await readJsonObject(statePath) ?? {} : {};
+  document.lineReviewPath = lineReviewPath;
+  return document;
 }
 
 function stripHtmlHash(value: string): string {
@@ -1924,10 +2139,13 @@ function sameFilePath(left: string | undefined, right: string | undefined): bool
 
 async function lineReviewCandidateInWorkspace(candidate: string | undefined, workspaceDir: string | undefined): Promise<string | undefined> {
   const filePath = filePathFromPathLike(candidate);
-  if (!filePath || !(await isLineReviewHtml(filePath))) {
+  if (!filePath) {
     return undefined;
   }
-  return workspaceDir && !isSameOrInside(workspaceDir, filePath) ? undefined : filePath;
+  const canonicalBatchIndex = await canonicalBatchLineReviewIndexPath(filePath);
+  const resolvedPath = canonicalBatchIndex ?? filePath;
+  if (!canonicalBatchIndex && !(await isLineReviewHtml(resolvedPath))) return undefined;
+  return workspaceDir && !isSameOrInside(workspaceDir, resolvedPath) ? undefined : resolvedPath;
 }
 
 async function findLineReviewForProposalHtml(
@@ -2003,7 +2221,7 @@ async function findProofreadReportCandidates(outputDir: string): Promise<Proofre
         await visit(fullPath, depth + 1);
         return;
       }
-      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md")) {
+      if (!entry.isFile() || !/\.(?:md|json)$/i.test(entry.name)) {
         return;
       }
       const info = await stat(fullPath);
@@ -2087,6 +2305,10 @@ function splitLines(text: string | undefined): string[] {
     return [];
   }
   return text.replace(/\r\n/g, "\n").replace(/\r$/, "").replace(/\n$/, "").split("\n");
+}
+
+function blankAlignedTranslationText(sourceText: string): string {
+  return splitLines(sourceText).map(() => "").join("\n");
 }
 
 function safeExtractedTextBaseName(filePath: string): string {
@@ -2228,541 +2450,40 @@ async function backupFile(targetPath: string, outputDir?: string): Promise<strin
   return backupPath;
 }
 
-function resolveCliCandidates(command: string): string[] {
-  if (process.platform !== "win32") {
-    const candidate = resolveCliFromPath(command, {
-      platform: process.platform,
-      pathEnv: process.env.PATH,
-      pathext: process.env.PATHEXT,
-      pathJoin: path.join,
-      exists: existsSync
-    });
-    return candidate ? [candidate] : [];
+async function writeBoundTranslationText(args: WriteTextFileArgs): Promise<{
+  ok: true;
+  path: string;
+  backupPath?: string;
+}> {
+  const targetPath = args.path;
+  const text = args.text ?? "";
+  if (!targetPath || !path.isAbsolute(targetPath)) {
+    throw new Error("A bound absolute translation path is required.");
   }
-  const candidates: string[] = [];
-  const seen = new Set<string>();
-  const names = executableNames(command, process.platform, process.env.PATHEXT);
-  for (const dir of (process.env.PATH ?? "").split(path.delimiter).map((item) => item.trim()).filter(Boolean)) {
-    for (const name of names) {
-      const candidate = path.join(dir, name);
-      const key = candidate.toLowerCase();
-      if (!seen.has(key) && existsSync(candidate)) {
-        seen.add(key);
-        candidates.push(candidate);
-      }
-    }
+  if (!/\.txt$/i.test(targetPath)) {
+    throw new Error("Only txt translation files can be overwritten.");
   }
-  return candidates;
-}
-
-function commandVersionScore(candidate: string): number {
-  try {
-    const result = spawnSync(candidate, ["--version"], {
-      encoding: "utf8",
-      timeout: 5000,
-      windowsHide: true
-    });
-    const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-    const match = text.match(/(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z0-9.-]+))?/);
-    if (!match) {
-      return -1;
-    }
-    const [, major, minor, patch, suffix] = match;
-    const prereleasePenalty = suffix ? 0 : 500;
-    return Number(major) * 1_000_000_000 + Number(minor) * 1_000_000 + Number(patch) * 1_000 + prereleasePenalty;
-  } catch {
-    return -1;
-  }
-}
-
-function resolveCliCommand(command: string): string {
-  if (command === "codex") {
-    const candidates = resolveCliCandidates(command);
-    if (candidates.length > 0) {
-      return candidates
-        .map((candidate, index) => ({ candidate, index, score: commandVersionScore(candidate) }))
-        .sort((a, b) => b.score - a.score || a.index - b.index)[0].candidate;
-    }
-  }
-  const candidate = resolveCliFromPath(command, {
-    platform: process.platform,
-    pathEnv: process.env.PATH,
-    pathext: process.env.PATHEXT,
-    pathJoin: path.join,
-    exists: existsSync
+  const resolvedTargetPath = path.resolve(targetPath);
+  await mkdir(path.dirname(resolvedTargetPath), { recursive: true });
+  return withTranslationCandidateLock(resolvedTargetPath, async () => {
+    const backupPath = await backupFile(resolvedTargetPath, args.outputDir);
+    await writeTextFileAtomically(resolvedTargetPath, text);
+    return { ok: true, path: resolvedTargetPath, backupPath };
   });
-  if (!candidate) {
-    throw new Error(`${command} CLI was not found in PATH.`);
-  }
-  return candidate;
-}
-
-async function resolveAgentCli(agent: "codex" | "claude"): Promise<string> {
-  if (agent === "codex" && process.platform === "win32") {
-    const npmCodex = path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm", "codex.cmd");
-    if (existsSync(npmCodex)) {
-      const version = spawnSync(npmCodex, ["--version"], { encoding: "utf8", windowsHide: true });
-      if (version.status === 0) {
-        return npmCodex;
-      }
-    }
-  }
-  return resolveCliCommand(agent === "codex" ? "codex" : "claude");
-}
-
-function normalizeSkillInstallAgent(value: unknown): SkillInstallAgent {
-  return value === "codex" || value === "claude" || value === "all" ? value : "all";
-}
-
-function isSkillInstallRoot(candidate: string): boolean {
-  return existsSync(path.join(candidate, "scripts", "install-skills.mjs")) && existsSync(path.join(candidate, "skills"));
-}
-
-function localPackageRoot(): string {
-  const candidates = [
-    ...(app.isPackaged ? [path.join(process.resourcesPath, "app.asar.unpacked")] : []),
-    app.getAppPath(),
-    process.cwd()
-  ];
-  for (const candidate of candidates) {
-    if (isSkillInstallRoot(candidate)) {
-      return candidate;
-    }
-  }
-  return app.getAppPath();
-}
-
-function localSkillInstallDetails(agent: SkillInstallAgent): { repoRoot: string; command: string; githubCommand: string; args: string[] } {
-  const repoRoot = localPackageRoot();
-  return {
-    repoRoot,
-    command: buildLocalSkillInstallCommand(repoRoot, agent),
-    githubCommand: buildGithubSkillInstallCommand(agent, process.platform),
-    args: buildLocalSkillInstallArgs(repoRoot, agent)
-  };
-}
-
-function tryResolveCliCommand(command: string): string {
-  try {
-    return resolveCliCommand(command);
-  } catch {
-    return "";
-  }
-}
-
-function userHomeDir(): string {
-  return os.homedir() || process.env.HOME || process.env.USERPROFILE || "";
-}
-
-function globalSkillTargets(agent: "codex" | "claude", home: string): string[] {
-  if (agent === "codex") {
-    return [
-      path.join(home, ".codex", "skills", "translate-text", "SKILL.md"),
-      path.join(home, ".codex", "skills", "proofread-translation", "SKILL.md")
-    ];
-  }
-  return [
-    path.join(home, ".claude", "commands", "translate-text.md"),
-    path.join(home, ".claude", "commands", "proofread-translation.md")
-  ];
-}
-
-function checkAgentInstall(agent: "codex" | "claude", home: string): AgentInstallCheck {
-  const targets = globalSkillTargets(agent, home);
-  const installedSkillPaths = targets.filter((target) => existsSync(target));
-  const missingSkillPaths = targets.filter((target) => !existsSync(target));
-  const cliPath = tryResolveCliCommand(agent === "codex" ? "codex" : "claude");
-  return {
-    agent,
-    cliFound: Boolean(cliPath),
-    cliPath,
-    skillsFound: missingSkillPaths.length === 0,
-    installedSkillPaths,
-    missingSkillPaths
-  };
-}
-
-function localSkillInstallStatus(agent: SkillInstallAgent): SkillInstallStatus {
-  const selectedAgent = agent === "claude" ? "claude" : "codex";
-  const home = userHomeDir();
-  const codex = checkAgentInstall("codex", home);
-  const claude = checkAgentInstall("claude", home);
-  return {
-    selectedAgent,
-    home,
-    anyCliFound: codex.cliFound || claude.cliFound,
-    selected: selectedAgent === "claude" ? claude : codex,
-    agents: { codex, claude }
-  };
-}
-
-function loadNodePty(): NodePtyModule {
-  try {
-    return require("node-pty") as NodePtyModule;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Interactive Agent Console requires node-pty. Run npm install and restart translation-workshop. ${detail}`);
-  }
-}
-
-const TRANSLATION_SKILLS = new Set(["translate-text", "proofread-translation"]);
-
-interface InteractiveAgentLaunch {
-  args: string[];
-  cleanupPaths: string[];
-  env?: NodeJS.ProcessEnv;
-}
-
-function toTomlPath(filePath: string): string {
-  return path.resolve(filePath).replace(/\\/g, "/").replace(/"/g, "\\\"");
-}
-
-function skillNameFromSkillPath(skillPath: string): string {
-  return path.basename(path.dirname(skillPath));
-}
-
-async function directoryExists(dirPath: string): Promise<boolean> {
-  try {
-    return (await stat(dirPath)).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-async function discoverSkillMarkdownFiles(skillDirs: string[]): Promise<string[]> {
-  const seen = new Set<string>();
-  const results: string[] = [];
-  async function visit(dirPath: string, depth: number): Promise<void> {
-    if (depth > 3 || !await directoryExists(dirPath)) {
-      return;
-    }
-    const directSkillPath = path.join(dirPath, "SKILL.md");
-    try {
-      if ((await stat(directSkillPath)).isFile()) {
-        const normalized = path.resolve(directSkillPath).toLowerCase();
-        if (!seen.has(normalized)) {
-          seen.add(normalized);
-          results.push(directSkillPath);
-        }
-        return;
-      }
-    } catch {
-      // Not every directory is a skill directory.
-    }
-    const entries = await readdir(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) {
-        continue;
-      }
-      const skillPath = path.join(dirPath, entry.name);
-      try {
-        await visit(skillPath, depth + 1);
-      } catch {
-        // Ignore unreadable skill candidates.
-      }
-    }
-  }
-  for (const skillDir of skillDirs) {
-    await visit(skillDir, 0);
-  }
-  return results;
-}
-
-async function discoverClaudeSkillNames(skillDirs: string[], commandDirs: string[]): Promise<string[]> {
-  const names = new Set<string>(TRANSLATION_SKILLS);
-  for (const skillPath of await discoverSkillMarkdownFiles(skillDirs)) {
-    names.add(skillNameFromSkillPath(skillPath));
-  }
-  for (const commandDir of commandDirs) {
-    if (!await directoryExists(commandDir)) {
-      continue;
-    }
-    const entries = await readdir(commandDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isFile() && /\.md$/i.test(entry.name)) {
-        names.add(path.basename(entry.name, path.extname(entry.name)));
-      }
-    }
-  }
-  return [...names].sort((left, right) => left.localeCompare(right));
-}
-
-function workspaceAncestor(startDir: string): string | undefined {
-  let current = path.resolve(startDir);
-  while (true) {
-    if (existsSync(path.join(current, "package.json")) || existsSync(path.join(current, ".git"))) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      return undefined;
-    }
-    current = parent;
-  }
-}
-
-async function prepareClaudeTranslationLaunch(outputDir: string): Promise<InteractiveAgentLaunch> {
-  const home = os.homedir();
-  const skillNames = await discoverClaudeSkillNames(
-    [
-      path.join(outputDir, ".claude", "skills"),
-      path.join(home, ".claude", "skills")
-    ],
-    [
-      path.join(outputDir, ".claude", "commands"),
-      path.join(home, ".claude", "commands")
-    ]
-  );
-  const skillOverrides: Record<string, "on" | "user-invocable-only"> = {};
-  for (const name of skillNames) {
-    skillOverrides[name] = TRANSLATION_SKILLS.has(name) ? "on" : "user-invocable-only";
-  }
-  const settingsDir = await mkdtemp(path.join(os.tmpdir(), "translation-workshop-claude-"));
-  const settingsPath = path.join(settingsDir, "settings.json");
-  await writeFile(settingsPath, JSON.stringify({ skillOverrides }, null, 2), "utf8");
-  return {
-    args: ["--settings", settingsPath, "--add-dir", outputDir, "--permission-mode", "acceptEdits"],
-    cleanupPaths: [settingsDir]
-  };
-}
-
-async function prepareCodexTranslationLaunch(outputDir: string): Promise<InteractiveAgentLaunch> {
-  const home = os.homedir();
-  const repoRoot = workspaceAncestor(outputDir);
-  const skillPaths = await discoverSkillMarkdownFiles([
-    ...(repoRoot ? [path.join(repoRoot, ".agents", "skills")] : []),
-    path.join(outputDir, ".agents", "skills"),
-    path.join(home, ".agents", "skills"),
-    path.join(home, ".codex", "skills")
-  ]);
-  const disabledSkillPaths = skillPaths.filter((skillPath) => !TRANSLATION_SKILLS.has(skillNameFromSkillPath(skillPath)));
-  const profileName = `translation-workshop-${process.pid}-${Date.now()}`;
-  const codexHome = process.env.CODEX_HOME && process.env.CODEX_HOME.trim()
-    ? process.env.CODEX_HOME.trim()
-    : path.join(home, ".codex");
-  await mkdir(codexHome, { recursive: true });
-  const profilePath = path.join(codexHome, `${profileName}.config.toml`);
-  const profile = [
-    "# Generated by translation-workshop for this Agent session.",
-    "# Codex has no user-invocable-only equivalent, so non-translation skills are disabled by SKILL.md path.",
-    ...disabledSkillPaths.flatMap((skillPath) => [
-      "",
-      "[[skills.config]]",
-      `path = "${toTomlPath(skillPath)}"`,
-      "enabled = false"
-    ])
-  ].join("\n");
-  await writeFile(profilePath, profile, "utf8");
-  return {
-    args: ["--profile", profileName, "-c", "check_for_update_on_startup=false", "--cd", outputDir],
-    cleanupPaths: [profilePath],
-    env: { CODEX_HOME: codexHome }
-  };
-}
-
-async function cleanupAgentLaunchFiles(paths: string[] | undefined): Promise<void> {
-  for (const itemPath of paths ?? []) {
-    try {
-      await rm(itemPath, { recursive: true, force: true });
-    } catch {
-      // Temporary launcher files should never block Agent shutdown.
-    }
-  }
-}
-
-async function interactiveAgentLaunch(agent: "codex" | "claude", outputDir: string): Promise<InteractiveAgentLaunch> {
-  return agent === "claude"
-    ? prepareClaudeTranslationLaunch(outputDir)
-    : prepareCodexTranslationLaunch(outputDir);
-}
-
-function dismissCodexUpdatePrompt(session: InteractiveAgentSession, output: string): void {
-  if (session.agent !== "codex" || session.dismissedUpdatePrompt) {
-    return;
-  }
-  if (/Update available/i.test(output) && /Skip/i.test(output)) {
-    session.dismissedUpdatePrompt = true;
-    session.pty.write("2\r");
-  }
-}
-
-function dismissCodexTrustPrompt(session: InteractiveAgentSession, output: string): void {
-  if (session.agent !== "codex" || session.dismissedTrustPrompt) {
-    return;
-  }
-  if (/Do you trust the contents of this directory/i.test(output) && /Yes,\s*continue/i.test(output)) {
-    session.dismissedTrustPrompt = true;
-    session.pty.write("1\r");
-  }
-}
-
-function compactConsoleText(value: string): string {
-  return value.replace(/\s+/g, "").toLowerCase();
-}
-
-function dismissClaudeMemoryPermissionPrompt(session: InteractiveAgentSession, output: string): void {
-  if (session.agent !== "claude") {
-    return;
-  }
-  const compact = compactConsoleText(output);
-  if (!compact.includes(".claude") || !compact.includes("memory") || !compact.includes("doyouwanttoproceed")) {
-    return;
-  }
-  const signature = compact.slice(-900);
-  if (session.lastDeniedClaudeMemoryPrompt === signature) {
-    return;
-  }
-  session.lastDeniedClaudeMemoryPrompt = signature;
-  session.pty.write(compact.includes("3.no") ? "3\r" : "2\r");
-}
-
-function broadcastAgentConsoleEvent(channel: "agent-console:data" | "agent-console:exit", payload: unknown): void {
-  const sent = new Set<number>();
-  for (const window of BrowserWindow.getAllWindows()) {
-    const webContents = window.webContents;
-    if (!webContents.isDestroyed()) {
-      sent.add(webContents.id);
-      webContents.send(channel, payload);
-    }
-  }
-  for (const tab of htmlViewerTabs.values()) {
-    const webContents = tab.view.webContents;
-    if (!webContents.isDestroyed() && !sent.has(webContents.id)) {
-      webContents.send(channel, payload);
-    }
-  }
-  const eventName = channel === "agent-console:data" ? "agent-console" : "agent-exit";
-  for (const session of lanSyncSessions.values()) {
-    const data = `event: ${eventName}\ndata: ${lanSyncJson(payload)}\n\n`;
-    for (const client of [...session.clients]) {
-      if (client.destroyed) {
-        session.clients.delete(client);
-        continue;
-      }
-      client.write(data);
-    }
-  }
-}
-
-function interactiveConsoleSnapshot() {
-  return interactiveAgentSession
-    ? {
-        running: true,
-        id: interactiveAgentSession.id,
-        agent: interactiveAgentSession.agent,
-        outputDir: interactiveAgentSession.outputDir,
-        startedAt: interactiveAgentSession.startedAt,
-        output: interactiveAgentSession.outputBuffer
-      }
-    : { running: false };
-}
-
-function toAgentRelativePath(outputDir: string, filePath: string): string {
-  return path.relative(outputDir, filePath).split(path.sep).join("/");
-}
-
-async function spoolAgentPrompt(session: InteractiveAgentSession, text: string): Promise<{ text: string; promptPath: string }> {
-  const workspaceDir = await ensureWorkspace(session.outputDir);
-  const promptDir = path.join(workspaceDir, "agent-prompts");
-  await mkdir(promptDir, { recursive: true });
-  const promptPath = path.join(promptDir, `agent-prompt-${timestamp()}.md`);
-  await writeFile(promptPath, text, "utf8");
-  const relativePath = toAgentRelativePath(session.outputDir, promptPath);
-  return {
-    promptPath,
-    text: buildAgentPromptFileMessage(relativePath, promptPath, text)
-  };
-}
-
-async function submitInteractiveAgentInput(session: InteractiveAgentSession, text: string): Promise<AgentConsoleInputResult> {
-  const prepared = shouldSendAgentPromptViaFile(text)
-    ? await spoolAgentPrompt(session, text)
-    : { text, promptPath: undefined };
-  session.pty.write(formatInteractiveAgentMessage(session.agent, prepared.text));
-  setTimeout(() => {
-    session.pty.write("\r");
-  }, session.agent === "codex" ? 80 : 120);
-  return {
-    ok: true,
-    promptPath: prepared.promptPath,
-    message: prepared.promptPath
-      ? `Prompt saved to file; skill invocation was sent with a details reference: ${prepared.promptPath}`
-      : undefined
-  };
-}
-
-async function startInteractiveAgentConsole(args: AgentConsoleStartArgs): Promise<{ ok: boolean; message?: string; status?: ReturnType<typeof interactiveConsoleSnapshot> }> {
-  const agent = args.agent === "claude" ? "claude" : "codex";
-  const outputDir = args.outputDir?.trim();
-  if (!outputDir || !path.isAbsolute(outputDir)) {
-    return { ok: false, message: "An absolute output folder is required for the interactive Agent Console." };
-  }
-  if (interactiveAgentSession) {
-    return { ok: true, message: `${interactiveAgentSession.agent} console is already running.`, status: interactiveConsoleSnapshot() };
-  }
-  try {
-    await ensureWorkspace(outputDir);
-    const [pty, cliPath] = await Promise.all([Promise.resolve(loadNodePty()), resolveAgentCli(agent)]);
-    const launch = await interactiveAgentLaunch(agent, outputDir);
-    const cols = Math.max(40, Math.min(240, Math.floor(args.cols || 120)));
-    const rows = Math.max(10, Math.min(80, Math.floor(args.rows || 32)));
-    let ptyProcess: PtyProcess;
-    try {
-      ptyProcess = pty.spawn(cliPath, launch.args, {
-        cwd: outputDir,
-        cols,
-        rows,
-        name: "xterm-color",
-        env: { ...process.env, ...launch.env, TERM: "xterm-256color" }
-      });
-    } catch (error) {
-      await cleanupAgentLaunchFiles(launch.cleanupPaths);
-      throw error;
-    }
-    const session: InteractiveAgentSession = {
-      id: `agent-console-${Date.now()}`,
-      agent,
-      outputDir,
-      startedAt: new Date().toISOString(),
-      pty: ptyProcess,
-      outputBuffer: "",
-      cleanupPaths: launch.cleanupPaths
-    };
-    interactiveAgentSession = session;
-    ptyProcess.onData((data) => {
-      session.outputBuffer = `${session.outputBuffer}${data}`.slice(-agentTranscriptLimit);
-      session.recentOutput = `${session.recentOutput ?? ""}${data}`.slice(-4000);
-      dismissCodexUpdatePrompt(session, session.recentOutput);
-      dismissCodexTrustPrompt(session, session.recentOutput);
-      dismissClaudeMemoryPermissionPrompt(session, session.recentOutput);
-      broadcastAgentConsoleEvent("agent-console:data", { id: session.id, data });
-    });
-    ptyProcess.onExit((exit) => {
-      if (interactiveAgentSession?.id === session.id) {
-        interactiveAgentSession = undefined;
-      }
-      void cleanupAgentLaunchFiles(session.cleanupPaths);
-      broadcastAgentConsoleEvent("agent-console:exit", { id: session.id, exitCode: exit.exitCode, signal: exit.signal });
-    });
-    return { ok: true, message: `Started interactive ${agent} console.`, status: interactiveConsoleSnapshot() };
-  } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : String(error) };
-  }
 }
 
 async function collectLineFiles(folderPath: string, fileType: GenerateLineHtmlArgs["fileType"], workspaceDir: string): Promise<FolderLineFile[]> {
-  const entries = await readdir(folderPath, { withFileTypes: true });
   const allowed = fileType === "epub" ? /\.epub$/i : fileType === "txt" ? /\.txt$/i : /\.(txt|epub)$/i;
-  const files = await Promise.all(
-    entries
-      .filter((entry) => entry.isFile() && allowed.test(entry.name))
-      .map(async (entry) => {
-        const fullPath = path.join(folderPath, entry.name);
-        const text = await readLineDocument(fullPath, fileType, workspaceDir);
-        return { name: entry.name, path: fullPath, lineCount: splitLines(text).length };
-      })
-  );
-  return files.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+  const entries = await collectSourceTreeFiles(folderPath, (filePath) => allowed.test(filePath));
+  return Promise.all(entries.map(async (entry) => {
+    const text = await readLineDocument(entry.path, fileType, workspaceDir);
+    return {
+      name: path.basename(entry.path),
+      relativePath: entry.relativePath,
+      path: entry.path,
+      lineCount: splitLines(text).length
+    };
+  }));
 }
 
 async function collectTranslationLineFiles(folderPath: string, workspaceDir: string): Promise<FolderLineFile[]> {
@@ -2770,12 +2491,21 @@ async function collectTranslationLineFiles(folderPath: string, workspaceDir: str
 }
 
 async function collectBilingualFiles(folderPath: string, fileType: GenerateLineHtmlArgs["fileType"]): Promise<Array<{ name: string; path: string }>> {
-  const entries = await readdir(folderPath, { withFileTypes: true });
   const allowed = fileType === "epub" ? /\.epub$/i : fileType === "txt" ? /\.txt$/i : /\.(txt|epub)$/i;
-  return entries
-    .filter((entry) => entry.isFile() && allowed.test(entry.name))
-    .map((entry) => ({ name: entry.name, path: path.join(folderPath, entry.name) }))
-    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+  const entries = await collectSourceTreeFiles(folderPath, (filePath) => allowed.test(filePath));
+  return entries.map((entry) => ({ name: entry.relativePath, path: entry.path }));
+}
+
+function folderPromptAdvanced(
+  advanced: PromptAdvancedOptions | undefined,
+  documents: Array<{ id: string; path: string }>
+): PromptAdvancedOptions {
+  return {
+    ...advanced,
+    folderTranslationOrder: advanced?.folderTranslationOrder?.trim()
+      || formatFolderTranslationOrder(documents.map((document) => document.id)),
+    folderSourceDocuments: documents
+  };
 }
 
 function preloadPath(): string {
@@ -2786,8 +2516,19 @@ function appIconPath(): string {
   return path.join(app.getAppPath(), "assets", "app-icon.png");
 }
 
-async function createWindow(): Promise<void> {
+function resolveMainAppWindow(): BrowserWindow | undefined {
+  if (mainAppWindow && !mainAppWindow.isDestroyed()) {
+    return mainAppWindow;
+  }
+  return BrowserWindow.getAllWindows().find((window) => {
+    const url = window.webContents.getURL();
+    return url.includes("renderer/index.html") || url.includes("127.0.0.1:5173");
+  });
+}
+
+async function createWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
+    show: !portableSmokeMarkerPath && !electronVerificationHeadless,
     width: 1280,
     height: 860,
     minWidth: 980,
@@ -2796,7 +2537,16 @@ async function createWindow(): Promise<void> {
     webPreferences: {
       preload: preloadPath(),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: !electronVerificationHeadless,
+      offscreen: electronVerificationOffscreen
+    }
+  });
+
+  mainAppWindow = win;
+  win.on("closed", () => {
+    if (mainAppWindow === win) {
+      mainAppWindow = undefined;
     }
   });
 
@@ -2805,18 +2555,79 @@ async function createWindow(): Promise<void> {
   } else {
     await win.loadFile(path.join(app.getAppPath(), "dist", "renderer", "index.html"));
   }
+  return win;
+}
+
+async function loadRendererRoute(win: BrowserWindow, hash: string): Promise<void> {
+  if (isDev) {
+    await win.loadURL(`http://127.0.0.1:5173/#${hash}`);
+    return;
+  }
+  await win.loadFile(path.join(app.getAppPath(), "dist", "renderer", "index.html"), { hash });
+}
+
+async function rendererAssetUrl(prefix: string): Promise<string> {
+  if (isDev) {
+    return `http://127.0.0.1:5173/src/renderer/agent/embedded.tsx`;
+  }
+  const assetsDir = path.join(app.getAppPath(), "dist", "renderer", "assets");
+  const files = await readdir(assetsDir);
+  const match = files.find((file) => file.startsWith(prefix) && file.endsWith(".js"));
+  if (!match) {
+    throw new Error(`Renderer asset not found: ${prefix}`);
+  }
+  return pathToFileURL(path.join(assetsDir, match)).toString();
+}
+
+async function rendererCssAssetUrl(): Promise<string | undefined> {
+  if (isDev) {
+    return `http://127.0.0.1:5173/src/renderer/styles.css`;
+  }
+  const assetsDir = path.join(app.getAppPath(), "dist", "renderer", "assets");
+  const files = await readdir(assetsDir);
+  const match = files.find((file) => file.startsWith("styles-") && file.endsWith(".css"))
+    ?? files.find((file) => file.endsWith(".css"));
+  return match ? pathToFileURL(path.join(assetsDir, match)).toString() : undefined;
 }
 
 function splitHtmlOpenTarget(targetPath: string): { filePath: string; hash: string; key: string } {
   const htmlHashIndex = targetPath.toLowerCase().lastIndexOf(".html#");
-  const rawFilePath = htmlHashIndex >= 0 ? targetPath.slice(0, htmlHashIndex + ".html".length) : targetPath;
+  const rawFilePath = htmlHashIndex >= 0 ? targetPath.slice(0, htmlHashIndex + ".html".length) : targetPath.replace(/#.*$/, "");
   const hash = htmlHashIndex >= 0 ? targetPath.slice(htmlHashIndex + ".html#".length) : "";
-  const filePath = path.resolve(rawFilePath);
-  return { filePath, hash, key: filePath.toLowerCase() };
+  const filePath = normalizeLinkedHtmlFilePath(rawFilePath) || path.resolve(rawFilePath);
+  const key = hash.includes("agent-chat-popout")
+    ? `${filePath.toLowerCase()}::agent-popout`
+    : filePath.toLowerCase();
+  return { filePath, hash, key };
 }
 
 function isHtmlOpenTarget(targetPath: string): boolean {
   return /\.html(?:#|$)/i.test(targetPath);
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    return (await stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function resolveHtmlOpenTarget(targetPath: string): Promise<string> {
+  const { filePath, hash } = splitHtmlOpenTarget(targetPath);
+  if (await fileExists(filePath)) {
+    return targetPath;
+  }
+
+  const workspaceDir = workspaceDirFromKnownPath(filePath);
+  if (!workspaceDir) {
+    return targetPath;
+  }
+
+  const htmlDir = path.join(workspaceDir, "html");
+  const sameName = await existingHtmlPath(path.join(htmlDir, path.basename(filePath)), workspaceDir);
+  const fallback = sameName || await findLatestHtml(htmlDir);
+  return fallback ? `${fallback}${hash ? `#${hash}` : ""}` : targetPath;
 }
 
 function renderHtmlTabShell(): string {
@@ -2871,8 +2682,10 @@ function layoutHtmlViewerTabs(): void {
   }
   const [width, height] = htmlViewerWindow.getContentSize();
   const bounds = { x: 0, y: htmlViewerTabBarHeight, width, height: Math.max(120, height - htmlViewerTabBarHeight) };
-  for (const tab of htmlViewerTabs.values()) {
-    tab.view.setBounds(bounds);
+  for (const [key, tab] of htmlViewerTabs) {
+    tab.view.setBounds(key === activeHtmlViewerTab
+      ? bounds
+      : { x: 0, y: 0, width: 0, height: 0 });
   }
 }
 
@@ -2893,6 +2706,7 @@ async function ensureHtmlViewerWindow(): Promise<BrowserWindow> {
     return htmlViewerWindow;
   }
   htmlViewerWindow = new BrowserWindow({
+    show: !electronVerificationHeadless,
     width: 1440,
     height: 920,
     minWidth: 980,
@@ -2901,12 +2715,34 @@ async function ensureHtmlViewerWindow(): Promise<BrowserWindow> {
     webPreferences: {
       preload: preloadPath(),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: !electronVerificationHeadless,
+      offscreen: electronVerificationOffscreen
     }
   });
+  htmlViewerWindowClosing = false;
   htmlViewerWindow.on("resize", layoutHtmlViewerTabs);
+  htmlViewerWindow.on("close", (event) => {
+    event.preventDefault();
+    if (htmlViewerWindowClosing) return;
+    const closingWindow = htmlViewerWindow;
+    const tabs = [...htmlViewerTabs.values()];
+    htmlViewerWindowClosing = true;
+    void Promise.all(tabs.map(flushHtmlViewerTabState))
+      .then(() => Promise.all(tabs.map(cancelHtmlViewerTabAgentRuns)))
+      .then(() => {
+        if (closingWindow && !closingWindow.isDestroyed()) {
+          disposeHtmlViewerTabs(closingWindow, tabs);
+          closingWindow.destroy();
+        }
+    }).catch((error) => {
+      htmlViewerWindowClosing = false;
+      console.error("[html-viewer] Failed to persist state and suspend Agent sessions before closing", error);
+    });
+  });
   htmlViewerWindow.on("closed", () => {
     htmlViewerWindow = undefined;
+    htmlViewerWindowClosing = false;
     htmlViewerTabs.clear();
     activeHtmlViewerTab = "";
   });
@@ -2919,24 +2755,82 @@ function activateHtmlViewerTab(key: string): boolean {
   if (!tab || !htmlViewerWindow || htmlViewerWindow.isDestroyed()) {
     return false;
   }
-  activeHtmlViewerTab = key;
-  htmlViewerWindow.setBrowserView(tab.view);
+  if (activeHtmlViewerTab !== key) {
+    activeHtmlViewerTab = key;
+    htmlViewerWindow.setTopBrowserView(tab.view);
+  }
   layoutHtmlViewerTabs();
   htmlViewerWindow.setTitle(tab.title);
-  htmlViewerWindow.show();
-  htmlViewerWindow.focus();
+  if (!electronVerificationHeadless) {
+    htmlViewerWindow.show();
+    htmlViewerWindow.focus();
+  }
   updateHtmlViewerTabs();
   return true;
 }
 
-function closeHtmlViewerTab(key: string): boolean {
+async function rememberHtmlViewerTabProject(tab: HtmlViewerTab | undefined): Promise<void> {
+  if (!tab?.workspaceDir) return;
+  const { outputDir } = normalizeProjectFolder(tab.workspaceDir);
+  await writeRecentProjectDir(app.getPath("userData"), outputDir);
+}
+
+async function rememberActiveHtmlViewerProject(): Promise<void> {
+  await rememberHtmlViewerTabProject(htmlViewerTabs.get(activeHtmlViewerTab));
+}
+
+async function extractLineReviewWorkspaceDir(filePath: string): Promise<string | undefined> {
+  const html = await readFile(filePath, "utf8").catch(() => "");
+  const match = html.match(/<script id="(?:reviewData|proposalData|batchData)" type="application\/json">([\s\S]*?)<\/script>/i);
+  if (!match) return undefined;
+  try {
+    const data = JSON.parse(match[1]);
+    const outputDir = typeof data?.workflow?.paths?.outputDir === "string"
+      ? data.workflow.paths.outputDir
+      : typeof data?.folderAgentRoute?.outputDir === "string"
+        ? data.folderAgentRoute.outputDir
+      : typeof data?.outputDir === "string"
+        ? data.outputDir
+        : "";
+    return outputDir && path.isAbsolute(outputDir)
+      ? normalizeProjectFolder(outputDir).workspaceDir
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function cancelHtmlViewerTabAgentRuns(tab: HtmlViewerTab): Promise<void> {
+  if (tab.workspaceDir) await piNativeSessionService.suspendWorkspace(tab.workspaceDir);
+}
+
+async function flushHtmlViewerTabState(tab: HtmlViewerTab): Promise<void> {
+  if (tab.view.webContents.isDestroyed()) return;
+  await tab.view.webContents.executeJavaScript(`
+    typeof window.flushTranslationWorkshopLineReviewState === "function"
+      ? window.flushTranslationWorkshopLineReviewState()
+      : undefined
+  `);
+}
+
+function disposeHtmlViewerTabs(window: BrowserWindow, tabs: HtmlViewerTab[]): void {
+  for (const tab of tabs) {
+    window.removeBrowserView(tab.view);
+    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+  }
+}
+
+async function closeHtmlViewerTab(key: string): Promise<boolean> {
   const tab = htmlViewerTabs.get(key);
   if (!tab || !htmlViewerWindow || htmlViewerWindow.isDestroyed()) {
     return false;
   }
   const keys = Array.from(htmlViewerTabs.keys());
   const closedIndex = keys.indexOf(key);
+  await flushHtmlViewerTabState(tab);
+  await cancelHtmlViewerTabAgentRuns(tab);
   htmlViewerWindow.removeBrowserView(tab.view);
+  if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
   htmlViewerTabs.delete(key);
   if (htmlViewerTabs.size === 0) {
     activeHtmlViewerTab = "";
@@ -2955,67 +2849,170 @@ function closeHtmlViewerTab(key: string): boolean {
   return true;
 }
 
-async function loadHtmlViewerTab(targetPath: string): Promise<{ filePath: string; hash: string; key: string; tab: { filePath: string; hash: string; title: string; view: BrowserView } }> {
-  const { filePath, hash, key } = splitHtmlOpenTarget(targetPath);
-  await upgradeLegacyReviewHtmlTree(filePath);
+async function loadHtmlViewerTab(targetPath: string): Promise<{ filePath: string; hash: string; key: string; tab: HtmlViewerTab }> {
+  const resolvedTargetPath = await resolveHtmlOpenTarget(targetPath);
+  const { filePath, hash, key } = splitHtmlOpenTarget(resolvedTargetPath);
+  if (!(await fileExists(filePath))) {
+    throw new Error(`HTML file not found: ${filePath}`);
+  }
+  const upgradedOnDisk = await upgradeLegacyReviewHtmlTree(filePath);
   await repairProposalReviewHtmlLineReviewPath(filePath);
-  const win = await ensureHtmlViewerWindow();
+  const workspaceDir = await extractLineReviewWorkspaceDir(filePath);
+  await ensureHtmlViewerWindow();
   let tab = htmlViewerTabs.get(key);
   if (!tab) {
     const view = new BrowserView({
       webPreferences: {
         preload: preloadPath(),
         contextIsolation: true,
-        nodeIntegration: false
+        nodeIntegration: false,
+        backgroundThrottling: !electronVerificationHeadless,
+        offscreen: electronVerificationOffscreen
       }
     });
-    tab = { filePath, hash, title: path.basename(filePath), view };
+    tab = { filePath, hash, title: path.basename(filePath), view, workspaceDir };
     htmlViewerTabs.set(key, tab);
+    htmlViewerWindow!.addBrowserView(view);
     view.webContents.on("page-title-updated", (_event, title) => {
       tab!.title = title || path.basename(filePath);
       updateHtmlViewerTabs();
     });
   } else {
     tab.hash = hash;
+    tab.workspaceDir = workspaceDir;
   }
-  win.setBrowserView(tab.view);
-  layoutHtmlViewerTabs();
-  await tab.view.webContents.loadFile(filePath, { hash });
+  const currentUrl = tab.view.webContents.getURL();
+  const currentFilePath = normalizeLinkedHtmlFilePath(currentUrl.replace(/#.*$/, ""));
+  const needsLoad = upgradedOnDisk || !currentFilePath || !sameFilePath(currentFilePath, filePath);
+  if (needsLoad) {
+    if (!tab.loadPromise) {
+      const pendingLoad = (async () => {
+        await tab.view.webContents.loadFile(filePath, { hash });
+        tab.filePath = filePath;
+        await injectHtmlSidecarState(filePath, tab.view.webContents);
+      })();
+      tab.loadPromise = pendingLoad;
+      const clearPendingLoad = () => {
+        if (tab.loadPromise === pendingLoad) tab.loadPromise = undefined;
+      };
+      void pendingLoad.then(clearPendingLoad, clearPendingLoad);
+    }
+    await tab.loadPromise;
+  } else if (hash) {
+    await tab.view.webContents.executeJavaScript(`if (location.hash !== "#${hash.replace(/"/g, "")}") location.hash = "#${hash.replace(/"/g, "")}";`);
+  }
+  tab.hash = hash;
   return { filePath, hash, key, tab };
 }
 
+async function injectHtmlSidecarState(filePath: string, contents: Electron.WebContents): Promise<void> {
+  const html = await readFile(filePath, "utf8").catch(() => "");
+  const kind = html.includes('id="reviewData"') && html.includes("line-review")
+    ? "line"
+    : html.includes('id="proposalData"')
+      ? "proposal"
+      : "";
+  if (!kind) return;
+  const statePath = await htmlSidecarStatePath(filePath, kind);
+  const sidecarState = statePath ? await readJsonObject(statePath) : undefined;
+  if (!sidecarState) return;
+  const stateJson = JSON.stringify(sidecarState);
+  await contents.executeJavaScript(`
+    (() => {
+      const incomingState = ${stateJson};
+      if (!incomingState || typeof incomingState !== "object") return;
+      if (${JSON.stringify(kind)} === "line") {
+        const legacyKey = "translation-workshop:line:" + location.pathname;
+        const primaryKey = typeof lineReviewStorageKey === "function" ? lineReviewStorageKey() : legacyKey;
+        const existingState = JSON.parse(localStorage.getItem(primaryKey) || localStorage.getItem(legacyKey) || "{}") || {};
+        const mergedState = {
+          ...existingState,
+          ...incomingState,
+          edits: { ...(existingState.edits || {}), ...(incomingState.edits || {}) },
+          status: { ...(existingState.status || {}), ...(incomingState.status || {}) },
+          revisions: { ...(existingState.revisions || {}), ...(incomingState.revisions || {}) },
+          revisionHistory: { ...(existingState.revisionHistory || {}), ...(incomingState.revisionHistory || {}) },
+          auditIssues: { ...(existingState.auditIssues || {}), ...(incomingState.auditIssues || {}) },
+          auditWhitelist: { ...(existingState.auditWhitelist || {}), ...(incomingState.auditWhitelist || {}) },
+          theme: { ...(existingState.theme || {}), ...(incomingState.theme || {}) }
+        };
+        for (const storageKey of [...new Set([primaryKey, legacyKey].filter(Boolean))]) {
+          localStorage.setItem(storageKey, JSON.stringify(mergedState));
+        }
+        if (typeof state === "object" && state) Object.assign(state, mergedState);
+      } else {
+        const existingState = JSON.parse(localStorage.getItem(key) || "{}") || {};
+        const mergedState = {
+          ...existingState,
+          ...incomingState,
+          decisions: { ...(existingState.decisions || {}), ...(incomingState.decisions || {}) },
+          theme: { ...(existingState.theme || {}), ...(incomingState.theme || {}) }
+        };
+        localStorage.setItem(key, JSON.stringify(mergedState));
+        if (typeof state === "object" && state) Object.assign(state, mergedState);
+      }
+      if (typeof render === "function") render();
+    })();
+  `);
+}
+
 async function openHtmlWindow(targetPath: string): Promise<void> {
-  const { key } = await loadHtmlViewerTab(targetPath);
-  activateHtmlViewerTab(key);
+  const { key, tab } = await loadHtmlViewerTab(targetPath);
+  if (activateHtmlViewerTab(key)) {
+    await rememberHtmlViewerTabProject(tab);
+  }
 }
 
 async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promise<{ ok: boolean }> {
   if (!args.lineReviewPath) {
     throw new Error("Line review HTML path is required.");
   }
-  const line = Number(args.line || 0);
+  const normalizedPath = normalizeLinkedHtmlFilePath(args.lineReviewPath.replace(/#.*$/, ""));
+  if (!normalizedPath) {
+    throw new Error("Line review HTML path is invalid.");
+  }
+  const lines = [...new Set([
+    ...(Array.isArray(args.lines) ? args.lines : []),
+    args.line
+  ].map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))];
+  const line = lines[0] ?? 0;
   const targetPath = Number.isInteger(line) && line > 0
-    ? `${args.lineReviewPath.replace(/#.*$/, "")}#line=${line}`
-    : args.lineReviewPath;
+    ? `${normalizedPath}#line=${line}`
+    : normalizedPath;
+  // Keep the currently visible proposal tab attached until the linked line state
+  // has been applied. Attaching first exposes one stale frame and lets callers
+  // observe the old translation before the state mutation finishes.
   const { key, tab } = await loadHtmlViewerTab(targetPath);
   const stateJson = JSON.stringify(args.lineState ?? {});
   const lineJson = JSON.stringify(line);
+  const linesJson = JSON.stringify(lines);
   await tab.view.webContents.executeJavaScript(
-    `(() => {
+    `(async () => {
       const legacyKey = "translation-workshop:line:" + location.pathname;
       const primaryKey = typeof lineReviewStorageKey === "function" ? lineReviewStorageKey() : legacyKey;
       const storageKeys = [...new Set([primaryKey, legacyKey].filter(Boolean))];
       const existingState = JSON.parse(localStorage.getItem(primaryKey) || localStorage.getItem(legacyKey) || "{}") || {};
       const incomingState = ${stateJson};
+      const affectedLines = ${linesJson};
       const mergedState = {
         ...existingState,
         ...incomingState,
-        edits: { ...(existingState.edits || {}), ...(incomingState.edits || {}) },
-        status: { ...(existingState.status || {}), ...(incomingState.status || {}) },
-        auditIssues: { ...(existingState.auditIssues || {}), ...(incomingState.auditIssues || {}) },
-        auditWhitelist: { ...(existingState.auditWhitelist || {}), ...(incomingState.auditWhitelist || {}) },
         theme: { ...(existingState.theme || {}), ...(incomingState.theme || {}) }
       };
+      for (const field of ["edits", "status", "revisions", "revisionHistory", "auditIssues", "auditWhitelist"]) {
+        const incomingMap = incomingState[field] || {};
+        const nextMap = { ...(existingState[field] || {}) };
+        if (affectedLines.length > 0) {
+          for (const line of affectedLines) {
+            const key = String(line);
+            if (Object.prototype.hasOwnProperty.call(incomingMap, key)) nextMap[key] = incomingMap[key];
+            else delete nextMap[key];
+          }
+        } else {
+          Object.assign(nextMap, incomingMap);
+        }
+        mergedState[field] = nextMap;
+      }
       for (const storageKey of storageKeys) {
         localStorage.setItem(storageKey, JSON.stringify(mergedState));
       }
@@ -3023,6 +3020,8 @@ async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promi
         Object.assign(state, mergedState);
         state.edits = mergedState.edits;
         state.status = mergedState.status;
+        state.revisions = mergedState.revisions;
+        state.revisionHistory = mergedState.revisionHistory;
         state.auditIssues = mergedState.auditIssues;
         state.auditWhitelist = mergedState.auditWhitelist;
         state.theme = mergedState.theme;
@@ -3035,59 +3034,16 @@ async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promi
         requestAnimationFrame(() => jumpToLine(targetLine));
       }
       if (typeof save === "function") {
-        save();
+        await save(affectedLines.length > 0 ? affectedLines : Object.keys(incomingState.edits || {}).map(Number));
       }
     })();`
   );
   if (args.activate !== false) {
-    activateHtmlViewerTab(key);
+    if (activateHtmlViewerTab(key)) {
+      await rememberHtmlViewerTabProject(tab);
+    }
   }
   return { ok: true };
-}
-
-async function upgradeLegacyReviewHtmlTree(targetPath: string): Promise<void> {
-  await upgradeLegacyLineReviewHtml(targetPath);
-  let html = "";
-  try {
-    html = await readFile(targetPath, "utf8");
-  } catch {
-    return;
-  }
-  const dataMatch = html.match(/<script id="batchData" type="application\/json">([\s\S]*?)<\/script>/i);
-  if (!dataMatch) {
-    return;
-  }
-  let data: unknown;
-  try {
-    data = JSON.parse(dataMatch[1]);
-  } catch {
-    return;
-  }
-  const files = (data as { files?: Array<{ outputPath?: unknown }> })?.files;
-  if (!Array.isArray(files)) {
-    return;
-  }
-  await Promise.all(files.map(async (file) => {
-    if (typeof file.outputPath !== "string" || !file.outputPath.toLowerCase().endsWith(".html")) {
-      return;
-    }
-    await upgradeLegacyLineReviewHtml(path.resolve(path.dirname(targetPath), file.outputPath));
-  }));
-}
-
-async function upgradeLegacyLineReviewHtml(targetPath: string): Promise<void> {
-  let html = "";
-  try {
-    html = await readFile(targetPath, "utf8");
-  } catch {
-    return;
-  }
-  const fallbackTitle = path.basename(targetPath);
-  const upgraded = upgradeLegacyLineReviewHtmlContent(html, fallbackTitle)
-    ?? upgradeLegacyProposalReviewHtmlContent(html, fallbackTitle);
-  if (upgraded) {
-    await writeFile(targetPath, upgraded, "utf8");
-  }
 }
 
 function promptBuildPath(value: unknown, label: string): string {
@@ -3097,7 +3053,6 @@ function promptBuildPath(value: unknown, label: string): string {
 function normalizePromptBuildArgs(args: unknown): PromptBuildOptions {
   const value = args && typeof args === "object" ? args as PromptBuildArgs : {};
   const kind = value.kind === "proofread" ? "proofread" : "translate";
-  const agent = value.agent === "claude" ? "claude" : "codex";
   const outputDir = promptBuildPath(value.outputDir, "output folder");
   const sourcePath = promptBuildPath(value.sourcePath, "source path");
   const translationPath = kind === "proofread"
@@ -3109,8 +3064,8 @@ function normalizePromptBuildArgs(args: unknown): PromptBuildOptions {
   const advanced = value.advanced && typeof value.advanced === "object" ? value.advanced as PromptAdvancedOptions : undefined;
   return {
     kind,
-    agent,
     sourcePath,
+    sourceKind: value.sourceKind === "folder" ? "folder" : "file",
     translationPath,
     outputDir,
     glossaryPath,
@@ -3118,6 +3073,41 @@ function normalizePromptBuildArgs(args: unknown): PromptBuildOptions {
     advanced
   };
 }
+
+ipcMain.handle("ui:openAgentChat", async () => {
+  let target = resolveMainAppWindow();
+  if (!target) {
+    await createWindow();
+    target = resolveMainAppWindow();
+  }
+  if (!target) {
+    return { ok: false, message: "Main window is unavailable." };
+  }
+  if (!electronVerificationHeadless) {
+    target.show();
+    target.focus();
+  }
+  target.webContents.send("ui:open-agent-chat");
+  return { ok: true };
+});
+
+ipcMain.handle("ui:openAgentChatWindow", async (_event, args: { lineReviewPath?: string; outputDir?: string; locale?: "zh-CN" | "en-US"; languagePair?: string; sourcePath?: string; sourceKind?: "file" | "folder"; translationPath?: string; initialPrompt?: string; initialWorkflowIntent?: "translation" | "proofread"; initialLanguagePair?: string }) => {
+  const result = await openAgentChatWindow({
+    args,
+    preloadPath: preloadPath(),
+    icon: appIconPath(),
+    loadRendererRoute
+  });
+  return { ok: true, surface: result.surface };
+});
+
+ipcMain.handle("ui:agentChatEmbeddedEntryUrl", async () => {
+  return {
+    ok: true,
+    url: await rendererAssetUrl("agent-embedded-"),
+    cssUrl: await rendererCssAssetUrl()
+  };
+});
 
 ipcMain.handle("dialog:openFile", async (_event, filters?: Electron.FileFilter[]) => {
   const result = await dialog.showOpenDialog({ properties: ["openFile"], filters });
@@ -3134,25 +3124,43 @@ ipcMain.handle("dialog:openFolder", async () => {
   return result.canceled ? undefined : result.filePaths[0];
 });
 
+ipcMain.handle("dialog:openProjectFolder", async () => {
+  const userDataDir = app.getPath("userData");
+  const defaultPath = await readRecentProjectDir(userDataDir);
+  const result = await dialog.showOpenDialog({
+    properties: ["openDirectory", "createDirectory"],
+    ...(defaultPath ? { defaultPath } : {})
+  });
+  if (result.canceled) return undefined;
+  const selected = normalizeProjectFolder(result.filePaths[0]).outputDir;
+  await writeRecentProjectDir(userDataDir, selected);
+  return selected;
+});
+
 ipcMain.handle("project:load", async (_event, outputDir?: string) => {
   if (!outputDir) {
     return undefined;
   }
   const projectFolder = normalizeProjectFolder(outputDir);
   const workspaceDir = projectFolder.workspaceDir;
-  const project = await readJsonObject(path.join(workspaceDir, "project.json"));
-  const state = await readJsonObject(path.join(workspaceDir, "state.json"));
-  const latestHtml = await findLatestHtml(path.join(workspaceDir, "html"));
-  if (!project && !state && !latestHtml) {
+  const [project, state, reviewTargets] = await Promise.all([
+    readProjectState(projectFolder.outputDir),
+    readJsonObject(path.join(workspaceDir, "state.json")),
+    discoverProjectReviewTargets(workspaceDir)
+  ]);
+  const latestHtml = reviewTargets.primaryHtml || await findLatestHtml(path.join(workspaceDir, "html"));
+  if (Object.keys(project).length === 0 && !state && !latestHtml) {
     return undefined;
   }
-  const lastHtml = typeof state?.lastHtml === "string"
+  await writeRecentProjectDir(app.getPath("userData"), projectFolder.outputDir);
+  const savedLastHtml = typeof state?.lastHtml === "string"
     ? state.lastHtml
     : typeof project?.lastHtml === "string"
       ? project.lastHtml
       : typeof project?.lastOutput === "string"
         ? project.lastOutput
-        : latestHtml;
+        : "";
+  const lastHtml = reviewTargets.primaryHtml || await existingHtmlPath(savedLastHtml, workspaceDir) || latestHtml;
   const lastOutput = typeof project?.lastOutput === "string" && project.lastOutput
     ? project.lastOutput
     : lastHtml;
@@ -3161,14 +3169,25 @@ ipcMain.handle("project:load", async (_event, outputDir?: string) => {
     outputDir: projectFolder.outputDir,
     lastHtml,
     lastOutput,
+    lastLineReviewHtml: reviewTargets.lineReviewHtml,
+    lineReviewPath: reviewTargets.lineReviewHtml,
+    lastProposalReviewHtml: reviewTargets.proposalReviewHtml,
     generatedAt: state?.generatedAt ?? project?.generatedAt
   };
 });
 
 ipcMain.handle("project:save", async (_event, outputDir: string, state: unknown) => {
-  const workspaceDir = await ensureWorkspace(outputDir);
-  await writeFile(path.join(workspaceDir, "project.json"), JSON.stringify(state, null, 2), "utf8");
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
+    throw new Error("Project state must be an object.");
+  }
+  await saveProjectState(outputDir, state as Record<string, unknown>);
+  await writeRecentProjectDir(app.getPath("userData"), normalizeProjectFolder(outputDir).outputDir);
   return true;
+});
+
+ipcMain.handle("project:readState", async (_event, outputDir?: unknown) => {
+  const value = typeof outputDir === "string" ? outputDir.trim() : "";
+  return value ? readProjectState(value) : {};
 });
 
 ipcMain.handle("project:patch", async (_event, args: { outputDir?: unknown; patch?: unknown }) => {
@@ -3179,15 +3198,7 @@ ipcMain.handle("project:patch", async (_event, args: { outputDir?: unknown; patc
   if (!outputDir || !patch) {
     return false;
   }
-  const workspaceDir = await ensureWorkspace(outputDir);
-  const projectPath = path.join(workspaceDir, "project.json");
-  const current = await readJsonObject(projectPath) ?? {};
-  await writeFile(projectPath, JSON.stringify({
-    ...current,
-    ...patch,
-    outputDir,
-    updatedAt: new Date().toISOString()
-  }, null, 2), "utf8");
+  await patchProjectState(outputDir, patch);
   return true;
 });
 
@@ -3219,9 +3230,23 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
       if (sourceFiles.length === 0) {
         throw new Error("No .txt or .epub bilingual files were found in the source folder.");
       }
-      const indexFiles: BatchLineReviewIndexFile[] = [];
-      for (const [index, file] of sourceFiles.entries()) {
+      const preparedFiles = await Promise.all(sourceFiles.map(async (file) => {
         const parsed = await parseBilingualDocument(file.path, args.fileType, workspaceDir, sourcePosition, translationPosition);
+        const agentSourcePath = parsed.sourcePromptPath ?? await writeExtractedPromptText(
+          workspaceDir,
+          file.path,
+          "source",
+          parsed.sourceText
+        );
+        return { file, parsed, agentSourcePath };
+      }));
+      const folderAdvanced = folderPromptAdvanced(args.advanced, preparedFiles.map(({ file, agentSourcePath }) => ({
+        id: file.name,
+        path: agentSourcePath
+      })));
+      const indexFiles: BatchLineReviewIndexFile[] = [];
+      for (const [index, prepared] of preparedFiles.entries()) {
+        const { file, parsed } = prepared;
         const childName = htmlSafeName(file.name, index);
         const childPath = path.join(batchDir, childName);
         const html = renderLineReviewHtml({
@@ -3231,17 +3256,22 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
           pageSize: args.pageSize,
           startPage: args.startPage,
           locale: args.locale,
+          lineReviewPath: childPath,
           workflow: {
             sourcePath: file.path,
+            validationSourcePath: parsed.sourcePromptPath ?? file.path,
+            sourceKind: "file",
             translationPath: file.path,
-            sourcePromptPath: parsed.sourcePromptPath,
-            translationPromptPath: parsed.translationPromptPath,
+            editableTranslationPath: parsed.kind === "epub" ? parsed.translationPromptPath : file.path,
+            sourcePromptPath: args.sourcePath,
+            promptSourceKind: "folder",
+            translationPromptPath: args.sourcePath,
             outputDir: args.outputDir,
             glossaryPath: args.glossaryPath,
             glossaryEntries,
             inputMode: "bilingual",
             promptInputMode: parsed.kind === "epub" ? "separate" : "bilingual",
-            advanced: args.advanced,
+            advanced: folderAdvanced,
             bilingualPair: { sourcePosition, translationPosition, pairSize: 2 },
             epubExport: parsed.kind === "epub" ? { mode: "pair-position", replacePosition: translationPosition, pairSize: 2 } : undefined
           }
@@ -3262,7 +3292,16 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
       const indexHtml = renderBatchLineReviewIndexHtml({
         title: `${path.basename(args.sourcePath)} bilingual folder review`,
         files: indexFiles,
-        locale: args.locale
+        locale: args.locale,
+        workflow: {
+          sourcePath: args.sourcePath,
+          sourceKind: "folder",
+          translationPath: args.sourcePath,
+          outputDir: args.outputDir,
+          glossaryPath: args.glossaryPath,
+          inputMode: "bilingual",
+          advanced: folderAdvanced
+        }
       });
       await writeFile(outputPath, indexHtml, "utf8");
       await writeFile(
@@ -3287,6 +3326,7 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
 
     const parsed = await parseBilingualDocument(args.sourcePath, args.fileType, workspaceDir, sourcePosition, translationPosition);
     const title = `${path.basename(args.sourcePath)} bilingual line review`;
+    const outputPath = path.join(workspaceDir, "html", `line-review-bilingual-${timestamp()}.html`);
     const html = renderLineReviewHtml({
       title,
       sourceText: parsed.sourceText,
@@ -3294,9 +3334,12 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
       pageSize: args.pageSize,
       startPage: args.startPage,
       locale: args.locale,
+      lineReviewPath: outputPath,
       workflow: {
         sourcePath: args.sourcePath,
+        validationSourcePath: parsed.sourcePromptPath ?? args.sourcePath,
         translationPath: args.sourcePath,
+        editableTranslationPath: parsed.kind === "epub" ? parsed.translationPromptPath : args.sourcePath,
         sourcePromptPath: parsed.sourcePromptPath,
         translationPromptPath: parsed.translationPromptPath,
         outputDir: args.outputDir,
@@ -3309,7 +3352,6 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
         epubExport: parsed.kind === "epub" ? { mode: "pair-position", replacePosition: translationPosition, pairSize: 2 } : undefined
       }
     });
-    const outputPath = path.join(workspaceDir, "html", `line-review-bilingual-${timestamp()}.html`);
     await writeFile(outputPath, html, "utf8");
     await writeFile(
       path.join(workspaceDir, "state.json"),
@@ -3334,12 +3376,32 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
       throw new Error("No .txt or .epub files were found in the source folder.");
     }
     const matches = matchFolderFiles(sourceFiles, translationFiles);
+    const preparedMatches = await Promise.all(matches.map(async (match) => ({
+      match,
+      sourceDocument: await readLineDocumentForWorkflow(match.sourcePath, args.fileType, workspaceDir, "source")
+    })));
+    const folderAdvanced = folderPromptAdvanced(args.advanced, preparedMatches.map(({ match, sourceDocument }) => ({
+      id: match.sourceName,
+      path: sourceDocument.promptPath ?? match.sourcePath
+    })));
     const indexFiles: BatchLineReviewIndexFile[] = [];
-    for (const [index, match] of matches.entries()) {
-      const sourceDocument = await readLineDocumentForWorkflow(match.sourcePath, args.fileType, workspaceDir, "source");
+    for (const [index, prepared] of preparedMatches.entries()) {
+      const { match, sourceDocument } = prepared;
       const translationDocument = match.status === "matched" && match.translationPath
         ? await readTranslationDocumentForWorkflow(match.translationPath, workspaceDir)
         : undefined;
+      const editableTranslationPath = translationDocument?.kind === "epub"
+        ? translationDocument.promptPath
+        : match.translationPath
+          ? match.translationPath
+          : sourceDocument.kind === "epub"
+            ? await writeExtractedPromptText(
+              workspaceDir,
+              match.sourcePath,
+              "translation",
+              blankAlignedTranslationText(sourceDocument.text)
+            )
+            : undefined;
       const childName = htmlSafeName(match.sourceName, index);
       const childPath = path.join(batchDir, childName);
       const html = renderLineReviewHtml({
@@ -3349,16 +3411,21 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
         pageSize: args.pageSize,
         startPage: args.startPage,
         locale: args.locale,
+        lineReviewPath: childPath,
         workflow: {
           sourcePath: match.sourcePath,
+          validationSourcePath: sourceDocument.promptPath ?? match.sourcePath,
+          sourceKind: "file",
           translationPath: match.status === "matched" ? match.translationPath : undefined,
-          sourcePromptPath: sourceDocument.promptPath,
-          translationPromptPath: translationDocument?.promptPath,
+          editableTranslationPath,
+          sourcePromptPath: args.sourcePath,
+          promptSourceKind: "folder",
+          translationPromptPath: (translationDocument?.promptPath ?? editableTranslationPath ?? args.translationPath) || undefined,
           outputDir: args.outputDir,
           glossaryPath: args.glossaryPath,
           glossaryEntries,
           inputMode: "separate",
-          advanced: args.advanced,
+          advanced: folderAdvanced,
           epubExport: match.sourcePath.toLowerCase().endsWith(".epub") ? { mode: "all" } : undefined
         }
       });
@@ -3378,7 +3445,16 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
     const indexHtml = renderBatchLineReviewIndexHtml({
       title: `${path.basename(args.sourcePath)} folder line review`,
       files: indexFiles,
-      locale: args.locale
+      locale: args.locale,
+      workflow: {
+        sourcePath: args.sourcePath,
+        sourceKind: "folder",
+        translationPath: args.translationPath || undefined,
+        outputDir: args.outputDir,
+        glossaryPath: args.glossaryPath,
+        inputMode: "separate",
+        advanced: folderAdvanced
+      }
     });
     await writeFile(outputPath, indexHtml, "utf8");
     await writeFile(
@@ -3407,7 +3483,20 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
   const translationDocument = args.translationPath
     ? await readTranslationDocumentForWorkflow(args.translationPath, workspaceDir)
     : undefined;
+  const editableTranslationPath = translationDocument?.kind === "epub"
+    ? translationDocument.promptPath
+    : args.translationPath
+      ? args.translationPath
+      : sourceDocument.kind === "epub"
+        ? await writeExtractedPromptText(
+          workspaceDir,
+          args.sourcePath,
+          "translation",
+          blankAlignedTranslationText(sourceDocument.text)
+        )
+        : undefined;
   const title = `${path.basename(args.sourcePath)} line review`;
+  const outputPath = path.join(workspaceDir, "html", `line-review-${timestamp()}.html`);
   const html = renderLineReviewHtml({
     title,
     sourceText: sourceDocument.text,
@@ -3415,11 +3504,14 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
     pageSize: args.pageSize,
     startPage: args.startPage,
     locale: args.locale,
+    lineReviewPath: outputPath,
     workflow: {
       sourcePath: args.sourcePath,
+      validationSourcePath: sourceDocument.promptPath ?? args.sourcePath,
       translationPath: args.translationPath,
+      editableTranslationPath,
       sourcePromptPath: sourceDocument.promptPath,
-      translationPromptPath: translationDocument?.promptPath,
+      translationPromptPath: translationDocument?.promptPath ?? editableTranslationPath,
       outputDir: args.outputDir,
       glossaryPath: args.glossaryPath,
       glossaryEntries,
@@ -3428,7 +3520,6 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
       epubExport: args.sourcePath.toLowerCase().endsWith(".epub") ? { mode: "all" } : undefined
     }
   });
-  const outputPath = path.join(workspaceDir, "html", `line-review-${timestamp()}.html`);
   await writeFile(outputPath, html, "utf8");
   await writeFile(path.join(workspaceDir, "state.json"), JSON.stringify({ lastHtml: outputPath, generatedAt: new Date().toISOString() }, null, 2), "utf8");
   return { outputPath };
@@ -3448,7 +3539,7 @@ ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateRevie
     throw new Error("No proofread Markdown report with replacement proposals was found.");
   }
   const reportText = await readFile(reportPath, "utf8");
-  const proposals = parseProofreadMarkdown(reportText);
+  const proposals = parseProofreadReport(reportText, reportPath);
   if (proposals.length === 0) {
     return {
       fallbackPrompt: buildReportFormatRepairPrompt(reportPath, args.locale),
@@ -3469,6 +3560,10 @@ ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateRevie
   });
   const outputPath = path.join(workspaceDir, "html", `proposal-review-${timestamp()}.html`);
   await writeFile(outputPath, html, "utf8");
+  await writeFile(path.join(workspaceDir, "state.json"), JSON.stringify({
+    lastHtml: outputPath,
+    generatedAt: new Date().toISOString()
+  }, null, 2), "utf8");
   return { outputPath, proposalCount: proposals.length, reportPath, lineReviewPath };
 });
 
@@ -3476,8 +3571,11 @@ ipcMain.handle("html:openReviewHtml", async (_event, args: OpenReviewHtmlArgs) =
   if (!args.htmlPath) {
     throw new Error("Review HTML path is required.");
   }
-  await repairProposalReviewHtmlLineReviewPath(args.htmlPath, args.outputDir);
-  await openHtmlWindow(args.htmlPath);
+  if (args.activate === false) {
+    await loadHtmlViewerTab(args.htmlPath);
+  } else {
+    await openHtmlWindow(args.htmlPath);
+  }
   return { ok: true };
 });
 
@@ -3485,10 +3583,380 @@ ipcMain.handle("html:applyLineReviewState", async (_event, args: ApplyLineReview
   return applyLineReviewStateToView(args);
 });
 
+ipcMain.handle("html:readLineReviewDocument", async (_event, args: { lineReviewPath?: unknown }) => {
+  if (typeof args?.lineReviewPath !== "string" || !args.lineReviewPath.trim()) {
+    throw new Error("Line review HTML path is required.");
+  }
+  const normalizedPath = normalizeLinkedHtmlFilePath(args.lineReviewPath.replace(/#.*$/, ""));
+  if (!normalizedPath) {
+    throw new Error("Line review HTML path is invalid.");
+  }
+  const existingTab = [...htmlViewerTabs.values()].find((item) => sameFilePath(item.filePath, normalizedPath));
+  if (existingTab?.loadPromise) await existingTab.loadPromise;
+  if (!existingTab) {
+    await loadHtmlViewerTab(normalizedPath);
+  }
+  let document: LanSyncLineDocument | undefined;
+  for (let attempt = 0; attempt < 5 && !document; attempt += 1) {
+    document = await readOpenLineReviewDocument(normalizedPath);
+    if (!document && attempt < 4) await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+  if (!document) {
+    throw new Error("Line review document state is unavailable.");
+  }
+  return document;
+});
+
+ipcMain.handle("html:prepareProposalLineReviewBatch", async (_event, args: PrepareProposalLineReviewBatchArgs) => {
+  try {
+    if (!args.outputDir || !path.isAbsolute(args.outputDir)) {
+      throw new Error("An absolute project output directory is required.");
+    }
+    const outputDir = path.resolve(args.outputDir);
+    const workspaceDir = normalizeProjectFolder(outputDir).workspaceDir;
+    if (!args.reportPath || !path.isAbsolute(args.reportPath)
+      || (!isSameOrInside(outputDir, args.reportPath) && !isSameOrInside(workspaceDir, args.reportPath))) {
+      throw new Error("The proofread report must belong to the current project.");
+    }
+    const batchIndexPath = typeof args.lineReviewPath === "string"
+      ? normalizeLinkedHtmlFilePath(args.lineReviewPath.replace(/#.*$/, ""))
+      : "";
+    if (!batchIndexPath || await isLineReviewHtml(batchIndexPath)) {
+      return { ok: true, batch: false, synchronized: 0, migrated: 0 };
+    }
+    try {
+      await readBatchLineReviewChildren(batchIndexPath);
+    } catch (error) {
+      throw new Error(`The linked batch line-review index is invalid: ${batchIndexPath}`, { cause: error });
+    }
+    if (!isSameOrInside(workspaceDir, batchIndexPath)) {
+      throw new Error("The batch line-review index is outside the current project workspace.");
+    }
+    const requestedDocuments = Array.isArray(args.documents) ? args.documents : [];
+    if (requestedDocuments.length === 0) {
+      throw new Error("Batch proposal preparation requires its embedded document routes.");
+    }
+    const reportText = await readFile(args.reportPath, "utf8");
+    const proposals = parseProofreadReport(reportText, args.reportPath);
+    if (proposals.length === 0) throw new Error("The proofread report has no findings to route.");
+    await proposalRoutingFromReport({
+      outputDir,
+      reportPath: args.reportPath,
+      documentId: proposals[0].documentId,
+      sourcePath: proposals[0].sourcePath,
+      translationPath: proposals[0].translationPath
+    });
+    const routeOverrides = new Map<string, { sourcePath: string; translationPath: string }>();
+    for (const proposal of proposals) {
+      const documentId = String(proposal.documentId || "");
+      const sourcePath = typeof proposal.sourcePath === "string" && path.isAbsolute(proposal.sourcePath)
+        ? path.resolve(proposal.sourcePath)
+        : "";
+      const translationPath = typeof proposal.translationPath === "string" && path.isAbsolute(proposal.translationPath)
+        ? path.resolve(proposal.translationPath)
+        : "";
+      if (!validProposalDocumentId(documentId) || !sourcePath || !translationPath) {
+        throw new Error(`Proofread report has an incomplete batch route: ${documentId || "unknown"}.`);
+      }
+      const key = normalizedProposalDocumentId(documentId);
+      const previous = routeOverrides.get(key);
+      if (previous && (!sameFilePath(previous.sourcePath, sourcePath)
+        || !sameFilePath(previous.translationPath, translationPath))) {
+        throw new Error(`Proofread report maps ${documentId} to multiple file routes.`);
+      }
+      routeOverrides.set(key, { sourcePath, translationPath });
+    }
+    for (const document of requestedDocuments) {
+      const key = normalizedProposalDocumentId(document.documentId);
+      const reportRoute = routeOverrides.get(key);
+      const requestedSource = typeof document.sourcePath === "string" && path.isAbsolute(document.sourcePath)
+        ? path.resolve(document.sourcePath)
+        : "";
+      const requestedTranslation = typeof document.translationPath === "string" && path.isAbsolute(document.translationPath)
+        ? path.resolve(document.translationPath)
+        : "";
+      if (!reportRoute || !requestedSource || !requestedTranslation
+        || !sameFilePath(reportRoute.sourcePath, requestedSource)
+        || !sameFilePath(reportRoute.translationPath, requestedTranslation)) {
+        throw new Error(`Proofread report translation route changed before batch proposal apply: ${document.documentId || "unknown"}.`);
+      }
+    }
+    const result = await synchronizeBatchProposalLineReviews({
+      outputDir,
+      batchIndexPath,
+      locale: args.locale === "en-US" ? "en-US" : "zh-CN",
+      routeOverrides
+    });
+    return { ok: true, batch: true, ...result };
+  } catch (error) {
+    return {
+      ok: false,
+      batch: false,
+      synchronized: 0,
+      migrated: 0,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+ipcMain.handle("html:resolveProposalLineReviewDocument", async (_event, args: ResolveProposalLineReviewDocumentArgs) => {
+  if (!args.outputDir || !path.isAbsolute(args.outputDir)) {
+    throw new Error("An absolute project output directory is required.");
+  }
+  const outputDir = path.resolve(args.outputDir);
+  const workspaceDir = normalizeProjectFolder(outputDir).workspaceDir;
+  if (!args.reportPath || !path.isAbsolute(args.reportPath)
+    || (!isSameOrInside(outputDir, args.reportPath) && !isSameOrInside(workspaceDir, args.reportPath))) {
+    throw new Error("The proofread report must belong to the current project.");
+  }
+  const routing = await proposalRoutingFromReport(args);
+  const locale = args.locale === "en-US" ? "en-US" : "zh-CN";
+  const lineReviewPath = await existingProposalLineReview(outputDir, args.lineReviewPath, routing, locale)
+    ?? await generateProposalLineReview(outputDir, routing, locale);
+  if (!isSameOrInside(workspaceDir, lineReviewPath)) {
+    throw new Error("The resolved line-review document is outside the current project workspace.");
+  }
+  const document = await readProposalLineReviewDocument(lineReviewPath);
+  return {
+    ...document,
+    documentId: routing.documentId,
+    sourcePath: routing.sourcePath,
+    translationPath: routing.translationPath,
+    lineReviewPath
+  };
+});
+
+ipcMain.handle("html:applyProposalLineReviewStates", async (event, args: ApplyProposalLineReviewStatesArgs) => {
+  const documents = Array.isArray(args?.documents) ? args.documents : [];
+  if (documents.length === 0) throw new Error("At least one line-review state is required.");
+  const senderPath = [...htmlViewerTabs.values()]
+    .find((tab) => tab.view.webContents.id === event.sender.id)?.filePath
+    || normalizeLinkedHtmlFilePath(event.sender.getURL().replace(/#.*$/, ""));
+  const senderWorkspace = workspaceDirFromKnownPath(senderPath);
+  if (!senderWorkspace) throw new Error("The proposal review is outside a project workspace.");
+  const senderOutputDir = path.dirname(senderWorkspace);
+  const prepared: Array<{
+    reportPath: string;
+    routing: { documentId: string; sourcePath: string; translationPath?: string };
+    lineReviewPath: string;
+    statePath: string;
+    lineState: unknown;
+    changedLines: number[];
+    changedStateKeys: string[];
+    expectedLineRevisions: unknown;
+  }> = [];
+  const seenStatePaths = new Set<string>();
+  for (const item of documents) {
+    const lineReviewPath = typeof item?.lineReviewPath === "string"
+      ? normalizeLinkedHtmlFilePath(item.lineReviewPath.replace(/#.*$/, ""))
+      : "";
+    if (!lineReviewPath || !(await isLineReviewHtml(lineReviewPath))) {
+      throw new Error("A valid line-review HTML path is required for every proposal document.");
+    }
+    const documentWorkspace = workspaceDirFromKnownPath(lineReviewPath);
+    if (!documentWorkspace || !sameFilePath(documentWorkspace, senderWorkspace)) {
+      throw new Error("Proposal changes cannot cross the current project workspace boundary.");
+    }
+    const reportPath = typeof item?.reportPath === "string"
+      ? normalizeLinkedHtmlFilePath(item.reportPath.replace(/#.*$/, ""))
+      : "";
+    if (!reportPath || (!isSameOrInside(senderOutputDir, reportPath) && !isSameOrInside(senderWorkspace, reportPath))) {
+      throw new Error("The proofread report must belong to the current proposal project.");
+    }
+    let routing: { documentId: string; sourcePath: string; translationPath?: string };
+    try {
+      routing = await proposalRoutingFromReport({
+        outputDir: senderOutputDir,
+        reportPath,
+        documentId: item.documentId,
+        sourcePath: item.sourcePath,
+        translationPath: item.translationPath
+      });
+      await assertLineReviewMatchesProposalRouting(lineReviewPath, routing);
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        documents: []
+      };
+    }
+    const statePath = await htmlSidecarStatePath(lineReviewPath, "line");
+    if (!statePath) {
+      throw new Error(`Proposal changes contain an invalid line-review state: ${lineReviewPath}`);
+    }
+    const comparableStatePath = path.resolve(statePath).toLowerCase();
+    if (seenStatePaths.has(comparableStatePath)) {
+      throw new Error(`Proposal changes contain a duplicate or invalid line-review state: ${lineReviewPath}`);
+    }
+    seenStatePaths.add(comparableStatePath);
+    prepared.push({
+      reportPath,
+      routing,
+      lineReviewPath,
+      statePath,
+      lineState: item.lineState,
+      changedLines: normalizeChangedLineNumbers(item.changedLines),
+      changedStateKeys: normalizeChangedStateKeys(item.changedStateKeys),
+      expectedLineRevisions: item.expectedLineRevisions
+    });
+  }
+  return withHtmlStateWriteLocks(prepared.map((item) => item.statePath), async () => {
+    const updates = await Promise.all(prepared.map(async (item) => {
+      const currentState = await readJsonObject(item.statePath) ?? {};
+      assertExpectedLineRevisions(currentState, item.expectedLineRevisions, item.changedLines);
+      return {
+        ...item,
+        state: mergeCanonicalLineReviewState(
+          currentState,
+          item.lineState,
+          item.changedLines,
+          item.changedStateKeys
+        )
+      };
+    }));
+    for (const item of updates) await ensureTransactionalTextTarget(item.statePath, "{}\n");
+    await writeTextFilesAtomically(updates.map((item) => ({
+      targetPath: item.statePath,
+      text: `${JSON.stringify(item.state, null, 2)}\n`
+    })));
+    for (const item of updates) {
+      broadcastLineReviewState({
+        ok: true,
+        path: item.statePath,
+        lineReviewPath: item.lineReviewPath,
+        state: item.state,
+        changedLines: item.changedLines,
+        changedStateKeys: item.changedStateKeys
+      });
+    }
+    return {
+      ok: true,
+      documents: updates.map((item) => ({
+        lineReviewPath: item.lineReviewPath,
+        state: item.state,
+        changedLines: item.changedLines,
+        changedStateKeys: item.changedStateKeys
+      }))
+    };
+  });
+});
+
+ipcMain.handle("html:persistState", async (event, args: {
+  kind?: unknown;
+  lineReviewPath?: unknown;
+  state?: unknown;
+  changedLines?: unknown;
+  changedStateKeys?: unknown;
+  clientId?: unknown;
+  mutationId?: unknown;
+}) => {
+  const kind = args?.kind === "line" || args?.kind === "proposal" ? args.kind : "";
+  if (!kind) return { ok: false };
+  const senderTabPath = [...htmlViewerTabs.values()]
+    .find((tab) => tab.view.webContents.id === event.sender.id)?.filePath;
+  const senderPath = senderTabPath
+    || normalizeLinkedHtmlFilePath(event.sender.getURL().replace(/#.*$/, ""));
+  const requestedPath = typeof args.lineReviewPath === "string" && args.lineReviewPath.trim()
+    ? normalizeLinkedHtmlFilePath(args.lineReviewPath, senderPath)
+    : senderPath;
+  if (!requestedPath || path.extname(requestedPath).toLowerCase() !== ".html") return { ok: false };
+  const senderWorkspace = workspaceDirFromKnownPath(senderPath);
+  const requestedWorkspace = workspaceDirFromKnownPath(requestedPath);
+  const sameDocument = sameFilePath(senderPath, requestedPath);
+  const sameWorkspace = Boolean(
+    senderWorkspace && requestedWorkspace && sameFilePath(senderWorkspace, requestedWorkspace)
+  );
+  const ownedBatchChild = Boolean(
+    senderPath && !sameDocument && await batchLineReviewOwnsChild(senderPath, requestedPath)
+  );
+  if (!sameDocument && !sameWorkspace && !ownedBatchChild) {
+    throw new Error("HTML state cannot cross the current project workspace boundary.");
+  }
+  const filePath = requestedPath;
+  const statePath = await htmlSidecarStatePath(filePath, kind);
+  if (!statePath) return { ok: false };
+  if (kind === "line") {
+    const changedLines = normalizeChangedLineNumbers(args.changedLines);
+    const changedStateKeys = normalizeChangedStateKeys(args.changedStateKeys);
+    let mutationAccepted = true;
+    const canonicalState = await updateHtmlSidecarState(
+      statePath,
+      (current) => {
+        const stateKey = path.resolve(statePath).toLowerCase();
+        const sequences = htmlStateMutationSequences.get(stateKey) ?? new Map<string, number>();
+        htmlStateMutationSequences.set(stateKey, sequences);
+        mutationAccepted = acceptLineReviewMutationSequence(
+          sequences,
+          args.clientId,
+          args.mutationId
+        );
+        return mutationAccepted
+          ? mergeCanonicalLineReviewState(current, args.state, changedLines, changedStateKeys)
+          : current;
+      }
+    );
+    const payload = {
+      ok: true,
+      path: statePath,
+      lineReviewPath: filePath,
+      state: canonicalState,
+      changedLines: mutationAccepted ? changedLines : [],
+      changedStateKeys: mutationAccepted ? changedStateKeys : [],
+      clientId: typeof args.clientId === "string" ? args.clientId : "",
+      mutationId: typeof args.mutationId === "string" ? args.mutationId : "",
+      mutationAccepted
+    };
+    broadcastLineReviewState(payload);
+    return payload;
+  }
+  await writeHtmlSidecarState(statePath, args.state);
+  return { ok: true, path: statePath };
+});
+
+ipcMain.handle("html:writeBatchLineReviewTxt", async (event) => {
+  const batchIndexPath = [...htmlViewerTabs.values()]
+    .find((tab) => tab.view.webContents.id === event.sender.id)?.filePath;
+  if (!batchIndexPath) {
+    throw new Error("The batch review is not open in the Electron HTML workbench.");
+  }
+  await drainHtmlSidecarStateWrites();
+  const writes = await prepareBatchLineReviewTxtWrites(batchIndexPath);
+  const written = [];
+  for (const write of writes) {
+    const result = await writeBoundTranslationText({
+      path: write.targetPath,
+      text: write.text,
+      outputDir: write.outputDir
+    });
+    written.push({
+      path: result.path,
+      backupPath: result.backupPath,
+      lineCount: write.lineCount
+    });
+  }
+  return { ok: true, written };
+});
+
 ipcMain.handle("lan-sync:start", async (event, args: LanSyncStartArgs) => {
+  const ownerWebContentsId = event.sender.id;
+  if (!lanSyncOwnerDestroyedHandlers.has(ownerWebContentsId)) {
+    const handleOwnerDestroyed = () => {
+      lanSyncOwnerDestroyedHandlers.delete(ownerWebContentsId);
+      const ownedSessions = [...lanSyncSessions.values()]
+        .filter((item) => item.ownerWebContentsId === ownerWebContentsId);
+      void Promise.all(ownedSessions.map((item) => stopLanSyncSession(item, lanSyncSessions)));
+    };
+    lanSyncOwnerDestroyedHandlers.set(ownerWebContentsId, handleOwnerDestroyed);
+    event.sender.once("destroyed", handleOwnerDestroyed);
+  }
   if (!isValidLanSyncPin(args?.pin)) {
     throw new Error(args?.locale === "en-US" ? "LAN sync PIN must be exactly 6 digits." : "局域网同步 PIN 必须是 6 位数字。");
   }
+  const senderTabPath = [...htmlViewerTabs.values()]
+    .find((tab) => tab.view.webContents.id === event.sender.id)?.filePath;
+  const senderPath = senderTabPath
+    || normalizeLinkedHtmlFilePath(event.sender.getURL().replace(/#.*$/, ""));
+  assertLanSyncStartOwnership(args, senderPath);
   await ensureLanSyncServer();
   const token = randomBytes(18).toString("base64url");
   let lineDocument = normalizeLanSyncLineDocument(args);
@@ -3516,12 +3984,11 @@ ipcMain.handle("lan-sync:start", async (event, args: LanSyncStartArgs) => {
   const outputDir = normalizeLanSyncOutputDir(args, lineDocument, proposalDocument);
   const session: LanSyncSession = {
     token,
-    ownerWebContentsId: event.sender.id,
+    ownerWebContentsId,
     title: String(args.title || "translation-workshop"),
     pinHash: hashLanSyncPin(args.pin),
     authTokens: new Set(),
     outputDir,
-    agent: args.agent === "claude" ? "claude" : "codex",
     documents: {
       line: lineDocument,
       proposal: proposalDocument
@@ -3530,14 +3997,11 @@ ipcMain.handle("lan-sync:start", async (event, args: LanSyncStartArgs) => {
     createdAt: new Date().toISOString(),
     clients: new Set()
   };
-  lanSyncSessions.set(token, session);
-  event.sender.once("destroyed", () => {
-    for (const item of [...lanSyncSessions.values()]) {
-      if (item.ownerWebContentsId === session.ownerWebContentsId) {
-        stopLanSyncSession(item);
-      }
-    }
-  });
+  const registered = await registerLanSyncSession(session, lanSyncSessions, () => !event.sender.isDestroyed());
+  if (!registered || event.sender.isDestroyed()) {
+    await stopLanSyncSession(session, lanSyncSessions);
+    return { ok: false };
+  }
   return {
     ok: true,
     token,
@@ -3559,8 +4023,7 @@ ipcMain.handle("lan-sync:patch", async (event, args: { token?: string; patch?: L
     clientId: args.patch.clientId || "desktop",
     timestamp: args.patch.timestamp || new Date().toISOString()
   };
-  applyLanSyncPatchToSession(session, patch);
-  broadcastLanSyncPatch(session, patch);
+  await commitLanSyncPatch(session, patch, persistLanSyncPatch, broadcastLanSyncPatch);
   return { ok: true };
 });
 
@@ -3569,7 +4032,7 @@ ipcMain.handle("lan-sync:stop", async (event, token: string) => {
   if (!session || session.ownerWebContentsId !== event.sender.id) {
     return { ok: false };
   }
-  stopLanSyncSession(session);
+  await stopLanSyncSession(session, lanSyncSessions);
   return { ok: true };
 });
 
@@ -3595,22 +4058,11 @@ ipcMain.handle("files:scanTranslations", async (_event, outputDir: string) => {
 });
 
 ipcMain.handle("clipboard:writeText", async (_event, text: string) => {
-  clipboard.writeText(text);
-  return true;
+  return writeClipboardTextVerified(clipboard, text);
 });
 
 ipcMain.handle("files:writeTextFile", async (_event, args: WriteTextFileArgs) => {
-  const targetPath = args.path;
-  const text = args.text ?? "";
-  if (!targetPath || !path.isAbsolute(targetPath)) {
-    throw new Error("A bound absolute translation path is required.");
-  }
-  if (!/\.txt$/i.test(targetPath)) {
-    throw new Error("Only txt translation files can be overwritten.");
-  }
-  const backupPath = await backupFile(targetPath, args.outputDir);
-  await writeFile(targetPath, text, "utf8");
-  return { ok: true, path: targetPath, backupPath };
+  return writeBoundTranslationText(args);
 });
 
 ipcMain.handle("files:readTextFile", async (_event, args: ReadTextFileArgs) => {
@@ -3625,20 +4077,6 @@ ipcMain.handle("files:readTextFile", async (_event, args: ReadTextFileArgs) => {
   return { ok: true, path: targetPath, text: await readFile(targetPath, "utf8") };
 });
 
-ipcMain.handle("files:writeGlossaryFile", async (_event, args: WriteGlossaryFileArgs) => {
-  const targetPath = args.path;
-  const text = args.text ?? "";
-  if (!targetPath || !path.isAbsolute(targetPath)) {
-    throw new Error("A bound absolute glossary path is required.");
-  }
-  if (!/\.(txt|json|csv|tsv|md)$/i.test(targetPath)) {
-    throw new Error("Glossary writes support txt/json/csv/tsv/md files.");
-  }
-  const backupPath = await backupFile(targetPath, args.outputDir);
-  await writeFile(targetPath, text, "utf8");
-  return { ok: true, path: targetPath, backupPath };
-});
-
 ipcMain.handle("files:writeAuditWhitelistFile", async (_event, args: WriteAuditWhitelistFileArgs) => {
   const outputRoot = args.outputDir && path.isAbsolute(args.outputDir)
     ? args.outputDir
@@ -3650,15 +4088,80 @@ ipcMain.handle("files:writeAuditWhitelistFile", async (_event, args: WriteAuditW
   }
   const workspaceDir = await ensureWorkspace(outputRoot);
   const targetPath = path.join(workspaceDir, "audit-whitelist.json");
-  const backupPath = await backupFile(targetPath, outputRoot);
   const uniqueLines = [...new Set((args.lines ?? []).filter((line) => Number.isInteger(line) && line > 0))].sort((a, b) => a - b);
-  await writeFile(targetPath, JSON.stringify({
-    version: 1,
-    sourcePath: args.sourcePath ?? "",
-    lines: uniqueLines,
-    updatedAt: new Date().toISOString()
-  }, null, 2), "utf8");
-  return { ok: true, path: targetPath, backupPath, lineCount: uniqueLines.length };
+  const readMergedWhitelistText = async () => JSON.stringify(mergeAuditWhitelistDocument(
+    await readJsonObject(targetPath) ?? {},
+    {
+      documentId: args.documentId,
+      sourcePath: args.sourcePath,
+      lines: uniqueLines
+    }
+  ), null, 2);
+  const transactional = args.lineReviewPath !== undefined
+    || args.lineState !== undefined
+    || args.changedLines !== undefined;
+  if (!transactional) {
+    const backupPath = await backupFile(targetPath, outputRoot);
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeTextFileAtomically(targetPath, await readMergedWhitelistText());
+    return { ok: true, path: targetPath, backupPath, lineCount: uniqueLines.length };
+  }
+
+  const normalizedLineReviewPath = typeof args.lineReviewPath === "string"
+    ? normalizeLinkedHtmlFilePath(args.lineReviewPath.replace(/#.*$/, ""))
+    : "";
+  const changedLines = normalizeChangedLineNumbers(args.changedLines);
+  if (
+    !normalizedLineReviewPath
+    || path.extname(normalizedLineReviewPath).toLowerCase() !== ".html"
+    || changedLines.length === 0
+    || !args.lineState
+  ) {
+    throw new Error("Atomic audit-whitelist updates require a bound line-review HTML, line state, and changed lines.");
+  }
+  const statePath = await htmlSidecarStatePath(normalizedLineReviewPath, "line");
+  if (!statePath || !isSameOrInside(workspaceDir, statePath)) {
+    throw new Error("The linked line-review state is outside the project workspace.");
+  }
+  const queueKey = path.resolve(targetPath).toLowerCase();
+  const previous = htmlStateWriteQueues.get(queueKey) ?? Promise.resolve();
+  let canonicalState: Record<string, unknown> = {};
+  const current = previous.catch(() => undefined).then(async () => {
+    await ensureTransactionalTextTarget(statePath, "{}\n");
+    await ensureTransactionalTextTarget(targetPath, `${JSON.stringify({
+      version: 2,
+      documents: {},
+      updatedAt: new Date(0).toISOString()
+    }, null, 2)}\n`);
+    canonicalState = mergeCanonicalLineReviewState(
+      await readJsonObject(statePath) ?? {},
+      args.lineState,
+      changedLines,
+      ["auditVisible"]
+    );
+    const whitelistText = await readMergedWhitelistText();
+    await writeTextFilesAtomically([
+      { targetPath: statePath, text: `${JSON.stringify(canonicalState, null, 2)}\n` },
+      { targetPath, text: `${whitelistText}\n` }
+    ]);
+  });
+  htmlStateWriteQueues.set(queueKey, current);
+  try {
+    await current;
+  } finally {
+    if (htmlStateWriteQueues.get(queueKey) === current) htmlStateWriteQueues.delete(queueKey);
+  }
+  const payload = {
+    ok: true,
+    path: targetPath,
+    lineCount: uniqueLines.length,
+    lineReviewPath: normalizedLineReviewPath,
+    state: canonicalState,
+    changedLines,
+    changedStateKeys: ["auditVisible"]
+  };
+  broadcastLineReviewState(payload);
+  return payload;
 });
 
 ipcMain.handle("files:writeEpubFile", async (_event, args: WriteEpubFileArgs) => {
@@ -3684,85 +4187,90 @@ ipcMain.handle("files:writeEpubFile", async (_event, args: WriteEpubFileArgs) =>
 
 ipcMain.handle("shell:openPath", async (_event, targetPath: string) => {
   if (isHtmlOpenTarget(targetPath)) {
-    await openHtmlWindow(targetPath);
-    return "";
+    try {
+      await openHtmlWindow(targetPath);
+      return "";
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
   }
   return shell.openPath(targetPath);
 });
 
-ipcMain.handle("skills:installCommand", async (_event, args: SkillInstallArgs) => {
-  const agent = normalizeSkillInstallAgent(args?.agent);
-  return localSkillInstallDetails(agent);
-});
-
-ipcMain.handle("skills:status", async (_event, args: SkillInstallArgs) => {
-  const agent = normalizeSkillInstallAgent(args?.agent);
-  return localSkillInstallStatus(agent);
-});
-
 ipcMain.handle("html-tabs:activate", async (_event, key: string) => {
-  return activateHtmlViewerTab(key);
+  const activated = activateHtmlViewerTab(key);
+  if (activated) await rememberActiveHtmlViewerProject();
+  return activated;
 });
 
 ipcMain.handle("html-tabs:close", async (_event, key: string) => {
-  return closeHtmlViewerTab(key);
+  const closed = await closeHtmlViewerTab(key);
+  if (closed) await rememberActiveHtmlViewerProject();
+  return closed;
 });
 
-ipcMain.handle("agent-console:start", async (_event, args: AgentConsoleStartArgs) => {
-  return startInteractiveAgentConsole(args);
-});
-
-ipcMain.handle("agent-console:input", async (_event, args: AgentConsoleInputArgs) => {
-  if (!interactiveAgentSession) {
-    return { ok: false, message: "No interactive Agent Console is running." };
+let agentIpcRegistered = false;
+async function ensureAgentIpcRegistered(): Promise<void> {
+  if (agentIpcRegistered) {
+    return;
   }
-  return submitInteractiveAgentInput(interactiveAgentSession, args.data ?? "");
-});
-
-ipcMain.handle("agent-console:write", async (_event, args: AgentConsoleInputArgs) => {
-  if (!interactiveAgentSession) {
-    return { ok: false, message: "No interactive Agent Console is running." };
-  }
-  interactiveAgentSession.pty.write(args.data ?? "");
-  return { ok: true };
-});
-
-ipcMain.handle("agent-console:clear", async () => {
-  if (!interactiveAgentSession) {
-    return { ok: true };
-  }
-  interactiveAgentSession.outputBuffer = "";
-  interactiveAgentSession.recentOutput = "";
-  return { ok: true };
-});
-
-ipcMain.handle("agent-console:resize", async (_event, args: AgentConsoleResizeArgs) => {
-  if (!interactiveAgentSession) {
-    return { ok: false, message: "No interactive Agent Console is running." };
-  }
-  const cols = Math.max(40, Math.min(240, Math.floor(args.cols || 120)));
-  const rows = Math.max(10, Math.min(80, Math.floor(args.rows || 32)));
-  interactiveAgentSession.pty.resize(cols, rows);
-  return { ok: true };
-});
-
-ipcMain.handle("agent-console:stop", async () => {
-  if (!interactiveAgentSession) {
-    return { ok: true };
-  }
-  const session = interactiveAgentSession;
-  interactiveAgentSession = undefined;
-  session.pty.kill();
-  return { ok: true };
-});
-
-ipcMain.handle("agent-console:status", async () => {
-  return interactiveConsoleSnapshot();
-});
+  const [
+    { registerAgentAssetIpc },
+    { registerAgentArtifactIpc },
+    { registerAgentSessionIpc },
+    { registerAgentProviderIpc }
+  ] = await Promise.all([
+    import("./ipc/agentAssetHandlers.ts"),
+    import("./ipc/agentArtifactHandlers.ts"),
+    import("./ipc/agentSessionHandlers.ts"),
+    import("./ipc/agentProviderHandlers.ts")
+  ]);
+  registerAgentAssetIpc();
+  registerAgentArtifactIpc();
+  registerAgentSessionIpc({
+    resolveInterfaceWorkspace(sender) {
+      const workspaceDir = [...htmlViewerTabs.values()]
+        .find((tab) => tab.view.webContents.id === sender.id)?.workspaceDir;
+      return workspaceDir ? normalizeProjectFolder(workspaceDir).outputDir : undefined;
+    }
+  });
+  registerAgentProviderIpc();
+  agentIpcRegistered = true;
+}
 
 app.whenReady().then(async () => {
+  await recordPortableSmoke("app-ready");
+  configureGlobalAgentDataDir(app.getPath("userData"));
+  configureWebReferenceBrowserFetch((url, init) => session.defaultSession.fetch(url, init));
+  initializeAutoUpdates();
   configureApplicationMenu();
-  await createWindow();
+  await ensureAgentIpcRegistered();
+  await recordPortableSmoke("ipc-ready");
+  const win = await createWindow();
+  await recordPortableSmoke("renderer-ready", {
+    rendererUrl: win.webContents.getURL(),
+    rendererLoaded: !win.webContents.isLoadingMainFrame(),
+    windowVisible: win.isVisible()
+  });
+  if (portableSmokeMarkerPath) {
+    await writeFile(portableSmokeMarkerPath, `${JSON.stringify({
+      version: app.getVersion(),
+      pid: process.pid,
+      rendererUrl: win.webContents.getURL(),
+      rendererLoaded: !win.webContents.isLoadingMainFrame(),
+      windowVisible: win.isVisible()
+    }, null, 2)}\n`, "utf8");
+    app.quit();
+    return;
+  }
+  scheduleStartupUpdateCheck();
+}).catch(async (error) => {
+  await recordPortableSmoke("failed", {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined
+  }).catch(() => undefined);
+  console.error("[startup] Application initialization failed", error);
+  app.exit(1);
 });
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {

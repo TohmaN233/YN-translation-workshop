@@ -1,25 +1,40 @@
 {
   "name": "translation-workshop",
-  "version": "1.1.1",
+  "version": "2.0.0",
   "description": "Local translation and proofreading workflow workbench.",
   "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "main": "dist/main/main.js",
   "bin": {
     "translation-workshop-skills": "scripts/install-skills.mjs"
   },
   "scripts": {
-    "prepare:xterm-assets": "node scripts/prepare-xterm-assets.mjs",
-    "test": "npm run typecheck",
+    "test": "npm run typecheck && npm run test:skills && npm run test:unit",
+    "test:skills": "node scripts/check-runtime-skills.mjs",
+    "test:unit": "node tests/run.mjs",
+    "setup:toy-agent-artifacts": "node --experimental-strip-types scripts/setup-toy-agent-artifacts.mjs",
+    "verify:toy-agent-artifacts": "node --experimental-strip-types scripts/verify-toy-agent-artifacts.mjs",
+    "verify:electron-agent-html": "npm run build && node scripts/verify-electron-agent-html.mjs",
+    "verify:electron-lan-agent": "npm run build && node scripts/verify-electron-lan-agent.mjs",
+    "verify:electron-project-open": "npm run build && node scripts/verify-electron-project-open.mjs",
+    "verify:electron-agent-ui": "npm run verify:electron-agent-html",
+    "verify:electron-agent-real": "npm run build && node scripts/verify-electron-agent-real-html.mjs",
+    "verify:real-provider-agent": "node --experimental-strip-types scripts/verify-real-provider-agent-smoke.mjs",
+    "toy:agent-artifacts": "npm run setup:toy-agent-artifacts && npm run verify:toy-agent-artifacts && npm run dev",
     "typecheck": "tsc --noEmit",
-    "build:main": "npm run prepare:xterm-assets && esbuild src/main/main.ts --bundle --platform=node --format=esm --outfile=dist/main/main.js --external:electron --external:extract-zip --external:node-pty && npm run build:preload",
+    "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=esm --outfile=dist/main/main.js --external:electron --external:electron-updater --external:electron-updater/* --external:extract-zip --external:cheerio --external:cheerio/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* && npm run build:preload",
     "build:preload": "esbuild src/main/preload.ts --bundle --platform=node --format=cjs --outfile=dist/main/preload.cjs --external:electron",
     "dev": "concurrently -k -n renderer,electron \"npm run dev:renderer\" \"npm run dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1",
     "dev:electron": "npm run build:main && wait-on http://127.0.0.1:5173 && cross-env TRANSLATION_WORKSHOP_DEV=1 electron .",
     "build": "tsc && npm run build:main && vite build",
     "package:dir": "npm run build && cross-env ELECTRON_BUILDER_CACHE=.cache/electron-builder electron-builder --dir",
-    "package:win": "npm run build && cross-env ELECTRON_BUILDER_CACHE=.cache/electron-builder electron-builder --win",
+    "package:win": "npm run build && cross-env ELECTRON_BUILDER_CACHE=.cache/electron-builder electron-builder --win && node scripts/write-release-checksums.mjs",
     "package:linux": "npm run build && cross-env ELECTRON_BUILDER_CACHE=.cache/electron-builder electron-builder --linux",
+    "verify:release": "node scripts/verify-release-artifacts.mjs",
+    "verify:packaged-launch": "node scripts/verify-packaged-launch.mjs",
     "start": "electron ."
   },
   "keywords": [
@@ -29,11 +44,17 @@
     "electron",
     "i18n"
   ],
-  "author": "",
+  "author": "TohmaN233",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TohmaN233/YN-translation-workshop.git"
+  },
+  "homepage": "https://github.com/TohmaN233/YN-translation-workshop",
   "build": {
     "appId": "local.translation-workshop",
     "productName": "translation-workshop",
+    "copyright": "Copyright © 2026 TohmaN233",
     "directories": {
       "buildResources": "build",
       "output": "release"
@@ -41,27 +62,26 @@
     "electronDist": "node_modules/electron/dist",
     "npmRebuild": false,
     "afterPack": "scripts/after-pack-win.cjs",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "TohmaN233",
+        "repo": "YN-translation-workshop",
+        "releaseType": "release"
+      }
+    ],
     "files": [
       "dist/**/*",
       "assets/**/*",
       "skills/**/*",
-      "scripts/**/*",
+      "scripts/install-skills.mjs",
       "README.md",
       "README.en.md",
       "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "assets/vendor/xterm",
-        "to": "assets/vendor/xterm",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
     "asarUnpack": [
-      "node_modules/node-pty/**/*",
       "skills/**/*",
       "scripts/install-skills.mjs"
     ],
@@ -84,10 +104,14 @@
       ]
     },
     "nsis": {
+      "artifactName": "${name}-Setup-${version}-${arch}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "${name}-Portable-${version}-${arch}.${ext}"
     },
     "linux": {
       "icon": "assets/app-icon.png",
@@ -99,18 +123,20 @@
     }
   },
   "dependencies": {
-    "extract-zip": "^2.0.1"
-  },
-  "optionalDependencies": {
-    "node-pty": "^1.0.0"
+    "@earendil-works/pi-agent-core": "0.80.6",
+    "@earendil-works/pi-ai": "0.80.6",
+    "cheerio": "^1.2.0",
+    "electron-updater": "^6.8.9",
+    "extract-zip": "^2.0.1",
+    "react-markdown": "^10.1.0",
+    "typebox": "1.1.38",
+    "undici": "^6.27.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^5.0.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
     "concurrently": "^9.2.0",
     "cross-env": "^10.0.0",
     "electron": "^39.0.0",

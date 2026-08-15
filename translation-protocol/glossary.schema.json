@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://translation-workshop/protocol/glossary.schema.json",
+  "title": "Glossary",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["src", "dst"],
+    "additionalProperties": false,
+    "properties": {
+      "src": { "type": "string", "description": "Source term." },
+      "dst": { "type": "string", "description": "Target term." },
+      "info": {
+        "type": "string",
+        "description": "Category, note, or character gender/pronoun metadata (e.g. 男性, female, they/them)."
+      },
+      "status": {
+        "type": "string",
+        "enum": ["confirmed", "auto", "pending"],
+        "description": "confirmed = user-verified, non-negotiable; auto = inferred, needs review; pending = discovered but not yet translated."
+      },
+      "variants": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Known source/target variants."
+      }
+    }
+  }
+}

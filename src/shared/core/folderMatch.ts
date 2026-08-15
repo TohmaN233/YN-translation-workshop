@@ -2,6 +2,7 @@ export type FolderMatchStatus = "matched" | "missing-translation" | "line-count-
 
 export interface FolderLineFile {
   name: string;
+  relativePath?: string;
   path: string;
   lineCount: number;
 }
@@ -17,15 +18,18 @@ export interface FolderFileMatch {
 }
 
 export function matchFolderFiles(sourceFiles: FolderLineFile[], translationFiles: FolderLineFile[] = []): FolderFileMatch[] {
-  const translationsByName = new Map(translationFiles.map((file) => [file.name.toLowerCase(), file]));
+  const key = (file: FolderLineFile): string => (file.relativePath || file.name).replace(/\\/g, "/").toLowerCase();
+  const displayName = (file: FolderLineFile): string => (file.relativePath || file.name).replace(/\\/g, "/");
+  const translationsByName = new Map(translationFiles.map((file) => [key(file), file]));
 
   return [...sourceFiles]
-    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
+    .sort((left, right) => displayName(left).localeCompare(displayName(right), undefined, { sensitivity: "base" }))
     .map((source) => {
-      const translation = translationsByName.get(source.name.toLowerCase());
+      const sourceName = displayName(source);
+      const translation = translationsByName.get(key(source));
       if (!translation) {
         return {
-          sourceName: source.name,
+          sourceName,
           sourcePath: source.path,
           sourceLineCount: source.lineCount,
           status: "missing-translation" as const
@@ -33,10 +37,10 @@ export function matchFolderFiles(sourceFiles: FolderLineFile[], translationFiles
       }
 
       return {
-        sourceName: source.name,
+        sourceName,
         sourcePath: source.path,
         sourceLineCount: source.lineCount,
-        translationName: translation.name,
+        translationName: displayName(translation),
         translationPath: translation.path,
         translationLineCount: translation.lineCount,
         status: source.lineCount === translation.lineCount ? "matched" as const : "line-count-mismatch" as const

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://translation-workshop/protocol/findings.schema.json",
+  "title": "Proofread Findings",
+  "description": "Structured findings emitted by a proofread job. The HTML review UI reads this first and falls back to Markdown only when absent.",
+  "type": "object",
+  "required": ["schemaVersion", "documentId", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0" },
+    "documentId": { "type": "string", "description": "Stable id for the reviewed translation document (typically the translation basename)." },
+    "sourcePath": { "type": "string" },
+    "translationPath": { "type": "string" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "mode": { "type": "string", "enum": ["montecarlo", "split"] },
+    "targetLanguage": { "type": "string" },
+    "sourceLanguage": { "type": "string" },
+    "summaryPath": { "type": "string", "description": "Path to the parallel [basename]_proofread_summary.md." },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Finding" }
+    }
+  },
+  "$defs": {
+    "Severity": { "type": "string", "enum": ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "M1", "M2", "M3", "M4", "M5", "L1", "L2", "L3", "L4"] },
+    "Finding": {
+      "type": "object",
+      "required": ["id", "severity", "type", "sourceLine", "translationLine", "sourceText", "currentTranslation", "suggestedFix", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(H[1-9]|M[1-5]|L[1-4])-\\d{3,}$",
+          "description": "Globally unique finding id, e.g. H3-001. Renumber duplicates after the current max for that code."
+        },
+        "severity": { "$ref": "#/$defs/Severity" },
+        "type": { "type": "string", "description": "Short human-readable type label (错译, 术语不符, ...)." },
+        "sourceLine": { "type": "integer", "minimum": 1, "description": "Global 1-based source line number (L<N> -> source_lines[N-1])." },
+        "translationLine": { "type": "integer", "minimum": 1, "description": "Global 1-based translation line number." },
+        "sourceText": { "type": "string", "description": "Full exact source line text, verbatim." },
+        "currentTranslation": { "type": "string", "description": "Full exact current translation line text, verbatim." },
+        "suggestedFix": { "type": "string", "description": "Complete replacement line in the target language. No meta phrases, explanations, or partial edits." },
+        "rationale": { "type": "string", "description": "Brief explanation in target_language. Append (待核查) when uncertain." },
+        "agentId": { "type": "string", "description": "Originating agent/subagent id, for parallel-merge traceability." },
+        "needsVerification": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

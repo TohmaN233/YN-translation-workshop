@@ -1,3 +1,5 @@
+import { splitTextLines } from "../validation/translationValidator.ts";
+
 export type LineStatus = "empty" | "machine" | "manual" | "term";
 
 export interface LineReviewRow {
@@ -16,16 +18,9 @@ export interface PageResult<T> {
   rows: T[];
 }
 
-function splitLines(text: string | undefined): string[] {
-  if (!text) {
-    return [];
-  }
-  return text.replace(/\r\n/g, "\n").replace(/\r$/, "").replace(/\n$/, "").split("\n");
-}
-
 export function buildLinePairs(sourceText: string, translationText?: string): LineReviewRow[] {
-  const sourceLines = splitLines(sourceText);
-  const translationLines = splitLines(translationText);
+  const sourceLines = splitTextLines(sourceText);
+  const translationLines = splitTextLines(translationText);
 
   return sourceLines.map((source, index) => {
     const translation = translationLines[index] ?? "";

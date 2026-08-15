@@ -1,4 +1,0 @@
-interface:
-  display_name: "Translate Text"
-  short_description: "Line-aligned translation with live glossary."
-  default_prompt: "Translate this text file line by line using the glossary, preserving placeholders and updating translation notes."

@@ -1,6 +1,9 @@
-import { bundledSkillPaths } from "./skillInstall.ts";
+import { YN_DEFAULT_SPLIT_SIZE } from "../agent/piSessionContract.ts";
+import {
+  normalizeCustomPreserveRules,
+  type CustomPreserveRule
+} from "../validation/customPreserveRules.ts";
 
-export type AgentType = "codex" | "claude";
 export type ProofreadMode = "split" | "montecarlo";
 export type PromptKind = "translate" | "proofread";
 
@@ -9,9 +12,11 @@ export interface PromptAdvancedOptions {
   style?: string;
   split?: boolean;
   splitSize?: number;
-  subagent?: boolean;
-  subagentCount?: number;
+  glossaryCandidates?: boolean;
+  characterBible?: boolean;
+  reuseExistingTranslation?: boolean;
   workDescription?: string;
+  workflowTemplateId?: string;
   translateOutputDir?: string;
   proofreadOutputDir?: string;
   proofreadMode?: ProofreadMode;
@@ -19,13 +24,20 @@ export interface PromptAdvancedOptions {
   montecarloSize?: number;
   montecarloRoundMin?: number;
   montecarloRoundMax?: number;
-  reviewMode?: string;
   translationType?: string;
+  subagentEnabled?: boolean;
+  subagentCount?: number;
+  reviewSubagentCount?: number;
+  subagentProviderId?: string;
+  subagentModelId?: string;
+  folderTranslationOrder?: string;
+  folderSourceDocuments?: Array<{ id: string; path: string }>;
+  customPreserveRules?: CustomPreserveRule[];
 }
 
 export interface TranslatePromptOptions {
-  agent: AgentType;
   sourcePath: string;
+  sourceKind?: "file" | "folder";
   translationPath?: string;
   outputDir: string;
   glossaryPath?: string;
@@ -33,8 +45,8 @@ export interface TranslatePromptOptions {
 }
 
 export interface ProofreadPromptOptions {
-  agent: AgentType;
   sourcePath: string;
+  sourceKind?: "file" | "folder";
   translationPath: string;
   glossaryPath?: string;
   outputDir?: string;
@@ -44,35 +56,14 @@ export interface ProofreadPromptOptions {
 
 export interface PromptBuildOptions {
   kind: PromptKind;
-  agent: AgentType;
   sourcePath: string;
+  sourceKind?: "file" | "folder";
   translationPath?: string;
   outputDir: string;
   glossaryPath?: string;
   inputMode?: "separate" | "bilingual";
   advanced?: PromptAdvancedOptions;
 }
-
-export const skillPaths = {
-  codex: {
-    translate: bundledSkillPaths.codex.translate,
-    proofread: bundledSkillPaths.codex.proofread,
-    installTarget: bundledSkillPaths.codex.installTarget,
-    displayName: "Codex",
-    workflowKind: "skill",
-    bundledLabel: "Bundled Codex skill path",
-    installTargetLabel: "Global Codex skill target"
-  },
-  claude: {
-    translate: bundledSkillPaths.claude.translate,
-    proofread: bundledSkillPaths.claude.proofread,
-    installTarget: bundledSkillPaths.claude.installTarget,
-    displayName: "Claude Code",
-    workflowKind: "command",
-    bundledLabel: "Bundled Claude Code command path",
-    installTargetLabel: "Global Claude Code command target"
-  }
-} as const;
 
 function clean(value: string | undefined): string {
   return value?.trim() ?? "";
@@ -84,6 +75,11 @@ function numberOrDefault(value: number | undefined, fallback: number): number {
 
 function boolOrDefault(value: boolean | undefined, fallback: boolean): boolean {
   return value === undefined ? fallback : value;
+}
+
+function optionalPositiveNumber(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  return Math.max(1, Math.floor(value));
 }
 
 function joinLocalPath(root: string, child: string): string {
@@ -102,22 +98,37 @@ function basenameWithoutExtension(filePath: string): string {
   return name.replace(/\.[^.]+$/, "") || "translation";
 }
 
-function bracketedPath(pathValue: string): string {
-  return `[${pathValue || ""}]`;
+function valueOrNone(value: string | undefined): string {
+  return clean(value) || "None";
 }
 
-function skillInvocation(agent: AgentType, skillName: "translate-text" | "proofread-translation"): string {
-  return agent === "claude" ? `/${skillName}` : `$${skillName}`;
+function subagentModelText(advanced?: PromptAdvancedOptions): string {
+  const providerId = clean(advanced?.subagentProviderId);
+  const modelId = clean(advanced?.subagentModelId);
+  if (!providerId && !modelId) return "follow the parent Agent model";
+  if (!providerId || !modelId) return "invalid; both configured provider and model are required";
+  return `use configured Pi model ${providerId}/${modelId}`;
+}
+
+function customPreserveRuleLines(rules: ReturnType<typeof normalizeCustomPreserveRules>): string[] {
+  if (rules.length === 0) return [];
+  return [
+    "",
+    "Custom preservation rules (each source match must remain verbatim on the same candidate line):",
+    ...rules.map((rule, index) => `- ${rule.label || `Rule ${index + 1}`}: /${rule.pattern}/${rule.flags}`)
+  ];
 }
 
 export function promptParameterDefaults(projectDir: string, advanced: PromptAdvancedOptions = {}) {
+  const subagentCount = optionalPositiveNumber(advanced.subagentCount);
   return {
     languagePair: clean(advanced.languagePair) || "ja->zh-CN",
     style: clean(advanced.style) || "game",
     split: boolOrDefault(advanced.split, true),
-    splitSize: numberOrDefault(advanced.splitSize, 2000),
-    subagent: boolOrDefault(advanced.subagent, false),
-    subagentCount: numberOrDefault(advanced.subagentCount, 3),
+    splitSize: numberOrDefault(advanced.splitSize, YN_DEFAULT_SPLIT_SIZE),
+    glossaryCandidates: boolOrDefault(advanced.glossaryCandidates, true),
+    characterBible: boolOrDefault(advanced.characterBible, true),
+    reuseExistingTranslation: boolOrDefault(advanced.reuseExistingTranslation, false),
     workDescription: clean(advanced.workDescription),
     translateOutputDir: clean(advanced.translateOutputDir) || joinLocalPath(projectDir, "AI_translation"),
     proofreadOutputDir: clean(advanced.proofreadOutputDir) || joinLocalPath(projectDir, "report"),
@@ -125,7 +136,18 @@ export function promptParameterDefaults(projectDir: string, advanced: PromptAdva
     candidateRatio: numberOrDefault(advanced.candidateRatio, 1.5),
     montecarloSize: numberOrDefault(advanced.montecarloSize, 3000),
     montecarloRoundMin: numberOrDefault(advanced.montecarloRoundMin, 2),
-    montecarloRoundMax: numberOrDefault(advanced.montecarloRoundMax, 5)
+    montecarloRoundMax: numberOrDefault(advanced.montecarloRoundMax, 5),
+    subagentEnabled: boolOrDefault(advanced.subagentEnabled, true),
+    subagentCount,
+    reviewSubagentCount: optionalPositiveNumber(advanced.reviewSubagentCount),
+    subagentProviderId: clean(advanced.subagentProviderId),
+    subagentModelId: clean(advanced.subagentModelId),
+    folderTranslationOrder: clean(advanced.folderTranslationOrder),
+    folderSourceDocuments: advanced.folderSourceDocuments?.map((document) => ({
+      id: clean(document.id),
+      path: clean(document.path)
+    })).filter((document) => document.id && document.path),
+    customPreserveRules: normalizeCustomPreserveRules(advanced.customPreserveRules)
   };
 }
 
@@ -137,8 +159,14 @@ function translateDefaults(options: TranslatePromptOptions) {
     style: defaults.style,
     split: defaults.split,
     splitSize: defaults.splitSize,
-    subagent: defaults.subagent,
+    glossaryCandidates: defaults.glossaryCandidates,
+    characterBible: defaults.characterBible,
+    reuseExistingTranslation: defaults.reuseExistingTranslation,
+    subagentEnabled: defaults.subagentEnabled,
     subagentCount: defaults.subagentCount,
+    reviewSubagentCount: defaults.reviewSubagentCount,
+    folderTranslationOrder: defaults.folderTranslationOrder,
+    customPreserveRules: defaults.customPreserveRules,
     workDescription: defaults.workDescription || "None",
     outputDir: defaults.translateOutputDir,
     basename
@@ -147,7 +175,7 @@ function translateDefaults(options: TranslatePromptOptions) {
 
 function proofreadDefaults(options: ProofreadPromptOptions) {
   const defaults = promptParameterDefaults(options.outputDir || "", options.advanced);
-  const mode: ProofreadMode = defaults.proofreadMode;
+  const mode: ProofreadMode = options.sourceKind === "folder" ? "split" : defaults.proofreadMode;
   const basename = basenameWithoutExtension(options.translationPath || options.sourcePath || "translation.txt");
   return {
     languagePair: defaults.languagePair,
@@ -158,20 +186,15 @@ function proofreadDefaults(options: ProofreadPromptOptions) {
     montecarloRoundMin: defaults.montecarloRoundMin,
     montecarloRoundMax: defaults.montecarloRoundMax,
     candidateRatio: defaults.candidateRatio,
-    subagent: mode === "split" ? defaults.subagent : false,
+    subagentEnabled: defaults.subagentEnabled,
     subagentCount: defaults.subagentCount,
+    reviewSubagentCount: defaults.reviewSubagentCount,
+    folderTranslationOrder: defaults.folderTranslationOrder,
+    customPreserveRules: defaults.customPreserveRules,
     workDescription: defaults.workDescription || "None",
     outputDir: defaults.proofreadOutputDir,
     basename
   };
-}
-
-function translateCommandLine(options: TranslatePromptOptions, defaults: ReturnType<typeof translateDefaults>): string {
-  const split = defaults.split ? `; Split=${defaults.splitSize}` : "";
-  const translationReference = options.translationPath ? `; existing translation/reference:${options.translationPath}` : "";
-  return [
-    `${skillInvocation(options.agent, "translate-text")} ${defaults.languagePair}; Genre: ${defaults.style}; source:${options.sourcePath}${translationReference}${split}; glossary: ${bracketedPath(options.glossaryPath || "")}; Work description: ${bracketedPath(defaults.workDescription)}`
-  ].join("\n");
 }
 
 function proofreadModeText(defaults: ReturnType<typeof proofreadDefaults>): string {
@@ -181,95 +204,90 @@ function proofreadModeText(defaults: ReturnType<typeof proofreadDefaults>): stri
   return `${defaults.mode} ${defaults.splitSize}`;
 }
 
-function proofreadCommandLine(options: ProofreadPromptOptions, defaults: ReturnType<typeof proofreadDefaults>): string {
-  const sourcePart = options.inputMode === "bilingual"
-    ? `bilingual file:${options.sourcePath}; translation:${options.translationPath}`
-    : `source:${options.sourcePath}; translation:${options.translationPath}`;
-  return `${skillInvocation(options.agent, "proofread-translation")} Mode: ${proofreadModeText(defaults)}; ${defaults.languagePair}; Genre: ${defaults.style}; ${sourcePart}; glossary: ${bracketedPath(options.glossaryPath || "")}; Work description: ${bracketedPath(defaults.workDescription)}`;
+function taskHeader(kind: PromptKind, languagePair: string, style: string): string[] {
+  return [
+    `Workflow: ${kind === "translate" ? "yn-translation-v1" : "yn-proofread-v1"}.`,
+    `Language pair: ${languagePair}.`,
+    `Text/domain style: ${style}.`
+  ];
 }
 
 export function buildTranslatePrompt(options: TranslatePromptOptions): string {
   const defaults = translateDefaults(options);
-  const subagentLines = defaults.subagent
-    ? [
-        `CALL SUBAGENT; SUBAGENT_COUNT=${defaults.subagentCount};`,
-        `Split=${defaults.splitSize} is a checkpoint interval, not the task scope.`,
-        `Divide the full source line range into ${defaults.subagentCount} non-overlapping agent ranges of roughly equal size; each subagent must process its full assigned range and save progress every ${defaults.splitSize} source lines.`,
-        "Boundary/context lines are read-only references only; subagents must not translate, count, or write them into outputs.",
-        "After all complete, merge in part order:",
-        `- Final translation (single file): ${outputPath(defaults.outputDir, `${defaults.basename}_translated.txt`)}`,
-        `- Merged glossary: ${outputPath(defaults.outputDir, "glossary.json")}`,
-        `- Merged character bible: ${outputPath(defaults.outputDir, "character_bible.md")}`,
-        `- Workspace: ${outputPath(defaults.outputDir, "_workspace/")}`,
-        "Merge rules:",
-        "- Concatenate translated parts in order. No line drops or reordering.",
-        "- Glossary: dedupe by src, keep most-frequent dst; conflicts marked `inconsistent`.",
-        "- Character bible: merge by name; on field conflicts, keep the more detailed entry."
-      ]
-    : [
-        "NO SUBAGENT;",
-        "Output paths:",
-        `- Final translation: ${outputPath(defaults.outputDir, `${defaults.basename}_translated.txt`)}`,
-        `- Glossary: ${options.glossaryPath ? `direct edit ${bracketedPath(options.glossaryPath)}` : outputPath(defaults.outputDir, "glossary.json")}`,
-        `- Character bible: ${outputPath(defaults.outputDir, "character_bible.md")}`,
-        `- Workspace: ${outputPath(defaults.outputDir, "_workspace/")}`
-      ];
-  const outputContract = [
-    defaults.split ? `- Split=${defaults.splitSize} means checkpoint/save interval. Process the whole assigned range; do not stop after one split.` : "",
-    "- Write the final translation and auxiliary output prose in the target language of the language pair; keep source terms, paths, placeholders, IDs, and schema keys unchanged where required.",
-    "- Do not modify the source file.",
-    "- MUST preserve one-to-one line alignment, placeholders, tags, variables, IDs, and empty lines. Before finalizing, self-check that source line count equals output line count and every output line maps to the same source line number; fix any mismatch before writing the final file.",
-    "- Do not write explanations into translated lines."
-  ].filter(Boolean);
+  const folderBatch = options.sourceKind === "folder";
+  const characterBibleModule = defaults.characterBible ? "on" : "off";
+  const glossaryInstruction = options.glossaryPath
+    ? `Selected glossary: ${options.glossaryPath}`
+    : defaults.glossaryCandidates
+      ? "Glossary candidates: AI_translation/_workspace/glossary_candidates.json"
+      : "Glossary candidates: off";
+  const candidateOutput = folderBatch
+    ? `${defaults.outputDir}/[relative source path]/[basename]_translated.txt`
+    : outputPath(defaults.outputDir, `${defaults.basename}_translated.txt`);
 
   return [
-    translateCommandLine(options, defaults),
-    ...subagentLines,
+    ...taskHeader("translate", defaults.languagePair, defaults.style),
     "",
-    "Output contract:",
-    ...outputContract
+    "Task settings:",
+    `- ${folderBatch ? "Source folder" : "Source path"}: ${valueOrNone(options.sourcePath)}`,
+    `- Output directory: ${defaults.outputDir}`,
+    `- Candidate output: ${candidateOutput}`,
+    `- Work description: ${defaults.workDescription}`,
+    `- ${glossaryInstruction}`,
+    `- Character bible: ${characterBibleModule}`,
+    `- Existing translation: ${defaults.reuseExistingTranslation ? "audit and reuse" : "discard and retranslate"}`,
+    `- Split enabled: ${defaults.split}; splitSize=${defaults.splitSize}`,
+    `- Subagents: ${defaults.subagentEnabled ? `enabled; maximum=${defaults.subagentCount ?? "project ceiling"}` : "disabled"}`,
+    `- Translation review Agents: ${defaults.subagentEnabled ? `maximum=${defaults.reviewSubagentCount ?? defaults.subagentCount ?? "project ceiling"}` : "disabled"}`,
+    `- Subagent model: ${subagentModelText(options.advanced)}`,
+    ...customPreserveRuleLines(defaults.customPreserveRules),
+    ...(folderBatch ? [
+      "",
+      "File order (removed names are skipped; braces remove relative ordering only):",
+      defaults.folderTranslationOrder || "{\n(all manifest files in filename order)\n}"
+    ] : [])
   ].join("\n");
 }
 
 export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
   const defaults = proofreadDefaults(options);
-  const subagentLines = defaults.subagent
-    ? [
-        `CALL SUBAGENT; SUBAGENT_COUNT=${defaults.subagentCount};`,
-        `Mode split ${defaults.splitSize} is a checkpoint interval, not the review scope.`,
-        `Divide the full aligned line range into ${defaults.subagentCount} non-overlapping agent ranges of roughly equal size; each subagent must review its full assigned range and save/report progress every ${defaults.splitSize} line pairs.`,
-        "After all complete, merge into a single report:",
-        `- Final merged overall review: ${outputPath(defaults.outputDir, `${defaults.basename}_proofread_summary.md`)}`,
-        `- Final merged fix proposal (single md with suggested fixes): ${outputPath(defaults.outputDir, `${defaults.basename}_fix_proposal.md`)}`,
-        "Merge rule: final fix proposal IDs must be globally unique; if parallel outputs duplicate Hx/Mx/Lx numbers, renumber duplicates after the current max for that code."
-      ]
-    : [
-        "NO SUBAGENT;",
-        "Output paths:",
-        `- ${outputPath(defaults.outputDir, `${defaults.basename}_proofread_summary.md`)}`,
-        `- ${outputPath(defaults.outputDir, `${defaults.basename}_fix_proposal.md`)}`
-      ];
-  const reportContract = [
-    defaults.mode === "split" ? `- In split mode, ${defaults.splitSize} means checkpoint/save interval. Review the complete assigned range; do not stop after one split.` : "",
-    "- Output language: write all report prose in the target language of the language pair. Keep parser-required fixed labels exactly as required by the proofread-translation format, such as `Suggested fix`.",
-    "- `Source` and `Current translation` must contain the full exact line text. `Suggested fix` must be a complete replacement line in the target language, with no explanation or partial edit."
-  ].filter(Boolean);
+  const folderBatch = options.sourceKind === "folder";
+  const translationInput = folderBatch
+    ? "host-resolved AI_translation candidate per retained file"
+    : valueOrNone(options.translationPath);
 
   return [
-    proofreadCommandLine(options, defaults),
-    `H9 candidate ratio: ${defaults.candidateRatio};`,
-    ...subagentLines,
+    ...taskHeader("proofread", defaults.languagePair, defaults.style),
     "",
-    "Report contract:",
-    ...reportContract
+    "Task settings:",
+    folderBatch
+      ? `- Source folder: ${valueOrNone(options.sourcePath)}`
+      : options.inputMode === "bilingual"
+      ? `- Bilingual source path: ${valueOrNone(options.sourcePath)}`
+      : `- Source path: ${valueOrNone(options.sourcePath)}`,
+    `- Translation path: ${translationInput}`,
+    `- Glossary/reference path: ${valueOrNone(options.glossaryPath)}`,
+    `- Output directory: ${defaults.outputDir}`,
+    `- Work description: ${defaults.workDescription}`,
+    `- Mode: ${proofreadModeText(defaults)}`,
+    `- H9 candidate ratio: ${defaults.candidateRatio}`,
+    `- Subagents: ${defaults.subagentEnabled ? `enabled; maximum=${defaults.subagentCount ?? "project ceiling"}` : "disabled"}`,
+    `- Subagent model: ${subagentModelText(options.advanced)}`,
+    ...customPreserveRuleLines(defaults.customPreserveRules),
+    ...(folderBatch ? [
+      "",
+      "File order (removed names are skipped; braces remove relative ordering only):",
+      defaults.folderTranslationOrder || "{\n(all manifest files in filename order)\n}"
+    ] : []),
+    `- Report output: ${outputPath(defaults.outputDir, folderBatch ? "folder.proofread.json" : `${defaults.basename}.proofread.json`)}`
   ].join("\n");
 }
 
 export function buildPrompt(options: PromptBuildOptions): string {
   if (options.kind === "proofread") {
     return buildProofreadPrompt({
-      agent: options.agent,
       sourcePath: options.sourcePath,
+      sourceKind: options.sourceKind,
       translationPath: options.translationPath || "",
       glossaryPath: options.glossaryPath,
       outputDir: options.outputDir,
@@ -279,32 +297,11 @@ export function buildPrompt(options: PromptBuildOptions): string {
   }
 
   return buildTranslatePrompt({
-    agent: options.agent,
     sourcePath: options.sourcePath,
+    sourceKind: options.sourceKind,
     translationPath: options.translationPath,
     outputDir: options.outputDir,
     glossaryPath: options.glossaryPath,
     advanced: options.advanced
   });
-}
-
-export function getAgentSetupText(agentType: AgentType): string {
-  const agent = skillPaths[agentType];
-  if (agentType === "codex") {
-    return [
-      "Codex setup",
-      `Bundled translate-text skill: ${agent.translate}.`,
-      `Bundled proofread-translation skill: ${agent.proofread}.`,
-      `Global install target: ${agent.installTarget}.`,
-      "Use the local Node install command shown in the UI before invoking Codex."
-    ].join("\n");
-  }
-
-  return [
-    "Claude Code setup",
-    `Bundled translate command: ${agent.translate}.`,
-    `Bundled proofread command: ${agent.proofread}.`,
-    `Global install target: ${agent.installTarget}.`,
-    "Use the local Node install command shown in the UI before invoking Claude Code."
-  ].join("\n");
 }

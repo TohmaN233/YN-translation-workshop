@@ -19,6 +19,35 @@ function escapeXml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function replaceVisibleTextPreservingMarkup(inner: string, replacement: string): string {
+  const tokens = inner.split(/(<[^>]+>)/g);
+  const visibleTokenIndexes: number[] = [];
+  const linkedVisibleTokenIndexes: number[] = [];
+  let anchorDepth = 0;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (/^<a\b/i.test(token)) {
+      anchorDepth += 1;
+      continue;
+    }
+    if (/^<\/a\b/i.test(token)) {
+      anchorDepth = Math.max(0, anchorDepth - 1);
+      continue;
+    }
+    if (token.startsWith("<") || xhtmlToLines(token).length === 0) continue;
+    visibleTokenIndexes.push(index);
+    if (anchorDepth > 0) linkedVisibleTokenIndexes.push(index);
+  }
+
+  const replacementIndex = linkedVisibleTokenIndexes[0] ?? visibleTokenIndexes[0];
+  if (replacementIndex === undefined) return escapeXml(replacement);
+  for (const index of visibleTokenIndexes) {
+    tokens[index] = index === replacementIndex ? escapeXml(replacement) : "";
+  }
+  return tokens.join("");
+}
+
 function shouldReplaceLine(lineIndex: number, options: Required<EpubReplacementOptions>): boolean {
   if (options.mode === "all") {
     return true;
@@ -65,7 +94,7 @@ function replaceInlineSpanLines(
       return match;
     }
     changed = true;
-    return `<span${attrs}>${escapeXml(replacement)}</span>`;
+    return `<span${attrs}>${replaceVisibleTextPreservingMarkup(spanInner, replacement)}</span>`;
   });
   return { inner: nextInner, changed, handledLines };
 }
@@ -94,7 +123,7 @@ function replaceXhtmlLinesInPlace(
       return match;
     }
     changed = true;
-    return `<${tag}${attrs}>${escapeXml(replacement)}</${tag}>`;
+    return `<${tag}${attrs}>${replaceVisibleTextPreservingMarkup(inner, replacement)}</${tag}>`;
   });
   return { xhtml: nextXhtml, changed };
 }

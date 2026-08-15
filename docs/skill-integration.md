@@ -1,65 +1,53 @@
-# Skill Integration
+# Workflow Sources
 
-## Codex
-
-Bundled translate skill:
+The repository keeps the translation and proofreading workflow sources here:
 
 ```text
-skills/codex/translate-text
+skills/translate-text
+skills/proofread-translation
 ```
 
-Bundled proofread skill:
+They are maintained as domain reference material and optional external exports.
+The product Agent UI has no skill selector, marketplace, installer, or external
+Agent mode.
 
-```text
-skills/codex/proofread-translation
-```
+## Optional Export Targets
 
-The app only copies this command; it does not execute global skill installation:
+Codex target:
 
 ```bash
 node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global --replace
 ```
 
-Targets:
+Installs to:
 
 ```text
-~/.codex/skills/translate-text/SKILL.md
-~/.codex/skills/proofread-translation/SKILL.md
+~/.codex/skills/translate-text
+~/.codex/skills/proofread-translation
 ```
 
-The recommended command updates existing bundled targets and first backs up the exact target under `~/.translation-workshop/skill-backups/`. You only need one agent configured, so a Codex-only or Claude-only setup is valid.
-
-## Claude Code
-
-Bundled translate command:
-
-```text
-skills/claude/commands/translate-text.md
-```
-
-Bundled proofread command:
-
-```text
-skills/claude/commands/proofread-translation.md
-```
-
-The app only copies this command; it does not execute global skill installation:
+Claude Code target:
 
 ```bash
 node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global --replace
 ```
 
-Targets:
+Generates command files from the same bundled skill content and installs them to:
 
 ```text
 ~/.claude/commands/translate-text.md
 ~/.claude/commands/proofread-translation.md
 ```
 
-The recommended command updates existing bundled targets and first backs up the exact target under `~/.translation-workshop/skill-backups/`. You only need one agent configured, so a Codex-only or Claude-only setup is valid.
+Use `--agent all` to export both targets. The installer backs up replaced targets under `~/.translation-workshop/skill-backups/`.
 
-## Interactive Agent Console
+## Runtime
 
-The app keeps agent work interactive. It can start Codex or Claude Code in a terminal console when the selected CLI is available on PATH, then the user sends the generated prompt or any follow-up messages directly.
+The workshop does not need a global skill install. Product turns run through the
+source-adapted Pi core `Agent` runtime; the fixed YN system prompt, host tools, artifact
+validators, and completion gate implement the translation/proofreading
+contract. There is no `readSkillReference` tool and no runtime dispatch to
+Codex or Claude skill folders.
 
-The console is a real terminal emulator backed by the selected CLI. The app shows a small status hint: stopped, running, waiting, streaming, or quiet. Quiet only means output has stopped for a short interval; the app does not claim the agent has completed until the user verifies the result and runs manual sync/report detection.
+The installer above is a repository utility only. It is not imported by the
+Electron main process, renderer, preload, or native Pi session service.

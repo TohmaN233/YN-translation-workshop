@@ -10,7 +10,7 @@ export interface ProofreadReportCandidate extends ProofreadReportCandidateInput 
   reasons: string[];
 }
 
-type StructuredReportKind = "fix-proposal" | "summary" | "unknown";
+type StructuredReportKind = "findings-json" | "fix-proposal" | "summary" | "unknown";
 
 interface StructuredReportDetection {
   kind: StructuredReportKind;
@@ -88,6 +88,24 @@ function detectStructuredReport(candidate: ProofreadReportCandidateInput): Struc
   const first = lines[0] ?? "";
   const metadata = lines.slice(1, 10);
   const normalizedPath = candidate.path.replaceAll("\\", "/").toLowerCase();
+  if (normalizedPath.endsWith(".json")) {
+    try {
+      const parsed = JSON.parse(candidate.content) as { schemaVersion?: unknown; findings?: unknown };
+      if ((parsed?.schemaVersion === "1.0" || parsed?.schemaVersion === "2.0") && Array.isArray(parsed.findings)) {
+        const folderAggregate = parsed.schemaVersion === "2.0"
+          && (parsed as { scope?: { kind?: unknown } }).scope?.kind === "folder";
+        return {
+          kind: "findings-json",
+          score: 190,
+          reasons: folderAggregate
+            ? ["findings-json-schema", "folder-aggregate-schema"]
+            : ["findings-json-schema"]
+        };
+      }
+    } catch {
+      return { kind: "unknown", score: -40, reasons: ["invalid-json"] };
+    }
+  }
 
   const hasFixProposalName = /(?:^|\/)[^/]*_fix_proposal\.md$/.test(normalizedPath);
   const hasSummaryName = /(?:^|\/)[^/]*_proofread_summary\.md$/.test(normalizedPath);
@@ -164,5 +182,9 @@ export function scoreProofreadReportCandidate(candidate: ProofreadReportCandidat
 export function rankProofreadReportCandidates(candidates: ProofreadReportCandidateInput[]): ProofreadReportCandidate[] {
   return candidates
     .map(scoreProofreadReportCandidate)
-    .sort((left, right) => right.score - left.score || right.modifiedMs - left.modifiedMs || right.size - left.size);
+    .sort((left, right) => {
+      const aggregatePriority = Number(right.reasons.includes("folder-aggregate-schema"))
+        - Number(left.reasons.includes("folder-aggregate-schema"));
+      return aggregatePriority || right.score - left.score || right.modifiedMs - left.modifiedMs || right.size - left.size;
+    });
 }

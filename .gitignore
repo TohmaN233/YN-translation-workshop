@@ -14,3 +14,16 @@ Thumbs.db
 .translation-workshop/html/
 .translation-workshop/cache/
 测试用/
+.reference/
+.tmp/
+.chatgpt-review/
+.codegraph/
+.agents/
+.codebase-mastery/
+.planning/
+.tools/
+.tmp-electron-*/
+.tmp-package/
+.video-work/
+artifacts/
+video-output/

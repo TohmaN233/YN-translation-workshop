@@ -19,11 +19,11 @@ translation-workshop 用于把源文与译文按行配对，生成可人工改�
 
 Windows 用户推荐下载：
 
-**`translation-workshop.Setup.exe`**
+**`translation-workshop-Setup-2.0.0-x64.exe`**
 
 不想安装时，可以下载便携版：
 
-**`translation-workshop.exe`**
+**`translation-workshop-Portable-2.0.0-x64.exe`**
 
 Release 页面：  
 <https://github.com/TohmaN233/YN-translation-workshop/releases>
@@ -31,6 +31,14 @@ Release 页面：
 Windows 如果遇到命令行中文乱码，可以下载仓库里的 [`set_utf8.reg`](./set_utf8.reg) 后双击运行，让控制台默认使用 UTF-8 编码；不放心的话，运行前可以先用记事本打开检查内容。
 
 ## 更新说明
+
+### v2.0.0
+
+- **原生 Pi Agent OS**：Agent 前端、会话、流式消息、工具调用、thinking、subagent 与长会话压缩已切换到 Pi / pi-web 基底，旧 YN job/runtime 不再进入产品路径。
+- **翻译与校对工作流**：支持文件夹任务、持久并行 worker、逐块校验、失败修复、术语表、角色圣经和结构化校对结果。
+- **网页参考资料**：Agent 可通过 Pi 原生 `fetchWebReference` 工具读取用户提供的公开 HTTP(S) 页面；Wikipedia 使用 MediaWiki API 提取正文，普通网页使用 HTML 解析器抽取可读内容，并将缓存共享给翻译/校对 subagent。
+- **检查更新**：安装版启动后会静默检查 GitHub Releases，也可从 `Help > Check for Updates...` 手动检查；安装版支持下载后重启安装，便携版会打开发布页供手动更新。
+- **发布验收**：Windows 安装版和便携版均使用 `2.0.0` 版本资源，并附带 GitHub Releases 自动更新元数据。
 
 ### v1.1.1
 

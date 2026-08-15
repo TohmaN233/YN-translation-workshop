@@ -26,6 +26,8 @@ exports.default = async function afterPack(context) {
     "--set-icon", iconPath,
     "--set-version-string", "FileDescription", productName,
     "--set-version-string", "ProductName", productName,
+    "--set-version-string", "CompanyName", "TohmaN233",
+    "--set-version-string", "LegalCopyright", "Copyright (C) 2026 TohmaN233",
     "--set-version-string", "OriginalFilename", `${productFilename}.exe`,
     "--set-version-string", "InternalName", productFilename,
     "--set-file-version", version,

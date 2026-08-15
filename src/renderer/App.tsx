@@ -1,47 +1,94 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal as XTerm } from "@xterm/xterm";
-import { Clipboard, ExternalLink, FileSearch, FileText, FolderOpen, Languages, Minus, RefreshCw, Send, ShieldCheck, Square, Terminal as TerminalIcon, Trash2 } from "lucide-react";
+import { Clipboard, ExternalLink, FileSearch, FileText, FolderOpen, Languages, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { buildPrompt, skillPaths, type AgentType } from "../shared/core/prompts.ts";
+import { buildPrompt } from "../shared/core/prompts.ts";
+import { YN_DEFAULT_SPLIT_SIZE } from "../shared/agent/piSessionContract.ts";
+import { getWorkflowTemplate, workflowTemplates, type WorkflowTemplateId } from "../shared/agent/workflowTemplates.ts";
+import {
+  normalizeCustomPreserveRules,
+  type CanonicalCustomPreserveRule,
+  type CustomPreserveRule
+} from "../shared/validation/customPreserveRules.ts";
 import enUS from "../shared/i18n/en-US.json";
 import zhCN from "../shared/i18n/zh-CN.json";
 import appIcon from "./assets/app-icon.png";
 import companionFull from "./assets/companion-full.png";
+import { parsePiWebAgentWindowRoute, PiWebAgentWindow } from "./agent/PiWebAgentWindow.tsx";
 import "./styles.css";
-import "@xterm/xterm/css/xterm.css";
 
 type Locale = "zh-CN" | "en-US";
 type FileType = "auto" | "txt" | "epub";
 type InputMode = "separate" | "bilingual";
 type AgentTaskKind = "translate" | "proofread" | "generic";
 type ProofreadMode = "split" | "montecarlo";
-type AgentConsolePhase = "stopped" | "running" | "waiting" | "streaming" | "quiet";
 
-interface AgentInstallCheck {
-  agent: AgentType;
-  cliFound: boolean;
-  cliPath: string;
-  skillsFound: boolean;
-  installedSkillPaths: string[];
-  missingSkillPaths: string[];
+interface AssetProposal {
+  id: string;
+  kind: string;
+  status: string;
+  entry?: Record<string, unknown>;
+  reason?: string;
+  createdAt: string;
 }
 
-interface SkillInstallStatus {
-  selectedAgent: AgentType;
-  home: string;
-  anyCliFound: boolean;
-  selected: AgentInstallCheck;
-  agents: Record<AgentType, AgentInstallCheck>;
+interface ProjectAssetSummary {
+  paths?: {
+    glossary?: string;
+    characterBible?: string;
+    styleGuide?: string;
+    translationMemory?: string;
+  };
+  available?: {
+    glossary?: boolean;
+    characterBible?: boolean;
+    styleGuide?: boolean;
+    translationMemory?: boolean;
+  };
+  glossary?: { entries?: unknown[] };
+  characterBible?: { characters?: unknown[]; source?: string };
+  styleGuide?: string;
+  translationMemory?: { segmentCount?: number };
+}
+
+interface WorkspaceAssetSummary {
+  paths: { glossaryCandidates: string; characterBible: string };
+  counts: { glossaryCandidates: number; characterBibleLines: number };
+  available: { glossaryCandidates: boolean; characterBible: boolean };
+  pending: { glossaryCandidates: number };
+  actions: { importGlossaryCandidates: boolean };
+}
+
+interface AssetEditorState {
+  glossarySource: string;
+  glossaryTarget: string;
+  glossaryAliases: string;
+  glossaryInfo: string;
+  glossaryStatus: "confirmed" | "auto" | "pending";
+  characterName: string;
+  characterTarget: string;
+  characterAliases: string;
+  characterGender: string;
+  characterPronouns: string;
+  characterGenderConfidence: "confirmed" | "inferred" | "unknown";
+  characterTermsOfAddress: string;
+  characterRequiredTerms: string;
+  characterForbiddenTerms: string;
+  styleGuide: string;
+}
+
+interface CustomPreserveRuleDraft {
+  label: string;
+  pattern: string;
+  flags: string;
 }
 
 interface FormState {
-  agent: AgentType;
   locale: Locale;
   inputMode: InputMode;
   sourcePath: string;
+  sourceKind: "file" | "folder";
   translationPath: string;
   outputDir: string;
   glossaryPath: string;
@@ -54,19 +101,21 @@ interface FormState {
   proofreadOutputDir: string;
   split: boolean;
   splitSize: number;
-  subagent: boolean;
-  subagentCount: number;
+  glossaryCandidates: boolean;
+  characterBible: boolean;
   proofreadMode: ProofreadMode;
   candidateRatio: number;
   montecarloSize: number;
   montecarloRoundMin: number;
   montecarloRoundMax: number;
-  reviewMode: string;
   translationType: string;
   workDescription: string;
   reportPath: string;
   sourcePosition: number;
   translationPosition: number;
+  workflowTemplateId: WorkflowTemplateId;
+  agentProxyEnabled: boolean;
+  agentProxyUrl: string;
 }
 
 type LoadedProjectState = Partial<FormState> & {
@@ -77,9 +126,39 @@ type LoadedProjectState = Partial<FormState> & {
   lastProposalReviewHtml?: string;
   sourceColumn?: number;
   translationColumn?: number;
+  customPreserveRules?: CustomPreserveRule[];
 };
 
 const dictionaries = { "zh-CN": zhCN, "en-US": enUS };
+const projectFormKeys = [
+  "locale", "inputMode", "sourcePath", "sourceKind", "translationPath", "glossaryPath",
+  "fileType", "pageSize", "startPage", "languagePair", "style", "translateOutputDir",
+  "proofreadOutputDir", "split", "splitSize", "glossaryCandidates", "characterBible",
+  "proofreadMode", "candidateRatio", "montecarloSize", "montecarloRoundMin",
+  "montecarloRoundMax", "translationType", "workDescription", "reportPath",
+  "sourcePosition", "translationPosition", "workflowTemplateId", "agentProxyEnabled", "agentProxyUrl"
+] as const;
+
+function formPatchFromProjectState(value: Record<string, unknown>): Partial<FormState> {
+  const patch: Record<string, unknown> = {};
+  for (const key of projectFormKeys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) patch[key] = value[key];
+  }
+  return patch as Partial<FormState>;
+}
+
+function sameProjectPath(left: string, right: string): boolean {
+  const normalize = (value: string) => value.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLocaleLowerCase();
+  return normalize(left) === normalize(right);
+}
+
+function preserveRuleDrafts(value: unknown): CustomPreserveRuleDraft[] {
+  return normalizeCustomPreserveRules(value).map((rule) => ({
+    label: rule.label ?? "",
+    pattern: rule.pattern,
+    flags: rule.flags
+  }));
+}
 const sourceFileFilters = [
   { name: "All source files", extensions: ["txt", "epub"] },
   { name: "EPUB books", extensions: ["epub"] },
@@ -103,11 +182,16 @@ const glossaryFileFilters = [
 ];
 
 function App() {
+  const agentWindowRoute = parsePiWebAgentWindowRoute();
+  if (agentWindowRoute) {
+    return <PiWebAgentWindow route={agentWindowRoute} />;
+  }
+
   const [form, setForm] = useState<FormState>({
-    agent: "codex",
     locale: "zh-CN",
     inputMode: "separate",
     sourcePath: "",
+    sourceKind: "file",
     translationPath: "",
     outputDir: "",
     glossaryPath: "",
@@ -119,20 +203,22 @@ function App() {
     translateOutputDir: "",
     proofreadOutputDir: "",
     split: true,
-    splitSize: 2000,
-    subagent: false,
-    subagentCount: 3,
+    splitSize: YN_DEFAULT_SPLIT_SIZE,
+    glossaryCandidates: true,
+    characterBible: true,
     proofreadMode: "split",
     candidateRatio: 1.5,
     montecarloSize: 3000,
     montecarloRoundMin: 2,
     montecarloRoundMax: 5,
-    reviewMode: "split 1000",
     translationType: "game",
     workDescription: "",
     reportPath: "",
     sourcePosition: 2,
-    translationPosition: 1
+    translationPosition: 1,
+    workflowTemplateId: "initial_translation",
+    agentProxyEnabled: false,
+    agentProxyUrl: "http://127.0.0.1:3067"
   });
   const [prompt, setPrompt] = useState("");
   const [promptKind, setPromptKind] = useState<AgentTaskKind>("translate");
@@ -140,236 +226,54 @@ function App() {
   const [lastOutput, setLastOutput] = useState("");
   const [candidates, setCandidates] = useState<Array<{ path: string; size: number; modifiedAt: string }>>([]);
   const [reportCandidates, setReportCandidates] = useState<Array<{ path: string; size: number; modifiedMs: number; score: number; reasons: string[] }>>([]);
+  const [assetProposals, setAssetProposals] = useState<AssetProposal[]>([]);
+  const [startupSuggestionIndex, setStartupSuggestionIndex] = useState(0);
+  const [projectAssets, setProjectAssets] = useState<ProjectAssetSummary | undefined>();
+  const [workspaceAssets, setWorkspaceAssets] = useState<WorkspaceAssetSummary | undefined>();
+  const [assetEditor, setAssetEditor] = useState<AssetEditorState>({
+    glossarySource: "",
+    glossaryTarget: "",
+    glossaryAliases: "",
+    glossaryInfo: "",
+    glossaryStatus: "confirmed",
+    characterName: "",
+    characterTarget: "",
+    characterAliases: "",
+    characterGender: "",
+    characterPronouns: "",
+    characterGenderConfidence: "unknown",
+    characterTermsOfAddress: "",
+    characterRequiredTerms: "",
+    characterForbiddenTerms: "",
+    styleGuide: ""
+  });
+  const [customPreserveRuleDrafts, setCustomPreserveRuleDrafts] = useState<CustomPreserveRuleDraft[]>([]);
+  const [savedCustomPreserveRules, setSavedCustomPreserveRules] = useState<CanonicalCustomPreserveRule[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [callAgentPanelOpen, setCallAgentPanelOpen] = useState(false);
-  const [activeAgentPrompt, setActiveAgentPrompt] = useState("");
-  const [agentConsoleRunning, setAgentConsoleRunning] = useState(false);
-  const [agentConsolePhase, setAgentConsolePhase] = useState<AgentConsolePhase>("stopped");
-  const [skillInstallCommand, setSkillInstallCommand] = useState("");
-  const [skillInstallStatus, setSkillInstallStatus] = useState<SkillInstallStatus | undefined>();
 
   const t = dictionaries[form.locale];
-  const agentSetup = useMemo(() => skillPaths[form.agent], [form.agent]);
   const bilingualPositionMode = form.inputMode === "bilingual";
-  const agentTerminalElement = useRef<HTMLDivElement | null>(null);
-  const agentTerminal = useRef<XTerm | undefined>(undefined);
-  const agentTerminalFit = useRef<FitAddon | undefined>(undefined);
-  const agentTerminalResizeObserver = useRef<ResizeObserver | undefined>(undefined);
-  const agentConsoleAgent = useRef<AgentType>("codex");
-  const agentConsoleSessionId = useRef("");
-  const agentConsoleQuietTimer = useRef<number | undefined>(undefined);
-  const agentConsoleAwaitingReply = useRef(false);
-  const lastAgentConsoleDataAt = useRef(0);
   const lastLineReviewHtml = useRef("");
   const lastProposalReviewHtml = useRef("");
   const hydratingProject = useRef(false);
   const autoSaveTimer = useRef<number | undefined>(undefined);
-
-  function fitAgentTerminal() {
-    const terminal = agentTerminal.current;
-    if (!terminal) {
-      return;
-    }
-    try {
-      agentTerminalFit.current?.fit();
-      void window.workshop.resizeAgentConsole({ cols: terminal.cols, rows: terminal.rows });
-    } catch {
-      // The terminal can briefly have no measured cell size while the panel mounts.
-    }
-  }
-
-  function writeAgentTerminal(data: string) {
-    agentTerminal.current?.write(data);
-  }
-
-  function resetAgentTerminal() {
-    agentTerminal.current?.reset();
-    agentTerminal.current?.clear();
-  }
-
-  function markAgentConsoleStreaming() {
-    lastAgentConsoleDataAt.current = Date.now();
-    if (!agentConsoleAwaitingReply.current) {
-      setAgentConsolePhase((phase) => phase === "stopped" ? "running" : phase);
-      return;
-    }
-    setAgentConsolePhase("streaming");
-    if (agentConsoleQuietTimer.current) {
-      window.clearTimeout(agentConsoleQuietTimer.current);
-    }
-    agentConsoleQuietTimer.current = window.setTimeout(() => {
-      void refreshAgentConsoleStatus(true);
-    }, 2500);
-  }
-
-  async function refreshAgentConsoleStatus(allowQuiet = false) {
-    try {
-      const snapshot = await window.workshop.agentConsoleStatus();
-      setAgentConsoleRunning(Boolean(snapshot.running));
-      if (snapshot.agent) {
-        agentConsoleAgent.current = snapshot.agent;
-      }
-      if (snapshot.id) {
-        agentConsoleSessionId.current = snapshot.id;
-      }
-      if (!snapshot.running) {
-        agentConsoleAwaitingReply.current = false;
-        setAgentConsolePhase("stopped");
-        return;
-      }
-      if (allowQuiet && Date.now() - lastAgentConsoleDataAt.current >= 2400) {
-        setAgentConsolePhase((phase) => {
-          if (phase === "streaming" || phase === "waiting") {
-            agentConsoleAwaitingReply.current = false;
-            return "quiet";
-          }
-          return phase;
-        });
-      }
-    } catch {
-      // Status is advisory; live output events remain the source for terminal text.
-    }
-  }
-
-  function resetAgentConsoleTranscript() {
-    resetAgentTerminal();
-    void window.workshop.clearAgentConsoleOutput();
-  }
+  const suppressNextAutoSave = useRef(false);
+  const workspaceAssetsRequestId = useRef(0);
 
   useEffect(() => {
-    let stopped = false;
-    async function refreshSkillSetup() {
-      try {
-        const [details, installStatus] = await Promise.all([
-          window.workshop.skillInstallCommand({ agent: form.agent }),
-          window.workshop.skillInstallStatus({ agent: form.agent })
-        ]);
-        if (!stopped) {
-          setSkillInstallCommand(details.githubCommand || details.command);
-          setSkillInstallStatus(installStatus);
-        }
-      } catch {
-        if (!stopped) {
-          setSkillInstallCommand("");
-          setSkillInstallStatus(undefined);
-        }
-      }
-    }
-    void refreshSkillSetup();
-    return () => {
-      stopped = true;
-    };
-  }, [form.agent]);
-
-  useEffect(() => {
-    if (!agentTerminalElement.current || agentTerminal.current) {
-      return undefined;
-    }
-    const terminal = new XTerm({
-      cursorBlink: true,
-      convertEol: false,
-      fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
-      fontSize: 12,
-      lineHeight: 1.2,
-      scrollback: 8000,
-      theme: {
-        background: "#071523",
-        foreground: "#dbeafe",
-        cursor: "#ffffff",
-        selectionBackground: "#355c7d"
-      }
-    });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(agentTerminalElement.current);
-    terminal.onData((data) => {
-      if (data.includes("\r")) {
-        agentConsoleAwaitingReply.current = true;
-        lastAgentConsoleDataAt.current = Date.now();
-        setAgentConsolePhase("waiting");
-      }
-      void window.workshop.writeAgentConsoleInput(data);
-    });
-    agentTerminal.current = terminal;
-    agentTerminalFit.current = fitAddon;
-    agentTerminalResizeObserver.current = new ResizeObserver(() => fitAgentTerminal());
-    agentTerminalResizeObserver.current.observe(agentTerminalElement.current);
-    window.requestAnimationFrame(() => {
-      fitAgentTerminal();
-      terminal.focus();
-      void window.workshop.agentConsoleStatus().then((snapshot) => {
-        setAgentConsoleRunning(Boolean(snapshot.running));
-        if (snapshot.agent) {
-          agentConsoleAgent.current = snapshot.agent;
-        }
-        if (snapshot.id) {
-          agentConsoleSessionId.current = snapshot.id;
-        }
-        if (snapshot.output) {
-          terminal.reset();
-          terminal.write(snapshot.output);
-        }
-        setAgentConsolePhase(snapshot.running ? "running" : "stopped");
-      }).catch(() => undefined);
-    });
-    return () => {
-      agentTerminalResizeObserver.current?.disconnect();
-      agentTerminalResizeObserver.current = undefined;
-      agentTerminalFit.current = undefined;
-      agentTerminal.current = undefined;
-      terminal.dispose();
-    };
-  }, []);
-
-  useEffect(() => {
-    const stopData = window.workshop.onAgentConsoleData((payload) => {
-      setAgentConsoleRunning(true);
-      markAgentConsoleStreaming();
-      if (payload.id && payload.id !== agentConsoleSessionId.current) {
-        agentConsoleSessionId.current = payload.id;
-        resetAgentTerminal();
-      }
-      writeAgentTerminal(payload.data);
-    });
-    const stopExit = window.workshop.onAgentConsoleExit((payload) => {
-      if (agentConsoleQuietTimer.current) {
-        window.clearTimeout(agentConsoleQuietTimer.current);
-      }
-      agentConsoleAwaitingReply.current = false;
-      setAgentConsoleRunning(false);
-      setAgentConsolePhase("stopped");
-      setStatus(`${t.agentConsoleStopped} (${payload.exitCode ?? "?"})`);
-    });
-    const statusPoll = window.setInterval(() => {
-      void refreshAgentConsoleStatus(true);
-    }, 1500);
-    void window.workshop.agentConsoleStatus().then((snapshot) => {
-      setAgentConsoleRunning(Boolean(snapshot.running));
-      if (snapshot.agent) {
-        agentConsoleAgent.current = snapshot.agent;
-      }
-      if (snapshot.id && snapshot.id !== agentConsoleSessionId.current) {
-        agentConsoleSessionId.current = snapshot.id;
-        resetAgentTerminal();
-      }
-      if (snapshot.output) {
-        resetAgentTerminal();
-        writeAgentTerminal(snapshot.output);
-      }
-      setAgentConsolePhase(snapshot.running ? "running" : "stopped");
-    }).catch(() => undefined);
-    return () => {
-      if (agentConsoleQuietTimer.current) {
-        window.clearTimeout(agentConsoleQuietTimer.current);
-      }
-      window.clearInterval(statusPoll);
-      stopData();
-      stopExit();
-    };
-  }, [t]);
+    document.documentElement.lang = form.locale;
+  }, [form.locale]);
 
   useEffect(() => {
     if (!form.outputDir || hydratingProject.current) {
+      return undefined;
+    }
+    if (suppressNextAutoSave.current) {
+      suppressNextAutoSave.current = false;
+      if (autoSaveTimer.current) {
+        window.clearTimeout(autoSaveTimer.current);
+        autoSaveTimer.current = undefined;
+      }
       return undefined;
     }
     if (autoSaveTimer.current) {
@@ -385,8 +289,66 @@ function App() {
     };
   }, [form]);
 
+  useEffect(() => window.workshop.onWorkspaceAssetsStatus(({ outputDir, status: nextStatus }) => {
+    if (form.outputDir && outputDir.toLowerCase() === form.outputDir.toLowerCase()) {
+      setWorkspaceAssets(nextStatus);
+    }
+  }), [form.outputDir]);
+
+  useEffect(() => window.workshop.onProjectStateUpdate(({ outputDir, state }) => {
+    if (!form.outputDir || !sameProjectPath(outputDir, form.outputDir)) return;
+    if (Object.prototype.hasOwnProperty.call(state, "customPreserveRules")) {
+      const rules = normalizeCustomPreserveRules(state.customPreserveRules);
+      setSavedCustomPreserveRules(rules);
+      setCustomPreserveRuleDrafts(preserveRuleDrafts(rules));
+    }
+    const next = formPatchFromProjectState(state);
+    if (autoSaveTimer.current) {
+      window.clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = undefined;
+    }
+    setForm((current) => {
+      const changed = Object.entries(next).some(([key, value]) => current[key as keyof FormState] !== value);
+      if (changed) suppressNextAutoSave.current = true;
+      return changed ? { ...current, ...next } : current;
+    });
+  }), [form.outputDir]);
+
+  useEffect(() => window.workshop.onProjectAssetsUpdate(({ outputDir, assets }) => {
+    if (!form.outputDir || !sameProjectPath(outputDir, form.outputDir)) return;
+    const nextAssets = assets as ProjectAssetSummary;
+    setProjectAssets(nextAssets);
+    setAssetEditor((previous) => ({ ...previous, styleGuide: String(nextAssets.styleGuide ?? "") }));
+  }), [form.outputDir]);
+
+  useEffect(() => {
+    if (!form.outputDir) {
+      setProjectAssets(undefined);
+      setAssetProposals([]);
+      return;
+    }
+    let cancelled = false;
+    void Promise.all([
+      window.workshop.readProjectAssets({ outputDir: form.outputDir }),
+      window.workshop.listAssetProposals({ outputDir: form.outputDir })
+    ]).then(([assets, proposals]) => {
+      if (cancelled) return;
+      const nextAssets = assets as ProjectAssetSummary;
+      setProjectAssets(nextAssets);
+      setAssetEditor((previous) => ({ ...previous, styleGuide: String(nextAssets.styleGuide ?? "") }));
+      setAssetProposals(proposals.filter((proposal) => proposal.status === "pending"));
+    }).catch(showActionError);
+    return () => {
+      cancelled = true;
+    };
+  }, [form.outputDir]);
+
   function patch(next: Partial<FormState>) {
     setForm((current) => ({ ...current, ...next }));
+  }
+
+  function showActionError(error: unknown) {
+    setStatus(error instanceof Error ? error.message : String(error));
   }
 
   function asLoadedProject(value: unknown): LoadedProjectState | undefined {
@@ -394,8 +356,28 @@ function App() {
   }
 
   function projectLastHtml(project: LoadedProjectState | undefined): string {
-    const lastHtml = project?.lastHtml || project?.lastOutput || "";
+    const lastHtml = project?.lastLineReviewHtml || project?.lineReviewPath || project?.lastHtml || project?.lastOutput || "";
     return typeof lastHtml === "string" ? lastHtml : "";
+  }
+
+  async function openLoadedProjectHtml(project: LoadedProjectState | undefined, outputDir: string) {
+    const proposalReviewHtml = project?.lastProposalReviewHtml || "";
+    const lineReviewHtml = project?.lastLineReviewHtml || project?.lineReviewPath || "";
+    if (lineReviewHtml) {
+      await window.workshop.openPath(lineReviewHtml);
+    } else if (proposalReviewHtml) {
+      await window.workshop.openReviewHtml({ htmlPath: proposalReviewHtml, outputDir });
+    } else {
+      const fallbackHtml = projectLastHtml(project);
+      if (fallbackHtml) await window.workshop.openPath(fallbackHtml);
+    }
+    if (lineReviewHtml && proposalReviewHtml) {
+      void window.workshop.openReviewHtml({
+        htmlPath: proposalReviewHtml,
+        outputDir,
+        activate: false
+      }).catch(showActionError);
+    }
   }
 
   function joinUiPath(root: string, child: string) {
@@ -413,10 +395,14 @@ function App() {
   }
 
   async function loadProjectState(outputDir: string, openLastHtml: boolean) {
+    const assetsRequestId = ++workspaceAssetsRequestId.current;
+    setWorkspaceAssets(undefined);
     const loaded = asLoadedProject(await window.workshop.loadProject(outputDir));
     if (!loaded) {
       hydratingProject.current = true;
       patch({ outputDir });
+      setSavedCustomPreserveRules([]);
+      setCustomPreserveRuleDrafts([]);
       window.setTimeout(() => {
         hydratingProject.current = false;
       }, 0);
@@ -424,19 +410,25 @@ function App() {
       lastLineReviewHtml.current = "";
       lastProposalReviewHtml.current = "";
       setStatus(t.projectOpenedNoHtml);
+      void window.workshop.readWorkspaceAssetsStatus({ outputDir }).then((nextStatus) => {
+        if (workspaceAssetsRequestId.current === assetsRequestId) setWorkspaceAssets(nextStatus);
+      }).catch(showActionError);
       return;
     }
     const lastHtml = projectLastHtml(loaded);
     lastLineReviewHtml.current = loaded.lastLineReviewHtml || loaded.lineReviewPath || "";
     lastProposalReviewHtml.current = loaded.lastProposalReviewHtml || "";
     const projectOutputDir = typeof loaded.outputDir === "string" && loaded.outputDir ? loaded.outputDir : outputDir;
+    const loadedCustomPreserveRules = normalizeCustomPreserveRules(loaded.customPreserveRules);
+    setSavedCustomPreserveRules(loadedCustomPreserveRules);
+    setCustomPreserveRuleDrafts(preserveRuleDrafts(loadedCustomPreserveRules));
     hydratingProject.current = true;
     setForm((current) => ({
       ...current,
-      agent: loaded.agent ?? current.agent,
       locale: loaded.locale ?? current.locale,
       inputMode: loaded.inputMode ?? current.inputMode,
       sourcePath: loaded.sourcePath ?? current.sourcePath,
+      sourceKind: loaded.sourceKind === "folder" ? "folder" : loaded.sourceKind === "file" ? "file" : current.sourceKind,
       translationPath: loaded.translationPath ?? current.translationPath,
       outputDir: projectOutputDir,
       glossaryPath: loaded.glossaryPath ?? current.glossaryPath,
@@ -449,19 +441,21 @@ function App() {
       proofreadOutputDir: loaded.proofreadOutputDir ?? current.proofreadOutputDir,
       split: loaded.split ?? current.split,
       splitSize: loaded.splitSize ?? current.splitSize,
-      subagent: loaded.subagent ?? current.subagent,
-      subagentCount: loaded.subagentCount ?? current.subagentCount,
+      glossaryCandidates: loaded.glossaryCandidates ?? current.glossaryCandidates,
+      characterBible: loaded.characterBible ?? current.characterBible,
       proofreadMode: loaded.proofreadMode ?? current.proofreadMode,
       candidateRatio: loaded.candidateRatio ?? current.candidateRatio,
       montecarloSize: loaded.montecarloSize ?? current.montecarloSize,
       montecarloRoundMin: loaded.montecarloRoundMin ?? current.montecarloRoundMin,
       montecarloRoundMax: loaded.montecarloRoundMax ?? current.montecarloRoundMax,
-      reviewMode: loaded.reviewMode ?? current.reviewMode,
       translationType: loaded.translationType ?? current.translationType,
       workDescription: loaded.workDescription ?? current.workDescription,
       reportPath: loaded.reportPath ?? current.reportPath,
       sourcePosition: loaded.sourcePosition ?? loaded.sourceColumn ?? current.sourcePosition,
-      translationPosition: loaded.translationPosition ?? loaded.translationColumn ?? current.translationPosition
+      translationPosition: loaded.translationPosition ?? loaded.translationColumn ?? current.translationPosition,
+      workflowTemplateId: getWorkflowTemplate(loaded.workflowTemplateId).id,
+      agentProxyEnabled: loaded.agentProxyEnabled ?? current.agentProxyEnabled,
+      agentProxyUrl: loaded.agentProxyUrl ?? current.agentProxyUrl
     }));
     window.setTimeout(() => {
       hydratingProject.current = false;
@@ -469,78 +463,114 @@ function App() {
     setLastOutput(lastHtml);
     setStatus(lastHtml ? t.projectOpened : t.projectOpenedNoHtml);
     if (openLastHtml && lastHtml) {
-      await window.workshop.openPath(lastHtml);
+      await openLoadedProjectHtml(loaded, projectOutputDir);
     }
+    void window.workshop.readWorkspaceAssetsStatus({ outputDir: projectOutputDir }).then((nextStatus) => {
+      if (workspaceAssetsRequestId.current === assetsRequestId) setWorkspaceAssets(nextStatus);
+    }).catch(showActionError);
   }
 
   async function openProject() {
-    const selected = await window.workshop.openFolder();
-    if (selected) {
-      await loadProjectState(selected, true);
+    try {
+      const selected = await window.workshop.openProjectFolder();
+      if (selected) {
+        await loadProjectState(selected, true);
+      }
+    } catch (error) {
+      showActionError(error);
     }
   }
 
   async function openExistingHtml() {
-    const selected = await window.workshop.openFile([
-      { name: "HTML", extensions: ["html", "htm"] },
-      { name: "All files", extensions: ["*"] }
-    ]);
-    if (!selected) {
-      return;
+    try {
+      const selected = await window.workshop.openFile([
+        { name: "HTML", extensions: ["html", "htm"] },
+        { name: "All files", extensions: ["*"] }
+      ]);
+      if (!selected) {
+        return;
+      }
+      setLastOutput(selected);
+      setStatus(t.htmlOpened);
+      await window.workshop.openPath(selected);
+    } catch (error) {
+      showActionError(error);
     }
-    setLastOutput(selected);
-    setStatus(t.htmlOpened);
-    await window.workshop.openPath(selected);
   }
 
   async function openReviewHtml() {
-    const selected = await window.workshop.openFile([
-      { name: "Review HTML", extensions: ["html", "htm"] },
-      { name: "All files", extensions: ["*"] }
-    ]);
-    if (!selected) {
-      return;
+    try {
+      const selected = await window.workshop.openFile([
+        { name: "Review HTML", extensions: ["html", "htm"] },
+        { name: "All files", extensions: ["*"] }
+      ]);
+      if (!selected) {
+        return;
+      }
+      setLastOutput(selected);
+      setStatus(t.reviewHtmlOpened ?? t.htmlOpened);
+      await saveProject(selected, "proposal");
+      await window.workshop.openReviewHtml({ htmlPath: selected, outputDir: form.outputDir || undefined });
+    } catch (error) {
+      showActionError(error);
     }
-    setLastOutput(selected);
-    setStatus(t.reviewHtmlOpened ?? t.htmlOpened);
-    await saveProject(selected, "proposal");
-    await window.workshop.openReviewHtml({ htmlPath: selected, outputDir: form.outputDir || undefined });
   }
 
   async function pickFile(key: keyof Pick<FormState, "sourcePath" | "translationPath" | "glossaryPath" | "reportPath">) {
-    const filters = key === "glossaryPath" ? glossaryFileFilters : documentFileFilters;
-    const selected = await window.workshop.openFile(filters);
-    if (selected) {
-      patch({ [key]: selected } as Partial<FormState>);
+    try {
+      const filters = key === "glossaryPath" ? glossaryFileFilters : documentFileFilters;
+      const selected = await window.workshop.openFile(filters);
+      if (selected) {
+        patch({ [key]: selected } as Partial<FormState>);
+      }
+    } catch (error) {
+      showActionError(error);
     }
   }
 
   async function pickSourceFile(key: keyof Pick<FormState, "sourcePath" | "translationPath">) {
-    const selected = await window.workshop.openFile(sourceFileFilters);
-    if (selected) {
-      const lower = selected.toLowerCase();
-      patch({
-        [key]: selected,
-        fileType: key === "sourcePath"
-          ? (lower.endsWith(".epub") ? "epub" : lower.endsWith(".txt") ? "txt" : form.fileType)
-          : form.fileType,
-        sourcePosition: form.inputMode === "bilingual" ? 2 : form.sourcePosition,
-        translationPosition: form.inputMode === "bilingual" ? 1 : form.translationPosition
-      } as Partial<FormState>);
+    try {
+      const selected = await window.workshop.openFile(sourceFileFilters);
+      if (selected) {
+        const lower = selected.toLowerCase();
+        patch({
+          [key]: selected,
+          ...(key === "sourcePath" ? { sourceKind: "file" as const } : {}),
+          fileType: key === "sourcePath"
+            ? (lower.endsWith(".epub") ? "epub" : lower.endsWith(".txt") ? "txt" : form.fileType)
+            : form.fileType,
+          sourcePosition: form.inputMode === "bilingual" ? 2 : form.sourcePosition,
+          translationPosition: form.inputMode === "bilingual" ? 1 : form.translationPosition
+        } as Partial<FormState>);
+      }
+    } catch (error) {
+      showActionError(error);
     }
   }
 
   async function pickSourceFolder(key: keyof Pick<FormState, "sourcePath" | "translationPath">) {
-    const selected = await window.workshop.openFolder();
-    if (selected) {
-      patch({ [key]: selected, fileType: "auto" } as Partial<FormState>);
+    try {
+      const selected = await window.workshop.openFolder();
+      if (selected) {
+        patch({
+          [key]: selected,
+          fileType: "auto",
+          ...(key === "sourcePath" ? { sourceKind: "folder" as const } : {})
+        } as Partial<FormState>);
+      }
+    } catch (error) {
+      showActionError(error);
     }
   }
 
   async function pickOutput() {
-    const selected = await window.workshop.openFolder();
-    if (selected) {
-      await loadProjectState(selected, false);
+    try {
+      const selected = await window.workshop.openFolder();
+      if (selected) {
+        await loadProjectState(selected, false);
+      }
+    } catch (error) {
+      showActionError(error);
     }
   }
 
@@ -552,30 +582,66 @@ function App() {
       proofreadOutputDir: form.proofreadOutputDir || defaultProofreadOutputDir(),
       split: form.split,
       splitSize: form.splitSize,
-      subagent: form.subagent,
-      subagentCount: form.subagentCount,
+      glossaryCandidates: form.glossaryCandidates,
+      characterBible: form.characterBible,
       proofreadMode: form.proofreadMode,
       candidateRatio: form.candidateRatio,
       montecarloSize: form.montecarloSize,
       montecarloRoundMin: form.montecarloRoundMin,
       montecarloRoundMax: form.montecarloRoundMax,
       workDescription: form.workDescription,
-      reviewMode: form.reviewMode,
-      translationType: form.translationType
+      workflowTemplateId: form.workflowTemplateId,
+      translationType: form.translationType,
+      customPreserveRules: savedCustomPreserveRules
     };
   }
 
   function buildDefaultAgentPrompt(kind: AgentTaskKind = promptKind) {
     return buildPrompt({
       kind: kind === "proofread" ? "proofread" : "translate",
-      agent: form.agent,
       sourcePath: form.sourcePath,
+      sourceKind: form.sourceKind,
       translationPath: form.translationPath || undefined,
       outputDir: form.outputDir,
       glossaryPath: form.glossaryPath || undefined,
       inputMode: form.inputMode,
       advanced: promptAdvanced()
     });
+  }
+
+  function workflowArtifactInstruction(templateId: WorkflowTemplateId) {
+    const artifact = getWorkflowTemplate(templateId).outputArtifact;
+    return [
+      `Primary artifact: ${artifact.pathHint}`,
+      `Artifact kind: ${artifact.kind}`,
+      "Use this artifact as the durable output for the selected workflow template."
+    ].join("\n");
+  }
+
+  function buildWorkflowTemplatePrompt(templateId: WorkflowTemplateId) {
+    const withArtifact = (lines: string[]) => [...lines, workflowArtifactInstruction(templateId)].join("\n");
+    switch (templateId) {
+      case "terminology_sweep":
+        return withArtifact([
+          "Run a terminology sweep for the current source/translation pair.",
+          "Check glossary consistency, use readProjectAssets, and propose glossary updates with proposeAssetUpdate.",
+          "Do not edit the final translation file directly."
+        ]);
+      case "character_voice_check":
+        return withArtifact([
+          "Run a character voice check for the current source/translation pair.",
+          "Check character names, speaking style, and consistency against the character bible.",
+          "Use proposeAssetUpdate for character bible updates and write line-aware findings when fixes are needed."
+        ]);
+      case "final_qa":
+        return withArtifact([
+          "Run final QA for the current source/translation pair.",
+          "Produce structured findings JSON and a concise QA summary under the report folder.",
+          "Do not edit the final translation file directly."
+        ]);
+      default:
+        return withArtifact([buildDefaultAgentPrompt(getWorkflowTemplate(templateId).promptKind)]);
+    }
   }
 
   function setBilingualFileType(fileType: FileType) {
@@ -662,8 +728,8 @@ function App() {
   function generateTranslatePrompt() {
     const next = buildDefaultAgentPrompt("translate");
     setPromptKind("translate");
+    patch({ workflowTemplateId: "initial_translation" });
     setPrompt(next);
-    setActiveAgentPrompt(next);
   }
 
   function generateProofreadPrompt() {
@@ -673,149 +739,100 @@ function App() {
     }
     const next = buildDefaultAgentPrompt("proofread");
     setPromptKind("proofread");
+    patch({ workflowTemplateId: "proofread" });
     setPrompt(next);
-    setActiveAgentPrompt(next);
+  }
+
+  function selectWorkflowTemplate(templateId: WorkflowTemplateId) {
+    const template = getWorkflowTemplate(templateId);
+    const next = buildWorkflowTemplatePrompt(template.id);
+    patch({ workflowTemplateId: template.id });
+    setPromptKind(template.promptKind);
+    setPrompt(next);
+  }
+
+  function workflowTemplateParams() {
+    switch (form.workflowTemplateId) {
+      case "initial_translation":
+        return (
+          <>
+            <label className="field">
+              <span>{t.translateOutputDir ?? "Translation output folder"}</span>
+              <input value={form.translateOutputDir || defaultTranslateOutputDir()} onChange={(event) => patch({ translateOutputDir: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>{t.splitSize ?? "Split size"}</span>
+              <input type="number" min={1} value={form.splitSize} onChange={(event) => patch({ splitSize: Number(event.target.value) })} />
+            </label>
+          </>
+        );
+      case "proofread":
+        return (
+          <>
+            <label className="field">
+              <span>{t.proofreadOutputDir ?? "Report output folder"}</span>
+              <input value={form.proofreadOutputDir || defaultProofreadOutputDir()} onChange={(event) => patch({ proofreadOutputDir: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>{t.proofreadMode ?? "Proofread mode"}</span>
+              <select value={form.proofreadMode} onChange={(event) => patch({ proofreadMode: event.target.value as ProofreadMode })}>
+                <option value="split">split</option>
+                <option value="montecarlo">montecarlo</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>{t.candidateRatio ?? "H9 candidate ratio"}</span>
+              <input type="number" min={0.1} step={0.1} value={form.candidateRatio} onChange={(event) => patch({ candidateRatio: Number(event.target.value) })} />
+            </label>
+          </>
+        );
+      case "terminology_sweep":
+        return (
+          <>
+            <label className="field">
+              <span>{t.glossaryPath}</span>
+              <input value={form.glossaryPath} onChange={(event) => patch({ glossaryPath: event.target.value })} />
+            </label>
+            <label className="field wideField">
+              <span>{t.workDescription}</span>
+              <textarea value={form.workDescription} onChange={(event) => patch({ workDescription: event.target.value })} />
+            </label>
+          </>
+        );
+      case "character_voice_check":
+        return (
+          <>
+            <label className="field">
+              <span>{t.proofreadOutputDir ?? "Report output folder"}</span>
+              <input value={form.proofreadOutputDir || defaultProofreadOutputDir()} onChange={(event) => patch({ proofreadOutputDir: event.target.value })} />
+            </label>
+            <label className="field wideField">
+              <span>{t.workDescription}</span>
+              <textarea value={form.workDescription} onChange={(event) => patch({ workDescription: event.target.value })} />
+            </label>
+          </>
+        );
+      case "final_qa":
+        return (
+          <>
+            <label className="field">
+              <span>{t.proofreadOutputDir ?? "Report output folder"}</span>
+              <input value={form.proofreadOutputDir || defaultProofreadOutputDir()} onChange={(event) => patch({ proofreadOutputDir: event.target.value })} />
+            </label>
+            <label className="field">
+              <span>{t.candidateRatio ?? "H9 candidate ratio"}</span>
+              <input type="number" min={0.1} step={0.1} value={form.candidateRatio} onChange={(event) => patch({ candidateRatio: Number(event.target.value) })} />
+            </label>
+          </>
+        );
+      default:
+        return null;
+    }
   }
 
   async function copyPrompt() {
-    await window.workshop.copyText(activeAgentPrompt || prompt);
+    await window.workshop.copyText(prompt);
     setStatus(t.copied);
-  }
-
-  async function copySkillInstallCommand() {
-    const details = await window.workshop.skillInstallCommand({ agent: form.agent });
-    const command = details.githubCommand || details.command;
-    setSkillInstallCommand(command);
-    await window.workshop.copyText(command);
-    setStatus(t.copied);
-  }
-
-  function skillSetupMessage() {
-    const selected = skillInstallStatus?.selected;
-    if (!selected) {
-      return "";
-    }
-    if (selected.cliFound && selected.skillsFound) {
-      return form.agent === "codex"
-        ? (t.skillStatusCodexReady ?? "Codex CLI was detected; Codex skills are installed.")
-        : (t.skillStatusClaudeReady ?? "Claude Code CLI was detected; Claude commands are installed.");
-    }
-    const details = [
-      !selected.cliFound
-        ? form.agent === "codex"
-          ? (t.skillCodexCliMissing ?? "Codex CLI was not detected.")
-          : (t.skillClaudeCliMissing ?? "Claude Code CLI was not detected.")
-        : "",
-      !selected.skillsFound
-        ? `${form.agent === "codex"
-          ? (t.skillCodexFilesMissing ?? "Codex skills are not fully installed:")
-          : (t.skillClaudeFilesMissing ?? "Claude commands are not fully installed:")} ${selected.missingSkillPaths.join(", ")}`
-        : ""
-    ].filter(Boolean);
-    return `${details.join(" ")} ${t.skillOnlyOneAgentNote ?? "You only need to install and select the one Agent you plan to use."}`.trim();
-  }
-
-  function skillLayoutMessage() {
-    return form.agent === "codex"
-      ? (t.skillLayoutCodex ?? "Codex uses directory skills: each skill is a ~/.codex/skills/<name>/ folder with SKILL.md as the entry file.")
-      : (t.skillLayoutClaude ?? "Claude Code uses slash commands: each command is a ~/.claude/commands/<name>.md file.");
-  }
-
-  function openCallAgentPanel() {
-    setCallAgentPanelOpen(true);
-    window.requestAnimationFrame(() => {
-      fitAgentTerminal();
-      agentTerminal.current?.focus();
-    });
-  }
-
-  async function startAgentConsole() {
-    if (!form.outputDir) {
-      setStatus(t.agentConsoleNeedsOutput);
-      return false;
-    }
-    const wasRunning = agentConsoleRunning;
-    setCallAgentPanelOpen(true);
-    agentConsoleAgent.current = form.agent;
-    window.requestAnimationFrame(() => fitAgentTerminal());
-    const result = await window.workshop.startAgentConsole({
-      agent: form.agent,
-      outputDir: form.outputDir,
-      cols: agentTerminal.current?.cols ?? 120,
-      rows: agentTerminal.current?.rows ?? 32
-    });
-    if (result.ok) {
-      if (result.status?.id && result.status.id !== agentConsoleSessionId.current) {
-        agentConsoleSessionId.current = result.status.id;
-        resetAgentConsoleTranscript();
-      }
-      agentConsoleAgent.current = result.status?.agent ?? form.agent;
-      setAgentConsoleRunning(Boolean(result.status?.running ?? true));
-      setAgentConsolePhase("running");
-      setStatus(result.message || t.agentConsoleStarted);
-      if (!wasRunning) {
-        await new Promise((resolve) => window.setTimeout(resolve, 700));
-      }
-      return true;
-    }
-    setStatus(result.message || t.agentUnavailable);
-    return false;
-  }
-
-  async function sendInteractiveAgentMessage() {
-    const message = activeAgentPrompt || prompt;
-    if (!message.trim()) {
-      return;
-    }
-    const started = await startAgentConsole();
-    if (!started) {
-      return;
-    }
-    agentConsoleAwaitingReply.current = true;
-    lastAgentConsoleDataAt.current = Date.now();
-    setAgentConsolePhase("waiting");
-    setActiveAgentPrompt("");
-    setPrompt("");
-    const result = await window.workshop.sendAgentConsoleInput(message);
-    if (!result.ok) {
-      agentConsoleAwaitingReply.current = false;
-      setActiveAgentPrompt(message);
-      setPrompt(message);
-      setStatus(result.message || t.agentUnavailable);
-      return;
-    }
-    setStatus(result.ok
-      ? result.promptPath
-        ? `${t.promptSentViaFile} ${result.promptPath}`
-        : t.promptSentToAgent
-      : (result.message || t.agentUnavailable));
-  }
-
-  async function stopAgentConsole() {
-    await window.workshop.stopAgentConsole();
-    setAgentConsoleRunning(false);
-    setAgentConsolePhase("stopped");
-    setStatus(t.agentConsoleStopped);
-  }
-
-  function clearAgentConsole() {
-    resetAgentConsoleTranscript();
-  }
-
-  function agentConsolePhaseLabel() {
-    if (!agentConsoleRunning && agentConsolePhase === "stopped") {
-      return t.agentConsoleStopped;
-    }
-    if (agentConsolePhase === "waiting") {
-      return t.agentConsoleWaiting ?? "等待 Agent 回复…";
-    }
-    if (agentConsolePhase === "streaming") {
-      return t.agentConsoleStreaming ?? "Agent 输出中…";
-    }
-    if (agentConsolePhase === "quiet") {
-      return t.agentConsoleQuiet ?? "输出已静默，可能已完成。";
-    }
-    return t.agentConsoleRunning ?? "控制台运行中";
   }
 
   async function syncTranslations() {
@@ -844,6 +861,228 @@ function App() {
     return "";
   }
 
+  async function refreshAssetProposals() {
+    if (!form.outputDir) {
+      setStatus(t.requiredSourceOutput);
+      return;
+    }
+    const [assets, proposals, generated] = await Promise.all([
+      window.workshop.readProjectAssets({ outputDir: form.outputDir }),
+      window.workshop.listAssetProposals({ outputDir: form.outputDir }),
+      window.workshop.readWorkspaceAssetsStatus({ outputDir: form.outputDir })
+    ]);
+    setProjectAssets(assets as ProjectAssetSummary);
+    setAssetEditor((previous) => ({ ...previous, styleGuide: String((assets as ProjectAssetSummary).styleGuide ?? "") }));
+    setAssetProposals(proposals.filter((proposal) => proposal.status === "pending"));
+    setWorkspaceAssets(generated);
+    setStatus(proposals.length ? `${t.assetProposals ?? "Asset proposals"}: ${proposals.length}` : (t.noAssetProposals ?? "No pending asset proposals."));
+  }
+
+  function refreshStartupSuggestion() {
+    setStartupSuggestionIndex((current) => (current + 1) % t.startupSuggestions.length);
+    if (form.outputDir) void refreshAssetProposals();
+  }
+
+  async function importGeneratedGlossary() {
+    if (!form.outputDir) {
+      setStatus(t.requiredSourceOutput);
+      return;
+    }
+    const result = await window.workshop.importGeneratedGlossaryCandidates({ outputDir: form.outputDir });
+    setProjectAssets(result.assets as ProjectAssetSummary);
+    const importedGlossaryPath = String((result.assets as ProjectAssetSummary).paths?.glossary ?? "");
+    if (!form.glossaryPath.trim() && importedGlossaryPath) patch({ glossaryPath: importedGlossaryPath });
+    setStatus(`${t.generatedGlossaryImported ?? "Generated glossary imported"}: ${result.counts.added} added, ${result.counts.deduplicated} existing.`);
+    setWorkspaceAssets(await window.workshop.readWorkspaceAssetsStatus({ outputDir: form.outputDir }));
+  }
+
+  function patchAssetEditor(patch: Partial<AssetEditorState>) {
+    setAssetEditor((previous) => ({ ...previous, ...patch }));
+  }
+
+  function splitAssetList(value: string) {
+    return value.split(/[,，;；、\n]/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  async function saveGlossaryEntry() {
+    if (!form.outputDir || !assetEditor.glossarySource.trim() || !assetEditor.glossaryTarget.trim()) {
+      setStatus(t.requiredSourceOutput);
+      return;
+    }
+    const assets = await window.workshop.saveProjectAssets({
+      outputDir: form.outputDir,
+      glossaryEntry: {
+        source: assetEditor.glossarySource.trim(),
+        target: assetEditor.glossaryTarget.trim(),
+        aliases: splitAssetList(assetEditor.glossaryAliases),
+        ...(assetEditor.glossaryInfo.trim() ? { info: assetEditor.glossaryInfo.trim() } : {}),
+        status: assetEditor.glossaryStatus
+      }
+    });
+    setProjectAssets(assets as ProjectAssetSummary);
+    patchAssetEditor({ glossarySource: "", glossaryTarget: "", glossaryAliases: "", glossaryInfo: "", glossaryStatus: "confirmed" });
+    setStatus(t.projectAssetsSaved ?? "Project assets saved.");
+  }
+
+  async function saveCharacterEntry() {
+    if (!form.outputDir || !assetEditor.characterName.trim()) {
+      setStatus(t.requiredSourceOutput);
+      return;
+    }
+    const assets = await window.workshop.saveProjectAssets({
+      outputDir: form.outputDir,
+      characterEntry: {
+        name: assetEditor.characterName.trim(),
+        target: assetEditor.characterTarget.trim(),
+        aliases: splitAssetList(assetEditor.characterAliases),
+        ...(assetEditor.characterGender.trim() ? { gender: assetEditor.characterGender.trim() } : {}),
+        ...(assetEditor.characterPronouns.trim() ? { pronouns: assetEditor.characterPronouns.trim() } : {}),
+        genderConfidence: assetEditor.characterGenderConfidence,
+        termsOfAddress: assetEditor.characterTermsOfAddress.trim() || "unknown",
+        requiredTerms: splitAssetList(assetEditor.characterRequiredTerms),
+        forbiddenTerms: splitAssetList(assetEditor.characterForbiddenTerms)
+      }
+    });
+    setProjectAssets(assets as ProjectAssetSummary);
+    patchAssetEditor({
+      characterName: "",
+      characterTarget: "",
+      characterAliases: "",
+      characterGender: "",
+      characterPronouns: "",
+      characterGenderConfidence: "unknown",
+      characterTermsOfAddress: "",
+      characterRequiredTerms: "",
+      characterForbiddenTerms: ""
+    });
+    setStatus(t.projectAssetsSaved ?? "Project assets saved.");
+  }
+
+  async function saveStyleGuide() {
+    if (!form.outputDir) {
+      setStatus(t.requiredSourceOutput);
+      return;
+    }
+    const assets = await window.workshop.saveProjectAssets({ outputDir: form.outputDir, styleGuide: assetEditor.styleGuide });
+    setProjectAssets(assets as ProjectAssetSummary);
+    setStatus(t.projectAssetsSaved ?? "Project assets saved.");
+  }
+
+  function patchCustomPreserveRule(index: number, patch: Partial<CustomPreserveRuleDraft>) {
+    setCustomPreserveRuleDrafts((current) => current.map((rule, ruleIndex) => (
+      ruleIndex === index ? { ...rule, ...patch } : rule
+    )));
+  }
+
+  function addCustomPreserveRule() {
+    setCustomPreserveRuleDrafts((current) => [
+      ...current,
+      { label: "", pattern: "", flags: "u" }
+    ]);
+  }
+
+  function removeCustomPreserveRule(index: number) {
+    setCustomPreserveRuleDrafts((current) => current.filter((_, ruleIndex) => ruleIndex !== index));
+  }
+
+  async function saveCustomPreserveRules() {
+    if (!form.outputDir) {
+      setStatus(t.requiredSourceOutput);
+      return;
+    }
+    try {
+      const rules = normalizeCustomPreserveRules(
+        customPreserveRuleDrafts
+          .filter((rule) => rule.pattern.trim())
+          .map((rule) => ({
+            ...(rule.label.trim() ? { label: rule.label.trim() } : {}),
+            pattern: rule.pattern,
+            flags: rule.flags
+          }))
+      );
+      await window.workshop.saveProject(form.outputDir, { customPreserveRules: rules });
+      setSavedCustomPreserveRules(rules);
+      setCustomPreserveRuleDrafts(preserveRuleDrafts(rules));
+      setStatus(t.customPreserveRulesSaved ?? "Preservation rules saved.");
+    } catch (error) {
+      showActionError(error);
+    }
+  }
+
+  async function approveAssetProposal(proposal: AssetProposal) {
+    if (!form.outputDir) {
+      setStatus(t.requiredSourceOutput);
+      return;
+    }
+    await window.workshop.approveAssetProposal({ outputDir: form.outputDir, proposalId: proposal.id, entry: proposal.entry });
+    setStatus(t.assetProposalApproved ?? "Asset proposal approved.");
+    await refreshAssetProposals();
+  }
+
+  function glossaryAssetProposals() {
+    return assetProposals.filter((proposal) => proposal.kind === "glossary");
+  }
+
+  async function approveGlossaryAssetProposals() {
+    if (!form.outputDir) {
+      setStatus(t.requiredSourceOutput);
+      return;
+    }
+    const glossary = glossaryAssetProposals();
+    if (glossary.length === 0) {
+      setStatus(t.noAssetProposals ?? "No pending asset proposals.");
+      return;
+    }
+    for (const proposal of glossary) {
+      await window.workshop.approveAssetProposal({ outputDir: form.outputDir, proposalId: proposal.id, entry: proposal.entry });
+    }
+    setStatus(`${t.assetGlossaryBatchApproved ?? "Glossary proposals approved."} (${glossary.length})`);
+    await refreshAssetProposals();
+  }
+
+  function proposalTargetKey(proposal: AssetProposal) {
+    const entry = proposal.entry ?? {};
+    for (const key of ["target", "localizedName", "translation"]) {
+      if (String(entry[key] ?? "").trim()) return key;
+    }
+    return "target";
+  }
+
+  function proposalTargetOptions(proposal: AssetProposal) {
+    const entry = proposal.entry ?? {};
+    const target = String(entry[proposalTargetKey(proposal)] ?? "").trim();
+    const alternatives = Array.isArray(entry.alternatives)
+      ? entry.alternatives.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+    return [...new Set([target, ...alternatives].filter(Boolean))];
+  }
+
+  function selectProposalTarget(proposal: AssetProposal, target: string) {
+    const key = proposalTargetKey(proposal);
+    setAssetProposals((previous) => previous.map((item) => item.id === proposal.id
+      ? (() => {
+        const entry = item.entry ?? {};
+        const currentTarget = String(entry[key] ?? "").trim();
+        const alternatives = Array.isArray(entry.alternatives)
+          ? entry.alternatives.map((value) => String(value).trim()).filter(Boolean)
+          : [];
+        const nextAlternatives = [...new Set([...alternatives.filter((value) => value !== target), currentTarget].filter(Boolean))];
+        return { ...item, entry: { ...entry, [key]: target, alternatives: nextAlternatives } };
+      })()
+      : item));
+  }
+
+  function assetRows() {
+    const paths = projectAssets?.paths ?? {};
+    const available = projectAssets?.available;
+    return [
+      { key: "glossary", label: t.assetGlossary ?? "Glossary", path: paths.glossary, count: projectAssets?.glossary?.entries?.length, exists: available?.glossary },
+      { key: "characterBible", label: t.assetCharacterBible ?? "Character bible", path: paths.characterBible, count: projectAssets?.characterBible?.characters?.length, exists: available?.characterBible },
+      { key: "styleGuide", label: t.assetStyleGuide ?? "Style guide", path: paths.styleGuide, exists: available?.styleGuide },
+      { key: "translationMemory", label: t.assetTranslationMemory ?? "Translation memory", path: paths.translationMemory, count: projectAssets?.translationMemory?.segmentCount, exists: available?.translationMemory }
+    ].filter((row) => row.path && row.exists !== false);
+  }
+
   async function generateReviewHtml(preferredReportPath?: string) {
     if (!form.outputDir) {
       setStatus(t.requiredReviewReport);
@@ -870,8 +1109,6 @@ function App() {
       if (result.fallbackPrompt) {
         setPromptKind("proofread");
         setPrompt(result.fallbackPrompt);
-        setActiveAgentPrompt(result.fallbackPrompt);
-        setCallAgentPanelOpen(true);
         if (result.reportPath) {
           patch({ reportPath: result.reportPath });
         }
@@ -885,7 +1122,10 @@ function App() {
       setLastOutput(result.outputPath);
       setStatus(`${t.reviewGenerated} (${result.proposalCount})`);
       await saveProject(result.outputPath, "proposal");
-      await window.workshop.openPath(result.outputPath);
+      await window.workshop.openReviewHtml({
+        htmlPath: result.outputPath,
+        outputDir: form.outputDir
+      });
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -902,12 +1142,6 @@ function App() {
           </div>
         </div>
         <div className="topActions">
-          <IconButton icon={<TerminalIcon size={18} />} label={t.callAgent} onClick={openCallAgentPanel} primary={callAgentPanelOpen || agentConsoleRunning} />
-          {agentConsoleRunning && (
-            <span className={agentConsolePhase === "streaming" || agentConsolePhase === "waiting" ? "consoleLive topConsoleStatus" : "consoleIdle topConsoleStatus"}>
-              {agentConsolePhaseLabel()}
-            </span>
-          )}
           <IconButton icon={<FolderOpen size={18} />} label={t.openProject} onClick={openProject} />
           <IconButton icon={<ExternalLink size={18} />} label={t.openHtml} onClick={openExistingHtml} />
           <div className="segmented">
@@ -923,36 +1157,25 @@ function App() {
 
       <section className="workspace">
         <aside className="panel">
-          <div className="field">
-            <label>{t.agent}</label>
-            <div className="segmented full">
-              <button className={form.agent === "codex" ? "active" : ""} onClick={() => patch({ agent: "codex" })}>
-                {t.codex}
-              </button>
-              <button className={form.agent === "claude" ? "active" : ""} onClick={() => patch({ agent: "claude" })}>
-                {t.claude}
-              </button>
-            </div>
-          </div>
-
           <div className="setup">
-            <strong>{t.setup}</strong>
-            <span>{agentSetup.displayName}</span>
-            <span>{t.bundledSkills ?? "内置 skills"}</span>
-            <span>{skillLayoutMessage()}</span>
-            {skillSetupMessage() && (
-              <span className={skillInstallStatus?.selected.cliFound && skillInstallStatus.selected.skillsFound ? "setupOk" : "setupWarning"}>
-                {skillSetupMessage()}
-              </span>
-            )}
-            <code>{agentSetup.translate}</code>
-            <code>{agentSetup.proofread}</code>
-            <code>{agentSetup.installTarget}</code>
-            <span>{t.installCommand ?? "本地 Node 安装命令"}</span>
-            <code>{skillInstallCommand}</code>
-            <div className="inlineActions">
-              <button type="button" onClick={copySkillInstallCommand}>{t.copyInstallCommand ?? "复制安装命令"}</button>
-            </div>
+            <strong>{t.agentProxyEnabled ?? "Agent network"}</strong>
+            <label className="field checkboxField">
+              <input
+                type="checkbox"
+                checked={form.agentProxyEnabled}
+                onChange={(event) => patch({ agentProxyEnabled: event.target.checked })}
+              />
+              <span>{t.agentProxyEnabled ?? "Use proxy for Agent network"}</span>
+            </label>
+            <label className="field">
+              <span>{t.agentProxyUrl ?? "Agent proxy URL"}</span>
+              <input
+                value={form.agentProxyUrl}
+                disabled={!form.agentProxyEnabled}
+                placeholder="http://127.0.0.1:3067"
+                onChange={(event) => patch({ agentProxyUrl: event.target.value })}
+              />
+            </label>
           </div>
 
           <PathField label={t.sourcePath} value={form.sourcePath} onChange={(value) => patch({ sourcePath: value })} onPickFile={() => pickSourceFile("sourcePath")} onPickFolder={() => pickSourceFolder("sourcePath")} buttonFileText={t.selectFile} buttonFolderText={t.selectFolder} />
@@ -961,6 +1184,11 @@ function App() {
           )}
           <Field label={t.outputDir} value={form.outputDir} onChange={(value) => patch({ outputDir: value })} onPick={pickOutput} buttonText={t.select} folder />
           <Field label={`${t.glossaryPath} (${t.optional})`} value={form.glossaryPath} onChange={(value) => patch({ glossaryPath: value })} onPick={() => pickFile("glossaryPath")} buttonText={t.select} />
+          {workspaceAssets?.actions.importGlossaryCandidates ? (
+            <button className="generatedGlossaryImport" type="button" onClick={() => void importGeneratedGlossary().catch(showActionError)}>
+              {t.importGeneratedGlossary ?? "Import generated glossary"} · {workspaceAssets.pending.glossaryCandidates}
+            </button>
+          ) : null}
 
           <div className="grid2">
             <label className="field">
@@ -1019,6 +1247,14 @@ function App() {
               <strong>{t.translatePromptParams ?? "Translate prompt parameters"}</strong>
               <label className="field"><span>{t.translateOutputDir ?? "Translation output folder"}</span><input value={form.translateOutputDir || defaultTranslateOutputDir()} onChange={(event) => patch({ translateOutputDir: event.target.value })} /></label>
               <label className="field checkboxField">
+                <input type="checkbox" checked={form.glossaryCandidates} onChange={(event) => patch({ glossaryCandidates: event.target.checked })} />
+                <span>{t.glossaryCandidates ?? "Glossary candidates"}</span>
+              </label>
+              <label className="field checkboxField">
+                <input type="checkbox" checked={form.characterBible} onChange={(event) => patch({ characterBible: event.target.checked })} />
+                <span>{t.characterBible ?? "Character bible"}</span>
+              </label>
+              <label className="field checkboxField">
                 <input type="checkbox" checked={form.split} onChange={(event) => patch({ split: event.target.checked })} />
                 <span>{t.split ?? "Split"}</span>
               </label>
@@ -1043,16 +1279,7 @@ function App() {
                   <label className="field"><span>{t.montecarloRoundMax ?? "Max rounds"}</span><input type="number" min={1} value={form.montecarloRoundMax} onChange={(event) => patch({ montecarloRoundMax: Number(event.target.value) })} /></label>
                 </>
               ) : (
-                <>
-                  <label className="field"><span>{t.splitSize ?? "Split size"}</span><input type="number" min={1} value={form.splitSize} onChange={(event) => patch({ splitSize: Number(event.target.value) })} /></label>
-                  <label className="field checkboxField">
-                    <input type="checkbox" checked={form.subagent} onChange={(event) => patch({ subagent: event.target.checked })} />
-                    <span>{t.subagent ?? "Subagent"}</span>
-                  </label>
-                  {form.subagent && (
-                    <label className="field"><span>{t.subagentCount ?? "Subagent count"}</span><input type="number" min={1} value={form.subagentCount} onChange={(event) => patch({ subagentCount: Number(event.target.value) })} /></label>
-                  )}
-                </>
+                <label className="field"><span>{t.splitSize ?? "Split size"}</span><input type="number" min={1} value={form.splitSize} onChange={(event) => patch({ splitSize: Number(event.target.value) })} /></label>
               )}
             </div>
           )}
@@ -1067,6 +1294,23 @@ function App() {
             <Languages size={18} />
             <span>{form.inputMode === "bilingual" || form.translationPath ? t.modeCompare : t.modeTranslateOnly}</span>
           </div>
+
+          <label className="field workflowTemplateField">
+            <span>{t.workflowTemplate ?? "Workflow template"}</span>
+            <select value={form.workflowTemplateId} onChange={(event) => selectWorkflowTemplate(event.target.value as WorkflowTemplateId)}>
+              {workflowTemplates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {t[template.labelKey] ?? template.id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <section className="workflowTemplateParams">
+            <strong>{t.workflowTemplateParams ?? "Template parameters"}</strong>
+            <div className="workflowTemplateParamGrid">
+              {workflowTemplateParams()}
+            </div>
+          </section>
 
           <div className="actions">
             <IconButton icon={<FileText size={18} />} label={t.generateLineHtml} onClick={generateLineHtml} primary />
@@ -1087,45 +1331,8 @@ function App() {
             <span>{t.prompt}</span>
             <textarea value={prompt} onChange={(event) => {
               setPrompt(event.target.value);
-              setActiveAgentPrompt(event.target.value);
             }} />
           </label>
-
-          <section className="agentConsole agentConsoleFloating" hidden={!callAgentPanelOpen}>
-              <header className="agentConsoleHeader">
-                <strong>{t.agentTool}</strong>
-                <span className={agentConsolePhase === "streaming" || agentConsolePhase === "waiting" ? "consoleLive" : "consoleIdle"}>
-                  {agentConsolePhaseLabel()}
-                </span>
-                <div className="agentConsoleActions">
-                  <IconButton icon={<Square size={16} />} label={t.stopAgentConsole} onClick={stopAgentConsole} disabled={!agentConsoleRunning} />
-                  <IconButton icon={<Trash2 size={16} />} label={t.clearAgentConsole} onClick={clearAgentConsole} />
-                  <IconButton icon={<Minus size={16} />} label={t.collapseAgentWindow} onClick={() => setCallAgentPanelOpen(false)} />
-                </div>
-              </header>
-              <div className="agentConsoleInput">
-                <IconButton icon={<TerminalIcon size={16} />} label={t.startInteractiveAgent} onClick={startAgentConsole} />
-                <IconButton icon={<Send size={16} />} label={t.sendConsoleInput} onClick={sendInteractiveAgentMessage} />
-              </div>
-              <div className="agentConsoleOutput" ref={agentTerminalElement} aria-label={t.agentConsole} data-empty={t.agentConsoleEmpty} />
-              <label className="field agentPromptInput">
-                <span>{t.agentPromptInput}</span>
-                <textarea
-                  value={activeAgentPrompt}
-                  placeholder={t.agentConsoleInput}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void sendInteractiveAgentMessage();
-                    }
-                  }}
-                  onChange={(event) => {
-                    setActiveAgentPrompt(event.target.value);
-                    setPrompt(event.target.value);
-                  }}
-                />
-              </label>
-            </section>
 
           <div className="statusBar">
             <strong>{t.status}</strong>
@@ -1168,6 +1375,202 @@ function App() {
               ))}
             </div>
           )}
+          <div className="assetProposals">
+            <div className="assetProposalsHeader">
+              <strong>{t.assetProposals ?? "Asset proposals"}</strong>
+              <button type="button" onClick={refreshStartupSuggestion}>{t.refreshAssetProposals ?? "Refresh"}</button>
+            </div>
+            <p>{t.startupSuggestions[startupSuggestionIndex % t.startupSuggestions.length]}</p>
+            {projectAssets ? (
+              <div className="assetProposalCard">
+                <strong>{t.projectAssets ?? "Project assets"}</strong>
+                <div className="assetPathList">
+                  {assetRows().map((asset) => (
+                    <button key={asset.key} type="button" onClick={() => asset.path && window.workshop.openPath(asset.path)}>
+                      {asset.label}{asset.count !== undefined ? ` · ${asset.count}` : ""}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {projectAssets ? (
+              <div className="assetEditorPanel">
+                <strong>{t.projectAssetEditor ?? "Asset editor"}</strong>
+                <div className="assetEditorGrid">
+                  <label>
+                    <span>{t.assetGlossary ?? "Glossary"} source</span>
+                    <input value={assetEditor.glossarySource} onChange={(event) => patchAssetEditor({ glossarySource: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t.assetGlossary ?? "Glossary"} target</span>
+                    <input value={assetEditor.glossaryTarget} onChange={(event) => patchAssetEditor({ glossaryTarget: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>aliases</span>
+                    <input value={assetEditor.glossaryAliases} onChange={(event) => patchAssetEditor({ glossaryAliases: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t.assetInfo ?? "Info"}</span>
+                    <input value={assetEditor.glossaryInfo} onChange={(event) => patchAssetEditor({ glossaryInfo: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t.assetConfidence ?? "Status"}</span>
+                    <select value={assetEditor.glossaryStatus} onChange={(event) => patchAssetEditor({ glossaryStatus: event.target.value as AssetEditorState["glossaryStatus"] })}>
+                      <option value="confirmed">confirmed</option>
+                      <option value="auto">auto</option>
+                      <option value="pending">pending</option>
+                    </select>
+                  </label>
+                  <button type="button" onClick={() => void saveGlossaryEntry()}>{t.saveAssetEntry ?? "Save entry"}</button>
+                </div>
+                <div className="assetEditorGrid">
+                  <label>
+                    <span>{t.assetCharacterBible ?? "Character bible"} name</span>
+                    <input value={assetEditor.characterName} onChange={(event) => patchAssetEditor({ characterName: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>target</span>
+                    <input value={assetEditor.characterTarget} onChange={(event) => patchAssetEditor({ characterTarget: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>aliases</span>
+                    <input value={assetEditor.characterAliases} onChange={(event) => patchAssetEditor({ characterAliases: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t.assetGender ?? "Gender"}</span>
+                    <input value={assetEditor.characterGender} onChange={(event) => patchAssetEditor({ characterGender: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t.assetPronouns ?? "Pronouns"}</span>
+                    <input value={assetEditor.characterPronouns} onChange={(event) => patchAssetEditor({ characterPronouns: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>{t.assetConfidence ?? "Confidence"}</span>
+                    <select value={assetEditor.characterGenderConfidence} onChange={(event) => patchAssetEditor({ characterGenderConfidence: event.target.value as AssetEditorState["characterGenderConfidence"] })}>
+                      <option value="confirmed">confirmed</option>
+                      <option value="inferred">inferred</option>
+                      <option value="unknown">unknown</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{t.assetTermsOfAddress ?? "Terms of address"}</span>
+                    <input value={assetEditor.characterTermsOfAddress} onChange={(event) => patchAssetEditor({ characterTermsOfAddress: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>required terms</span>
+                    <input value={assetEditor.characterRequiredTerms} onChange={(event) => patchAssetEditor({ characterRequiredTerms: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>forbidden terms</span>
+                    <input value={assetEditor.characterForbiddenTerms} onChange={(event) => patchAssetEditor({ characterForbiddenTerms: event.target.value })} />
+                  </label>
+                  <button type="button" onClick={() => void saveCharacterEntry()}>{t.saveAssetEntry ?? "Save entry"}</button>
+                </div>
+                <label className="assetStyleEditor">
+                  <span>{t.assetStyleGuide ?? "Style guide"}</span>
+                  <textarea value={assetEditor.styleGuide} onChange={(event) => patchAssetEditor({ styleGuide: event.target.value })} />
+                </label>
+                <button type="button" onClick={() => void saveStyleGuide()}>{t.saveStyleGuide ?? "Save style guide"}</button>
+                <section className="customPreserveEditor">
+                  <div className="customPreserveHeader">
+                    <div>
+                      <strong>{t.customPreserveRules ?? "Custom regex preservation rules"}</strong>
+                      <p>{t.customPreserveRulesHint ?? "Source matches must remain verbatim on the same translated line."}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="iconButton"
+                      onClick={addCustomPreserveRule}
+                      disabled={customPreserveRuleDrafts.length >= 64}
+                      title={t.addCustomPreserveRule ?? "Add preservation rule"}
+                      aria-label={t.addCustomPreserveRule ?? "Add preservation rule"}
+                    >
+                      <Plus size={18} aria-hidden="true" />
+                    </button>
+                  </div>
+                  {customPreserveRuleDrafts.length > 0 ? (
+                    <div className="customPreserveRuleList">
+                      {customPreserveRuleDrafts.map((rule, index) => (
+                        <div className="customPreserveRuleRow" key={index}>
+                          <label>
+                            <span>{t.customPreserveRuleLabel ?? "Label"}</span>
+                            <input
+                              value={rule.label}
+                              onChange={(event) => patchCustomPreserveRule(index, { label: event.target.value })}
+                            />
+                          </label>
+                          <label>
+                            <span>{t.customPreserveRulePattern ?? "Regular expression"}</span>
+                            <input
+                              value={rule.pattern}
+                              spellCheck={false}
+                              onChange={(event) => patchCustomPreserveRule(index, { pattern: event.target.value })}
+                            />
+                          </label>
+                          <label>
+                            <span>{t.customPreserveRuleFlags ?? "Flags"}</span>
+                            <input
+                              value={rule.flags}
+                              spellCheck={false}
+                              onChange={(event) => patchCustomPreserveRule(index, { flags: event.target.value })}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="iconButton danger"
+                            onClick={() => removeCustomPreserveRule(index)}
+                            title={t.removeCustomPreserveRule ?? "Remove preservation rule"}
+                            aria-label={t.removeCustomPreserveRule ?? "Remove preservation rule"}
+                          >
+                            <Trash2 size={17} aria-hidden="true" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="customPreserveEmpty">{t.customPreserveRulesEmpty ?? "No custom preservation rules."}</p>
+                  )}
+                  <button type="button" onClick={() => void saveCustomPreserveRules()}>
+                    {t.saveCustomPreserveRules ?? "Save preservation rules"}
+                  </button>
+                </section>
+              </div>
+            ) : null}
+            {glossaryAssetProposals().length > 0 ? (
+              <div className="assetBatchBar">
+                <span>
+                  {t.assetGlossaryBatch ?? "Glossary proposals"} · {glossaryAssetProposals().length}
+                </span>
+                <button type="button" onClick={() => void approveGlossaryAssetProposals()}>
+                  {t.approveGlossaryBatch ?? "Approve glossary batch"}
+                </button>
+              </div>
+            ) : null}
+            {assetProposals.map((proposal) => (
+              <article key={proposal.id} className="assetProposalCard">
+                <code>{proposal.kind} · {proposal.id}</code>
+                <pre>{JSON.stringify(proposal.entry ?? {}, null, 2)}</pre>
+                {proposalTargetOptions(proposal).length > 1 ? (
+                  <div className="assetAlternativeList">
+                    {proposalTargetOptions(proposal).map((target) => (
+                      <button
+                        key={target}
+                        type="button"
+                        className={target === String(proposal.entry?.[proposalTargetKey(proposal)] ?? "") ? "active" : ""}
+                        onClick={() => selectProposalTarget(proposal, target)}
+                      >
+                        {target}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                {proposal.reason ? <span>{proposal.reason}</span> : null}
+                <button type="button" onClick={() => void approveAssetProposal(proposal)}>
+                  {t.approveAssetProposal ?? "Approve"}
+                </button>
+              </article>
+            ))}
+          </div>
         </section>
       </section>
     </main>

@@ -43,8 +43,10 @@ const provider = fauxProvider({
 });
 models.setProvider(provider.provider);
 const providerUserPrompts = [];
+const providerContexts = [];
 provider.setResponses([
   async (context) => {
+    providerContexts.push(context);
     providerUserPrompts.push(latestUserText(context));
     return fauxAssistantMessage([
       fauxToolCall("readAssignedSource", { fromLine: 1, toLine: 4 }, { id: "batch-read" }),
@@ -57,6 +59,7 @@ provider.setResponses([
     ], { stopReason: "toolUse" });
   },
   async (context) => {
+    providerContexts.push(context);
     providerUserPrompts.push(latestUserText(context));
       return fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
       entries: [
@@ -67,6 +70,7 @@ provider.setResponses([
     }, { id: "host-owned-repair" }), { stopReason: "toolUse" });
   },
   async (context) => {
+    providerContexts.push(context);
     providerUserPrompts.push(latestUserText(context));
     return fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, {
       id: "host-owned-validate"
@@ -105,15 +109,21 @@ try {
   const batch = supervisor.list()[0];
   assert.equal(batch.status, "completed", batch.error);
   assert.equal(providerUserPrompts.length, 3);
-  assert.match(
-    providerUserPrompts[1],
-    /host rejected only the listed lines[\s\S]*repairAssignedTranslation/i,
-    "a mixed tool batch must return control to the host before the next provider call"
-  );
-  assert.notEqual(
+  assert.equal(
     providerUserPrompts[1],
     providerUserPrompts[0],
-    "the provider must not continue the same Pi turn after an incomplete translation write"
+    "an early validation error must continue the same child assignment instead of replaying its full Host prompt"
+  );
+  const secondTurnToolText = providerContexts[1].messages
+    .filter((message) => message.role === "toolResult")
+    .flatMap((message) => message.content)
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  assert.match(
+    secondTurnToolText,
+    /assigned translation is incomplete[\s\S]*L2-L4/i,
+    "the same child turn must receive the exact missing-line error before repairing"
   );
 } finally {
   supervisor.abortAll();
@@ -121,4 +131,4 @@ try {
   await rm(outputDir, { recursive: true, force: true });
 }
 
-console.log("ok mixed translation tool batches hand control back to the host before repair");
+console.log("ok mixed translation tool validation errors stay in the same assignment for exact repair");

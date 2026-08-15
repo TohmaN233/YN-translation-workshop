@@ -1358,7 +1358,6 @@ export class PiNativeSessionService {
       let currentPromptTask: Promise<void> | undefined;
       let startedTurn = false;
       let cancelled = false;
-      let parkedForExplicitContinuation = false;
       await this.withSessionTransition(workspaceDir, sessionId, async () => {
         const active = this.active.get(key);
         if (!active) throw new Error(`Pi session ${sessionId} is no longer active for child completion.`);
@@ -1374,13 +1373,6 @@ export class PiNativeSessionService {
           }
           return;
         }
-        if (active.domainRun?.recoveryPauseId) {
-          this.recordLiveSubagentMessage(active, message);
-          await active.runtime.appendMessage(message);
-          await this.handleRuntimeEvent(active, { type: "message_end", message } as PiSessionRuntimeEvent);
-          parkedForExplicitContinuation = true;
-          return;
-        }
         const operation: PromptOperation = {
           generation: ++this.nextPromptGeneration,
           cancelled: false
@@ -1394,7 +1386,6 @@ export class PiNativeSessionService {
         startedTurn = true;
       });
       if (cancelled) return;
-      if (parkedForExplicitContinuation) return;
       if (startedTurn) return;
       if (consumptionTask) {
         try {

@@ -1,6 +1,36 @@
 # Agent Runtime Memory
 
-Last verified: 2026-08-14
+Last verified: 2026-08-15
+
+## 2026-08-15 novel translation: live terminology gate and assignment recovery
+
+The live `E:\novel\5656\5656下` run proved that provisional glossary commits and the conflict gate
+worked, but exposed six adjacent runtime defects. Terminology repair tasks were singleton ranges that
+overlapped their already accepted split scopes; a failed terminal child tool incorrectly ended the Pi
+tool batch and caused the supervisor to replay the whole assignment; the safety reviewer could burn
+three repair turns on target-language punctuation; translation parent reads honored a stale proofread
+path; a child failure completion was silently parked when a recovery pause existed; and single-file
+`runTranslationSubagents` required the parent to manually enumerate every split.
+
+Terminology debt is now grouped by its owning accepted alignment range. The worker retains that full
+write scope but reads, changes, and reopens review evidence only for the exact terminology lines;
+non-target changes fail before review and no overlapping singleton scope is created. Host-terminal
+tool failures remain in the same Pi assignment so the child consumes the exact missing-line error;
+the observed L1-L500 retry now repairs L500 without receiving another full L1-L500 prompt. The Host
+filters punctuation-only safety reports while retaining semantic boundary defects, translation reads
+always resolve the canonical candidate, recovery pauses launch exactly one visible parent report turn
+without authorizing queue restart, and both folder and single-file queues use the same Host planner.
+
+The Electron verifier's fixed expectation of two review cards was also updated to the real persistent
+pool contract: one review worker may drain both assignments, so acceptance verifies total reviewed
+assignment coverage instead of inventing an idle second worker.
+
+Verification: all 139 test files pass, including real multi-tool Pi continuation, focused terminology
+reopen, canonical read binding, single-file auto-planning, punctuation filtering, and recovery-pause
+reporting. The complete hidden Electron/HTML suite passes after the verifier correction. Windows 2.0.0
+was rebuilt; installer size is 105,182,030 bytes and portable size is 104,807,307 bytes, all four
+checksums verify, and hidden `release/win-unpacked/translation-workshop.exe` rendered in 4,181 ms,
+remained invisible, and exited cleanly. The portable NSIS executable was not launched.
 
 ## 2026-08-14 LAN remote Agent terminal-reply convergence
 

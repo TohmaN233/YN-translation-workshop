@@ -261,6 +261,7 @@ export interface PiTranslationStagingCheckpoint {
   fromLine: number;
   toLine: number;
   candidatePath: string;
+  terminologyRepairLines: number[];
   accepted: boolean;
   requiredLines: number[];
   repairIssues: Array<{
@@ -2061,6 +2062,10 @@ export function createTranslationWriteBatchHandoff(
     hostControlByToolName.set(tool.name, tool.hostControl);
   }
   return async (context) => {
+    // A rejected terminal tool must stay in the same Pi turn so the child can
+    // consume the exact error and repair its current assignment. Marking the
+    // failed result terminal makes the supervisor retry the whole range.
+    if (context.isError) return undefined;
     const toolCalls = context.assistantMessage.content.filter((block) => block.type === "toolCall");
     const returnsToHost = toolCalls.some((toolCall) => (
       hostControlByToolName.get(toolCall.name) === "return_after_tool_batch"
@@ -2496,6 +2501,11 @@ export function createPiTranslationSubagentTools(
               fromLine: context.task.fromLine,
               toLine: context.task.toLine,
               candidatePath: context.workingCandidatePath,
+              terminologyRepairLines: context.task.terminologyRepair === true
+                ? [...new Set((context.task.reviewFeedback ?? [])
+                    .filter((feedback) => feedback.reason.startsWith("terminology:"))
+                    .map((feedback) => feedback.line))]
+                : [],
               accepted,
               requiredLines,
               repairIssues
@@ -3154,7 +3164,7 @@ function createPiTranslationReviewRuntimeSpec(
       `Review translation safety gate ${context.task.auditId} for ${context.task.documentId} L${context.task.fromLine}-L${context.task.toLine}.`,
       `The Host selected every mechanical-risk row plus ${context.task.sampledLineCount} deterministic clean sample row(s).`,
       "FIRST TOOL: call readAssignedTranslationReview once. Inspect every selected row. Neighboring rows are context, but include one as a failure when it clearly shares or continues the same defect; Host will promote that row and expand the next repair review around it.",
-      "Focus on one-to-one line identity, omissions, merged/split/shifted meaning, placeholder/meta text, untranslated residue, and material mistranslation. This is not the later full proofreading workflow; do not polish style or report minor wording preferences.",
+      "Focus on one-to-one line identity, omissions, merged/split/shifted meaning, placeholder/meta text, untranslated residue, and material mistranslation. This is not the later full proofreading workflow; do not polish style or report minor wording preferences. Target-language punctuation and typography choices alone, including adding a conventional Chinese sentence-final mark inside a closing quote, are never safety-gate failures.",
       "The first tool result includes canonical projectReferences paths and direct matches for its review windows. Use those direct matches first. Do not invent shorthand paths such as 'glossary'. Use searchProjectText/readProjectFile only for one specific unresolved ambiguity, copying the exact returned path, and do not recursively search the project or read generated review HTML.",
       "Then call submitTranslationReview exactly once. Use failures=[] when the selected scope is safe. For a real problem, include only its absolute line, a compact machine-readable code, and a short actionable note that names the defect and required correction. Never list aligned rows and never explain why correct rows pass.",
       "Do not modify any file and do not launch another subagent."

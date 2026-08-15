@@ -11,7 +11,10 @@ import {
   fauxText,
   fauxToolCall
 } from "@earendil-works/pi-ai";
-import { createYnDomainTools } from "../../src/main/agent/piNative/ynDomainTools.ts";
+import {
+  createYnDomainTools,
+  isMinorTranslationPunctuationReviewFailure
+} from "../../src/main/agent/piNative/ynDomainTools.ts";
 import { createYnDomainRunContract } from "../../src/main/agent/piNative/domainRunContract.ts";
 import { buildYnSystemPrompt } from "../../src/main/agent/piNative/systemPrompt.ts";
 import {
@@ -98,6 +101,48 @@ async function fixture(extraContext = {}, sourceText = "こんにちは {name}\n
 async function execute(tool, params = {}) {
   return tool.execute(`call_${tool.name}`, params);
 }
+
+await test("translation safety review ignores punctuation-only style reports but retains semantic boundary defects", async () => {
+  assert.equal(isMinorTranslationPunctuationReviewFailure({
+    code: "sentence_boundary_mismatch",
+    note: "句末增加了原文没有的句号，请删除句号以保持句尾标点一致。"
+  }), true);
+  assert.equal(isMinorTranslationPunctuationReviewFailure({
+    code: "sentence_boundary_mismatch",
+    note: "The candidate merges the next speaker's meaning across this sentence boundary."
+  }), false);
+});
+
+await test("translation parent reads the canonical candidate instead of a stale proofread path", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: true,
+    subagentEnabled: false
+  });
+  const fx = await fixture({
+    domainRun,
+    requestPatch: {
+      workflowIntent: "translation",
+      translationPath: path.join(os.tmpdir(), `stale-proofread-${Date.now()}.txt`)
+    }
+  }, "原文\n");
+  try {
+    const canonical = resolveTranslationCandidatePath({
+      outputDir: fx.outputDir,
+      sourcePaths: [fx.sourcePath],
+      documentId: "source.txt"
+    });
+    await mkdir(path.dirname(canonical), { recursive: true });
+    await writeFile(canonical, "规范候选\n", "utf8");
+    await writeFile(fx.request.translationPath, "过时校对绑定\n", "utf8");
+    const result = await execute(fx.tool("readTranslationLines"), { fromLine: 1, toLine: 1 });
+    assert.equal(result.details.path, canonical);
+    assert.deepEqual(result.details.lines, ["规范候选"]);
+  } finally {
+    await rm(fx.request.translationPath, { force: true });
+    await fx.close();
+  }
+});
 
 await test("parent line reads page oversized ranges instead of injecting whole files into Pi context", async () => {
   const sourceLines = Array.from({ length: 1_200 }, (_, index) => `source-${index + 1}`);
@@ -4098,6 +4143,19 @@ await test("persisted single-file terminology debt precedes the remaining queue 
       subagentCount: 2,
       restoreSnapshot: originalDomainRun.snapshot()
     });
+    const translationAlignmentState = createTranslationAlignmentHostState();
+    const acceptedScope = createTranslationChunkReviewAudit({
+      documentId: "source.txt",
+      sourceLines: ["用語 A", "次へ"],
+      candidateLines: ["旧译 A", "下一步"],
+      candidatePath,
+      languagePair: "ja->zh-CN",
+      fromLine: 1,
+      toLine: 2,
+      sourceLineCount: 3
+    });
+    acceptedScope.checks.forEach((check) => { check.verdict = "aligned"; });
+    translationAlignmentState.ranges["source.txt"] = [acceptedScope];
     const subagents = {
       hasRunning: () => false,
       startTranslationBatch(options) {
@@ -4109,21 +4167,44 @@ await test("persisted single-file terminology debt precedes the remaining queue 
       request,
       publishCustomMessage: async () => {},
       subagents,
-      domainRun: restoredDomainRun
+      domainRun: restoredDomainRun,
+      translationAlignmentState
     });
     const tool = (name) => tools.find((entry) => entry.name === name);
     await execute(tool("inspectTranslationContext"));
-    await execute(tool("runTranslationSubagents"), {
-      tasks: [
-        { fromLine: 1, toLine: 1, label: "repair split" },
-        { fromLine: 2, toLine: 3, label: "remaining split" }
-      ]
-    });
+    await execute(tool("runTranslationSubagents"));
     assert.ok(started);
     assert.equal(started.maxWorkers, 2);
-    assert.deepEqual(started.priorityTasks.map((task) => [task.fromLine, task.toLine]), [[1, 1]]);
-    assert.equal(started.tasks.some((task) => task.fromLine === 2 && task.toLine === 3), true);
+    assert.deepEqual(started.priorityTasks.map((task) => [task.fromLine, task.toLine]), [[1, 2]]);
+    assert.equal(started.tasks.some((task) => task.fromLine === 3 && task.toLine === 3), true);
     assert.equal(started.priorityTasks[0].terminologyRepair, true);
+    const stagingPath = await prepareTranslationStagingCandidate({
+      outputDir,
+      sourcePaths: [sourcePath],
+      documentId: "source.txt",
+      sessionId: request.sessionId,
+      subagentId: "terminology-worker",
+      assignmentId: "source.txt:L1-L2"
+    });
+    await writeFile(stagingPath, "标准译 A\n下一步\n结束\n", "utf8");
+    await started.onStagingCandidateCheckpoint({
+      documentId: "source.txt",
+      fromLine: 1,
+      toLine: 2,
+      candidatePath: stagingPath,
+      terminologyRepairLines: [1],
+      accepted: true,
+      requiredLines: [],
+      repairIssues: []
+    });
+    assert.equal(translationAlignmentState.ranges["source.txt"].length, 1,
+      "terminology repair must reopen its owning range instead of adding an overlapping singleton");
+    assert.deepEqual(
+      translationAlignmentState.ranges["source.txt"][0].checks
+        .filter((check) => !check.verdict)
+        .map((check) => check.line),
+      [1]
+    );
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
@@ -4926,16 +5007,12 @@ await test("single-file translation treats the configured child count as a ceili
     requestPatch: {
       workflowIntent: "translation",
       subagentEnabled: true,
-      subagentCount: 3
+      subagentCount: 3,
+      translationSplitSize: 1
     }
   }, source);
   try {
-    await execute(fx.tool("runTranslationSubagents"), {
-      tasks: Array.from({ length: 8 }, (_, index) => ({
-        fromLine: index + 1,
-        toLine: index + 1
-      }))
-    });
+    await execute(fx.tool("runTranslationSubagents"));
     assert.equal(batchArgs.tasks.length, 8);
     assert.equal(batchArgs.maxWorkers, 3, "task count must not override the configured 1..N worker ceiling");
   } finally {

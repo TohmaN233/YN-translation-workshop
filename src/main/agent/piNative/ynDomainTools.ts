@@ -201,6 +201,20 @@ function canonicalTranslationReviewCode(value: string): string {
   return token.slice(0, 80);
 }
 
+export function isMinorTranslationPunctuationReviewFailure(
+  failure: Pick<PiTranslationReviewFailure, "code" | "note">
+): boolean {
+  const code = canonicalTranslationReviewCode(failure.code);
+  if (!/(?:^|_)(?:punctuation|typography|sentence_boundary|quote_boundary|terminal_mark)(?:_|$)/u.test(code)) {
+    return false;
+  }
+  const note = failure.note.trim().toLowerCase().normalize("NFKC");
+  if (!/(?:punctuation|typograph|period|full stop|question mark|exclamation mark|quote|comma|句号|问号|感叹号|标点|引号|逗号|句読点|括弧)/u.test(note)) {
+    return false;
+  }
+  return !/(?:semantic|meaning|mistranslat|omission|missing|merge|split|shift|speaker|subject|object|negat|placeholder|control code|tag|terminolog|语义|含义|误译|漏译|缺失|合并|拆分|错位|说话人|主语|宾语|否定|占位|控制码|标签|术语|意味|誤訳|省略|欠落|結合|分割|ずれ)/u.test(note);
+}
+
 function reopenMalformedTranslationReviewEvidence(scope: TranslationAlignmentRangeState): boolean {
   let changed = false;
   for (const check of scope.checks) {
@@ -1570,6 +1584,44 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     }
     return currentConflicts;
   };
+  const translationTerminologyRepairTasks = (
+    debt: readonly YnTranslationTerminologyDebt[]
+  ): PiTranslationSubagentTask[] => {
+    const grouped = new Map<string, PiTranslationSubagentTask>();
+    for (const item of debt) {
+      const owner = (translationAlignmentState.ranges[item.documentId] ?? []).find((scope) => (
+        scope.fromLine <= item.line && scope.toLine >= item.line
+      ));
+      const fromLine = owner?.fromLine ?? item.line;
+      const toLine = owner?.toLine ?? item.line;
+      const key = `${item.documentId}\0${fromLine}\0${toLine}`;
+      const feedback = {
+        line: item.line,
+        reason: `terminology: use ${item.expectedTarget} for ${item.source}; replace ${item.observedTargets.join(", ")}`
+      };
+      const existing = grouped.get(key);
+      if (existing) {
+        existing.reviewFeedback = [...(existing.reviewFeedback ?? []), feedback];
+        continue;
+      }
+      grouped.set(key, {
+        documentId: item.documentId,
+        fromLine,
+        toLine,
+        label: owner
+          ? `Repair terminology ${item.documentId} within L${fromLine}-L${toLine}`
+          : `Repair terminology ${item.documentId} L${item.line}`,
+        terminologyRepair: true,
+        reviewFeedback: [feedback],
+        ...(folderStages?.has(item.documentId) ? { scheduleStage: folderStages.get(item.documentId) } : {})
+      });
+    }
+    return [...grouped.values()].map((task) => ({
+      ...task,
+      reviewFeedback: [...(task.reviewFeedback ?? [])]
+        .sort((left, right) => left.line - right.line || left.reason.localeCompare(right.reason, "en"))
+    }));
+  };
   const planTranslationTerminologyRepairs = async (
     terms: YnResolvedTranslationTerm[]
   ): Promise<{
@@ -1631,18 +1683,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     const debt = [...debtByLine.values()].sort((left, right) => (
       left.documentId.localeCompare(right.documentId, "en") || left.line - right.line || left.source.localeCompare(right.source)
     ));
-    const tasks = debt.map((item): PiTranslationSubagentTask => ({
-        documentId: item.documentId,
-        fromLine: item.line,
-        toLine: item.line,
-        label: `Repair terminology ${item.documentId} L${item.line}`,
-        terminologyRepair: true,
-        reviewFeedback: [{
-          line: item.line,
-          reason: `terminology: use ${item.expectedTarget} for ${item.source}; replace ${item.observedTargets.join(", ")}`
-        }],
-        ...(folderStages?.has(item.documentId) ? { scheduleStage: folderStages.get(item.documentId) } : {})
-      }));
+    const tasks = translationTerminologyRepairTasks(debt);
     return { debt, tasks };
   };
   const routeTranslationTerminologyRepairs = (
@@ -1827,7 +1868,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     }
     });
   };
-  const planOutstandingFolderTranslationTasks = async (
+  const planOutstandingTranslationTasks = async (
     resolvedManifest: PiSourceManifest
   ): Promise<PiTranslationSubagentTask[]> => {
     const planned = planFolderTranslationTasks({
@@ -1964,31 +2005,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       }
     }
 
-    const tasks = new Map<string, PiTranslationSubagentTask>();
-    for (const debt of currentDebt) {
-      const document = resolvedManifest.documents.find((entry) => entry.id === debt.documentId);
-      if (!document) continue;
-      const key = `${document.id}\0${debt.line}`;
-      const feedback = {
-        line: debt.line,
-        reason: `terminology: use ${debt.expectedTarget} for ${debt.source}; replace ${debt.observedTargets.join(", ")}`
-      };
-      const existing = tasks.get(key);
-      if (existing) {
-        existing.reviewFeedback = [...(existing.reviewFeedback ?? []), feedback];
-        continue;
-      }
-      tasks.set(key, {
-        documentId: document.id,
-        fromLine: debt.line,
-        toLine: debt.line,
-        label: `Repair terminology ${document.id} L${debt.line}`,
-        terminologyRepair: true,
-        reviewFeedback: [feedback],
-        ...(folderStages?.has(document.id) ? { scheduleStage: folderStages.get(document.id) } : {})
-      });
-    }
-    return [...tasks.values()];
+    return translationTerminologyRepairTasks(currentDebt.filter((debt) => (
+      resolvedManifest.documents.some((document) => document.id === debt.documentId)
+    )));
   };
   const mergePersistedTranslationTerminologyTasks = (
     ordinaryTasks: PiTranslationSubagentTask[],
@@ -2111,6 +2130,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       toLine: number;
       requiredLines?: number[];
       requiredLineReasons?: Array<{ line: number; reason: string }>;
+      terminologyRepairLines?: number[];
     },
     candidateOverride?: string
   ): Promise<TranslationAlignmentRangeState> => {
@@ -2153,16 +2173,97 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     const exact = existing.find((scope) => (
       scope.fromLine === range.fromLine && scope.toLine === range.toLine
     ));
+    const terminologyRepairLines = new Set(inputRange.terminologyRepairLines ?? []);
+    for (const line of terminologyRepairLines) {
+      if (!Number.isInteger(line) || line < range.fromLine || line > range.toLine) {
+        throw new Error(`Terminology repair L${line} is outside L${range.fromLine}-L${range.toLine}.`);
+      }
+    }
     const exactMatchesCurrentCandidate = exact !== undefined
       && exact.inputHash === created.inputHash
       && exact.candidatePath === created.candidatePath
       && exact.sourceLineCount === created.sourceLineCount;
+    let focusedTerminologyScope: TranslationAlignmentRangeState | undefined;
+    if (
+      exact
+      && !exactMatchesCurrentCandidate
+      && terminologyRepairLines.size > 0
+      && exact.checks.every((check) => check.verdict === "aligned")
+    ) {
+      const previousCandidateLines = splitTextLines(await readFile(exact.candidatePath, "utf8"));
+      if (
+        previousCandidateLines.length !== sourceLines.length
+        || exact.sourceLineCount !== sourceLines.length
+        || exact.inputHash !== currentTranslationAlignmentRangeHash(
+          exact,
+          sourceLines,
+          previousCandidateLines,
+          bound.languagePair
+        )
+      ) {
+        throw new Error(
+          `Cannot reopen terminology repair for ${currentDocumentId} L${range.fromLine}-L${range.toLine}: prior accepted evidence is stale.`
+        );
+      }
+      for (let line = range.fromLine; line <= range.toLine; line += 1) {
+        if (terminologyRepairLines.has(line)) continue;
+        if ((candidateLines[line - 1] ?? "") !== (previousCandidateLines[line - 1] ?? "")) {
+          throw new Error(
+            `Terminology repair for ${currentDocumentId} changed non-target L${line} inside its owning review range.`
+          );
+        }
+      }
+      const createdByLine = new Map(created.checks.map((check) => [check.line, check]));
+      const checks = exact.checks.map((check) => terminologyRepairLines.has(check.line)
+        ? {
+            line: check.line,
+            signals: [...new Set([
+              ...check.signals,
+              ...(createdByLine.get(check.line)?.signals ?? []),
+              "terminology_repair_target"
+            ])]
+          }
+        : {
+            line: check.line,
+            signals: [...check.signals],
+            verdict: "aligned" as const
+          });
+      const existingCheckLines = new Set(checks.map((check) => check.line));
+      for (const line of terminologyRepairLines) {
+        if (existingCheckLines.has(line)) continue;
+        checks.push({
+          line,
+          signals: [...new Set([
+            ...(createdByLine.get(line)?.signals ?? []),
+            "terminology_repair_target"
+          ])]
+        });
+      }
+      checks.sort((left, right) => left.line - right.line);
+      focusedTerminologyScope = {
+        ...created,
+        auditId: `alignment-terminology-${createHash("sha256")
+          .update(created.auditId)
+          .update("\0")
+          .update([...terminologyRepairLines].sort((left, right) => left - right).join(","))
+          .digest("hex")
+          .slice(0, 20)}`,
+        checks,
+        riskLineCount: checks.filter((check) => (
+          check.signals.length !== 1 || check.signals[0] !== "deterministic_unflagged_sample"
+        )).length,
+        sampledLineCount: checks.filter((check) => (
+          check.signals.length === 1 && check.signals[0] === "deterministic_unflagged_sample"
+        )).length
+      };
+    }
     const scope = exact && exactMatchesCurrentCandidate
       ? exact
-      : exact?.checks.every((check) => check.verdict !== undefined)
-        && exact.checks.some((check) => check.verdict === "misaligned")
-        ? createTranslationRepairReviewAudit(exact, created)
-        : created;
+      : focusedTerminologyScope
+        ?? (exact?.checks.every((check) => check.verdict !== undefined)
+          && exact.checks.some((check) => check.verdict === "misaligned")
+          ? createTranslationRepairReviewAudit(exact, created)
+          : created);
     const previousExact = exact ? {
       ...exact,
       checks: exact.checks.map((check) => ({
@@ -2433,6 +2534,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const pending = scope.checks.filter((check) => !check.verdict);
         const windows = reviewWindows(scope, pending);
         const grouped = new Map<number, { codes: Set<string>; notes: Set<string> }>();
+        const ignoredPunctuationLines = new Set<number>();
         for (const failure of failures) {
           const code = failure.code.trim();
           const note = typeof failure.note === "string" ? failure.note.trim() : "";
@@ -2447,6 +2549,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           }
           if (!windows.some((window) => failure.line >= window.fromLine && failure.line <= window.toLine)) {
             throw new Error(`Translation review failure L${failure.line} is outside the assigned review windows.`);
+          }
+          if (isMinorTranslationPunctuationReviewFailure({ code, note })) {
+            ignoredPunctuationLines.add(failure.line);
+            continue;
           }
           const entry = grouped.get(failure.line) ?? { codes: new Set<string>(), notes: new Set<string>() };
           entry.codes.add(canonicalTranslationReviewCode(code));
@@ -2467,6 +2573,16 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         for (const check of pending) {
           check.verdict = "aligned";
           delete check.reason;
+        }
+        for (const line of ignoredPunctuationLines) {
+          const check = byLine.get(line) ?? {
+            line,
+            signals: []
+          };
+          check.signals = [...new Set([...check.signals, "review_ignored_punctuation_only"])];
+          check.verdict = "aligned";
+          delete check.reason;
+          if (!byLine.has(line)) scope.checks.push(check);
         }
         for (const failure of normalized) {
           const check = byLine.get(failure.line) ?? {
@@ -3992,7 +4108,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       async execute(_toolCallId, params) {
         const input = params as { fromLine: number; toLine: number };
         const readRequest = activeTranslationChunkReview?.bound ?? request;
-        const translation = activeTranslationChunkReview
+        const translation = activeTranslationChunkReview || context.domainRun?.kind === "translation"
           ? candidatePath(readRequest)
           : proofreadTranslationPath(readRequest, manifest?.kind === "folder");
         const text = await readOptional(translation);
@@ -5702,7 +5818,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       requiresSourceManifest: true,
       name: "runTranslationSubagents",
       label: "Run translation subagents",
-      description: "Start the native Pi translation worker queue in the background. For a folder, or after an existing-translation reuse decision, call once without tasks so the Host owns file order, split size, and the persisted rejected-line mask. Retained reuse lines are never repartitioned. Return immediately so the parent remains interactive; inspect structured cards only when needed.",
+      description: "Start the native Pi translation worker queue in the background. Call once without tasks so the Host plans both single-file and folder assignments from canonical split size, file order, accepted evidence, terminology priority debt, and any persisted reuse mask. Explicit tasks remain available only for an already Host-defined exceptional scope. Retained reuse lines are never repartitioned. Return immediately so the parent remains interactive; inspect structured cards only when needed.",
       parameters: Type.Object({
         tasks: Type.Optional(Type.Array(Type.Object({
           documentId: Type.Optional(Type.String({ minLength: 1 })),
@@ -5727,13 +5843,12 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const currentDiscoveryConflicts = await prepareCurrentTranslationDiscoveryConflicts(resolvedManifest);
         const appliedReuseTasks = await planAppliedReuseAssignments(resolvedManifest);
         const totalLines = splitTextLines(await readFile(sourcePath(request), "utf8")).length;
-        const outstandingFolderTasks = !appliedReuseTasks
-          && resolvedManifest.kind === "folder"
+        const outstandingTasks = !appliedReuseTasks
           && !input.tasks?.length
-          ? await planOutstandingFolderTranslationTasks(resolvedManifest)
+          ? await planOutstandingTranslationTasks(resolvedManifest)
           : undefined;
         const ordinaryTasks = appliedReuseTasks
-          ?? outstandingFolderTasks
+          ?? outstandingTasks
           ?? normalizeTranslationTasks(input.tasks, manifest as PiSourceManifest, totalLines, request, context.domainRun);
         const persistedTerminologyTasks = await planPersistedTranslationTerminologyTasks(resolvedManifest);
         let tasks = applySubagentModelDefaults(
@@ -5993,6 +6108,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             await registerTranslationChunkReview(bound, {
               fromLine: checkpoint.fromLine,
               toLine: checkpoint.toLine,
+              terminologyRepairLines: checkpoint.terminologyRepairLines,
               requiredLines: checkpoint.requiredLines,
               requiredLineReasons: checkpoint.requiredLines.map((line) => {
                 const issues = issuesByLine.get(line) ?? [];

@@ -42,11 +42,12 @@ assert.deepEqual(
   "artifact writes and terminal validation must return control to Host"
 );
 
-function afterToolContext(assistantMessage, toolCall, terminate = false) {
+function afterToolContext(assistantMessage, toolCall, terminate = false, isError = false) {
   return {
     assistantMessage,
     toolCall,
-    result: { content: [], terminate }
+    result: { content: [], terminate },
+    isError
   };
 }
 
@@ -84,6 +85,11 @@ assert.deepEqual(
   await handoff(afterToolContext(writeBatchMessage, writeBatchCalls[2])),
   { terminate: true },
   "every result in the mixed batch must terminate so Pi cannot self-continue before Host inspection"
+);
+assert.equal(
+  await handoff(afterToolContext(writeBatchMessage, writeBatchCalls[2], false, true)),
+  undefined,
+  "a failed terminal validation must stay in the same Pi turn instead of retrying the whole assignment"
 );
 
 console.log("ok translation child Host handoff is definition-owned, exhaustive, and read-safe");

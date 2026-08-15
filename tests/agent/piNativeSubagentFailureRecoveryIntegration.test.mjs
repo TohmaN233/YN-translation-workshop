@@ -68,6 +68,7 @@ parent.setResponses([
     ]
   }, { id: "spawn-first-batch" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxText("The first native Pi batch is running in the background.")),
+  fauxAssistantMessage(fauxText("One child failed after the healthy sibling completed. The workflow is paused until the user explicitly continues it.")),
   fauxAssistantMessage(fauxToolCall("resumeYnWorkflow", {}, {
     id: "resume-after-explicit-user-continuation"
   }), { stopReason: "toolUse" }),
@@ -214,6 +215,8 @@ try {
       message.details?.closed && /^first-/.test(String(message.details?.label))
     )).length === 2;
   }, "the failed assignment to enter an explicit-continuation pause");
+  await waitUntil(async () => (await service.getRunState(workspaceDir, session.id)).running === false,
+    "the parent to report the recovery pause");
 
   let messages = await service.loadMessages(workspaceDir, session.id);
   assert.equal(toolCalls(messages, "runTranslationSubagents").length, 1,
@@ -308,4 +311,4 @@ try {
   await rm(workspaceDir, { recursive: true, force: true });
 }
 
-console.log("ok one failed child preserves its healthy sibling, pauses hidden recovery, and resumes only after explicit continuation");
+console.log("ok one failed child preserves its healthy sibling, reports the pause, and resumes only after explicit continuation");

@@ -2415,7 +2415,15 @@ async function run(): Promise<void> {
   const folderUiReviewCards = folderUiMessages.filter((message) => (
     message.role === "custom" && message.customType === "subagent.translation-review" && message.details?.closed
   ));
-  assert(folderTerminalProof.cards === 4 && folderTerminalProof.final && folderUiReviewCards.length === 2,
+  const folderUiReviewedAssignments = folderUiReviewCards.reduce((sum, message) => (
+    sum + (typeof message.details?.assignmentCount === "number" ? message.details.assignmentCount : 0)
+  ), 0);
+  assert(
+    folderTerminalProof.cards === 2 + folderUiReviewCards.length
+      && folderTerminalProof.final
+      && folderUiReviewCards.length >= 1
+      && folderUiReviewCards.length <= 2
+      && folderUiReviewedAssignments === 2,
     `Folder UI terminal transcript lost its translation/review worker cards: ${JSON.stringify(folderTerminalProof)} children=${JSON.stringify(folderUiChildStates)}`);
   const folderUiCandidates = await Promise.all(["a", "b"].map(async (name) => {
     const candidate = path.join(workspace, "AI_translation", `${name}_translated.txt`);

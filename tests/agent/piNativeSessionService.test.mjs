@@ -3177,6 +3177,91 @@ await test("child completion delivered at the parent final queue boundary reache
   }
 });
 
+await test("a recovery pause still delivers child completion through one visible parent reporting turn", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-recovery-pause-report-"));
+  let completionReachedProvider = false;
+  const faux = fauxProvider({ provider: "recovery-pause-report", tokensPerSecond: 1000 });
+  faux.setResponses([
+    fauxAssistantMessage(fauxText("parent is ready")),
+    async (context) => {
+      completionReachedProvider = context.messages.some((message) => (
+        message.role === "user" && userMessageText(message).includes("parent takeover required")
+      ));
+      return fauxAssistantMessage(fauxText("The translation batch paused after failure and requires explicit continuation."));
+    }
+  ]);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const service = new PiNativeSessionService({
+    createModelSelection: async () => ({
+      models,
+      model: faux.getModel(),
+      providerId: faux.provider.id,
+      modelId: faux.getModel().id
+    })
+  });
+  try {
+    const session = await service.createSession(workspaceDir);
+    await service.prompt({
+      outputDir: workspaceDir,
+      sessionId: session.id,
+      prompt: "start a normal parent turn",
+      providerId: faux.provider.id,
+      modelId: faux.getModel().id
+    });
+    const initialStartedAt = Date.now();
+    while ((await service.getRunState(workspaceDir, session.id)).running) {
+      if (Date.now() - initialStartedAt > 5000) throw new Error("Timed out waiting for initial parent turn");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const active = [...service.active.values()].find((candidate) => candidate.sessionId === session.id);
+    assert.ok(active);
+    const domainRun = createYnDomainRunContract({
+      workflowIntent: "translation",
+      fullWorkflow: true,
+      subagentEnabled: true,
+      subagentCount: 1
+    });
+    domainRun.recordInspection({
+      sourceLineCount: 2,
+      documents: [{ id: "source.txt", sourceLineCount: 2 }],
+      glossaryCandidateExists: false,
+      characterBibleExists: false
+    });
+    domainRun.recordSubagentBatchStarted("translation", "failed-batch", {
+      taskCount: 1,
+      workerCount: 1,
+      documentIds: ["source.txt"],
+      assignmentCounts: { "source.txt": 1 }
+    });
+    domainRun.recordSubagentBatchFailure("translation", "failed-batch", ["source.txt"]);
+    assert.ok(domainRun.recoveryPauseId);
+    active.domainRun = domainRun;
+
+    await service.deliverParentNotification(workspaceDir, session.id, {
+      role: "custom",
+      customType: "subagent-completion",
+      content: "parent takeover required after the translation worker failed",
+      display: false,
+      timestamp: Date.now()
+    }, active.childCompletionGeneration);
+    const reportStartedAt = Date.now();
+    while ((await service.getRunState(workspaceDir, session.id)).running) {
+      if (Date.now() - reportStartedAt > 5000) throw new Error("Timed out waiting for recovery-pause report turn");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(completionReachedProvider, true);
+    assert.deepEqual(
+      (await service.loadMessages(workspaceDir, session.id)).map((message) => message.role),
+      ["user", "assistant", "custom", "assistant"]
+    );
+    assert.ok(domainRun.recoveryPauseId, "the reporting turn must not implicitly resume the failed queue");
+  } finally {
+    await service.disposeWorkspace(workspaceDir);
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 await test("Stop cancels an in-flight child completion before it can resurrect a hidden parent turn", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-stop-parent-completion-"));
   const releaseInitialProvider = deferred();

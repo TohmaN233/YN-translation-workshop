@@ -197,11 +197,11 @@
   }
 
   function renderFeatures() {
-    return `${pageHead("普通用户教程 02", "设置怎么填", "截图紧跟它所解释的界面，方便边看边设置。")} 
+    return `${pageHead("普通用户教程 02", "设置怎么填", "截图紧跟它所解释的界面，方便边看边设置。")}
       <div class="tutorial-banner"><strong>第一次使用的原则</strong><span>只改语言方向、文本类型、作品说明和输出位置，其余先保持默认。跑通一小段后，再按速度与质量调整并发和拆分。</span></div>
 
       <h2 id="project-inputs">工作台的基本页面和按钮</h2>
-      ${image("workbench.png", "YN Translation Workshop 工作台全貌", "这是工作台总览。下面的文件路径、输入模式与网络代理都对应这张图。")} 
+      ${image("workbench.png", "YN Translation Workshop 工作台全貌", "这是工作台总览。下面的文件路径、输入模式与网络代理都对应这张图。")}
       <div class="table-wrap"><table class="field-guide"><thead><tr><th>界面名称</th><th>应该填什么</th><th>实用建议</th></tr></thead><tbody>
         <tr><td><strong>Agent 网络走代理</strong></td><td>只有访问所选模型确实需要代理时才打开，并填写本机代理软件给出的地址。</td><td>默认关闭。DeepSeek、Qwen、GLM 等能直连时不要开；不同代理软件的端口不一样。</td></tr>
         <tr><td><strong>源语言文件 / 文件夹路径</strong></td><td>选择要翻译或校对的原文 TXT、EPUB，或装有多份 TXT 的文件夹。</td><td>游戏脚本常选文件夹；小说单卷可选 TXT 或 EPUB。</td></tr>
@@ -215,17 +215,17 @@
       <h2 id="model-settings">AI 服务与模型</h2>
       <p>在 Agent 会话的设置里配置模型。Codex 订阅可以使用 OAuth；其他服务可填写兼容 API。先测试连接，再用该服务建立一次普通会话。</p>
       <div class="reference-pair">
-        ${image("provider-config.png", "兼容 API 服务配置", "自定义 API 需要填写接口地址、模型 ID、默认模型与密钥。")} 
-        ${image("model-config.png", "ChatGPT OAuth 与默认模型", "使用 Codex 订阅时可登录 OAuth，再从服务里选择默认模型。")} 
+        ${image("provider-config.png", "兼容 API 服务配置", "自定义 API 需要填写接口地址、模型 ID、默认模型与密钥。")}
+        ${image("model-config.png", "ChatGPT OAuth 与默认模型", "使用 Codex 订阅时可登录 OAuth，再从服务里选择默认模型。")}
       </div>
       <p>Agent 会话能正常收发消息，才算配置成功。下面这张图展示模型完成校对后返回结果的状态。</p>
-      ${image("agent-proofread.png", "Agent 会话成功完成校对", "配置成功后，工具调用和最终回复都会出现在同一条会话流里。")} 
+      ${image("agent-proofread.png", "Agent 会话成功完成校对", "配置成功后，工具调用和最终回复都会出现在同一条会话流里。")}
       <p>“新窗口”会把当前 Agent 会话打开为独立窗口，适合一边看 HTML，一边观察任务进度。</p>
-      ${image("agent-conversation.png", "独立 Agent 会话窗口", "独立窗口保留会话列表、工具调用、输入框和模型状态。")} 
+      ${image("agent-conversation.png", "独立 Agent 会话窗口", "独立窗口保留会话列表、工具调用、输入框和模型状态。")}
       <div class="note warning"><strong>代理不是越开越好</strong>只有模型服务或网页资料确实需要代理时才启用。地址必须来自你正在使用的本机代理软件，不能照抄别人的端口。</div>
 
       <h2 id="prompt-basics">翻译参数</h2>
-      ${image("prompt-settings.png", "翻译参数与文件顺序面板", "语言方向、风格、拆分大小、作品说明、文件顺序和保留规则都在这里填写。")} 
+      ${image("prompt-settings.png", "翻译参数与文件顺序面板", "语言方向、风格、拆分大小、作品说明、文件顺序和保留规则都在这里填写。")}
       <div class="table-wrap"><table class="field-guide"><thead><tr><th>界面名称</th><th>怎么填</th><th>例子或建议</th></tr></thead><tbody>
         <tr><td><strong>Language pair</strong></td><td>先写原文语言，再写目标语言。</td><td><code>ja-&gt;zh-CN</code> 表示日语到简体中文。</td></tr>
         <tr><td><strong>风格</strong></td><td>选择最接近的文本类型，再在作品说明中补充语气。</td><td>游戏、轻小说、视觉小说；“自然口语，保留敬称差异”。</td></tr>
@@ -236,7 +236,7 @@
       </tbody></table></div>
 
       <h2 id="translation-settings">子 Agent、候选与旧译复用</h2>
-      ${image("project-assets.png", "子 Agent 与翻译校对设置", "这张图对应下面的并发数量、模型、候选、角色表、旧译复用和校对选项。")} 
+      ${image("project-assets.png", "子 Agent 与翻译校对设置", "这张图对应下面的并发数量、模型、候选、角色表、旧译复用和校对选项。")}
       <div class="setting-list">
         <article><h3>子 Agent 数量</h3><p>表示最多可以同时工作的翻译或校对 Agent，不是一定会叫满。新项目默认上限为 3。数量越高通常越快，但瞬时 Token 消耗和接口压力也更高。</p></article>
         <article><h3>审阅 Agent 数量</h3><p>初翻中另有一组只负责检查结果的 Agent。默认跟随翻译 Agent 数量，也可以单独设小一点来控制开销。</p></article>
@@ -258,14 +258,14 @@
       </tbody></table></div>
 
       <h2 id="project-assets">进入项目后的其他参数</h2>
-      ${image("preserve-rules.png", "项目资产表单与正则保留规则", "进入项目后，可以手动维护正式术语、角色信息、文风指南和项目专用保留规则。")} 
+      ${image("preserve-rules.png", "项目资产表单与正则保留规则", "进入项目后，可以手动维护正式术语、角色信息、文风指南和项目专用保留规则。")}
       <p>术语、角色和文风属于项目长期资料。正则项与 HTML 前端同步；无效表达式会直接报错，不会静默忽略。</p>
-      ${image("html-theme.png", "HTML 主题色选项", "主题色只改变行审阅 HTML 的外观，不改变译文、问题状态或 Agent 行为。")} 
+      ${image("html-theme.png", "HTML 主题色选项", "主题色只改变行审阅 HTML 的外观，不改变译文、问题状态或 Agent 行为。")}
       <p>主题色可以按阅读习惯选择。它只影响显示，不会写进真实译文。</p>`;
   }
 
   function renderGuides() {
-    return `${pageHead("普通用户教程 01", "从零开始使用", "本页按实际操作顺序讲完整流程，截图紧跟对应步骤。")} 
+    return `${pageHead("普通用户教程 01", "从零开始使用", "本页按实际操作顺序讲完整流程，截图紧跟对应步骤。")}
       <h2 id="quickstart">最快的完整路径</h2>
       <ol class="step-list">
         <li><strong>选择源文和输出文件夹</strong><br>从零翻译可不选译文；校对已有内容时同时选择对应译文。</li>
@@ -280,8 +280,8 @@
 
       <h2 id="html">看懂两种 HTML</h2>
       <h3>HTML 文件夹版前端</h3>
-      ${image("folder-review.png", "文件夹版行审阅 HTML", "文件夹版负责选择文件、查看整体状态、打开单文件页面和批量写回。")} 
-      ${image("line-review.png", "单文件行审阅 HTML", "单文件版是实际阅读、编辑、搜索和逐条处理校对意见的主要工作区。")} 
+      ${image("folder-review.png", "文件夹版行审阅 HTML", "文件夹版负责选择文件、查看整体状态、打开单文件页面和批量写回。")}
+      ${image("line-review.png", "单文件行审阅 HTML", "单文件版是实际阅读、编辑、搜索和逐条处理校对意见的主要工作区。")}
       <p>文件夹版像目录和控制台，单文件版才是主要工作区。文件夹版还提供选择文件、打开单文件 HTML 和批量写入功能。真人翻译或校对时，建议从文件夹页打开某个文件，在新标签页里工作。</p>
 
       <h2 id="translation">跑一次完整翻译</h2>
@@ -293,7 +293,7 @@
         <li><strong>等待流程完成</strong><br>主 Agent 负责规划和汇总，子 Agent 领取有边界的分片。出现旧译选择或术语冲突时再按提示决定。</li>
       </ol>
       <p>最简用法就是：选源文、选项目目录、生成 HTML、配置模型、生成翻译提示词并发送。完成后回到 HTML 点击刷新，把候选译文导入页面。</p>
-      ${image("refresh-translation.png", "Agent 译文刷新区域", "Agent 完成后点击这里的“刷新”，页面会重新扫描候选译文。")} 
+      ${image("refresh-translation.png", "Agent 译文刷新区域", "Agent 完成后点击这里的“刷新”，页面会重新扫描候选译文。")}
       <p>刷新后先抽查人名、占位符、空行和章节衔接，再进入校对。HTML 中的候选不会自动写回真实 TXT。</p>
 
       <h2 id="reuse">已有译文怎么处理</h2>
@@ -309,17 +309,17 @@
         <li><strong>选择“校对”并发送提示词</strong><br>最终交付建议使用按拆分大小校对；只想快速了解质量可用 Monte Carlo。</li>
         <li><strong>等待校对完成，再生成审阅 HTML</strong><br>软件先扫描格式、占位符、长度和术语风险，再由 Agent 结合上下文判断。</li>
       </ol>
-      ${image("proofread-review.png", "校对建议审阅页面", "生成审阅 HTML 后，每条建议都带原文、当前译文和建议修正。")} 
+      ${image("proofread-review.png", "校对建议审阅页面", "生成审阅 HTML 后，每条建议都带原文、当前译文和建议修正。")}
       <p>审阅意见默认处于可应用状态，但强烈建议自己读一遍。你可以接受、拒绝或直接手改；“一键应用”先把建议同步到各 HTML，真正保存到目标文件还需要点击“写入 TXT”或“批量写入 TXT”。</p>
 
       <h2 id="assets">术语表、候选与角色表</h2>
-      <p>正式术语表是最高优先级的项目译名。翻译过程中产生的 Glossary candidate 只是候选，人工确认后才能导入正式表；与已有正式译名冲突时不会静默覆盖。</p>
-      ${image("glossary-editor.png", "术语表管理页面", "这里可以查看正式术语与候选、筛选状态、批量替换并导入确认后的候选。")} 
+      <p>正式术语表是最高优先级的项目译名。翻译过程中产生的 Glossary candidate 只是候选，人工确认后才能导入。导入时会把现有 canonical、外部选定 glossary 和已接受候选合并成完整正式表；有冲突则整次拒绝，成功后才切换到 canonical。</p>
+      ${image("glossary-editor.png", "术语表管理页面", "这里可以查看正式术语与候选、筛选状态、批量替换并导入确认后的候选。")}
       <p>翻译过程本来就会按当前原文读取命中的正式术语、候选术语和角色记录。你不需要另跑一个“读取术语表 Workflow”。关闭“生成译名表候选”只是不再新增候选，已有资料仍会用于只读参考。</p>
 
       <h2 id="line-editing">人工翻译与行级操作</h2>
       <p>手动编辑过的内容会显示为黄色；“还原当前行”会回到本次导入的候选。校对问题通常按高、中、低严重程度使用淡红、淡黄和淡蓝提示。</p>
-      ${image("issue-row.png", "带 H2 问题标记的译文行", "示例中的译文行带有高优先级 H2 标记；修正后可手动取消问题标记。")} 
+      ${image("issue-row.png", "带 H2 问题标记的译文行", "示例中的译文行带有高优先级 H2 标记；修正后可手动取消问题标记。")}
       <ul class="plain-check">
         <li>编辑为正确译文后，问题标记不会擅自消失；由你确认后取消。</li>
         <li>在源文中选中文本并使用右键菜单，可以把这一句和必要上下文交给 Agent 询问。</li>
@@ -328,26 +328,26 @@
 
       <h2 id="agent">看懂 Agent 会话</h2>
       <p>完整流程运行时可以随时询问进度。主 Agent 等待子 Agent 返回时仍可交互；思考和 Function 调用都以可展开的结构化块显示。</p>
-      ${image("tool-call.png", "展开后的 Function 调用", "Function 卡片可以展开查看调用内容、运行时间和返回结果。")} 
-      ${image("subagent-card.png", "子 Agent 卡片", "子 Agent 卡片显示当前任务和状态，也可以进入查看主 Agent 与它的交互。")} 
+      ${image("tool-call.png", "展开后的 Function 调用", "Function 卡片可以展开查看调用内容、运行时间和返回结果。")}
+      ${image("subagent-card.png", "子 Agent 卡片", "子 Agent 卡片显示当前任务和状态，也可以进入查看主 Agent 与它的交互。")}
       <p>进入子 Agent 卡片后，可以检查它拿到的任务、工具调用与最后结果，而不是只看主 Agent 的一句汇总。</p>
-      ${image("token-telemetry.png", "Agent Token 与费用估算", "会话顶部显示输入、输出、缓存 Token 与估算费用。")} 
+      ${image("token-telemetry.png", "Agent Token 与费用估算", "会话顶部显示输入、输出、缓存 Token 与估算费用。")}
       <p>费用是 Pi 根据 Token 估算的数值，不一定等于实际账单。订阅制以服务商的用量百分比为准，API 以服务商账单为准。</p>
-      ${image("slash-commands.png", "Agent 斜杠命令菜单", "在输入框键入斜杠可查看可用命令；运行中也可以选择插话或排队。")} 
+      ${image("slash-commands.png", "Agent 斜杠命令菜单", "在输入框键入斜杠可查看可用命令；运行中也可以选择插话或排队。")}
       <p>选择“插话”会在当前工具返回后让同一 Agent 尽快看到补充；选择“排队”则把消息放到当前工作之后。多模态模型还可以接收图片。</p>
 
       <h2 id="lan">手机、局域网与公网远程</h2>
       <p>在桌面应用内打开 HTML，输入自己的 6 位 PIN 并启动局域网同步。同一网络里的手机、平板或另一台电脑可打开页面给出的地址；桌面应用必须保持运行。</p>
       <div class="reference-pair wide-pair">
-        ${image("lan-settings.png", "局域网同步设置", "桌面页面会显示 PIN、本地地址、局域网地址和停止同步按钮。")} 
-        ${image("lan-browser.png", "手机浏览器中的同步页面", "远端页面可以编辑译文，也可以打开 Agent 面板继续交互。")} 
+        ${image("lan-settings.png", "局域网同步设置", "桌面页面会显示 PIN、本地地址、局域网地址和停止同步按钮。")}
+        ${image("lan-browser.png", "手机浏览器中的同步页面", "远端页面可以编辑译文，也可以打开 Agent 面板继续交互。")}
       </div>
       <p>需要在外网访问时，可以自行使用 Cloudflare Tunnel、ngrok 等工具，把隧道指向页面显示的本地同步地址。软件本身不内置公网穿透。</p>
-      ${image("tunnel-terminal.png", "Cloudflare Tunnel 控制台", "运行隧道命令后，控制台会给出临时公网地址；关闭进程后地址失效。")} 
+      ${image("tunnel-terminal.png", "Cloudflare Tunnel 控制台", "运行隧道命令后，控制台会给出临时公网地址；关闭进程后地址失效。")}
       <pre class="band"><code>cloudflared tunnel --url http://127.0.0.1:页面显示的端口</code></pre>
       <div class="note danger"><strong>公网地址等于把工作台暴露到互联网</strong>使用不可猜的 PIN，不要公开临时地址，结束后关闭隧道和局域网同步。不要把包含私密文本的项目交给不受信任的穿透服务。</div>
       <p>通过公网地址打开的远程页面同样支持 Agent 面板，出门后也能检查进度、插话或继续人工校对。</p>
-      ${image("agent-panel.png", "远程页面中的 Agent 面板", "远程页面中的 Agent 面板可以查看进度、发送消息并继续工作。")} 
+      ${image("agent-panel.png", "远程页面中的 Agent 面板", "远程页面中的 Agent 面板可以查看进度、发送消息并继续工作。")}
 
       <h2 id="troubleshooting">常见问题先查这里</h2>
       <div class="table-wrap"><table><thead><tr><th>现象</th><th>先检查</th><th>处理</th></tr></thead><tbody>

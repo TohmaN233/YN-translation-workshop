@@ -82,7 +82,7 @@ window.YN_GUIDE = {
     { key: "sourcePath / sourceKind", area: "项目", def: "必填 / file", effect: "绑定原文文件或文件夹；EPUB 会先提取为 UTF-8 TXT。", used: "manifest 解析、行数、候选路径、所有校验" },
     { key: "translationPath", area: "项目", def: "可选", effect: "已有译文、校对输入或单文件候选路径。", used: "复用审计、proofread prescan、行审阅 HTML" },
     { key: "outputDir", area: "项目", def: "必填", effect: "项目根目录与所有持久化资产的安全边界。", used: "project.json、Pi JSONL、候选、报告、备份、staging" },
-    { key: "glossaryPath", area: "项目", def: "可选", effect: "导入外部正式术语表；进入项目后归一到 canonical glossary。", used: "提示词、资产编辑器、validator" },
+    { key: "glossaryPath", area: "项目", def: "可选", effect: "选择外部正式术语表；导入已接受候选时与现有 canonical 合并，成功后切换到 canonical。", used: "提示词、资产编辑器、validator" },
     { key: "inputMode", area: "项目", def: "separate", effect: "分离原文/译文或双语交错输入。", used: "HTML 生成与校对输入解析" },
     { key: "fileType", area: "项目", def: "auto", effect: "TXT/EPUB 识别。", used: "源文提取与导出/重打包元数据" },
     { key: "pageSize", area: "HTML", def: "1000", effect: "行审阅页面每页显示的行数。", used: "HTML 分页，不改变 Agent 分片" },

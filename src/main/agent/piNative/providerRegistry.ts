@@ -23,6 +23,8 @@ import {
   normalizeExplicitModelIds,
   resolvePiProviderId
 } from "../../../shared/agent/providerModels.ts";
+import { isGrokOAuthProvider } from "../../../shared/agent/providerPresets.ts";
+import { applyKnownThinkingContract, listThinkingLevelsForModel } from "../../../shared/agent/thinkingLevels.ts";
 import { resolveProviderOAuthAuth } from "../oauthAuthResolver.ts";
 import { readProviderConfig } from "../providerConfigStore.ts";
 import { resolveProviderProxyUrl, runWithProviderProxy } from "../providers/proxyFetch.ts";
@@ -45,6 +47,7 @@ export interface PiConfiguredModel {
   modelName: string;
   authenticated: boolean;
   supportsImages: boolean;
+  thinkingLevels: ReturnType<typeof listThinkingLevelsForModel>;
 }
 
 function providerWorkspaceDir(projectDir: string): string {
@@ -148,14 +151,15 @@ export async function readPiLocalOAuthCredential(
 
 async function credentialFor(
   workspaceDir: string,
-  config: OpenAiCompatibleProviderConfig
+  config: OpenAiCompatibleProviderConfig,
+  options?: { refresh?: boolean }
 ): Promise<Credential | undefined> {
   if (config.enabled === false) return undefined;
   if (config.auth?.kind === "api_key" && config.auth.key.trim()) {
     return { type: "api_key", key: config.auth.key.trim() };
   }
   if (config.auth?.kind === "oauth") {
-    const resolved = await resolveProviderOAuthAuth(config, workspaceDir);
+    const resolved = await resolveProviderOAuthAuth(config, workspaceDir, options);
     const auth = resolved.auth ?? (resolved.token
       ? {
           kind: "oauth" as const,
@@ -165,6 +169,13 @@ async function credentialFor(
         }
       : undefined);
     if (auth?.accessToken) {
+      if (isGrokOAuthProvider(config)) {
+        console.info("[grok-oauth]", "handing refreshed access token to Pi as API key", {
+          providerId: config.id,
+          expiresAt: auth.expiresAt
+        });
+        return { type: "api_key", key: auth.accessToken };
+      }
       return {
         type: "oauth",
         access: auth.accessToken,
@@ -178,18 +189,32 @@ async function credentialFor(
 
 function aliasProvider(source: Provider, config: OpenAiCompatibleProviderConfig): Provider {
   const configuredBaseUrl = config.baseUrl.trim();
-  const remap = (model: Model<Api>): Model<Api> => ({
+  const remap = (model: Model<Api>): Model<Api> => applyKnownThinkingContract({
     ...model,
     provider: config.id,
     baseUrl: configuredBaseUrl || model.baseUrl
   });
+  const catalog = source.getModels().map((model) => remap(model as Model<Api>));
+  if (isGrokOAuthProvider(config)) {
+    const existing = new Set(catalog.map((model) => model.id));
+    const extras = normalizeExplicitModelIds(config.model, config.models).filter((id) => !existing.has(id));
+    const template = catalog.find((model) => model.id.startsWith("grok-4")) ?? catalog[0];
+    if (extras.length > 0 && !template) {
+      throw new Error(`Grok (OAuth) has no Pi xAI catalog model to clone for ${extras.join(", ")}.`);
+    }
+    if (extras.length > 0 && template) {
+      for (const id of extras) {
+        catalog.push(applyKnownThinkingContract({ ...template, id, name: id }));
+      }
+    }
+  }
   return {
     id: config.id,
     name: config.name,
     baseUrl: configuredBaseUrl || source.baseUrl,
     headers: source.headers,
     auth: source.auth,
-    getModels: () => source.getModels().map((model) => remap(model as Model<Api>)),
+    getModels: () => catalog,
     refreshModels: source.refreshModels ? async () => source.refreshModels?.() : undefined,
     stream: (model, context, options) => source.stream(model, context, options),
     streamSimple: (model, context, options) => source.streamSimple(model, context, options)
@@ -198,7 +223,7 @@ function aliasProvider(source: Provider, config: OpenAiCompatibleProviderConfig)
 
 function customOpenAiProvider(config: OpenAiCompatibleProviderConfig): Provider {
   const models = normalizeExplicitModelIds(config.model, config.models)
-    .map((modelId) => ({
+    .map((modelId) => applyKnownThinkingContract({
       id: modelId,
       name: modelId,
       api: "openai-completions" as const,
@@ -241,10 +266,13 @@ function withNetworkProxy(source: Provider, proxyUrl: string): Provider {
   };
 }
 
-async function createPiRegistry(projectDir: string): Promise<{
+async function createPiRegistry(projectDir: string, options?: {
+  refreshProviderId?: string;
+}): Promise<{
   config: ProviderConfigDocument;
   models: Models;
   authenticatedProviders: Set<string>;
+  credentialErrors: Map<string, unknown>;
 }> {
   const workspaceDir = providerWorkspaceDir(projectDir);
   const config = await readProviderConfig(workspaceDir);
@@ -252,15 +280,26 @@ async function createPiRegistry(projectDir: string): Promise<{
   const credentialStore = new InMemoryCredentialStore();
   const models = createModels({ credentials: credentialStore });
   const authenticatedProviders = new Set<string>();
+  const credentialErrors = new Map<string, unknown>();
   for (const stored of Object.values(config.providers)) {
     models.setProvider(withNetworkProxy(providerFor(stored), proxyUrl));
-    const credential = await credentialFor(workspaceDir, stored);
-    if (credential) {
-      await credentialStore.modify(stored.id, async () => credential);
-      authenticatedProviders.add(stored.id);
+    try {
+      const credential = await credentialFor(workspaceDir, stored, {
+        refresh: options?.refreshProviderId === stored.id
+      });
+      if (credential) {
+        await credentialStore.modify(stored.id, async () => credential);
+        authenticatedProviders.add(stored.id);
+      }
+    } catch (error) {
+      credentialErrors.set(stored.id, error);
+      console.error("[provider-registry] credential resolution failed", {
+        providerId: stored.id,
+        message: error instanceof Error ? error.message : String(error)
+      });
     }
   }
-  return { config, models, authenticatedProviders };
+  return { config, models, authenticatedProviders, credentialErrors };
 }
 
 export async function listPiConfiguredModels(projectDir: string): Promise<PiConfiguredModel[]> {
@@ -278,7 +317,8 @@ export async function listPiConfiguredModels(projectDir: string): Promise<PiConf
         modelId: model.id,
         modelName: model.name,
         authenticated,
-        supportsImages: model.input.includes("image")
+        supportsImages: model.input.includes("image"),
+        thinkingLevels: listThinkingLevelsForModel(model)
       });
     }
   }
@@ -286,8 +326,11 @@ export async function listPiConfiguredModels(projectDir: string): Promise<PiConf
 }
 
 export async function listPiProviderModels(projectDir: string, providerId: string) {
-  const { models } = await createPiRegistry(projectDir);
-  return models.getModels(providerId).map((model) => ({
+  const workspaceDir = providerWorkspaceDir(projectDir);
+  const config = await readProviderConfig(workspaceDir);
+  const stored = config.providers[providerId];
+  if (!stored) return [];
+  return providerFor(stored).getModels().map((model) => ({
     id: model.id,
     label: model.name,
     supportsImages: model.input.includes("image")
@@ -299,14 +342,23 @@ export async function createPiModelSelection(args: {
   providerId?: string;
   modelId?: string;
 }): Promise<PiModelSelection> {
-  const { config: configDocument, models, authenticatedProviders } = await createPiRegistry(args.workspaceDir);
-  const providerId = args.providerId?.trim() || configDocument.activeProviderId;
+  const requestedProviderId = args.providerId?.trim()
+    || (await readProviderConfig(providerWorkspaceDir(args.workspaceDir))).activeProviderId;
+  const { config: configDocument, models, authenticatedProviders, credentialErrors } = await createPiRegistry(
+    args.workspaceDir,
+    { refreshProviderId: requestedProviderId }
+  );
+  const providerId = requestedProviderId;
   const selectedConfig = configDocument.providers[providerId];
   if (!selectedConfig) {
     throw new Error(`Provider ${providerId || "(none)"} is not configured.`);
   }
   if (selectedConfig.enabled === false) {
     throw new Error(`Provider ${selectedConfig.name} is not enabled.`);
+  }
+  const credentialError = credentialErrors.get(providerId);
+  if (credentialError) {
+    throw credentialError instanceof Error ? credentialError : new Error(String(credentialError));
   }
   if (!authenticatedProviders.has(providerId)) {
     throw new Error(`Provider ${selectedConfig.name} is not authenticated.`);

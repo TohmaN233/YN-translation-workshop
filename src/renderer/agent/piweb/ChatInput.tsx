@@ -28,7 +28,7 @@ import type {
   PiSessionCompactionResult,
   PiWorkflowPromptMetadata
 } from "../../../shared/agent/piSessionContract.ts";
-import { THINKING_LEVEL_OPTIONS, type ThinkingLevel } from "../../../shared/agent/thinkingLevels.ts";
+import { thinkingLevelLabel, type ThinkingLevel } from "../../../shared/agent/thinkingLevels.ts";
 import { agentUiStrings, normalizeAgentUiLocale, type AgentUiLocale } from "./i18n";
 
 interface ModelOption {
@@ -71,6 +71,7 @@ interface Props {
   supportsImages?: boolean;
   onModelChange?: (provider: string, modelId: string) => void;
   thinkingLevel?: ThinkingLevel;
+  thinkingLevels?: ThinkingLevel[];
   onThinkingLevelChange?: (level: ThinkingLevel) => void;
   slashCommands?: SlashCommandInfo[];
   onBuiltinCommand?: (input: string) => Promise<BuiltinSlashCommandResult> | BuiltinSlashCommandResult;
@@ -136,11 +137,19 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   supportsImages = false,
   onModelChange,
   thinkingLevel,
+  thinkingLevels,
   onThinkingLevelChange,
   slashCommands = [],
   onBuiltinCommand
 }, ref) {
   const ui = agentUiStrings[normalizeAgentUiLocale(locale)];
+  const supportedThinkingLevels = (thinkingLevels ?? []).filter((level) => level !== "auto");
+  const thinkingPickerLevels: ThinkingLevel[] = supportedThinkingLevels.some((level) => level !== "off")
+    ? ["auto", ...supportedThinkingLevels]
+    : [];
+  const visibleThinkingLevel = thinkingPickerLevels.includes(thinkingLevel ?? "auto")
+    ? (thinkingLevel ?? "auto")
+    : (thinkingPickerLevels[0] ?? "auto");
   const [value, setValue] = useState("");
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
@@ -760,16 +769,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <div style={{ flex: 1 }} />
 
           <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 2, marginLeft: "auto" }}>
-            {!isStreaming && !isCompacting && onThinkingLevelChange && (
+            {!isStreaming && !isCompacting && onThinkingLevelChange && thinkingPickerLevels.length > 0 && (
               <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
                 <button data-agent-thinking-button="true" className="ynAgentInputPicker" type="button" title={ui.thinkingLevelTitle} onClick={() => setThinkingDropdownOpen((open) => !open)}>
                   <Lightbulb size={14} />
-                  <span>{thinkingLevel ?? "auto"}</span>
+                  <span>{visibleThinkingLevel}</span>
                 </button>
                 {thinkingDropdownOpen && (
                   <div className="ynAgentInputMenu" style={{ position: "absolute", bottom: "calc(100% + 6px)", right: 0, minWidth: 150 }}>
-                    {THINKING_LEVEL_OPTIONS.map(({ id: level }) => {
-                      const active = (thinkingLevel ?? "auto") === level;
+                    {thinkingPickerLevels.map((level) => {
+                      const active = visibleThinkingLevel === level;
                       return (
                         <button
                           key={level}
@@ -781,7 +790,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                           }}
                         >
                           {active ? <Check size={12} /> : <span className="ynAgentInputMenuCheck" />}
-                          <span>{level}</span>
+                          <span>{thinkingLevelLabel(level)}</span>
                         </button>
                       );
                     })}

@@ -1071,11 +1071,11 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 31;
+export const LINE_REVIEW_PROTOCOL_VERSION = 32;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 8;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
-export const PROMPT_SETTINGS_VERSION = 39;
+export const PROMPT_SETTINGS_VERSION = 40;
 
 export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   const locale = options.locale ?? "zh-CN";
@@ -1869,6 +1869,8 @@ function normalizedProjectOutputDir(value) {
   return String(value || "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLocaleLowerCase();
 }
 
+let projectTranslationPath = "";
+let projectTranslationOrigin = "";
 function applyProjectPromptSettings(value) {
   projectPromptSettings = promptSettingsFromProjectState(value);
   const needsPromptSettingsMigration = Number(value?.promptSettingsVersion || 0) < promptSettingsVersion;
@@ -1879,6 +1881,7 @@ function applyProjectPromptSettings(value) {
     projectGlossaryPath = glossaryPath;
     workflowPaths().glossaryPath = glossaryPath;
   }
+  applyProjectTranslationBinding(value);
   if (!promptSettingsTextEditorActive()) {
     fillPromptSettingsForm();
     updatePromptSettingsVisibility();
@@ -2967,10 +2970,11 @@ async function importArtifactAsDraft(candidatePath, sourcePath) {
     save(importedLines);
     render();
     if (/\.txt$/i.test(candidatePath)) {
-      const canonicalEditablePath = /\.epub$/i.test(workflow.paths?.sourcePath || "")
-        ? workflow.paths?.editableTranslationPath || ""
-        : "";
-      setBoundTranslationPath(canonicalEditablePath || candidatePath, canonicalEditablePath || candidatePath);
+      const sourceIsEpub = /\.epub$/i.test(workflow.paths?.sourcePath || "");
+      if (sourceIsEpub && workflow.paths?.editableTranslationPath) {
+        state.translationPath = workflow.paths.editableTranslationPath;
+      }
+      setBoundTranslationPath(candidatePath, candidatePath, { userSelected: true });
     } else {
       updateSaveTxtVisibility();
     }
@@ -3114,7 +3118,7 @@ async function chooseTranslationFile() {
     const result = await bridge.readTextFile({ path: filePath });
     if (typeof result?.text !== "string") return;
     const nextPath = result?.path || filePath;
-    setBoundTranslationPath(nextPath, nextPath);
+    setBoundTranslationPath(nextPath, nextPath, { userSelected: true });
     await syncLines(splitSyncedText(result.text), nextPath);
   } catch (error) {
     setAiStatus((data.labels.syncFailed || "Translation sync failed") + ": " + (error?.message || String(error)));
@@ -3226,11 +3230,50 @@ function ensureSaveTxtButton() {
   exportBtn.insertAdjacentElement("afterend", button);
   button.addEventListener("click", () => { void writeCurrentTranslationFile(); });
 }
+function isExtractedWorkshopTranslationPath(filePath) {
+  const value = String(filePath || "").trim().replace(/\\/g, "/");
+  return Boolean(value) && /\/\.translation-workshop\/extracted-text\/[^/]+\/translation\//i.test(value);
+}
+function projectTranslationBindingPath() {
+  return String(projectTranslationPath || "").trim();
+}
 function boundPromptTranslationPath() {
-  if (workflow.paths?.promptSourceKind === "folder") {
-    return workflow.paths?.promptTranslationPath || "";
+  const projectPath = projectTranslationBindingPath();
+  if (projectPath) {
+    if (/\.epub$/i.test(projectPath)) return workflow.paths?.promptTranslationPath || "";
+    if (workflow.paths?.promptSourceKind === "folder") return projectPath;
+    return projectPath;
   }
-  return state.translationPromptPath || workflow.paths?.promptTranslationPath || boundTranslationPath();
+  if (workflow.paths?.promptSourceKind === "folder") {
+    const folderPath = workflow.paths?.promptTranslationPath || "";
+    return isExtractedWorkshopTranslationPath(folderPath) ? "" : folderPath;
+  }
+  const selected = state.translationPromptPath || workflow.paths?.promptTranslationPath || "";
+  if (selected && !isExtractedWorkshopTranslationPath(selected)) return selected;
+  return "";
+}
+function applyProjectTranslationBinding(value) {
+  if (!value || typeof value !== "object" || !Object.prototype.hasOwnProperty.call(value, "translationPath")) return;
+  const nextPath = String(value.translationPath || "").trim();
+  const origin = value.translationBindingOrigin === "user" || value.translationBindingOrigin === "canonical"
+    ? value.translationBindingOrigin
+    : "";
+  projectTranslationPath = nextPath;
+  projectTranslationOrigin = origin;
+  const paths = workflowPaths();
+  if (origin === "user" && nextPath) {
+    paths.translationPath = nextPath;
+    if (!/\.epub$/i.test(nextPath)) paths.promptTranslationPath = nextPath;
+    state.translationPromptPath = paths.promptTranslationPath || nextPath;
+  } else if (origin === "canonical" && nextPath) {
+    paths.translationPath = nextPath;
+    paths.promptTranslationPath = nextPath;
+    state.translationPromptPath = nextPath;
+  } else if (!nextPath) {
+    if (isExtractedWorkshopTranslationPath(paths.promptTranslationPath)) paths.promptTranslationPath = "";
+    if (isExtractedWorkshopTranslationPath(state.translationPromptPath)) state.translationPromptPath = "";
+    if (isExtractedWorkshopTranslationPath(paths.translationPath)) paths.translationPath = "";
+  }
 }
 function workflowPaths() {
   workflow.paths ||= {};
@@ -3250,18 +3293,28 @@ function updateProjectState(patch) {
     setAiStatus((data.labels.projectStateSaveFailed || "Project state save failed") + ": " + (error?.message || String(error)));
   });
 }
-function setBoundTranslationPath(path, promptPath) {
+function setBoundTranslationPath(path, promptPath, options) {
   const value = String(path || "").trim();
   if (!value) return;
   const promptValue = String(promptPath || value).trim();
+  const userSelected = Boolean(options?.userSelected);
+  const extracted = isExtractedWorkshopTranslationPath(value);
   state.translationPath = value;
-  state.translationPromptPath = promptValue;
   const paths = workflowPaths();
-  paths.translationPath = value;
   paths.editableTranslationPath = value;
-  paths.promptTranslationPath = promptValue;
-  save([], ["translationPath", "translationPromptPath"]);
-  updateProjectState({ translationPath: value, promptTranslationPath: promptValue });
+  if (userSelected || !extracted) {
+    state.translationPromptPath = promptValue;
+    paths.translationPath = value;
+    paths.promptTranslationPath = extracted ? promptValue : value;
+    save([], ["translationPath", "translationPromptPath"]);
+    updateProjectState({
+      translationPath: value,
+      translationBindingOrigin: "user",
+      promptTranslationPath: paths.promptTranslationPath
+    });
+  } else {
+    save([], ["translationPath", "translationPromptPath"]);
+  }
   updateSaveTxtVisibility();
 }
 function writeBridge() {
@@ -3333,7 +3386,7 @@ document.getElementById("syncTranslationInput")?.addEventListener("change", asyn
     const text = await file.text();
     const filePath = file.path || "";
     if (filePath) {
-      setBoundTranslationPath(filePath, filePath);
+      setBoundTranslationPath(filePath, filePath, { userSelected: true });
     }
     await syncLines(splitSyncedText(text), filePath || file.name);
   } finally {

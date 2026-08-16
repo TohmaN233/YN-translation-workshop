@@ -27,6 +27,7 @@ import type {
   PiSessionRuntimeEvent
 } from "../../../shared/agent/piSessionContract.ts";
 import { resolveWorkflowSubagentCount } from "../../../shared/agent/piSessionContract.ts";
+import { resolveThinkingLevelForModel } from "../../../shared/agent/thinkingLevels.ts";
 import { createPiModelSelection } from "./providerRegistry.ts";
 import {
   createYnDomainRunContract,
@@ -54,7 +55,14 @@ import { resolvePiSourceManifest } from "./sourceManifest.ts";
 import { ynInterfaceContextStore } from "./interfaceContextStore.ts";
 import { readProjectAssets } from "../projectAssets.ts";
 import { ensureYnWorkflowWorkspace } from "../workspaceAssets.ts";
-import { readProjectState } from "../../projectState.ts";
+import { patchProjectState, readProjectState } from "../../projectState.ts";
+import {
+  applyProjectTranslationBinding,
+  canonicalTranslationBindingPath,
+  shouldPublishCanonicalTranslationBinding
+} from "../translationBindingResolve.ts";
+import { isExtractedWorkshopTranslationPath } from "../../../shared/core/translationBinding.ts";
+import { existsSync } from "node:fs";
 import { normalizeCustomPreserveRules } from "../../../shared/validation/customPreserveRules.ts";
 
 type EventListener = (envelope: PiSessionEventEnvelope) => void;
@@ -145,6 +153,36 @@ async function resolveCurrentProjectPromptRequest(
     current.proofreadSplitSize = state.splitSize as number;
   }
   current.customPreserveRules = normalizeCustomPreserveRules(state.customPreserveRules);
+  const folderSource = (current.sourceSelection ?? request.sourceSelection)?.kind === "folder"
+    || request.sourceSelection?.kind === "folder";
+  let translationState = state;
+  const proofreadIntent = current.workflowIntent === "proofread" || request.workflowIntent === "proofread";
+  const incomingTranslation = request.translationPath?.trim() || "";
+  if (
+    proofreadIntent
+    && shouldPublishCanonicalTranslationBinding(translationState)
+    && (!incomingTranslation || isExtractedWorkshopTranslationPath(incomingTranslation))
+  ) {
+    const canonicalPath = canonicalTranslationBindingPath({
+      outputDir: request.outputDir,
+      folderSource,
+      sourcePath: current.sourcePath ?? request.sourcePath,
+      documentId: path.basename(current.sourcePath ?? request.sourcePath ?? "translation.txt")
+    });
+    const alreadyBound = translationState.translationBindingOrigin === "canonical"
+      && translationState.translationPath === canonicalPath;
+    if (!alreadyBound && existsSync(canonicalPath)) {
+      translationState = await patchProjectState(request.outputDir, {
+        translationPath: canonicalPath,
+        translationBindingOrigin: "canonical"
+      });
+    }
+  }
+  const translationBinding = applyProjectTranslationBinding(request, translationState);
+  if (translationBinding.apply) {
+    current.translationPath = translationBinding.translationPath;
+    current.translationBindingOrigin = translationBinding.translationBindingOrigin;
+  }
   return { ...request, ...current };
 }
 
@@ -259,8 +297,11 @@ function sessionKey(workspaceDir: string, sessionId: string): string {
   return `${workspaceKey(workspaceDir)}::${sessionId}`;
 }
 
-function normalizeThinkingLevel(value: ThinkingLevel | "auto" | undefined): ThinkingLevel {
-  return value && value !== "auto" ? value : "medium";
+function normalizeThinkingLevel(
+  model: { id: string } | undefined,
+  value: ThinkingLevel | "auto" | undefined
+): ThinkingLevel {
+  return resolveThinkingLevelForModel(model, value);
 }
 
 function assertWorkflowPromptMetadata(request: PiSessionPromptRequest): void {
@@ -1106,7 +1147,7 @@ export class PiNativeSessionService {
       sessionId: request.sessionId,
       models: selection.models,
       model: selection.model,
-      thinkingLevel: normalizeThinkingLevel(request.thinkingLevel),
+      thinkingLevel: normalizeThinkingLevel(selection.model, request.thinkingLevel),
       systemPrompt,
       tools,
       deferThresholdCompaction: () => subagents.hasRunning()

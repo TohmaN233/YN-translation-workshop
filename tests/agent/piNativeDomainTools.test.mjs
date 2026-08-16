@@ -1863,6 +1863,64 @@ await test("translation starter assets are serialized by one structured Host too
   }
 });
 
+await test("empty optional starter-asset fields are Host-normalized instead of rejected", async () => {
+  const { pathToFileURL } = await import("node:url");
+  const { validateToolArguments } = await import(pathToFileURL(path.join(process.cwd(), "node_modules/@earendil-works/pi-ai/dist/utils/validation.js")).href);
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    workflowRequirements: { glossaryCandidate: true, characterBible: true },
+    fullWorkflow: true,
+    subagentEnabled: true,
+    subagentCount: 2
+  });
+  const fx = await fixture({
+    domainRun,
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      glossaryCandidates: true,
+      characterBible: true,
+      subagentEnabled: true,
+      subagentCount: 2
+    }
+  }, "希罗娜\n回到了神和镇。\n");
+  try {
+    await execute(fx.tool("inspectTranslationContext"));
+    const tool = fx.tool("initializeTranslationStarterAssets");
+    const params = {
+      glossaryCandidates: [{
+        source: "希罗娜",
+        target: "シロナ",
+        info: "",
+        status: "confirmed"
+      }],
+      characters: [{
+        name: "希罗娜",
+        target: "シロナ",
+        gender: "female",
+        pronouns: "彼女",
+        genderConfidence: "confirmed",
+        termsOfAddress: "シロナ",
+        catchphrases: "",
+        voice: "",
+        evidence: "Source sample."
+      }]
+    };
+    assert.doesNotThrow(() => validateToolArguments(tool, {
+      id: "call_initializeTranslationStarterAssets",
+      name: "initializeTranslationStarterAssets",
+      arguments: params
+    }));
+    const initialized = await execute(tool, params);
+    assert.equal(initialized.details.created.characterBible, true);
+    const markdown = await readFile(path.join(fx.outputDir, "AI_translation", "_workspace", "character_bible.md"), "utf8");
+    assert.match(markdown, /## 希罗娜/);
+    assert.doesNotMatch(markdown, /Catchphrases:/);
+  } finally {
+    await fx.close();
+  }
+});
+
 await test("an established formal glossary satisfies the requested starter glossary gate", async () => {
   let started;
   const domainRun = createYnDomainRunContract({

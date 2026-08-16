@@ -2,7 +2,7 @@ import type {
   OpenAiCompatibleProviderConfig,
   ProviderOAuthAuth
 } from "../../shared/agent/providerConfigTypes.ts";
-import { isChatGptOAuthProvider } from "../../shared/agent/providerPresets.ts";
+import { isChatGptOAuthProvider, isGrokOAuthProvider } from "../../shared/agent/providerPresets.ts";
 import {
   importCodexOAuthToProviderAuth,
   readOAuthFromWorkspaceProvider,
@@ -12,6 +12,7 @@ import {
   ensureFreshOAuthToken,
   oauthTokenExpiresAt
 } from "./openAiCodexOAuthPkce.ts";
+import { ensureFreshGrokOAuthToken } from "./grokOAuthPkce.ts";
 import {
   readOAuthProfiles,
   resolveOAuthProfile,
@@ -22,6 +23,7 @@ import { updateProviderConfig, readProviderConfig } from "./providerConfigStore.
 import { extractChatGptAccountId } from "./providers/codexJwt.ts";
 
 const chatGptAuthResolutions = new Map<string, Promise<ProviderOAuthAuth>>();
+const grokAuthResolutions = new Map<string, Promise<ProviderOAuthAuth>>();
 
 function normalizedOAuthAuth(auth: ProviderOAuthAuth): ProviderOAuthAuth {
   const expiresAt = oauthTokenExpiresAt(auth);
@@ -91,10 +93,39 @@ async function resolveFreshChatGptAuth(args: {
   }
 }
 
+async function resolveFreshGrokAuth(args: {
+  config: OpenAiCompatibleProviderConfig;
+  workspaceDir?: string;
+  storedAuth?: ProviderOAuthAuth;
+  candidate: ProviderOAuthAuth;
+}): Promise<ProviderOAuthAuth> {
+  const key = `${args.workspaceDir ?? ""}\u0000${args.config.id}`;
+  const active = grokAuthResolutions.get(key);
+  if (active) return active;
+
+  const pending = (async () => {
+    const fresh = await ensureFreshGrokOAuthToken(args.candidate, args.workspaceDir);
+    if (args.workspaceDir && oauthAuthChanged(args.storedAuth, fresh)) {
+      await persistOAuthAuth(args.workspaceDir, args.config.id, fresh);
+    }
+    return fresh;
+  })();
+  grokAuthResolutions.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (grokAuthResolutions.get(key) === pending) {
+      grokAuthResolutions.delete(key);
+    }
+  }
+}
+
 export async function resolveProviderOAuthAuth(
   config: OpenAiCompatibleProviderConfig,
-  workspaceDir?: string
+  workspaceDir?: string,
+  options?: { refresh?: boolean }
 ): Promise<{ token: string; auth?: import("../../shared/agent/providerConfigTypes.ts").ProviderOAuthAuth }> {
+  const refresh = options?.refresh !== false;
   let auth = config.auth?.kind === "oauth" ? config.auth : undefined;
 
   if (workspaceDir) {
@@ -109,6 +140,9 @@ export async function resolveProviderOAuthAuth(
   }
 
   if (isChatGptOAuthProvider(config) && auth?.accessToken) {
+    if (!refresh) {
+      return { token: auth.accessToken, auth };
+    }
     const storedAuth = auth;
     auth = preferNewerSameAccountAuth(storedAuth, await importCodexOAuthToProviderAuth());
     if (auth?.accessToken) {
@@ -120,6 +154,23 @@ export async function resolveProviderOAuthAuth(
       });
       return { token: fresh.accessToken, auth: fresh };
     }
+  }
+  if (isGrokOAuthProvider(config)) {
+    if (!refresh) {
+      return auth?.accessToken ? { token: auth.accessToken, auth } : { token: "" };
+    }
+    const storedAuth = auth;
+    if (auth?.accessToken) {
+      const fresh = await resolveFreshGrokAuth({
+        config,
+        workspaceDir,
+        storedAuth,
+        candidate: auth
+      });
+      return { token: fresh.accessToken, auth: fresh };
+    }
+    console.info("[grok-oauth]", "no OAuth session; refusing API-key fallback", { providerId: config.id });
+    return { token: "" };
   }
   if (!auth?.accessToken) {
     const fromConfig = resolveAuthToken(config.auth);

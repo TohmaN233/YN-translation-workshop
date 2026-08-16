@@ -24,6 +24,7 @@ import {
   type TranslationValidationResult
 } from "../../../shared/validation/translationValidator.ts";
 import type { PiSessionPromptRequest } from "../../../shared/agent/piSessionContract.ts";
+import { resolveThinkingLevelForModel } from "../../../shared/agent/thinkingLevels.ts";
 import { readProjectAssets, readWorkflowProjectAssets } from "../projectAssets.ts";
 import { listProjectDir, readProjectFile, searchProjectText } from "../projectFileTools.ts";
 import { resolveReadablePath } from "../projectPathGuard.ts";
@@ -37,6 +38,7 @@ import {
   writeTranslationChunk,
   writeTranslationLines
 } from "../writeTranslationChunk.ts";
+import { resolveProofreadTranslationPath } from "../translationBindingResolve.ts";
 import { createPiModelSelection, type PiModelSelection } from "./providerRegistry.ts";
 import {
   NonRetryableAssignmentError,
@@ -538,8 +540,11 @@ function translationWorkingCandidatePath(context: PiTranslationSubagentContext):
 }
 
 function proofreadTranslationPath(request: PiSessionPromptRequest): string {
-  const explicit = request.translationPath?.trim();
-  return explicit ? path.resolve(explicit) : candidatePath(request);
+  return resolveProofreadTranslationPath({
+    request,
+    folderSource: request.sourceSelection?.kind === "folder",
+    documentId: documentId(request)
+  });
 }
 
 async function assertProofreadAssignmentFiles(request: PiSessionPromptRequest): Promise<void> {
@@ -3743,9 +3748,7 @@ export async function createPiTranslationReviewSubagentWorker(
     sessionId: subagentId,
     models: selection.models,
     model: selection.model,
-    thinkingLevel: initialContext.request.thinkingLevel === "auto" || !initialContext.request.thinkingLevel
-      ? "medium"
-      : initialContext.request.thinkingLevel,
+    thinkingLevel: resolveThinkingLevelForModel(selection.model, initialContext.request.thinkingLevel),
     tools: initialSpec.tools(subagentId),
     systemPrompt: await subagentSystemPrompt(initialContext, initialSpec),
     providerStreamTimeouts: initialContext.providerStreamTimeouts,
@@ -3900,9 +3903,7 @@ export async function createPiTranslationAuditSubagentWorker(
     sessionId: subagentId,
     models: selection.models,
     model: selection.model,
-    thinkingLevel: initialContext.request.thinkingLevel === "auto" || !initialContext.request.thinkingLevel
-      ? "medium"
-      : initialContext.request.thinkingLevel,
+    thinkingLevel: resolveThinkingLevelForModel(selection.model, initialContext.request.thinkingLevel),
     tools: initialSpec.tools(subagentId),
     systemPrompt: await subagentSystemPrompt(initialContext, initialSpec),
     providerStreamTimeouts: initialContext.providerStreamTimeouts,
@@ -4103,9 +4104,7 @@ async function runPiSubagentRuntime<
     sessionId: subagentId,
     models: selection.models,
     model: selection.model,
-    thinkingLevel: context.request.thinkingLevel === "auto" || !context.request.thinkingLevel
-      ? "medium"
-      : context.request.thinkingLevel,
+    thinkingLevel: resolveThinkingLevelForModel(selection.model, context.request.thinkingLevel),
     tools,
     systemPrompt: await subagentSystemPrompt(context, spec),
     providerStreamTimeouts: context.providerStreamTimeouts,
@@ -4756,9 +4755,7 @@ export async function createPiTranslationSubagentWorker(
     sessionId: subagentId,
     models: selection.models,
     model: selection.model,
-    thinkingLevel: initialContext.request.thinkingLevel === "auto" || !initialContext.request.thinkingLevel
-      ? "medium"
-      : initialContext.request.thinkingLevel,
+    thinkingLevel: resolveThinkingLevelForModel(selection.model, initialContext.request.thinkingLevel),
     tools,
     systemPrompt: await subagentSystemPrompt(initialContext, initialSpec),
     providerStreamTimeouts: initialContext.providerStreamTimeouts,
@@ -5676,9 +5673,7 @@ export async function createPiProofreadSubagentWorker(
             sessionId: subagentId,
             models: selection.models,
             model: selection.model,
-            thinkingLevel: context.request.thinkingLevel === "auto" || !context.request.thinkingLevel
-              ? "medium"
-              : context.request.thinkingLevel,
+            thinkingLevel: resolveThinkingLevelForModel(selection.model, context.request.thinkingLevel),
             tools: spec.tools(subagentId),
             systemPrompt,
             providerStreamTimeouts: context.providerStreamTimeouts,

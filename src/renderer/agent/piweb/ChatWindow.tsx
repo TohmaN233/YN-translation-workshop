@@ -161,6 +161,11 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
       entry.provider === displayModel.provider && entry.id === displayModel.modelId
     ))?.name ?? displayModel.modelId;
   }, [displayModel, modelList, ui.notSelected]);
+  const currentThinkingLevels = useMemo(() => (
+    displayModel
+      ? modelList.find((entry) => entry.provider === displayModel.provider && entry.id === displayModel.modelId)?.thinkingLevels ?? []
+      : []
+  ), [displayModel, modelList]);
   const currentModelSupportsImages = useMemo(() => Boolean(displayModel && modelList.find((entry) => (
     entry.provider === displayModel.provider && entry.id === displayModel.modelId
   ))?.supportsImages), [displayModel, modelList]);
@@ -462,6 +467,7 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
       supportsImages={currentModelSupportsImages}
       onModelChange={handleModelChange}
       thinkingLevel={thinkingLevel}
+      thinkingLevels={currentThinkingLevels}
       onThinkingLevelChange={handleThinkingLevelChange}
       slashCommands={slashCommands}
       onBuiltinCommand={handleBuiltinCommand}

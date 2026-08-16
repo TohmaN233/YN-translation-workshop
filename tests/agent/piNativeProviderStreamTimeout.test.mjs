@@ -6,7 +6,8 @@ import {
 } from "@earendil-works/pi-ai";
 import { InMemorySessionRepo } from "@earendil-works/pi-agent-core/node";
 
-const { PiSessionAgentRuntime } = await import("../../src/main/agent/piNative/sessionAgentRuntime.ts");
+const { DEFAULT_PI_PROVIDER_STREAM_TIMEOUTS, PiSessionAgentRuntime } = await import("../../src/main/agent/piNative/sessionAgentRuntime.ts");
+assert.equal(DEFAULT_PI_PROVIDER_STREAM_TIMEOUTS.inactivityMs, 3_000_000);
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

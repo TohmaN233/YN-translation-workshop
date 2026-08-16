@@ -54,6 +54,7 @@ import {
   resolveTranslationCandidatePath,
   writeTranslationChunk
 } from "../writeTranslationChunk.ts";
+import { publishCanonicalTranslationBinding, resolveProofreadTranslationPath } from "../translationBindingResolve.ts";
 import { writeTextFileAtomically } from "../../atomicFile.ts";
 import {
   listPiConfiguredModels,
@@ -1026,9 +1027,21 @@ function candidatePath(request: PiBoundSourceRequest): string {
 }
 
 function proofreadTranslationPath(request: PiBoundSourceRequest, folderSource = false): string {
-  if (folderSource) return candidatePath(request);
-  const explicit = request.translationPath?.trim();
-  return explicit ? path.resolve(explicit) : candidatePath(request);
+  return resolveProofreadTranslationPath({
+    request,
+    folderSource,
+    documentId: documentId(request)
+  });
+}
+
+async function publishCompletedTranslationBinding(request: PiBoundSourceRequest): Promise<void> {
+  if (request.workflowIntent === "proofread") return;
+  await publishCanonicalTranslationBinding({
+    outputDir: request.outputDir,
+    folderSource: request.sourceSelection?.kind === "folder" || request.sourceRootSelection?.kind === "folder",
+    sourcePath: request.sourcePath,
+    documentId: documentId(request)
+  });
 }
 
 function proofreadReportScope(
@@ -5102,7 +5115,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           source: Type.String({ minLength: 1 }),
           target: Type.String({ minLength: 1 }),
           aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-          info: Type.Optional(Type.String({ minLength: 1 })),
+          info: Type.Optional(Type.String()),
           status: Type.Optional(Type.Union([
             Type.Literal("confirmed"),
             Type.Literal("auto"),
@@ -5123,12 +5136,12 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           termsOfAddress: Type.String({ minLength: 1 }),
           requiredTerms: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
           forbiddenTerms: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-          voice: Type.Optional(Type.String({ minLength: 1 })),
-          identity: Type.Optional(Type.String({ minLength: 1 })),
-          role: Type.Optional(Type.String({ minLength: 1 })),
-          relationships: Type.Optional(Type.String({ minLength: 1 })),
-          catchphrases: Type.Optional(Type.String({ minLength: 1 })),
-          evidence: Type.Optional(Type.String({ minLength: 1 }))
+          voice: Type.Optional(Type.String()),
+          identity: Type.Optional(Type.String()),
+          role: Type.Optional(Type.String()),
+          relationships: Type.Optional(Type.String()),
+          catchphrases: Type.Optional(Type.String()),
+          evidence: Type.Optional(Type.String())
         }, { additionalProperties: false })))
       }, { additionalProperties: false }),
       executionMode: "sequential",
@@ -7737,6 +7750,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               })
             );
             await context.persistHostState?.();
+            if ((context.domainRun?.incompleteReasons().length ?? 1) === 0) {
+              await publishCompletedTranslationBinding(request);
+            }
           }
         });
         const assignmentSummary = tasks.slice(0, MAX_TOOL_RESULT_COLLECTION_ITEMS).map((task) => ({

@@ -772,7 +772,7 @@ await test("renderLineReviewHtml binds imported TXT candidates for later Save TX
   assert.ok(match, "expected inline line-review script");
   assert.match(
     match[1],
-    /async function importArtifactAsDraft\(candidatePath, sourcePath\)[\s\S]*canonicalEditablePath[\s\S]*setBoundTranslationPath\(canonicalEditablePath \|\| candidatePath, canonicalEditablePath \|\| candidatePath\)/
+    /async function importArtifactAsDraft\(candidatePath, sourcePath\)[\s\S]*sourceIsEpub[\s\S]*setBoundTranslationPath\(candidatePath, candidatePath, \{ userSelected: true \}\)/
   );
 });
 

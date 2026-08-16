@@ -42,7 +42,8 @@ const CONFIG_PROVIDER_TO_PI_PROVIDER: Record<string, string> = {
   "moonshot-kimi-api": "moonshotai-cn",
   "gemini-openai-api": "google",
   "groq-api": "groq",
-  "xai-api": "xai"
+  "xai-api": "xai",
+  "xai-grok": "xai"
 };
 
 export function resolvePiProviderId(providerId: string, configuredPiProviderId?: string): string | undefined {
@@ -73,7 +74,15 @@ export function listModelsForProvider(
 ): ProviderModelOption[] {
   const provider = createPinnedPiProvider(providerId, options?.piProviderId);
   if (provider) {
-    return provider.getModels().map((model) => ({ id: model.id, label: model.name }));
+    const models = provider.getModels().map((model) => ({ id: model.id, label: model.name }));
+    if (providerId === "xai-grok") {
+      for (const id of normalizeExplicitModelIds(options?.model, options?.modelIds)) {
+        if (!models.some((model) => model.id === id)) {
+          models.push({ id, label: id });
+        }
+      }
+    }
+    return models;
   }
   return normalizeExplicitModelIds(options?.model, options?.modelIds)
     .map((id) => ({ id, label: id }));

@@ -29,7 +29,15 @@ export interface UseAgentSessionOptions {
 }
 
 type ThinkingLevelOption = ThinkingLevel | "auto";
-type ModelEntry = { id: string; name: string; provider: string; supportsImages: boolean };
+type ModelEntry = { id: string; name: string; provider: string; supportsImages: boolean; thinkingLevels?: ThinkingLevel[] };
+
+function thinkingLevelForModel(
+  model: Pick<ModelEntry, "thinkingLevels"> | undefined,
+  stored: ThinkingLevelOption | undefined
+): ThinkingLevelOption {
+  if (!stored || stored === "auto") return "auto";
+  return model?.thinkingLevels?.includes(stored) ? stored : "auto";
+}
 type SelectedModel = { provider: string; modelId: string };
 type ProviderConfigDoc = Awaited<ReturnType<typeof window.workshop.getAgentProviderConfig>>;
 
@@ -487,7 +495,8 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       id: model.modelId,
       name: model.modelName || model.modelId,
       provider: model.providerId,
-      supportsImages: model.supportsImages
+      supportsImages: model.supportsImages,
+      thinkingLevels: model.thinkingLevels ?? []
     }));
     const selection = resolveConfiguredModelSelection(config, modelList);
     const providerId = selection.provider;
@@ -499,7 +508,10 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
         ...current,
         providerId,
         modelId,
-        thinkingLevel: activeStored?.thinkingLevel ?? current.thinkingLevel,
+        thinkingLevel: thinkingLevelForModel(
+          modelList.find((model) => model.provider === providerId && model.id === modelId),
+          activeStored?.thinkingLevel ?? current.thinkingLevel
+        ),
         modelList,
         modelNames: Object.fromEntries(modelList.map((model) => [`${model.provider}:${model.id}`, model.name]))
       };
@@ -913,11 +925,15 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     if (stateRef.current.agentRunning || stateRef.current.isCompacting) return;
     const stored = providerConfig.providers[provider] as Record<string, unknown> | undefined;
     if (!stored) throw new Error(`Provider ${provider} is not configured.`);
-    setState((current) => ({ ...current, providerId: provider, modelId }));
+    const nextThinking = thinkingLevelForModel(
+      stateRef.current.modelList.find((model) => model.provider === provider && model.id === modelId),
+      stateRef.current.thinkingLevel
+    );
+    setState((current) => ({ ...current, providerId: provider, modelId, thinkingLevel: nextThinking }));
     const next = await window.workshop.saveAgentProviderConfig({
       outputDir: route.outputDir,
       activeProviderId: provider,
-      provider: { ...stored, id: provider, model: modelId }
+      provider: { ...stored, id: provider, model: modelId, thinkingLevel: nextThinking }
     });
     setProviderConfig(next);
   }, [providerConfig, route.outputDir]);

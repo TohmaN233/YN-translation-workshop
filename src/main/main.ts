@@ -62,6 +62,8 @@ import {
   writeRecentProjectDir
 } from "./projectOpenState.ts";
 import { patchProjectState, readProjectState, saveProjectState, subscribeProjectState } from "./projectState.ts";
+import { workflowTranslationPaths } from "../shared/core/translationBinding.ts";
+import { extractedWorkshopTextPath } from "./agent/translationBindingResolve.ts";
 import {
   lanSyncJson,
   lanSyncLabels,
@@ -2322,10 +2324,8 @@ async function writeExtractedPromptText(
   role: "source" | "translation",
   text: string
 ): Promise<string> {
-  const digest = createHash("sha1").update(path.resolve(filePath).toLowerCase()).digest("hex").slice(0, 10);
-  const extractedDir = path.join(workspaceDir, "extracted-text", digest, role);
-  await mkdir(extractedDir, { recursive: true });
-  const extractedPath = path.join(extractedDir, `${safeExtractedTextBaseName(filePath)}.txt`);
+  const extractedPath = extractedWorkshopTextPath(workspaceDir, filePath, role);
+  await mkdir(path.dirname(extractedPath), { recursive: true });
   await writeFile(extractedPath, text, "utf8");
   return extractedPath;
 }
@@ -3395,18 +3395,22 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
       const translationDocument = match.status === "matched" && match.translationPath
         ? await readTranslationDocumentForWorkflow(match.translationPath, workspaceDir)
         : undefined;
-      const editableTranslationPath = translationDocument?.kind === "epub"
-        ? translationDocument.promptPath
-        : match.translationPath
-          ? match.translationPath
-          : sourceDocument.kind === "epub"
-            ? await writeExtractedPromptText(
-              workspaceDir,
-              match.sourcePath,
-              "translation",
-              blankAlignedTranslationText(sourceDocument.text)
-            )
-            : undefined;
+      const selectedTranslationPath = match.status === "matched" ? match.translationPath : undefined;
+      const editableSnapshotPath = !selectedTranslationPath && sourceDocument.kind === "epub"
+        ? await writeExtractedPromptText(
+          workspaceDir,
+          match.sourcePath,
+          "translation",
+          blankAlignedTranslationText(sourceDocument.text)
+        )
+        : undefined;
+      const translationPaths = workflowTranslationPaths({
+        sourceIsEpub: sourceDocument.kind === "epub",
+        selectedTranslationPath,
+        selectedTranslationIsEpub: translationDocument?.kind === "epub",
+        selectedTranslationWorkingPath: translationDocument?.promptPath,
+        editableSnapshotPath
+      });
       const childName = htmlSafeName(match.sourceName, index);
       const childPath = path.join(batchDir, childName);
       const html = renderLineReviewHtml({
@@ -3421,11 +3425,11 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
           sourcePath: match.sourcePath,
           validationSourcePath: sourceDocument.promptPath ?? match.sourcePath,
           sourceKind: "file",
-          translationPath: match.status === "matched" ? match.translationPath : undefined,
-          editableTranslationPath,
+          translationPath: translationPaths.translationPath,
+          editableTranslationPath: translationPaths.editableTranslationPath,
           sourcePromptPath: args.sourcePath,
           promptSourceKind: "folder",
-          translationPromptPath: (translationDocument?.promptPath ?? editableTranslationPath ?? args.translationPath) || undefined,
+          translationPromptPath: translationPaths.translationPromptPath,
           outputDir: args.outputDir,
           glossaryPath: args.glossaryPath,
           glossaryEntries,
@@ -3488,18 +3492,21 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
   const translationDocument = args.translationPath
     ? await readTranslationDocumentForWorkflow(args.translationPath, workspaceDir)
     : undefined;
-  const editableTranslationPath = translationDocument?.kind === "epub"
-    ? translationDocument.promptPath
-    : args.translationPath
-      ? args.translationPath
-      : sourceDocument.kind === "epub"
-        ? await writeExtractedPromptText(
-          workspaceDir,
-          args.sourcePath,
-          "translation",
-          blankAlignedTranslationText(sourceDocument.text)
-        )
-        : undefined;
+  const editableSnapshotPath = !args.translationPath && sourceDocument.kind === "epub"
+    ? await writeExtractedPromptText(
+      workspaceDir,
+      args.sourcePath,
+      "translation",
+      blankAlignedTranslationText(sourceDocument.text)
+    )
+    : undefined;
+  const translationPaths = workflowTranslationPaths({
+    sourceIsEpub: sourceDocument.kind === "epub",
+    selectedTranslationPath: args.translationPath,
+    selectedTranslationIsEpub: translationDocument?.kind === "epub",
+    selectedTranslationWorkingPath: translationDocument?.promptPath,
+    editableSnapshotPath
+  });
   const title = `${path.basename(args.sourcePath)} line review`;
   const outputPath = path.join(workspaceDir, "html", `line-review-${timestamp()}.html`);
   const html = renderLineReviewHtml({
@@ -3513,10 +3520,10 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
     workflow: {
       sourcePath: args.sourcePath,
       validationSourcePath: sourceDocument.promptPath ?? args.sourcePath,
-      translationPath: args.translationPath,
-      editableTranslationPath,
+      translationPath: translationPaths.translationPath,
+      editableTranslationPath: translationPaths.editableTranslationPath,
       sourcePromptPath: sourceDocument.promptPath,
-      translationPromptPath: translationDocument?.promptPath ?? editableTranslationPath,
+      translationPromptPath: translationPaths.translationPromptPath,
       outputDir: args.outputDir,
       glossaryPath: args.glossaryPath,
       glossaryEntries,

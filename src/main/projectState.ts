@@ -38,6 +38,11 @@ function canonicalProjectState(value: ProjectState): ProjectState {
   for (const key of ["subagentCount", "reviewSubagentCount"] as const) {
     if (state[key] === null) delete state[key];
   }
+  if (state.translationBindingOrigin === null || state.translationBindingOrigin === "") {
+    delete state.translationBindingOrigin;
+  } else if (state.translationBindingOrigin !== undefined && state.translationBindingOrigin !== "user" && state.translationBindingOrigin !== "canonical") {
+    throw new Error("Invalid translationBindingOrigin: expected user or canonical.");
+  }
   if (state.customPreserveRules !== undefined) {
     state.customPreserveRules = normalizeCustomPreserveRules(state.customPreserveRules);
   }

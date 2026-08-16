@@ -85,6 +85,12 @@ function assertExtractedTextPath(value: string | undefined, name: string): strin
   return value;
 }
 
+function translationBindingOrigin(value: unknown): "user" | "canonical" | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "user" || value === "canonical") return value;
+  throw new Error("translationBindingOrigin must be user or canonical.");
+}
+
 function workflowIntent(value: unknown): PiWorkflowIntent | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (value === "translation" || value === "proofread") return value;
@@ -196,6 +202,7 @@ export function parsePiSessionPromptRequest(
     sourcePath: assertExtractedTextPath(optionalText(raw?.sourcePath), "sourcePath"),
     sourceSelection: sourceSelection(raw?.sourceSelection),
     translationPath: assertExtractedTextPath(optionalText(raw?.translationPath), "translationPath"),
+    translationBindingOrigin: translationBindingOrigin(raw?.translationBindingOrigin),
     lineReviewPath: optionalText(raw?.lineReviewPath),
     proofreadMode: proofreadMode(raw?.proofreadMode),
     proofreadSplitSize: optionalPositiveInteger(raw?.proofreadSplitSize, "proofreadSplitSize"),

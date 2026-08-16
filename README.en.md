@@ -4,7 +4,13 @@ A local workbench that brings human line editing, project assets, full AI transl
 
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
-[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.0)
+[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0.1](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.1)
+
+## 2.0.1
+
+- Fixed EPUB proofreading using the wrong translation path. A hand-picked frontend translation file wins; if the HTML later binds `translated` and the page never chose one, the binding updates automatically so Host does not get stuck on a temporary snapshot.
+- Added **Grok (OAuth)** to model selection. Sign in with SuperGrok / X Premium+ or import `~/.grok/auth.json`. This stays separate from the xAI API-key provider and does not fall back to a key on OAuth failure.
+- Raised the provider-stream inactivity limit to 3000 seconds. Grok, unlike GPT, finishes thinking before writing; the previous wait was too short.
 
 ## What 2.0 is
 
@@ -17,8 +23,8 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.0.0-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.0.0-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.0.1-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.0.1-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.
@@ -69,7 +75,7 @@ The installed build can check for updates and restart into the downloaded instal
 
 ### 4. Models, Providers, and Agent sessions
 
-- OpenAI / Codex OAuth plus OpenAI-compatible APIs, API keys, and explicit model catalogs.
+- ChatGPT, Claude, and Grok OAuth, plus OpenAI-compatible APIs, API keys, and explicit model catalogs.
 - Provider, OAuth profile, selected model, and default thinking level are user-level settings shared across projects.
 - Agent proxying is off by default and is used only when explicitly enabled for the current project.
 - Session list, session creation and switching, a separate Agent window, streaming output, and Markdown rendering.

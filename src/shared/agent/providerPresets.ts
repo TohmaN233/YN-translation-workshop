@@ -1,10 +1,10 @@
 import type { OpenAiCompatibleProviderConfig, ProviderAuthKind, ProviderDescriptor } from "../../shared/agent/providerConfigTypes.ts";
-import { resolvePiProviderId } from "./providerModels.ts";
-import { providerSupportsThinkingLevel } from "./thinkingLevels.ts";
+import { createPinnedPiProvider, resolvePiProviderId } from "./providerModels.ts";
+import { modelShowsThinkingPicker } from "./thinkingLevels.ts";
 
 /** Pi-style provider catalog — OAuth-first, API key optional. CLI is not an agent runtime. */
 
-export type ProviderPresetAuth = "oauth_chatgpt" | "oauth_claude" | "api_key" | "oauth_token_paste";
+export type ProviderPresetAuth = "oauth_chatgpt" | "oauth_claude" | "oauth_grok" | "api_key" | "oauth_token_paste";
 
 export interface ProviderPreset {
   id: string;
@@ -30,6 +30,20 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       model: "gpt-5.5",
       piProviderId: "openai-codex",
       thinkingLevel: "medium"
+    }
+  },
+  {
+    id: "xai-grok",
+    name: "Grok (OAuth)",
+    description: "Sign in with SuperGrok or X Premium+ using official Grok OAuth.",
+    auth: "oauth_grok",
+    config: {
+      id: "xai-grok",
+      type: "openai_compatible",
+      name: "Grok (OAuth)",
+      baseUrl: "https://api.x.ai/v1",
+      model: "grok-4.6",
+      piProviderId: "xai"
     }
   },
   {
@@ -221,7 +235,7 @@ export function getProviderPreset(id: string): ProviderPreset | undefined {
 }
 
 function authModesForPreset(preset: ProviderPreset): ProviderAuthKind[] {
-  if (preset.auth === "oauth_chatgpt" || preset.auth === "oauth_claude") {
+  if (preset.auth === "oauth_chatgpt" || preset.auth === "oauth_claude" || preset.auth === "oauth_grok") {
     return ["oauth"];
   }
   if (preset.auth === "oauth_token_paste") {
@@ -235,6 +249,12 @@ function cacheStrategyForProvider(id: string): "none" | "prompt_cache_key" | "an
     return "anthropic_cache_control";
   }
   return "prompt_cache_key";
+}
+
+function defaultModelShowsThinkingPicker(preset: ProviderPreset): boolean {
+  const provider = createPinnedPiProvider(preset.id, preset.config.piProviderId);
+  const catalogModel = provider?.getModels().find((model) => model.id === preset.config.model);
+  return modelShowsThinkingPicker(catalogModel ?? { id: preset.config.model });
 }
 
 export function getProviderDescriptor(id: string): ProviderDescriptor | undefined {
@@ -254,7 +274,7 @@ export function getProviderDescriptor(id: string): ProviderDescriptor | undefine
       authModes: authModesForPreset(preset),
       cacheStrategy,
       supportsPromptCache: cacheStrategy !== "none",
-      supportsReasoning: providerSupportsThinkingLevel(preset.id),
+      supportsReasoning: defaultModelShowsThinkingPicker(preset),
       modelSource: resolvePiProviderId(preset.id, preset.config.piProviderId) ? "pi_registry" : "explicit"
     }
   };
@@ -269,6 +289,10 @@ export function isClaudeOAuthProvider(config: OpenAiCompatibleProviderConfig | u
   return config?.id === "anthropic-claude";
 }
 
+export function isGrokOAuthProvider(config: OpenAiCompatibleProviderConfig | undefined): boolean {
+  return config?.id === "xai-grok";
+}
+
 export function isAnthropicProvider(config: OpenAiCompatibleProviderConfig | undefined): boolean {
   return config?.id === "anthropic-api"
     || config?.id === "anthropic-claude"
@@ -276,5 +300,5 @@ export function isAnthropicProvider(config: OpenAiCompatibleProviderConfig | und
 }
 
 export function isOAuthPresetAuth(auth: ProviderPresetAuth | undefined): boolean {
-  return auth === "oauth_chatgpt" || auth === "oauth_claude";
+  return auth === "oauth_chatgpt" || auth === "oauth_claude" || auth === "oauth_grok";
 }

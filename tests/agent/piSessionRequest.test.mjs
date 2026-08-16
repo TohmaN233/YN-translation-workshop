@@ -100,6 +100,7 @@ assert.deepEqual(parsePiSessionPromptRequest({
   sourcePath: undefined,
   sourceSelection: undefined,
   translationPath: undefined,
+  translationBindingOrigin: undefined,
   lineReviewPath: undefined,
   proofreadMode: "montecarlo",
   proofreadSplitSize: 1200,

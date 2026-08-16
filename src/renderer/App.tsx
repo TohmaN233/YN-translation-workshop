@@ -91,6 +91,7 @@ interface FormState {
   sourcePath: string;
   sourceKind: "file" | "folder";
   translationPath: string;
+  translationBindingOrigin?: "user" | "canonical" | null;
   outputDir: string;
   glossaryPath: string;
   fileType: FileType;
@@ -132,7 +133,7 @@ type LoadedProjectState = Partial<FormState> & {
 
 const dictionaries = { "zh-CN": zhCN, "en-US": enUS };
 const projectFormKeys = [
-  "locale", "inputMode", "sourcePath", "sourceKind", "translationPath", "glossaryPath",
+  "locale", "inputMode", "sourcePath", "sourceKind", "translationPath", "translationBindingOrigin", "glossaryPath",
   "fileType", "pageSize", "startPage", "languagePair", "style", "translateOutputDir",
   "proofreadOutputDir", "split", "splitSize", "glossaryCandidates", "characterBible",
   "proofreadMode", "candidateRatio", "montecarloSize", "montecarloRoundMin",
@@ -362,6 +363,12 @@ function App() {
   function patch(next: Partial<FormState>) {
     for (const key of Object.keys(next) as Array<keyof FormState>) {
       userSelectedFormKeys.current.add(key);
+    }
+    if (Object.prototype.hasOwnProperty.call(next, "translationPath") && next.translationBindingOrigin === undefined) {
+      next = {
+        ...next,
+        translationBindingOrigin: String(next.translationPath || "").trim() ? "user" : null
+      };
     }
     updateForm(next);
   }

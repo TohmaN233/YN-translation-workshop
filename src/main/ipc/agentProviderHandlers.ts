@@ -16,6 +16,11 @@ import {
   startCodexOAuthCallbackServer
 } from "../agent/openAiCodexOAuthPkce.ts";
 import {
+  GROK_PI_OAUTH_PROVIDER_ID,
+  importGrokOAuthToProviderAuth,
+  runGrokPkceLogin
+} from "../agent/grokOAuthPkce.ts";
+import {
   listOAuthProfilesForProvider,
   readOAuthProfiles,
   setActiveOAuthProfile,
@@ -124,7 +129,8 @@ export async function listAgentConfiguredModels(outputDir: string) {
       providerName: entry.providerName,
       modelId: entry.modelId,
       modelName: entry.modelName,
-      supportsImages: entry.supportsImages
+      supportsImages: entry.supportsImages,
+      thinkingLevels: entry.thinkingLevels
     }));
 }
 
@@ -255,7 +261,7 @@ export function registerAgentProviderIpc(): void {
       const { workspaceDir } = resolveProjectPaths(args.outputDir);
       const preset = getProviderPreset(args.providerId);
       if (!preset || !isOAuthPresetAuth(preset.auth)) {
-        return { ok: false, message: "OAuth connect is only supported for ChatGPT or Claude subscription providers." };
+        return { ok: false, message: "OAuth connect is only supported for ChatGPT, Claude, or Grok subscription providers." };
       }
 
       if (preset.auth === "oauth_claude") {
@@ -278,6 +284,47 @@ export function registerAgentProviderIpc(): void {
         }
         await persistOAuthSession(workspaceDir, args.providerId, auth, args.profileId, args.label);
         return { ok: true, message: piCredential ? "Claude OAuth connected from Pi." : "Claude OAuth connected from Claude Code." };
+      }
+
+      if (preset.auth === "oauth_grok") {
+        const mode = args.mode ?? "pkce";
+        if (mode === "device") {
+          return { ok: false, message: "Grok OAuth uses browser sign-in or ~/.grok/auth.json import. Device login is ChatGPT-only." };
+        }
+        if (mode === "import") {
+          const piCredential = await readPiLocalOAuthCredential(GROK_PI_OAUTH_PROVIDER_ID, GROK_PI_OAUTH_PROVIDER_ID);
+          const auth = piCredential
+            ? {
+                kind: "oauth" as const,
+                accessToken: piCredential.access,
+                refreshToken: piCredential.refresh || undefined,
+                expiresAt: Number.isFinite(piCredential.expires) && piCredential.expires < Number.MAX_SAFE_INTEGER
+                  ? new Date(piCredential.expires).toISOString()
+                  : undefined
+              }
+            : await importGrokOAuthToProviderAuth();
+          if (!auth?.accessToken) {
+            return {
+              ok: false,
+              message: "No ~/.grok/auth.json or Pi xai-auth OAuth session found. Sign in with Grok, or import the official Grok CLI login."
+            };
+          }
+          await persistOAuthSession(workspaceDir, args.providerId, auth, args.profileId, args.label);
+          return { ok: true, message: piCredential ? "Grok OAuth connected from Pi." : "Grok OAuth connected from Grok CLI." };
+        }
+        try {
+          const auth = await runGrokPkceLogin({
+            openBrowser: (url) => shell.openExternal(url),
+            workspaceDir
+          });
+          await persistOAuthSession(workspaceDir, args.providerId, auth, args.profileId, args.label);
+          return { ok: true, message: "Grok OAuth connected (PKCE)." };
+        } catch (error) {
+          return {
+            ok: false,
+            message: error instanceof Error ? error.message : "Grok PKCE OAuth login failed."
+          };
+        }
       }
 
       const mode = args.mode ?? "pkce";

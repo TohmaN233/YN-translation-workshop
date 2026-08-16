@@ -4,7 +4,13 @@
 
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
-[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.0)
+[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0.1](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.1)
+
+## 2.0.1
+
+- 修复 EPUB 校对模式下译文路径选错的问题：页面手选的译文文件优先；如果翻译结束后 HTML 已绑定 `translated`、而前端一开始没手选，则自动跟上，避免读到临时快照后卡死。
+- 模型选择新增 **Grok (OAuth)**。可用 SuperGrok / X Premium+ 官方登录，或导入本机 `~/.grok/auth.json`；与原来的 xAI API key 入口分开，失败时不会静默回退到 API key。
+- 将 Provider 流空闲等待上限提高到 3000 秒。测试 Grok 时发现它和 GPT 不同，会彻底思考完再写入，原先等待时间太短。
 
 ## 2.0 是什么
 
@@ -17,8 +23,8 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.0.0-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.0.0-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.0.1-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.0.1-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。
@@ -69,7 +75,7 @@
 
 ### 4. 模型、Provider 与 Agent 会话
 
-- 支持 OpenAI / Codex OAuth，以及 OpenAI-compatible API、API key 和显式模型目录。
+- 支持 ChatGPT、Claude、Grok OAuth，以及 OpenAI-compatible API、API key 和显式模型目录。
 - Provider、OAuth profile、当前模型和默认 thinking level 是用户级配置，可跨项目使用。
 - Agent 网络代理默认关闭；只有当前项目明确启用时才会使用项目代理地址。
 - 会话列表、创建与切换会话、独立弹出 Agent 窗口、流式输出和 Markdown 展示。

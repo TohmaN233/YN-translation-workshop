@@ -103,7 +103,8 @@ export interface PiAutoRetrySettings {
 }
 
 export const DEFAULT_PI_PROVIDER_STREAM_TIMEOUTS: PiProviderStreamTimeouts = {
-  inactivityMs: 60_000
+  // Reasoning models such as Grok 4.6 can stay silent for minutes before the first token.
+  inactivityMs: 3_000_000
 };
 
 export const DEFAULT_PI_AUTO_RETRY_SETTINGS: PiAutoRetrySettings = {

@@ -493,9 +493,9 @@ export function ProviderSettingsPanel({ outputDir, locale, onClose, onSaved }: P
             <div className="ynAgentProviderActions">
               {supportsOAuth && (
                 <>
-                  <button type="button" onClick={() => void connectOAuth("import")} disabled={saving}>{activeProviderId === "anthropic-claude" ? p.importClaude : activeProviderId === "openai-chatgpt" ? p.importCodex : p.importOAuth}</button>
+                  <button type="button" onClick={() => void connectOAuth("import")} disabled={saving}>{activeProviderId === "anthropic-claude" ? p.importClaude : activeProviderId === "openai-chatgpt" ? p.importCodex : activeProviderId === "xai-grok" ? p.importGrok : p.importOAuth}</button>
                   {activeProviderId !== "anthropic-claude" && (
-                    <button type="button" onClick={() => void connectOAuth("pkce")} disabled={saving}>{activeProviderId === "openai-chatgpt" ? p.signInChatGpt : p.oauthLogin}</button>
+                    <button type="button" onClick={() => void connectOAuth("pkce")} disabled={saving}>{activeProviderId === "openai-chatgpt" ? p.signInChatGpt : activeProviderId === "xai-grok" ? p.signInGrok : p.oauthLogin}</button>
                   )}
                 </>
               )}

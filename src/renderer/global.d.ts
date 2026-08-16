@@ -184,7 +184,7 @@ type WorkshopAgentProviderApi = {
   validateAgentProvider: (args: { outputDir?: string; providerId: string }) => Promise<{ ok: boolean; detail?: string }>;
   connectAgentProviderOAuth: (args: { outputDir: string; providerId: string; mode?: "pkce" | "import" | "device"; profileId?: string; label?: string }) => Promise<{ ok: boolean; message?: string }>;
   listAgentModels: (args: { outputDir?: string; providerId: string }) => Promise<Array<{ id: string; label: string; description?: string }>>;
-  listAgentConfiguredModels: (args: { outputDir: string }) => Promise<Array<{ providerId: string; providerName: string; modelId: string; modelName: string; supportsImages: boolean }>>;
+  listAgentConfiguredModels: (args: { outputDir: string }) => Promise<Array<{ providerId: string; providerName: string; modelId: string; modelName: string; supportsImages: boolean; thinkingLevels?: Array<"off" | "minimal" | "low" | "medium" | "high" | "xhigh"> }>>;
   listAgentOAuthProfiles: (args: { outputDir: string; providerId: string }) => Promise<{ activeProfileId: string; profiles: Array<{ id: string; label: string; updatedAt: string }> }>;
   setAgentOAuthProfile: (args: { outputDir: string; profileId: string }) => Promise<{ ok: boolean; activeProfileId: string }>;
   onAgentProviderUpdate: (callback: (payload: { scope?: "global"; workspaceDir: string; config: { activeProviderId: string; providers: Record<string, unknown> } }) => void) => () => void;

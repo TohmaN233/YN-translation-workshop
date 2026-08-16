@@ -138,8 +138,10 @@ export interface AgentUiStrings {
     notReady: string;
     importCodex: string;
     importClaude: string;
+    importGrok: string;
     importOAuth: string;
     signInChatGpt: string;
+    signInGrok: string;
     oauthLogin: string;
     notConnected: string;
     oauthConnectedShort: string;
@@ -271,8 +273,8 @@ export const agentUiStrings: Record<AgentUiLocale, AgentUiStrings> = {
       , addModel: "请至少填写一个模型 ID。", saving: "正在保存模型服务设置…", savedStatus: "已保存。", disabling: "正在停用模型服务…",
       disabledStatus: "已停用；设置仍保留。", deleting: "正在删除已保存的服务…", deletedStatus: "已删除。", importingOAuth: "正在导入 OAuth 登录…",
       openingOAuth: "正在打开 OAuth 登录…", oauthConnected: "OAuth 已连接。", oauthFailed: "OAuth 连接失败。", checking: "正在检查模型服务…",
-      ready: "模型服务可用。", notReady: "模型服务尚不可用。", importCodex: "导入本机 Pi / Codex 登录", importClaude: "导入本机 Pi / Claude 登录",
-      importOAuth: "导入本机 OAuth 登录", signInChatGpt: "使用 ChatGPT 登录", oauthLogin: "OAuth 登录"
+      ready: "模型服务可用。", notReady: "模型服务尚不可用。", importCodex: "导入本机 Pi / Codex 登录", importClaude: "导入本机 Pi / Claude 登录", importGrok: "导入本机 Grok CLI 登录",
+      importOAuth: "导入本机 OAuth 登录", signInChatGpt: "使用 ChatGPT 登录", signInGrok: "使用 Grok 登录", oauthLogin: "OAuth 登录"
       , notConnected: "未连接", oauthConnectedShort: "OAuth 已连接", apiKeySet: "已设置 API 密钥", savedDisabled: "已保存 · 已停用", oauthProfiles: "{count} 个 OAuth 账号",
       deleteConfirm: "要删除已保存的模型服务“{name}”吗？", oauthDescription: "使用本机订阅账号的 OAuth 登录。"
     },
@@ -386,8 +388,8 @@ export const agentUiStrings: Record<AgentUiLocale, AgentUiStrings> = {
       , addModel: "Add at least one model ID.", saving: "Saving provider settings…", savedStatus: "Saved.", disabling: "Disabling provider…",
       disabledStatus: "Disabled. Saved settings are retained.", deleting: "Deleting saved provider…", deletedStatus: "Deleted.", importingOAuth: "Importing OAuth session…",
       openingOAuth: "Opening OAuth login…", oauthConnected: "OAuth connected.", oauthFailed: "OAuth failed.", checking: "Checking provider…",
-      ready: "Provider ready.", notReady: "Provider is not ready.", importCodex: "Import Pi / Codex login", importClaude: "Import Pi / Claude login",
-      importOAuth: "Import local OAuth login", signInChatGpt: "Sign in with ChatGPT", oauthLogin: "OAuth login"
+      ready: "Provider ready.", notReady: "Provider is not ready.", importCodex: "Import Pi / Codex login", importClaude: "Import Pi / Claude login", importGrok: "Import Grok CLI login",
+      importOAuth: "Import local OAuth login", signInChatGpt: "Sign in with ChatGPT", signInGrok: "Sign in with Grok", oauthLogin: "OAuth login"
       , notConnected: "not connected", oauthConnectedShort: "OAuth connected", apiKeySet: "API key set", savedDisabled: "saved · disabled", oauthProfiles: "{count} OAuth profiles",
       deleteConfirm: "Delete saved provider \"{name}\"?", oauthDescription: "Use a local subscription OAuth session for this provider."
     },

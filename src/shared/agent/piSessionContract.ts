@@ -189,6 +189,7 @@ export interface PiSessionPromptRequest {
   sourcePath?: string;
   sourceSelection?: PiSourceSelection;
   translationPath?: string;
+  translationBindingOrigin?: "user" | "canonical";
   lineReviewPath?: string;
   proofreadMode?: PiProofreadMode;
   proofreadSplitSize?: number;

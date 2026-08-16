@@ -302,7 +302,7 @@ await test("ChatGPT OAuth adopts a newer same-account Codex credential before re
   }
 });
 
-await test("concurrent model catalog reads share one OAuth refresh", async () => {
+await test("listing configured models does not refresh ChatGPT OAuth", async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "tw-pi-oauth-single-flight-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const previousCodexHome = process.env.CODEX_HOME;
@@ -355,7 +355,14 @@ await test("concurrent model catalog reads share one OAuth refresh", async () =>
       listPiConfiguredModels(projectDir),
       listPiConfiguredModels(projectDir)
     ]);
-    assert.equal(refreshCalls, 1);
+    assert.equal(refreshCalls, 0, "model catalog listing must not consume a refresh token");
+
+    await Promise.all([
+      createPiModelSelection({ workspaceDir: projectDir, providerId: "openai-chatgpt", modelId: "gpt-5.6-luna" }),
+      createPiModelSelection({ workspaceDir: projectDir, providerId: "openai-chatgpt", modelId: "gpt-5.6-luna" }),
+      createPiModelSelection({ workspaceDir: projectDir, providerId: "openai-chatgpt", modelId: "gpt-5.6-luna" })
+    ]);
+    assert.equal(refreshCalls, 1, "actual model selection must single-flight one OAuth refresh");
   } finally {
     globalThis.fetch = originalFetch;
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -481,6 +488,153 @@ await test("corrupt Pi auth config fails fast with its file path", async () => {
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+await test("listing another provider's models does not refresh ChatGPT OAuth", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "tw-list-models-no-refresh-"));
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  try {
+    globalThis.fetch = async () => {
+      fetchCalls += 1;
+      throw new Error("OAuth refresh must not run while listing another provider");
+    };
+    const workspaceDir = path.join(projectDir, ".translation-workshop");
+    await writeProviderConfig(workspaceDir, {
+      activeProviderId: "deepseek-api",
+      providers: {
+        "openai-chatgpt": {
+          id: "openai-chatgpt",
+          type: "openai_compatible",
+          name: "ChatGPT (OAuth)",
+          baseUrl: "https://chatgpt.com/backend-api",
+          model: "gpt-5.5",
+          piProviderId: "openai-codex",
+          auth: {
+            kind: "oauth",
+            accessToken: "stale-chatgpt",
+            refreshToken: "chatgpt-refresh",
+            expiresAt: new Date(Date.now() - 60_000).toISOString()
+          }
+        },
+        "deepseek-api": {
+          id: "deepseek-api",
+          type: "openai_compatible",
+          name: "DeepSeek API",
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-v4-flash",
+          piProviderId: "deepseek",
+          auth: { kind: "api_key", key: "deepseek-key" }
+        }
+      }
+    });
+    const models = await listPiProviderModels(projectDir, "deepseek-api");
+    assert.ok(models.some((model) => model.id === "deepseek-v4-flash"));
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+await test("a dead ChatGPT refresh token does not hide other configured models", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "tw-list-configured-isolated-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      error: { message: "Your refresh token has already been used to generate a new access token. Please try signing in again.", code: "refresh_token_reused" }
+    }), { status: 401, headers: { "Content-Type": "application/json" } });
+    const workspaceDir = path.join(projectDir, ".translation-workshop");
+    await writeProviderConfig(workspaceDir, {
+      activeProviderId: "deepseek-api",
+      providers: {
+        "openai-chatgpt": {
+          id: "openai-chatgpt",
+          type: "openai_compatible",
+          name: "ChatGPT (OAuth)",
+          baseUrl: "https://chatgpt.com/backend-api",
+          model: "gpt-5.5",
+          piProviderId: "openai-codex",
+          auth: {
+            kind: "oauth",
+            accessToken: "stale-chatgpt",
+            refreshToken: "used-refresh",
+            expiresAt: new Date(Date.now() - 60_000).toISOString()
+          }
+        },
+        "deepseek-api": {
+          id: "deepseek-api",
+          type: "openai_compatible",
+          name: "DeepSeek API",
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-v4-flash",
+          piProviderId: "deepseek",
+          auth: { kind: "api_key", key: "deepseek-key" }
+        }
+      }
+    });
+    const configured = await listPiConfiguredModels(projectDir);
+    assert.ok(configured.some((entry) => entry.providerId === "deepseek-api" && entry.authenticated));
+    await assert.rejects(
+      createPiModelSelection({
+        workspaceDir: projectDir,
+        providerId: "openai-chatgpt",
+        modelId: "gpt-5.5"
+      }),
+      /401|refresh token|sign in again/i
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+await test("Grok OAuth injects official grok-4.6 effort levels without inventing GPT tiers", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "tw-pi-grok-thinking-"));
+  try {
+    await writeProviderConfig(path.join(projectDir, ".translation-workshop"), {
+      activeProviderId: "xai-grok",
+      providers: {
+        "xai-grok": {
+          id: "xai-grok",
+          type: "openai_compatible",
+          name: "Grok (OAuth)",
+          baseUrl: "https://api.x.ai/v1",
+          model: "grok-4.6",
+          piProviderId: "xai"
+        },
+        "custom-api:named-grok": {
+          id: "custom-api:named-grok",
+          presetId: "custom-api",
+          type: "openai_compatible",
+          name: "Named Grok",
+          baseUrl: "http://127.0.0.1:11434/v1",
+          model: "grok-4.6",
+          models: ["grok-4.6", "translator-main"],
+          auth: { kind: "api_key", key: "local-key" }
+        }
+      }
+    });
+    const configured = await listPiConfiguredModels(projectDir);
+    const grok46 = configured.find((entry) => entry.providerId === "xai-grok" && entry.modelId === "grok-4.6");
+    const grokFast = configured.find((entry) => entry.providerId === "xai-grok" && entry.modelId === "grok-code-fast-1");
+    const grok43 = configured.find((entry) => entry.providerId === "xai-grok" && entry.modelId === "grok-4.3");
+    assert.deepEqual(grok46?.thinkingLevels, ["low", "medium", "high", "xhigh"]);
+    assert.deepEqual(grokFast?.thinkingLevels, ["off"]);
+    assert.deepEqual(grok43?.thinkingLevels, ["off"]);
+
+    const selection = await createPiModelSelection({
+      workspaceDir: projectDir,
+      providerId: "custom-api:named-grok",
+      modelId: "grok-4.6"
+    });
+    assert.equal(selection.model.reasoning, true);
+    assert.equal(selection.model.compat?.supportsReasoningEffort, true);
+    assert.deepEqual(selection.model.thinkingLevelMap?.low, "low");
+    assert.equal(selection.model.thinkingLevelMap?.off, null);
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
   }
 });
 

@@ -28,6 +28,7 @@ import {
   type ProjectAssets
 } from "../projectAssets.ts";
 import {
+  readWorkspaceAgentContext,
   readWorkspaceCharacterGlossaryConflicts,
   readWorkspaceAssetsStatus,
   runWorkspaceGlossaryCandidateTransaction,
@@ -1915,47 +1916,17 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     }
     return tasksByBatch;
   };
-  const reconcileWorkspaceCharacterGlossaryCandidates = async (): Promise<void> => {
+  const assertWorkspaceCharacterGlossaryConsistency = async (): Promise<void> => {
     if (!glossaryCandidateCollectionEnabled || !characterFactCollectionEnabled) return;
     const conflicts = await readWorkspaceCharacterGlossaryConflicts(request.outputDir);
     if (conflicts.length === 0) return;
-    await runWorkspaceGlossaryCandidateTransaction(request.outputDir, async (transaction) => {
-      let candidateCommit: WorkspaceGlossaryCandidateCommit | undefined;
-      const domainRollbacks: Array<() => void> = [];
-      let hostStatePersisted = false;
-      try {
-        candidateCommit = await transaction.commit(conflicts.map((conflict) => ({
-          source: conflict.source,
-          target: conflict.characterTarget,
-          info: "reconciled to accepted character bible",
-          status: "pending" as const,
-          allowTargetReplacement: true
-        })));
-        const unresolved = candidateCommit.outcomes.filter((outcome) => outcome.status === "conflict");
-        if (unresolved.length > 0) {
-          throw new Error(
-            `Character/glossary reconciliation left unresolved candidates: ${unresolved
-              .map((outcome) => `${outcome.source} (${outcome.existingTarget} vs ${outcome.target})`).join(", ")}.`
-          );
-        }
-        const rollbackWorkflowWrite = context.domainRun?.recordWorkflowWrite(WORKSPACE_GLOSSARY);
-        if (rollbackWorkflowWrite) domainRollbacks.push(rollbackWorkflowWrite);
-        const rollbackResolution = context.domainRun?.resolveTranslationDiscoveries([], conflicts.map((conflict) => ({
-          source: conflict.source,
-          target: conflict.characterTarget,
-          observedTargets: [conflict.glossaryTarget, conflict.characterTarget]
-        })));
-        if (rollbackResolution) domainRollbacks.push(rollbackResolution);
-        await readWorkspaceAssetsStatus(request.outputDir);
-        await context.persistHostState?.();
-        hostStatePersisted = true;
-      } catch (error) {
-        if (hostStatePersisted) throw error;
-        for (const rollback of domainRollbacks.reverse()) rollback();
-        if (candidateCommit) await candidateCommit.rollback();
-        throw error;
-      }
-    });
+    throw new Error(
+      "The glossary candidate and character bible already contain conflicting established targets: "
+      + conflicts.map((conflict) => (
+        `${conflict.source} (${conflict.glossaryTarget} vs ${conflict.characterTarget})`
+      )).join(", ")
+      + ". New discoveries cannot silently choose one or rewrite prior translation lines; resolve the existing shared assets explicitly."
+    );
   };
   const commitTranslationAssignmentDiscoveries = async (args: {
     batchId: string;
@@ -1976,16 +1947,33 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     return runWorkspaceGlossaryCandidateTransaction(request.outputDir, async (transaction) => {
     const rollbacks: Array<() => void | Promise<void>> = [];
     let candidateCommit: WorkspaceGlossaryCandidateCommit | undefined;
-    let priorityTasksByBatch = new Map<string, PiTranslationSubagentTask[]>();
     let hostStatePersisted = false;
     try {
       rollbacks.push(domainRun.recordTranslationDiscoveries(records));
       const glossaryGroups = translationGlossaryGroups(records);
-      const assets = glossaryGroups.size > 0
-        ? await readWorkflowProjectAssets(request)
-        : undefined;
-      const formalBySource = new Map((assets?.glossary.entries ?? []).flatMap((entry) => {
+      const characterGroups = new Map<string, Extract<YnTranslationDiscoveryRecord, { kind: "character" }>[]>();
+      for (const record of records) {
+        if (record.kind !== "character") continue;
+        const source = normalizeTranslationTerm(record.sourceName);
+        const current = characterGroups.get(source) ?? [];
+        current.push(record);
+        characterGroups.set(source, current);
+      }
+      const [assets, workspaceAssets] = await Promise.all([
+        readWorkflowProjectAssets(request),
+        readWorkspaceAgentContext(request.outputDir)
+      ]);
+      const formalBySource = new Map(assets.glossary.entries.flatMap((entry) => {
         const source = normalizeTranslationTerm(String(entry.source ?? ""));
+        const target = normalizeTranslationTerm(String(entry.target ?? ""));
+        return source && target ? [[source, target] as const] : [];
+      }));
+      const candidateBySource = new Map((workspaceAssets.glossaryCandidates ?? []).map((entry) => [
+        normalizeTranslationTerm(entry.source),
+        normalizeTranslationTerm(entry.target)
+      ]));
+      const characterBySource = new Map(assets.characterBible.characters.flatMap((entry) => {
+        const source = normalizeTranslationTerm(String(entry.name ?? ""));
         const target = normalizeTranslationTerm(String(entry.target ?? ""));
         return source && target ? [[source, target] as const] : [];
       }));
@@ -2004,6 +1992,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       const autoIds = new Set<string>();
       const directConflicts: Array<{ source: string; targets: string[] }> = [];
       const formalSources = new Set<string>();
+      const autoCharacterGroups = new Map<string, {
+        records: Extract<YnTranslationDiscoveryRecord, { kind: "character" }>[];
+        target: string;
+      }>();
       for (const [source, records] of glossaryGroups) {
         const targets = [...new Set(records.map((record) => normalizeTranslationTerm(record.target)).filter(Boolean))];
         const prior = priorTerms.get(source);
@@ -2015,8 +2007,26 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           records.forEach((record) => autoIds.add(record.id));
           continue;
         }
-        if (prior && targets.some((target) => target !== normalizeTranslationTerm(prior.target))) {
-          directConflicts.push({ source, targets: observedTargets });
+        const candidateTarget = candidateBySource.get(source);
+        const characterTarget = characterBySource.get(source);
+        if (candidateTarget && characterTarget && candidateTarget !== characterTarget) {
+          directConflicts.push({
+            source,
+            targets: [...new Set([...observedTargets, candidateTarget, characterTarget])]
+          });
+          continue;
+        }
+        const establishedTarget = candidateTarget
+          ?? characterTarget
+          ?? (prior ? normalizeTranslationTerm(prior.target) : undefined);
+        if (establishedTarget) {
+          candidateProposals.push({
+            source: records[0]!.source,
+            target: establishedTarget,
+            aliases: [...new Set(records.flatMap((record) => record.aliases ?? []).map(normalizeTranslationTerm))],
+            info: `translation discovery: ${records[0]!.rationale.trim()}`,
+            status: "pending"
+          });
           continue;
         }
         if (targets.length !== 1) {
@@ -2030,6 +2040,42 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           info: `translation discovery: ${records[0]!.rationale.trim()}`,
           status: "pending"
         });
+      }
+      for (const [source, records] of characterGroups) {
+        const formalTarget = formalBySource.get(source);
+        const candidateTarget = candidateBySource.get(source);
+        const characterTarget = characterBySource.get(source);
+        if (!formalTarget && candidateTarget && characterTarget && candidateTarget !== characterTarget) {
+          continue;
+        }
+        const plannedGlossaryTarget = candidateProposals.find((proposal) => (
+          normalizeTranslationTerm(proposal.source) === source
+        ))?.target;
+        const discoveredTargets = [...new Set(
+          records.map((record) => normalizeTranslationTerm(record.targetName ?? "")).filter(Boolean)
+        )];
+        const target = formalTarget
+          ?? candidateTarget
+          ?? characterTarget
+          ?? priorTerms.get(source)?.target
+          ?? plannedGlossaryTarget
+          ?? (discoveredTargets.length === 1 ? discoveredTargets[0] : undefined);
+        if (!target) continue;
+        autoCharacterGroups.set(source, { records, target });
+        if (formalTarget && glossaryCandidateCollectionEnabled) {
+          formalSources.add(source);
+        } else if (
+          glossaryCandidateCollectionEnabled
+          && !candidateProposals.some((proposal) => normalizeTranslationTerm(proposal.source) === source)
+        ) {
+          candidateProposals.push({
+            source: records[0]!.sourceName,
+            target,
+            aliases: [],
+            info: `character discovery: ${records[0]!.evidence.trim()}`,
+            status: "pending"
+          });
+        }
       }
       if (candidateProposals.length > 0 || formalSources.size > 0) {
         candidateCommit = await transaction.commit(
@@ -2068,6 +2114,67 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           records.forEach((record) => autoIds.add(record.id));
         }
       }
+      if (autoCharacterGroups.size > 0) {
+        const characters = structuredClone(assets.characterBible.characters);
+        const byName = new Map(characters.map((entry) => [
+          normalizeTranslationTerm(String(entry.name ?? "")),
+          entry
+        ]));
+        for (const [source, value] of autoCharacterGroups) {
+          const strongest = value.records.find((record) => record.confidence === "confirmed")
+            ?? value.records.find((record) => record.confidence === "inferred")
+            ?? value.records[0]!;
+          const existing = byName.get(source);
+          const existingGender = normalizeTranslationTerm(String(existing?.gender ?? ""));
+          const existingConfidence = normalizeTranslationTerm(String(existing?.genderConfidence ?? ""));
+          const next = {
+            name: strongest.sourceName,
+            target: value.target,
+            gender: existingGender && existingGender !== "unknown" ? existingGender : strongest.gender,
+            pronouns: String(existing?.pronouns ?? "").trim()
+              || [...new Set(value.records.flatMap((record) => record.pronouns ?? []))].join(", ")
+              || "unknown",
+            genderConfidence: existingConfidence && existingConfidence !== "unknown"
+              ? existingConfidence
+              : strongest.confidence,
+            termsOfAddress: String(existing?.termsOfAddress ?? "").trim() || "unknown",
+            evidence: [
+              String(existing?.evidence ?? "").trim(),
+              `provisional Host discovery | ${strongest.documentId} L${strongest.evidenceLine}: ${strongest.evidence}`
+            ].filter(Boolean).join(" | ")
+          };
+          if (existing) Object.assign(existing, next);
+          else {
+            characters.push(next);
+            byName.set(source, next);
+          }
+          value.records.forEach((record) => autoIds.add(record.id));
+          if (glossaryCandidateCollectionEnabled) {
+            const prior = priorTerms.get(source);
+            autoTerms.set(source, {
+              source: strongest.sourceName,
+              target: value.target,
+              observedTargets: [...new Set([
+                ...(prior?.observedTargets ?? []),
+                ...(prior ? [prior.target] : []),
+                ...value.records.map((record) => normalizeTranslationTerm(record.targetName ?? "")).filter(Boolean),
+                value.target
+              ])]
+            });
+          }
+        }
+        const characterContent = serializeCharacterBibleMarkdown(characters);
+        validateGeneratedCharacterBibleContent(characterContent, WORKSPACE_CHARACTER_BIBLE);
+        const previousCharacterContent = await readOptional(assets.paths.characterBible);
+        await mkdir(path.dirname(assets.paths.characterBible), { recursive: true });
+        await writeTextFileAtomically(assets.paths.characterBible, characterContent);
+        rollbacks.push(async () => {
+          if (previousCharacterContent === undefined) await rm(assets.paths.characterBible, { force: true });
+          else await writeTextFileAtomically(assets.paths.characterBible, previousCharacterContent);
+        });
+        const rollbackWorkflowWrite = domainRun.recordWorkflowWrite(WORKSPACE_CHARACTER_BIBLE);
+        if (rollbackWorkflowWrite) rollbacks.push(rollbackWorkflowWrite);
+      }
       const conflicts = directConflicts.map(({ source, targets }) => {
         const records = domainRun.translationDiscoveryObservations()
           .filter((record): record is Extract<YnTranslationDiscoveryRecord, { kind: "glossary" }> => (
@@ -2086,28 +2193,22 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       if (autoIds.size > 0) {
         rollbacks.push(domainRun.resolveTranslationDiscoveries([...autoIds], [...autoTerms.values()]));
       }
-      const officialRepairTerms = [...autoTerms.values()].filter((term) => formalBySource.has(
-        normalizeTranslationTerm(term.source)
-      ));
-      if (officialRepairTerms.length > 0) {
-        const repairs = await planTranslationTerminologyRepairs(officialRepairTerms);
-        const existingDebt = domainRun.pendingTranslationTerminologyDebt();
-        rollbacks.push(domainRun.recordTranslationTerminologyDebt([...existingDebt, ...repairs.debt]));
-        priorityTasksByBatch = routeTranslationTerminologyRepairs(repairs.tasks);
+      if (glossaryGroups.size > 0 || autoCharacterGroups.size > 0) {
+        await readWorkspaceAssetsStatus(request.outputDir);
       }
-      if (glossaryGroups.size > 0) await readWorkspaceAssetsStatus(request.outputDir);
       await context.persistHostState?.();
       hostStatePersisted = true;
-      for (const [repairBatchId, repairTasks] of priorityTasksByBatch) {
-        context.subagents.enqueueTranslationPriorityTasksIfActive(repairBatchId, repairTasks);
-      }
-      const committedSources = new Set(autoTerms.keys());
       return {
         committedDiscoveries: {
-          glossaryCandidates: discoveries.glossaryCandidates.filter((entry) => (
-            committedSources.has(normalizeTranslationTerm(entry.source))
-          )),
-          characterFacts: discoveries.characterFacts
+          glossaryCandidates: discoveries.glossaryCandidates.flatMap((entry) => {
+            const term = autoTerms.get(normalizeTranslationTerm(entry.source));
+            return term ? [{ ...entry, target: term.target }] : [];
+          }),
+          characterFacts: discoveries.characterFacts.flatMap((entry) => {
+            const source = normalizeTranslationTerm(entry.sourceName);
+            const accepted = autoCharacterGroups.get(source);
+            return accepted ? [{ ...entry, targetName: accepted.target }] : [];
+          })
         },
         conflicts
       };
@@ -3859,9 +3960,42 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           current.push(record as never);
           groups.set(key, current as never);
         }
+        const [workflowAssets, workspaceAssets] = await Promise.all([
+          readWorkflowProjectAssets(request),
+          readWorkspaceAgentContext(request.outputDir)
+        ]);
+        const formalTargets = new Map(workflowAssets.glossary.entries.flatMap((entry) => {
+          const source = normalize(String(entry.source ?? ""));
+          const target = normalize(String(entry.target ?? ""));
+          return source && target ? [[source, target] as const] : [];
+        }));
+        const candidateTargets = new Map((workspaceAssets.glossaryCandidates ?? []).map((entry) => [
+          normalize(entry.source),
+          normalize(entry.target)
+        ]));
+        const characterTargets = new Map(workflowAssets.characterBible.characters.flatMap((entry) => {
+          const source = normalize(String(entry.name ?? ""));
+          const target = normalize(String(entry.target ?? ""));
+          return source && target ? [[source, target] as const] : [];
+        }));
+        const establishedTarget = (source: string): string | undefined => {
+          const formal = formalTargets.get(source);
+          if (formal) return formal;
+          const candidate = candidateTargets.get(source);
+          const character = characterTargets.get(source);
+          if (candidate && character && candidate !== character) {
+            throw new Error(
+              "The glossary candidate and character bible already disagree for " + source
+              + ": " + candidate + " vs " + character + ". "
+              + "Resolve the existing assets explicitly; a new discovery cannot choose between them."
+            );
+          }
+          return candidate ?? character;
+        };
         const seen = new Set<string>();
         const resolvedIds: string[] = [];
         const resolvedTerms: YnResolvedTranslationTerm[] = [];
+        const newlyEstablishedSources = new Set<string>();
         const acceptedGlossary: Array<{
           source: string;
           target: string;
@@ -3877,11 +4011,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           if (!records?.length) throw new Error(`No pending terminology discovery exists for ${decision.source}.`);
           resolvedIds.push(...records.map((record) => record.id));
           if (decision.action === "accept") {
-            const target = normalize(decision.target ?? "");
+            const priorTarget = establishedTarget(key);
+            const target = priorTarget ?? normalize(decision.target ?? "");
             if (!target) throw new Error(`Accepted terminology ${decision.source} requires a selected target.`);
+            if (!priorTarget) newlyEstablishedSources.add(key);
             const observedTargets = [...new Set([
               ...records.map((record) => normalize(record.target)),
-              ...(conflictsBySource.get(key)?.observedTargets ?? []).map(normalize)
+              ...(conflictsBySource.get(key)?.observedTargets ?? []).map(normalize),
+              target
             ])];
             acceptedGlossary.push({
               source: records[0]!.source,
@@ -3916,7 +4053,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           resolvedIds.push(...records.map((record) => record.id));
           if (decision.action === "accept") {
             const strongest = records.find((record) => record.confidence === "confirmed") ?? records[0]!;
-            const target = normalize(decision.targetName ?? strongest.targetName ?? strongest.sourceName);
+            const priorTarget = establishedTarget(key);
+            const target = priorTarget ?? normalize(decision.targetName ?? strongest.targetName ?? strongest.sourceName);
+            if (!priorTarget) newlyEstablishedSources.add(key);
             acceptedCharacters.push({
               name: strongest.sourceName,
               target,
@@ -3936,8 +4075,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
                   ...(prior?.observedTargets ?? []),
                   ...(prior ? [prior.target] : []),
                   ...records.map((record) => normalize(record.targetName ?? "")).filter(Boolean),
+                  normalize(decision.targetName ?? ""),
                   target
-                ])]
+                ].filter(Boolean))]
               });
             }
           }
@@ -3981,19 +4121,28 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             status: "pending";
             allowTargetReplacement: boolean;
           }>();
+          const removeCandidateSources = new Set<string>();
           for (const accepted of acceptedGlossary) {
+            if (formalTargets.has(normalize(accepted.source))) {
+              removeCandidateSources.add(accepted.source);
+              continue;
+            }
             candidateProposals.set(normalize(accepted.source), {
               source: accepted.source,
               target: accepted.target,
               aliases: accepted.aliases,
               info: `translation discovery: ${accepted.rationale}`,
               status: "pending",
-              allowTargetReplacement: conflictsBySource.has(normalize(accepted.source))
+              allowTargetReplacement: false
             });
           }
           if (glossaryCandidateCollectionEnabled) {
             for (const accepted of acceptedCharacters) {
               const key = normalize(accepted.name);
+              if (formalTargets.has(key)) {
+                removeCandidateSources.add(accepted.name);
+                continue;
+              }
               const existing = candidateProposals.get(key);
               if (existing && normalize(existing.target) !== normalize(accepted.target)) {
                 throw new Error(
@@ -4006,13 +4155,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
                 aliases: existing?.aliases ?? [],
                 info: `character discovery: ${accepted.rationale}`,
                 status: "pending",
-                allowTargetReplacement: true
+                allowTargetReplacement: false
               });
             }
           }
-          if (candidateProposals.size > 0) {
+          if (candidateProposals.size > 0 || removeCandidateSources.size > 0) {
             glossaryCommit = await transaction.commit(
-              [...candidateProposals.values()]
+              [...candidateProposals.values()],
+              { removeSources: [...removeCandidateSources] }
             );
             const unresolvedFileConflicts = glossaryCommit.outcomes.filter((outcome) => outcome.status === "conflict");
             if (unresolvedFileConflicts.length > 0) {
@@ -4060,8 +4210,11 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               : term);
           }
           const authoritativeResolvedTerms = [...authoritativeTermsBySource.values()];
-          const repairs = authoritativeResolvedTerms.length > 0
-            ? await planTranslationTerminologyRepairs(authoritativeResolvedTerms)
+          const newlyEstablishedTerms = authoritativeResolvedTerms.filter((term) => (
+            newlyEstablishedSources.has(normalize(term.source))
+          ));
+          const repairs = newlyEstablishedTerms.length > 0
+            ? await planTranslationTerminologyRepairs(newlyEstablishedTerms)
             : { debt: [], tasks: [] };
           const repairTasksByBatch = routeTranslationTerminologyRepairs(repairs.tasks);
           const rollbackResolution = context.domainRun?.resolveTranslationDiscoveries(resolvedIds, authoritativeResolvedTerms);
@@ -4224,6 +4377,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const candidate = candidatePath(request);
         const workspaceStatus = await readWorkspaceAssetsStatus(request.outputDir);
         const glossaryCandidateExists = workspaceStatus.available.glossaryCandidates;
+        const glossaryStarterAuthorityExists = glossaryCandidateExists || assets.glossary.entries.length > 0;
         const characterBibleExists = workspaceStatus.available.characterBible;
         if (workflow !== "inspect_only") {
           context.domainRun?.recordInspection({
@@ -4233,7 +4387,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               sourceLineCount: document.lineCount,
               scheduleStage: folderStages?.get(document.id)
             })),
-            glossaryCandidateExists,
+            glossaryCandidateExists: glossaryStarterAuthorityExists,
             characterBibleExists
           });
         }
@@ -4752,7 +4906,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       requiresSourceManifest: true,
       name: "readSourceLines",
       label: "Read source lines",
-      description: "Read a one-based range from the bound read-only source document. Results are paged at 512 lines. Host translation workers report shared-asset discoveries structurally, so normal asset construction does not require a parent pre-scan.",
+      description: "Read a one-based range from the bound read-only source document. Results are paged at 512 lines. Before translation starts, use bounded representative windows only when user-supplied references are insufficient to initialize requested glossary and character assets; do not turn starter initialization into an exhaustive full-source read.",
       parameters: Type.Object({
         fromLine: Type.Integer({ minimum: 1 }),
         toLine: Type.Integer({ minimum: 1 })
@@ -4939,9 +5093,188 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       }
     },
     {
+      requiresSourceManifest: true,
+      name: "initializeTranslationStarterAssets",
+      label: "Initialize translation starter assets",
+      description: "Create every currently missing requested translation starter asset in one structured Host transaction after inspectTranslationContext. Supply glossary and character records, never JSON or Markdown. The Host owns canonical serialization, validation, rollback, and workflow readiness. Existing formal glossary, glossary candidates, or character bible are reused rather than overwritten.",
+      parameters: Type.Object({
+        glossaryCandidates: Type.Optional(Type.Array(Type.Object({
+          source: Type.String({ minLength: 1 }),
+          target: Type.String({ minLength: 1 }),
+          aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+          info: Type.Optional(Type.String({ minLength: 1 })),
+          status: Type.Optional(Type.Union([
+            Type.Literal("confirmed"),
+            Type.Literal("auto"),
+            Type.Literal("pending")
+          ]))
+        }, { additionalProperties: false }))),
+        characters: Type.Optional(Type.Array(Type.Object({
+          name: Type.String({ minLength: 1 }),
+          target: Type.String({ minLength: 1 }),
+          aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+          gender: Type.String({ minLength: 1 }),
+          pronouns: Type.String({ minLength: 1 }),
+          genderConfidence: Type.Union([
+            Type.Literal("confirmed"),
+            Type.Literal("inferred"),
+            Type.Literal("unknown")
+          ]),
+          termsOfAddress: Type.String({ minLength: 1 }),
+          requiredTerms: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+          forbiddenTerms: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+          voice: Type.Optional(Type.String({ minLength: 1 })),
+          identity: Type.Optional(Type.String({ minLength: 1 })),
+          role: Type.Optional(Type.String({ minLength: 1 })),
+          relationships: Type.Optional(Type.String({ minLength: 1 })),
+          catchphrases: Type.Optional(Type.String({ minLength: 1 })),
+          evidence: Type.Optional(Type.String({ minLength: 1 }))
+        }, { additionalProperties: false })))
+      }, { additionalProperties: false }),
+      executionMode: "sequential",
+      async execute(_toolCallId, params) {
+        const domainRun = context.domainRun;
+        if (domainRun?.kind !== "translation" || domainRun.fullWorkflow !== true) {
+          throw new Error("Translation starter assets belong only to an active complete translation workflow.");
+        }
+        const snapshot = domainRun.snapshot();
+        const requirements = domainRun.workflowRequirements;
+        if (!snapshot.inspected) {
+          throw new Error("Call inspectTranslationContext before initializing translation starter assets.");
+        }
+        const input = params as {
+          glossaryCandidates?: Array<{
+            source: string;
+            target: string;
+            aliases?: string[];
+            info?: string;
+            status?: "confirmed" | "auto" | "pending";
+          }>;
+          characters?: Array<Record<string, unknown>>;
+        };
+        const [assets, workspaceStatus, workspaceContext] = await Promise.all([
+          readWorkflowProjectAssets(request),
+          readWorkspaceAssetsStatus(request.outputDir),
+          readWorkspaceAgentContext(request.outputDir)
+        ]);
+        const needsGlossary = requirements.glossaryCandidate
+          && !snapshot.glossaryReady
+          && assets.glossary.entries.length === 0
+          && !workspaceStatus.available.glossaryCandidates;
+        const needsCharacterBible = requirements.characterBible
+          && !snapshot.characterBibleReady
+          && !workspaceStatus.available.characterBible;
+        if (needsGlossary !== (input.glossaryCandidates !== undefined)) {
+          throw new Error(needsGlossary
+            ? "Include glossaryCandidates in the same starter-asset call."
+            : "Do not submit glossaryCandidates: an authority already exists or generation is disabled.");
+        }
+        if (needsCharacterBible !== (input.characters !== undefined)) {
+          throw new Error(needsCharacterBible
+            ? "Include characters in the same starter-asset call."
+            : "Do not submit characters: a character bible already exists or generation is disabled.");
+        }
+        if (!needsGlossary && !needsCharacterBible) {
+          throw new Error("No requested translation starter asset is missing.");
+        }
+        const establishedTargets = new Map<string, string>();
+        for (const entry of assets.glossary.entries) {
+          const source = normalizeTranslationTerm(String(entry.source ?? ""));
+          const target = normalizeTranslationTerm(String(entry.target ?? ""));
+          if (source && target) establishedTargets.set(source, target);
+        }
+        for (const entry of workspaceContext.glossaryCandidates ?? []) {
+          const source = normalizeTranslationTerm(entry.source);
+          const target = normalizeTranslationTerm(entry.target);
+          if (source && target && !establishedTargets.has(source)) establishedTargets.set(source, target);
+        }
+        for (const entry of input.glossaryCandidates ?? []) {
+          const source = normalizeTranslationTerm(entry.source);
+          const target = normalizeTranslationTerm(entry.target);
+          if (source && target && !establishedTargets.has(source)) establishedTargets.set(source, target);
+        }
+        const canonicalCharacters = (input.characters ?? []).map((entry) => {
+          const source = normalizeTranslationTerm(String(entry.name ?? ""));
+          const establishedTarget = establishedTargets.get(source);
+          return establishedTarget ? { ...entry, target: establishedTarget } : entry;
+        });
+        return runWorkspaceGlossaryCandidateTransaction(request.outputDir, async (transaction) => {
+          const domainRollbacks: Array<() => void | Promise<void>> = [];
+          let glossaryCommit: WorkspaceGlossaryCandidateCommit | undefined;
+          let characterWritten = false;
+          try {
+            if (needsGlossary) {
+              glossaryCommit = await transaction.commit((input.glossaryCandidates ?? []).map((entry) => ({
+                source: entry.source,
+                target: entry.target,
+                aliases: entry.aliases,
+                info: entry.info,
+                status: entry.status ?? "pending"
+              })));
+              domainRollbacks.push(() => glossaryCommit!.rollback());
+              const conflicts = glossaryCommit.outcomes.filter((outcome) => outcome.status === "conflict");
+              if (conflicts.length > 0) {
+                throw new Error(
+                  "Starter glossary candidates conflict with an established target: "
+                  + conflicts.map((outcome) => (
+                    `${outcome.source} (${outcome.existingTarget} vs ${outcome.target})`
+                  )).join(", ")
+                );
+              }
+              const rollback = domainRun.recordWorkflowWrite(WORKSPACE_GLOSSARY);
+              if (rollback) domainRollbacks.push(rollback);
+            }
+            if (needsCharacterBible) {
+              const content = serializeCharacterBibleMarkdown(canonicalCharacters);
+              validateGeneratedCharacterBibleContent(content, WORKSPACE_CHARACTER_BIBLE);
+              await mkdir(path.dirname(assets.paths.characterBible), { recursive: true });
+              await writeTextFileAtomically(assets.paths.characterBible, content);
+              characterWritten = true;
+              domainRollbacks.push(() => rm(assets.paths.characterBible, { force: true }));
+              const rollback = domainRun.recordWorkflowWrite(WORKSPACE_CHARACTER_BIBLE);
+              if (rollback) domainRollbacks.push(rollback);
+            }
+            const status = await readWorkspaceAssetsStatus(request.outputDir);
+            await context.persistHostState?.();
+            return textResult({
+              created: {
+                glossaryCandidates: needsGlossary,
+                characterBible: needsCharacterBible
+              },
+              counts: status.counts,
+              paths: status.paths
+            });
+          } catch (error) {
+            const rollbackErrors: unknown[] = [];
+            for (const rollback of domainRollbacks.reverse()) {
+              try {
+                await rollback();
+              } catch (rollbackError) {
+                rollbackErrors.push(rollbackError);
+              }
+            }
+            if (characterWritten || glossaryCommit) {
+              try {
+                await readWorkspaceAssetsStatus(request.outputDir);
+              } catch (rollbackError) {
+                rollbackErrors.push(rollbackError);
+              }
+            }
+            if (rollbackErrors.length > 0) {
+              throw new AggregateError(
+                [error, ...rollbackErrors],
+                "Translation starter-asset initialization failed and could not be fully rolled back."
+              );
+            }
+            throw error;
+          }
+        });
+      }
+    },
+    {
       name: "writeProjectFile",
       label: "Write workflow file",
-      description: "Write only AI_translation/_workspace assets or settings files. Parent directories are created automatically: never create .gitkeep or initialize AI_translation. Translation candidates must use writeTranslationChunk and proofreading reports must use writeProofreadFindings.",
+      description: "Write only noncanonical AI_translation/_workspace notes or settings files. Parent directories are created automatically: never create .gitkeep or initialize AI_translation. Translation starter glossary/character assets use initializeTranslationStarterAssets; later shared-asset updates use their typed Host discovery tools. Translation candidates must use writeTranslationChunk and proofreading reports must use writeProofreadFindings.",
       parameters: Type.Object({
         path: Type.String(),
         content: Type.String(),
@@ -4951,30 +5284,17 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       async execute(_toolCallId, params) {
         const input = params as { path: string; content: string; append?: boolean };
         const relativePath = assertDomainWritePath(request.outputDir, input.path);
-        if (relativePath === WORKSPACE_GLOSSARY) {
-          if (!glossaryCandidateCollectionEnabled) {
-            throw new Error("Glossary-candidate generation is disabled for this workflow.");
-          }
-          if (input.append) throw new Error("Generated glossary candidates must be replaced as one validated JSON document, not appended.");
-          validateGeneratedGlossaryContent(input.content, relativePath);
+        if (relativePath === WORKSPACE_GLOSSARY && !glossaryCandidateCollectionEnabled) {
+          throw new Error("Glossary-candidate generation is disabled for this workflow.");
         }
-        if (relativePath === WORKSPACE_CHARACTER_BIBLE) {
-          if (Object.values(translationAlignmentState.documents).some((audit) => (
-            audit.auditId.startsWith("translation-warning-")
-          ))) {
-            throw new Error(
-              "The canonical character bible cannot be rewritten during final warning review. "
-              + "Use the warning row's expectedTarget for translation repair; canonical target changes must go through resolveTranslationDiscoveries."
-            );
-          }
-          if (input.append) throw new Error("The generated character bible must be replaced as one validated Markdown document, not appended.");
-          validateGeneratedCharacterBibleContent(input.content, relativePath);
+        if (relativePath === WORKSPACE_GLOSSARY || relativePath === WORKSPACE_CHARACTER_BIBLE) {
+          throw new Error(
+            "Canonical translation starter assets cannot be hand-authored through writeProjectFile. "
+            + "Use initializeTranslationStarterAssets before workers, then the typed Host discovery/resolution tools for later updates."
+          );
         }
         const result = await writeProjectFile({ outputDir: request.outputDir, relativePath, content: input.content, append: input.append });
         if (!result.ok) throw new Error(result.error);
-        if (relativePath === WORKSPACE_GLOSSARY || relativePath === WORKSPACE_CHARACTER_BIBLE) {
-          await readWorkspaceAssetsStatus(request.outputDir);
-        }
         context.domainRun?.recordWorkflowWrite(relativePath);
         return textResult(result);
       }
@@ -5787,7 +6107,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         let totalSourceLineCount = 0;
         let totalWarningCount = 0;
         let acceptedDocumentCount = 0;
-        if (!boundedArtifactValidation) await reconcileWorkspaceCharacterGlossaryCandidates();
+        if (!boundedArtifactValidation) await assertWorkspaceCharacterGlossaryConsistency();
         for (const document of documents) {
           const bound = manifest?.kind === "folder"
             ? bindPiSourceDocument(baseRequest, document)
@@ -7036,6 +7356,23 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         context.domainRun?.assertCanStartSubagentBatch("translation");
         const input = params as { workerCount?: number; tasks?: TranslationSubagentTaskInput[] };
         const resolvedManifest = await ensureManifest();
+        const workflowState = context.domainRun?.snapshot();
+        const missingStarterAssets = [
+          workflowState?.workflowRequirements?.glossaryCandidate && !workflowState.glossaryReady
+            ? "AI_translation/_workspace/glossary_candidates.json"
+            : undefined,
+          workflowState?.workflowRequirements?.characterBible && !workflowState.characterBibleReady
+            ? "AI_translation/_workspace/character_bible.md"
+            : undefined
+        ].filter((value): value is string => Boolean(value));
+        if (missingStarterAssets.length > 0) {
+          throw new Error(
+            `Translation workers cannot start before requested starter assets are available: ${missingStarterAssets.join(", ")}. `
+            + "Initialize them from user-supplied references first; when those are insufficient, use bounded representative source samples. "
+            + "Then rerun inspectTranslationContext and start the Host queue."
+          );
+        }
+        await assertWorkspaceCharacterGlossaryConsistency();
         const currentDiscoveryConflicts = await prepareCurrentTranslationDiscoveryConflicts(resolvedManifest);
         const appliedReuseTasks = await planAppliedReuseAssignments(resolvedManifest);
         const totalLines = splitTextLines(await readFile(sourcePath(request), "utf8")).length;

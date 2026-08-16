@@ -1075,7 +1075,7 @@ export const LINE_REVIEW_PROTOCOL_VERSION = 31;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 8;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
-export const PROMPT_SETTINGS_VERSION = 38;
+export const PROMPT_SETTINGS_VERSION = 39;
 
 export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   const locale = options.locale ?? "zh-CN";
@@ -1763,6 +1763,8 @@ function setAiStatus(text) {
   if (aiStatus) aiStatus.textContent = text || "";
 }
 let projectPromptSettings = {};
+let promptSettingsEditRevision = 0;
+let promptSettingsDirty = false;
 const promptSettingsVersion = ${PROMPT_SETTINGS_VERSION};
 const projectPromptSettingKeys = [
   "languagePair", "style", "workDescription", "workflowTemplateId",
@@ -1877,8 +1879,10 @@ function applyProjectPromptSettings(value) {
     projectGlossaryPath = glossaryPath;
     workflowPaths().glossaryPath = glossaryPath;
   }
-  fillPromptSettingsForm();
-  updatePromptSettingsVisibility();
+  if (!promptSettingsTextEditorActive()) {
+    fillPromptSettingsForm();
+    updatePromptSettingsVisibility();
+  }
   if (needsPromptSettingsMigration) {
     void writeStoredPromptSettings(projectPromptSettings).catch((error) => {
       setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
@@ -1970,7 +1974,10 @@ function appendPromptCustomPreserveRule(rule = {}) {
   remove.textContent = "\u00d7";
   remove.title = data.labels.removeCustomPreserveRule || "Remove preservation rule";
   remove.setAttribute("aria-label", remove.title);
-  for (const field of [label, pattern, flags]) field.addEventListener("input", () => scheduleProjectPromptSettingsWrite(160));
+  for (const field of [label, pattern, flags]) {
+    field.addEventListener("input", markPromptSettingsEdited);
+    field.addEventListener("blur", commitPromptSettingsAfterFieldExit);
+  }
   remove.addEventListener("click", () => {
     row.remove();
     scheduleProjectPromptSettingsWrite();
@@ -2138,13 +2145,39 @@ function updatePromptSettingsVisibility() {
 }
 
 let promptSettingsWriteTimer = 0;
+function promptSettingsTextEditorActive() {
+  const active = document.activeElement;
+  return Boolean(promptSettingsPanel && active && promptSettingsPanel.contains(active)
+    && (active.matches("textarea") || active.matches('input:not([type="checkbox"]):not([type="radio"])')));
+}
+function markPromptSettingsEdited() {
+  promptSettingsEditRevision += 1;
+  promptSettingsDirty = true;
+}
+function commitPromptSettingsAfterFieldExit() {
+  window.setTimeout(() => {
+    if (promptSettingsDirty) {
+      scheduleProjectPromptSettingsWrite();
+    } else if (!promptSettingsTextEditorActive()) {
+      fillPromptSettingsForm();
+      updatePromptSettingsVisibility();
+    }
+  }, 0);
+}
 function scheduleProjectPromptSettingsWrite(delay = 0) {
   window.clearTimeout(promptSettingsWriteTimer);
   promptSettingsWriteTimer = window.setTimeout(() => {
     promptSettingsWriteTimer = 0;
     try {
       const settings = currentPromptSettings();
-      void writeStoredPromptSettings(settings).catch((error) => {
+      const editRevision = promptSettingsEditRevision;
+      void writeStoredPromptSettings(settings).then(() => {
+        if (promptSettingsEditRevision === editRevision) promptSettingsDirty = false;
+        if (!promptSettingsTextEditorActive()) {
+          fillPromptSettingsForm();
+          updatePromptSettingsVisibility();
+        }
+      }).catch((error) => {
         setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
       });
     } catch (error) {
@@ -2158,7 +2191,8 @@ for (const field of [
   promptFolderTranslationOrder, promptSubagentCount, promptReviewSubagentCount, promptCandidateRatio,
   promptMontecarloSize, promptMontecarloRoundMin, promptMontecarloRoundMax
 ]) {
-  field?.addEventListener("input", () => scheduleProjectPromptSettingsWrite(160));
+  field?.addEventListener("input", markPromptSettingsEdited);
+  field?.addEventListener("blur", commitPromptSettingsAfterFieldExit);
 }
 for (const field of [
   promptGlossaryCandidates, promptCharacterBible, promptReuseExistingTranslation, promptSplit, promptSubagent,

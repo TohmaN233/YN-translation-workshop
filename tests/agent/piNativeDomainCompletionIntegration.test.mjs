@@ -237,12 +237,11 @@ try {
   ));
   assert.ok(completionNoticeIndex >= 0);
   const completionNotice = messages[completionNoticeIndex];
-  assert.match(String(completionNotice.content), /CHILD DISCOVERY REPORT/);
-  assert.match(String(completionNotice.content), /ordinary dictionary words or everyday phrases/);
-  assert.match(String(completionNotice.content), /unknown gender\/pronoun/);
+  assert.match(String(completionNotice.content), /no new terminology or character facts for parent review/i);
   assert.equal(completionNotice.details?.completionContext?.glossaryCount, 0,
     "reviewed terminology should be committed at the assignment gate, not replayed at batch completion");
-  assert.equal(completionNotice.details?.completionContext?.characterCount, 1);
+  assert.equal(completionNotice.details?.completionContext?.characterCount, 0,
+    "safe character discoveries should update the shared starter assets at the assignment gate");
   assert.equal(Object.hasOwn(completionNotice.details?.completionContext ?? {}, "discoveries"), false,
     "terminal parent context must not duplicate the full child discovery payload");
   assert.ok(validationIndex > completionNoticeIndex);
@@ -253,6 +252,10 @@ try {
     "utf8"
   ));
   assert.deepEqual(glossaryCandidates.entries.map((entry) => [entry.source, entry.target]), [["one", "\u4e00"]]);
+  assert.match(
+    await readFile(path.join(workspaceDir, "AI_translation", "_workspace", "character_bible.md"), "utf8"),
+    /## one[\s\S]*Localized name: 一/i
+  );
 
   const state = await service.getRunState(workspaceDir, session.id);
   assert.equal(state.running, false);

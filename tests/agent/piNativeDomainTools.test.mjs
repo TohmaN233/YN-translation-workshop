@@ -325,7 +325,7 @@ await test("translation discoveries are paged from Host state and resolved into 
   }
 });
 
-await test("accepted translation splits commit provisional terms immediately and pause the live queue on conflicts", async () => {
+await test("accepted translation splits keep the first established term without reopening prior lines", async () => {
   let started;
   const notifications = [];
   const priorityRepairs = [];
@@ -417,36 +417,13 @@ await test("accepted translation splits commit provisional terms immediately and
     glossary = JSON.parse(await readFile(candidateAsset, "utf8"));
     assert.deepEqual(glossary.entries.map((entry) => [entry.source, entry.target]), [["ゲートオープン", "开门"]],
       "a conflicting later split must not overwrite or duplicate the provisional target");
-    assert.equal(started.claimGate.isBlocked(), true);
-    await started.claimGate.onQuiescent();
-    assert.equal(notifications.length, 1);
-    assert.match(notifications[0].content, /paused at the terminology commit gate/i);
-    let gateOpened = false;
-    const gateWait = started.claimGate.wait(new AbortController().signal).then(() => { gateOpened = true; });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(gateOpened, false, "the next split must remain behind the conflict gate");
-
-    await execute(fx.tool("resolveTranslationDiscoveries"), {
-      glossary: [{
-        source: "ゲートオープン",
-        action: "accept",
-        target: "开门",
-        rationale: "Use the first reviewed battle call consistently."
-      }]
-    });
-    await gateWait;
-    assert.equal(gateOpened, true);
-    assert.equal(priorityRepairs.length, 1);
-    assert.deepEqual(priorityRepairs[0].tasks.map((task) => [task.documentId, task.fromLine, task.toLine]), [
-      ["source.txt", 2, 2]
-    ]);
-    assert.match(priorityRepairs[0].tasks[0].reviewFeedback[0].reason, /use 开门/);
-
-    await writeFile(candidate, "开门 A\n开门 B\n下一步\n", "utf8");
-    await started.onTaskCompleted(resultFor("开门", 2), priorityRepairs[0].tasks[0]);
+    assert.equal(started.claimGate.isBlocked(), false);
+    assert.equal(notifications.length, 0);
+    assert.equal(priorityRepairs.length, 0);
+    assert.equal(domainRun.pendingTranslationDiscoveries().length, 0);
     assert.equal(domainRun.pendingTranslationTerminologyDebt().length, 0);
-    assert.equal(domainRun.translationDiscoveryObservations().length, 3,
-      "observed evidence must survive provisional commit, conflict resolution, and repair");
+    assert.equal(domainRun.translationDiscoveryObservations().length, 2,
+      "the differing later observation remains auditable without changing the established target");
   } finally {
     await fx.close();
   }
@@ -626,7 +603,11 @@ await test("disabled glossary candidates cannot create files, gates, hints, or t
     )), false);
     const nextRequest = started.requestForTask(started.tasks[1]);
     assert.deepEqual(nextRequest.priorTranslationDiscoveries.glossaryCandidates, []);
-    assert.equal(nextRequest.priorTranslationDiscoveries.characterFacts.length, 1);
+    assert.equal(nextRequest.priorTranslationDiscoveries.characterFacts.length, 0);
+    assert.match(
+      await readFile(path.join(fx.outputDir, "AI_translation", "_workspace", "character_bible.md"), "utf8"),
+      /## ユッピ[\s\S]*Localized name: 优比/i
+    );
   } finally {
     await fx.close();
   }
@@ -1781,7 +1762,155 @@ await test("accepted child character facts create and satisfy a previously missi
   }
 });
 
-await test("accepted character names atomically replace the same provisional glossary candidate", async () => {
+await test("complete translation workers cannot start before requested starter reference assets exist", async () => {
+  let starts = 0;
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    workflowRequirements: { glossaryCandidate: true, characterBible: true },
+    fullWorkflow: true,
+    subagentEnabled: true,
+    subagentCount: 4
+  });
+  domainRun.recordInspection({
+    sourceLineCount: 4,
+    glossaryCandidateExists: false,
+    characterBibleExists: false
+  });
+  const fx = await fixture({
+    domainRun,
+    subagents: {
+      startTranslationBatch() {
+        starts += 1;
+        return { id: "should-not-start", status: "running", subagents: [] };
+      }
+    },
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      glossaryCandidates: true,
+      characterBible: true,
+      subagentEnabled: true,
+      subagentCount: 4
+    }
+  }, "甲\n乙\n丙\n丁\n");
+  try {
+    await assert.rejects(
+      execute(fx.tool("runTranslationSubagents"), {}),
+      /cannot start before requested starter assets.*glossary_candidates\.json.*character_bible\.md/is
+    );
+    assert.equal(starts, 0);
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("translation starter assets are serialized by one structured Host tool", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    workflowRequirements: { glossaryCandidate: true, characterBible: true },
+    fullWorkflow: true,
+    subagentEnabled: true,
+    subagentCount: 2
+  });
+  const fx = await fixture({
+    domainRun,
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      glossaryCandidates: true,
+      characterBible: true,
+      subagentEnabled: true,
+      subagentCount: 2
+    }
+  }, "希罗娜\n回到了神和镇。\n");
+  try {
+    await execute(fx.tool("inspectTranslationContext"));
+    const initialized = await execute(fx.tool("initializeTranslationStarterAssets"), {
+      glossaryCandidates: [{
+        source: "希罗娜",
+        target: "シロナ",
+        info: "User-supplied official Japanese name.",
+        status: "confirmed"
+      }],
+      characters: [{
+        name: "希罗娜",
+        target: "シローナ",
+        gender: "female",
+        pronouns: "彼女",
+        genderConfidence: "confirmed",
+        termsOfAddress: "シロナ; シロナさん",
+        evidence: "User-supplied official name and source sample."
+      }]
+    });
+    assert.deepEqual(initialized.details.created, {
+      glossaryCandidates: true,
+      characterBible: true
+    });
+    const glossary = JSON.parse(await readFile(
+      path.join(fx.outputDir, "AI_translation", "_workspace", "glossary_candidates.json"),
+      "utf8"
+    ));
+    assert.deepEqual(Object.keys(glossary), ["entries"]);
+    assert.deepEqual(Object.keys(glossary.entries[0]).sort(), ["info", "source", "status", "target"]);
+    assert.match(
+      await readFile(path.join(fx.outputDir, "AI_translation", "_workspace", "character_bible.md"), "utf8"),
+      /## 希罗娜[\s\S]*Localized name: シロナ[\s\S]*Gender\/pronouns: female; 彼女; confirmed[\s\S]*Terms of address: シロナ; シロナさん/i
+    );
+    assert.equal(domainRun.snapshot().glossaryReady, true);
+    assert.equal(domainRun.snapshot().characterBibleReady, true);
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("an established formal glossary satisfies the requested starter glossary gate", async () => {
+  let started;
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    workflowRequirements: { glossaryCandidate: true, characterBible: false },
+    fullWorkflow: true,
+    subagentEnabled: true,
+    subagentCount: 2
+  });
+  const fx = await fixture({
+    domainRun,
+    subagents: {
+      hasRunning: () => Boolean(started),
+      startTranslationBatch(options) {
+        started = options;
+        return { id: options.batchId, kind: "translation", status: "running", startedAt: 1, subagents: [] };
+      }
+    },
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      glossaryCandidates: true,
+      characterBible: false,
+      subagentEnabled: true,
+      subagentCount: 2
+    }
+  }, "アリス\n帰宅した。\n");
+  try {
+    const workspace = path.join(fx.outputDir, ".translation-workshop");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(path.join(workspace, "glossary.json"), JSON.stringify({
+      entries: [{ source: "アリス", target: "爱丽丝" }]
+    }), "utf8");
+
+    const inspection = await execute(fx.tool("inspectTranslationContext"));
+    assert.equal(inspection.details.establishedAssets.glossaryAvailable, true);
+    assert.equal(inspection.details.workspace.glossaryCandidates.exists, false);
+    assert.equal(domainRun.snapshot().glossaryReady, true);
+
+    const result = await execute(fx.tool("runTranslationSubagents"), {});
+    assert.equal(result.details.status, "running");
+    assert.ok(started, "the existing formal glossary must avoid redundant starter-candidate creation");
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("an existing glossary candidate remains authoritative when a later character discovery disagrees", async () => {
   const domainRun = createYnDomainRunContract({
     workflowIntent: "translation",
     fullWorkflow: true,
@@ -1838,12 +1967,14 @@ await test("accepted character names atomically replace the same provisional glo
     });
 
     const glossary = JSON.parse(await readFile(path.join(workspace, "glossary_candidates.json"), "utf8"));
-    assert.equal(glossary.entries[0].target, "马克·威尔门斯");
-    assert.deepEqual(domainRun.resolvedTranslationTerms().find((term) => term.source === "マーク・ウィルメンス"), {
-      source: "マーク・ウィルメンス",
-      target: "马克·威尔门斯",
-      observedTargets: ["马克·威尔梅斯", "马克·威尔门斯"]
-    });
+    assert.equal(glossary.entries[0].target, "马克·威尔梅斯");
+    assert.match(
+      await readFile(path.join(workspace, "character_bible.md"), "utf8"),
+      /## マーク・ウィルメンス[\s\S]*Localized name: 马克·威尔梅斯/i
+    );
+    const resolved = domainRun.resolvedTranslationTerms().find((term) => term.source === "マーク・ウィルメンス");
+    assert.equal(resolved.target, "马克·威尔梅斯");
+    assert.deepEqual(new Set(resolved.observedTargets), new Set(["马克·威尔梅斯", "马克·威尔门斯"]));
   } finally {
     await fx.close();
   }
@@ -3301,7 +3432,7 @@ await test("valid aligned chunk persists and passes whole-artifact validation", 
   }
 });
 
-await test("final translation validation reconciles legacy character and glossary-candidate divergence", async () => {
+await test("final translation validation rejects pre-existing character and glossary-candidate divergence", async () => {
   const domainRun = createYnDomainRunContract({
     workflowIntent: "translation",
     fullWorkflow: true,
@@ -3349,11 +3480,13 @@ await test("final translation validation reconciles legacy character and glossar
     for (const check of acceptedCoverage.checks) check.verdict = "aligned";
     translationAlignmentState.ranges["source.txt"] = [acceptedCoverage];
 
-    await execute(fx.tool("validateTranslationArtifact"));
+    await assert.rejects(
+      execute(fx.tool("validateTranslationArtifact")),
+      /already contain conflicting established targets.*马克·威尔梅斯 vs 马克·威尔门斯/is
+    );
     const glossary = JSON.parse(await readFile(path.join(workspace, "glossary_candidates.json"), "utf8"));
-    assert.equal(glossary.entries[0].target, "马克·威尔门斯");
-    assert.equal(domainRun.resolvedTranslationTerms().find((term) => term.source === "マーク・ウィルメンス")?.target,
-      "马克·威尔门斯");
+    assert.equal(glossary.entries[0].target, "马克·威尔梅斯");
+    assert.equal(domainRun.resolvedTranslationTerms().length, 0);
   } finally {
     await fx.close();
   }
@@ -5768,43 +5901,34 @@ await test("direct writes cannot bypass the translation artifact contract", asyn
       content: "bypass"
     }), /restricted/i);
     await execute(fx.tool("writeProjectFile"), {
-      path: "AI_translation/_workspace/character_bible.md",
-      content: "# Character Bible\n\n## 勇者 / 勇者\n- Gender/pronouns: male; he/him; inferred\n- Terms of address: 勇者\n"
+      path: "AI_translation/_workspace/notes.md",
+      content: "bounded workflow note\n"
     });
-    assert.match(await readFile(path.join(fx.outputDir, "AI_translation/_workspace/character_bible.md"), "utf8"), /Character Bible/);
+    assert.match(await readFile(path.join(fx.outputDir, "AI_translation/_workspace/notes.md"), "utf8"), /workflow note/);
   } finally {
     await fx.close();
   }
 });
 
-await test("generated workspace assets must satisfy their host schemas before completion", async () => {
+await test("canonical workspace assets cannot bypass their typed Host initializer", async () => {
   const fx = await fixture();
   try {
     await assert.rejects(() => execute(fx.tool("writeProjectFile"), {
       path: "AI_translation/_workspace/glossary_candidates.json",
       content: JSON.stringify([{ source: "勇者", target: "勇者" }])
-    }), /expected an object root|entries/i);
+    }), /cannot be hand-authored.*initializeTranslationStarterAssets/i);
     await assert.rejects(() => execute(fx.tool("writeProjectFile"), {
       path: "AI_translation/_workspace/character_bible.md",
       content: "   \n"
-    }), /must not be empty/i);
-    await assert.rejects(() => execute(fx.tool("writeProjectFile"), {
-      path: "AI_translation/_workspace/character_bible.md",
-      content: "# Character Bible\n\n## 勇者 / 勇者\n- Voice/register: formal\n"
-    }), /Gender\/pronouns|Terms of address/i);
+    }), /cannot be hand-authored.*initializeTranslationStarterAssets/i);
     await assert.rejects(() => execute(fx.tool("writeProjectFile"), {
       path: "AI_translation/_workspace/GLOSSARY_CANDIDATES.JSON",
       content: "{}"
-    }), /entries/i);
+    }), /cannot be hand-authored.*initializeTranslationStarterAssets/i);
     await assert.rejects(() => execute(fx.tool("writeProjectFile"), {
       path: "AI_translation/_workspace/CHARACTER_BIBLE.MD",
       content: "   \n"
-    }), /must not be empty/i);
-    const canonical = await execute(fx.tool("writeProjectFile"), {
-      path: "AI_translation/_workspace/CHARACTER_BIBLE.MD",
-      content: "# Character Bible\n\n## 勇者 / 勇者\n- Gender/pronouns: male; he/him; confirmed\n- Terms of address: 勇者\n"
-    });
-    assert.equal(canonical.details.relativePath, "AI_translation/_workspace/character_bible.md");
+    }), /cannot be hand-authored.*initializeTranslationStarterAssets/i);
   } finally {
     await fx.close();
   }
@@ -7168,9 +7292,10 @@ await test("fixed system prompt drives semantic intent and mandatory artifact va
       "Host queue owns assignment, validation, review, retry, and settlement",
       "writeTranslationChunk",
       "validateTranslationArtifact",
-      "do not bulk-read the source or construct it before worker launch",
-      "Translation children report evidence-backed character facts",
-      "after the batch, page readTranslationDiscoveries",
+      "initializeTranslationStarterAssets",
+      "bounded source sample",
+      "Translation children report evidence-backed additions",
+      "page readTranslationDiscoveries only for unresolved facts",
       "Exact-search only facts that remain unknown",
       "Children inherit the parent model",
       "Child batches run in the background",
@@ -8018,7 +8143,7 @@ await test("final warning review cannot rewrite a canonical character target out
         path: "AI_translation/_workspace/character_bible.md",
         content: canonical.replaceAll("伊妮丝", "艾妮丝")
       }),
-      /cannot be rewritten during final warning review.*expectedTarget.*resolveTranslationDiscoveries/i
+      /cannot be hand-authored.*typed Host discovery\/resolution tools/i
     );
     assert.equal(await readFile(characterPath, "utf8"), canonical);
   } finally {

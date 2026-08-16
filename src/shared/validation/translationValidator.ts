@@ -282,6 +282,33 @@ function sharedHanRuns(sourcePayload: string, candidatePayload: string, minLengt
   return srcRuns.some((run) => run.length >= minLength && candidatePayload.includes(run));
 }
 
+function sharedHanSequenceResidue(sourcePayload: string, candidatePayload: string): boolean {
+  const sourceHan = (sourcePayload.match(/[\u4e00-\u9fff]/g) ?? []).join("");
+  const candidateHan = (candidatePayload.match(/[\u4e00-\u9fff]/g) ?? []).join("");
+  if (sourceHan.length < 4 || candidateHan.length < 4) return false;
+
+  const lengthRatio = Math.min(sourceHan.length, candidateHan.length)
+    / Math.max(sourceHan.length, candidateHan.length);
+  if (lengthRatio < 0.75) return false;
+
+  const ngramCounts = (value: string): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (let index = 0; index < value.length - 1; index += 1) {
+      const ngram = value.slice(index, index + 2);
+      counts.set(ngram, (counts.get(ngram) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const sourceNgrams = ngramCounts(sourceHan);
+  const candidateNgrams = ngramCounts(candidateHan);
+  let shared = 0;
+  for (const [ngram, count] of sourceNgrams) {
+    shared += Math.min(count, candidateNgrams.get(ngram) ?? 0);
+  }
+  return shared / Math.max(1, sourceHan.length - 1) >= 0.8
+    && shared / Math.max(1, candidateHan.length - 1) >= 0.8;
+}
+
 function sharedLatinWords(sourcePayload: string, candidatePayload: string, minLength: number): boolean {
   const words: string[] = sourcePayload.match(/[A-Za-z]+/g) ?? [];
   const hits = words.filter((word) => word.length >= minLength && candidatePayload.includes(word));
@@ -319,6 +346,8 @@ function languageSpecificResidue(
  *    digits, and whitespace ignored. Lines with no translatable prose never trigger.
  * 2. If the candidate no longer contains source-language script, assume translated.
  * 3. When sourceLanguage is known, apply conservative script-specific residue rules.
+ *    Chinese-to-Japanese needs pair-aware high-overlap detection because ordinary
+ *    Japanese naturally shares Han characters with the Chinese source.
  */
 export function looksLikeSourceResidue(
   source: string,
@@ -327,13 +356,14 @@ export function looksLikeSourceResidue(
     extractPlaceholders: (line: string) => string[];
     extractTags: (line: string) => string[];
     sourceLanguage?: SourceLanguageKey;
+    targetLanguage?: SourceLanguageKey;
   }
 ): boolean {
   if (!source || !candidate) {
     return false;
   }
 
-  const { extractPlaceholders, extractTags, sourceLanguage } = options;
+  const { extractPlaceholders, extractTags, sourceLanguage, targetLanguage } = options;
   const srcPayload = stripPreservedPayload(source, extractPlaceholders, extractTags);
   const candPayload = stripPreservedPayload(candidate, extractPlaceholders, extractTags);
   const srcCore = proseCore(srcPayload);
@@ -353,6 +383,10 @@ export function looksLikeSourceResidue(
 
   if (!sourceLanguage) {
     return false;
+  }
+
+  if (sourceLanguage === "zh" && targetLanguage === "ja") {
+    return sharedHanSequenceResidue(srcPayload, candPayload);
   }
 
   return languageSpecificResidue(srcPayload, candPayload, sourceLanguage);
@@ -929,7 +963,12 @@ export function validateTranslationCandidate(
       detectUntranslated
       && !isProbablyEmpty(src)
       && hasTranslatableProse(src, extractPlaceholders, extractTags)
-      && looksLikeSourceResidue(src, cand, { extractPlaceholders, extractTags, sourceLanguage })
+      && looksLikeSourceResidue(src, cand, {
+        extractPlaceholders,
+        extractTags,
+        sourceLanguage,
+        targetLanguage
+      })
     ) {
       const sourcePayload = stripPreservedPayload(src, extractPlaceholders, extractTags);
       const candidatePayload = stripPreservedPayload(cand, extractPlaceholders, extractTags);

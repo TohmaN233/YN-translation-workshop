@@ -444,6 +444,102 @@ async function run(): Promise<void> {
     'document.querySelector("#fileFrame")?.contentDocument?.querySelector("#promptSettingsPanel")?.hidden === false',
     "the upgraded child prompt-settings panel"
   );
+  const promptWritesBeforeTyping = await folderView.webContents.executeJavaScript(
+    "window.__ynFolderLifecycle?.projectWritesStarted || 0"
+  );
+  const promptStyleDraftStarted = await folderView.webContents.executeJavaScript(`(() => {
+    const doc = document.querySelector("#fileFrame")?.contentDocument;
+    const style = doc?.querySelector("#promptStyle");
+    if (!style) return false;
+    style.focus();
+    style.value = "";
+    style.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  })()`);
+  assert(promptStyleDraftStarted, "Could not start an in-progress prompt style edit");
+  await new Promise((resolve) => setTimeout(resolve, 360));
+  const promptStyleDuringTyping = await folderView.webContents.executeJavaScript(`(() => {
+    const doc = document.querySelector("#fileFrame")?.contentDocument;
+    return {
+      value: doc?.querySelector("#promptStyle")?.value ?? null,
+      active: doc?.activeElement?.id || "",
+      writes: window.__ynFolderLifecycle?.projectWritesStarted || 0
+    };
+  })()`);
+  assert(promptStyleDuringTyping.value === "", "Prompt style inserted the default 'game' while the user was still typing");
+  assert(promptStyleDuringTyping.active === "promptStyle", "Prompt style lost focus during a project-state refresh");
+  assert(promptStyleDuringTyping.writes === promptWritesBeforeTyping,
+    "Prompt style synchronized before the user left the input field");
+  await folderView.webContents.executeJavaScript(`(() => {
+    const doc = document.querySelector("#fileFrame")?.contentDocument;
+    const style = doc?.querySelector("#promptStyle");
+    style?.blur();
+    style?.dispatchEvent(new Event("blur"));
+  })()`);
+  await waitFor(
+    async () => {
+      try {
+        return JSON.parse(await readFile(projectStatePath, "utf8"));
+      } catch {
+        return null;
+      }
+    },
+    (state) => state?.style === "game",
+    "the prompt style to synchronize after leaving the field"
+  );
+  const promptRegexDraftStarted = await folderView.webContents.executeJavaScript(`(() => {
+    const doc = document.querySelector("#fileFrame")?.contentDocument;
+    doc?.querySelector("#addPromptCustomPreserveRule")?.click();
+    const pattern = doc?.querySelector("#promptCustomPreserveRules .prompt-preserve-pattern:last-of-type")
+      || [...(doc?.querySelectorAll("#promptCustomPreserveRules .prompt-preserve-pattern") || [])].at(-1);
+    if (!pattern) return false;
+    pattern.value = "[";
+    pattern.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  })()`);
+  assert(promptRegexDraftStarted, "Could not start an in-progress prompt regex edit");
+  const promptWritesBeforeRegexPause = await folderView.webContents.executeJavaScript(
+    "window.__ynFolderLifecycle?.projectWritesStarted || 0"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 360));
+  const promptRegexDuringTyping = await folderView.webContents.executeJavaScript(`(() => {
+    const doc = document.querySelector("#fileFrame")?.contentDocument;
+    const pattern = [...(doc?.querySelectorAll("#promptCustomPreserveRules .prompt-preserve-pattern") || [])].at(-1);
+    return {
+      value: pattern?.value ?? null,
+      active: doc?.activeElement === pattern,
+      writes: window.__ynFolderLifecycle?.projectWritesStarted || 0,
+      status: doc?.querySelector("#aiStatus")?.textContent || ""
+    };
+  })()`);
+  assert(promptRegexDuringTyping.value === "[", "Prompt regex draft was replaced during typing");
+  assert(promptRegexDuringTyping.active === true, "Prompt regex lost focus during a project-state refresh");
+  assert(promptRegexDuringTyping.writes === promptWritesBeforeRegexPause,
+    "Prompt regex synchronized before the user left the input field");
+  assert(!promptRegexDuringTyping.status.includes("Invalid custom preserve rule"),
+    "Prompt regex was validated before the user left the input field");
+  await folderView.webContents.executeJavaScript(`(() => {
+    const doc = document.querySelector("#fileFrame")?.contentDocument;
+    const row = [...(doc?.querySelectorAll("#promptCustomPreserveRules .prompt-preserve-row") || [])].at(-1);
+    const pattern = row?.querySelector(".prompt-preserve-pattern");
+    const flags = row?.querySelector(".prompt-preserve-flags");
+    if (!pattern || !flags) throw new Error("Prompt regex row disappeared before blur persistence");
+    pattern.value = "^DIALOGUE:";
+    pattern.dispatchEvent(new Event("input", { bubbles: true }));
+    pattern.blur();
+    pattern.dispatchEvent(new Event("blur"));
+  })()`);
+  await waitFor(
+    async () => {
+      try {
+        return JSON.parse(await readFile(projectStatePath, "utf8"));
+      } catch {
+        return null;
+      }
+    },
+    (state) => state?.customPreserveRules?.some((rule) => rule.pattern === "^DIALOGUE:"),
+    "the prompt regex to synchronize after leaving the field"
+  );
   const reuseAuditDefault = await folderView.webContents.executeJavaScript(`(() => {
     const checkbox = document.querySelector("#fileFrame")?.contentDocument?.querySelector("#promptReuseExistingTranslation");
     return checkbox ? { exists: true, checked: checkbox.checked } : { exists: false, checked: null };

@@ -66,12 +66,12 @@ export function buildYnSystemPrompt(
       ? "Use the selected glossary as authoritative. Do not bulk-read it: Host assignment reads inject direct matches and exact indexed search handles a real ambiguity."
       : glossaryEnabled
         ? subagentCount > 0
-          ? "Glossary-candidate collection is enabled for consistency-sensitive names and setting terms; exclude ordinary vocabulary and uncertain entries. Do not pre-scan the source or pre-populate the file: accepted translation chunks commit discoveries through the Host terminology gate. If the completed run reports no candidates and the requested file is still absent, create one validated empty candidate document then."
+          ? "If inspectTranslationContext reports an established glossary, use it as the starter authority and do not create a redundant glossary-candidate file. Otherwise, prepare glossary candidates for initializeTranslationStarterAssets from supplied references, plus a bounded source sample only when needed. Translation chunks then update missing terms through the Host gate; exclude ordinary or uncertain vocabulary."
           : "Create the workspace glossary candidate only when inspectTranslationContext reports it unavailable. Include consistency-sensitive names and setting terms; exclude ordinary vocabulary and uncertain entries."
         : "Glossary candidate generation is disabled.",
     characterBibleEnabled
       ? subagentCount > 0
-        ? "If inspectTranslationContext reports the character bible unavailable, do not bulk-read the source or construct it before worker launch. Translation children report evidence-backed character facts; after the batch, page readTranslationDiscoveries and accept or reject those records so the Host creates the validated character bible. Exact-search only facts that remain unknown; never infer gender from a translated name."
+        ? "If the character bible is unavailable, prepare its structured character records for initializeTranslationStarterAssets from supplied references and a bounded source sample. It is a starter, not a full census. Translation children report evidence-backed additions; page readTranslationDiscoveries only for unresolved facts. Exact-search only facts that remain unknown; never infer gender from a translated name."
         : `Create the workspace character bible only when inspectTranslationContext reports it unavailable. Use this format:\n${CHARACTER_BIBLE_BUILD_INSTRUCTIONS}`
       : "Character-bible generation is disabled."
   ];
@@ -89,6 +89,8 @@ export function buildYnSystemPrompt(
     "TRANSLATION WORKFLOW:",
     "1. Call inspectTranslationContext once. Its exists/available fields are authoritative; use its returned paths and never probe a path reported unavailable.",
     ...translationAssets,
+    "Before workers, build every requested missing starter asset. First use user-supplied Wiki URLs, setting files, reference translations and work description; fetch supplied URLs. If references do not provide enough names, use readSourceLines for representative source windows across each document, not a full census. Call initializeTranslationStarterAssets exactly once with all currently missing requested assets; the Host serializes canonical JSON and Markdown. Never hand-author these files through writeProjectFile. Then inspect again.",
+    "For the same normalized source, keep the already established target from the formal glossary, candidate or character bible and atomically fill the missing companion asset. Later evidence cannot replace it or trigger broad historical rewrites. Expose conflicts between already-established assets.",
     `2. ${translationReuse}`,
     `3. ${translationExecution}`,
     "4. Use writeTranslationChunk for trivial exact-range parent corrections; never restart the complete queue for a few known lines.",

@@ -316,6 +316,32 @@ await test("a translated Chinese line may preserve one short Japanese proper nou
   assert.equal(result.warnings.filter((f) => f.code === "likely_untranslated").length, 0);
 });
 
+await test("zh-to-ja shared kanji in natural Japanese does not become mandatory untranslated repair", () => {
+  const src = [
+    "第一幕：择路",
+    "少年，还是大叔？",
+    "她今天回到了神和镇，继续追查银河队留下的线索。"
+  ].join("\n");
+  const cand = [
+    "第一幕：進む道",
+    "少年なのか、それとも大人の男なのか？",
+    "彼女は今日カンナギタウンへ戻り、ギンガ団が残した手がかりの調査を続けた。"
+  ].join("\n");
+  const result = validateTranslationCandidate(src, cand, { languagePair: "zh-CN->ja" });
+  assert.deepEqual(
+    result.warnings.filter((finding) => finding.code === "likely_untranslated"),
+    [],
+    "ordinary kanji shared by Chinese source and Japanese translation must not force child repair"
+  );
+});
+
+await test("zh-to-ja near-copy remains visible as likely untranslated", () => {
+  const src = "她今天回到了神和镇，继续追查银河队留下的线索。";
+  const cand = "她今天回到了神和镇、继续追查银河队留下的线索です。";
+  const result = validateTranslationCandidate(src, cand, { languagePair: "zh-CN->ja" });
+  assert.ok(result.warnings.some((finding) => finding.code === "likely_untranslated"));
+});
+
 await test("punctuation-only lines are not flagged as untranslated", () => {
   const src = "……\n!!!\nHello world";
   const cand = "……\n!!!\nHello world";

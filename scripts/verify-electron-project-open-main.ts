@@ -321,9 +321,13 @@ async function run(): Promise<void> {
   );
 
   await activeView.webContents.executeJavaScript(`(() => {
+    document.querySelector("#translatePrompt")?.click();
     const field = document.querySelector("#promptStyle");
+    field.focus();
     field.value = "historical-drama";
     field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.blur();
+    field.dispatchEvent(new Event("blur"));
   })()`);
   const persistedState = await waitFor(
     async () => JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>,
@@ -350,6 +354,60 @@ async function run(): Promise<void> {
     })()`).catch(() => ""),
     (value) => value === "historical-drama",
     "live project-state broadcast into the React form"
+  );
+  const reactStyleDraftStarted = await mainWindow.webContents.executeJavaScript(`(() => {
+    const label = [...document.querySelectorAll("label.field")].find((item) => {
+      const text = item.querySelector("span")?.textContent?.trim() || "";
+      return text === "翻译风格" || text === "Style";
+    });
+    const input = label?.querySelector("input");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (!input || !setter) return false;
+    input.focus();
+    setter.call(input, "");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  })()`);
+  assert(reactStyleDraftStarted, "Could not start an in-progress React style edit");
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const reactStyleDuringTyping = await mainWindow.webContents.executeJavaScript(`(() => {
+    const label = [...document.querySelectorAll("label.field")].find((item) => {
+      const text = item.querySelector("span")?.textContent?.trim() || "";
+      return text === "翻译风格" || text === "Style";
+    });
+    const input = label?.querySelector("input");
+    return { value: input?.value ?? null, active: document.activeElement === input };
+  })()`);
+  assert(reactStyleDuringTyping.value === "", "React style inserted the default 'game' while the user was still typing");
+  assert(reactStyleDuringTyping.active === true, "React style lost focus during a project-state refresh");
+  const stateDuringReactStyleTyping = JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>;
+  assert(stateDuringReactStyleTyping.style === "historical-drama", "React style synchronized before the user left the input field");
+  await mainWindow.webContents.executeJavaScript(`(() => {
+    const label = [...document.querySelectorAll("label.field")].find((item) => {
+      const text = item.querySelector("span")?.textContent?.trim() || "";
+      return text === "翻译风格" || text === "Style";
+    });
+    const input = label?.querySelector("input");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (!input || !setter) throw new Error("React style input disappeared before blur persistence");
+    setter.call(input, "cinematic-drama");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await mainWindow.webContents.executeJavaScript(`(() => {
+    const label = [...document.querySelectorAll("label.field")].find((item) => {
+      const text = item.querySelector("span")?.textContent?.trim() || "";
+      return text === "翻译风格" || text === "Style";
+    });
+    const input = label?.querySelector("input");
+    if (!input) throw new Error("React style input disappeared before blur");
+    input.blur();
+    input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  })()`);
+  await waitFor(
+    async () => JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>,
+    (value) => value.style === "cinematic-drama",
+    "React style persistence after leaving the input field"
   );
 
   const assetsBeforeImport = await mainWindow.webContents.executeJavaScript(`window.workshop.readProjectAssets({ outputDir: ${JSON.stringify(outputDir)} })`) as {
@@ -549,7 +607,7 @@ async function run(): Promise<void> {
       style: document.querySelector("#promptStyle")?.value,
       glossary: [...document.querySelectorAll("#glossaryList input")].map((input) => input.value).join("\\n")
     })`).catch(() => ({})),
-    (value: Record<string, unknown>) => value.style === "historical-drama" && String(value.glossary).includes("文献馆"),
+    (value: Record<string, unknown>) => value.style === "cinematic-drama" && String(value.glossary).includes("文献馆"),
     "live project settings and assets in the sibling HTML"
   );
   await viewerWindow.webContents.executeJavaScript(`(() => {
@@ -580,7 +638,7 @@ async function run(): Promise<void> {
       style: document.querySelector("#promptStyle")?.value,
       glossary: [...document.querySelectorAll("#glossaryList input")].map((input) => input.value).join("\\n")
     })`).catch(() => ({})),
-    (value: Record<string, unknown>) => value.style === "historical-drama" && String(value.glossary).includes("文献馆"),
+    (value: Record<string, unknown>) => value.style === "cinematic-drama" && String(value.glossary).includes("文献馆"),
     "project settings and assets after HTML reopen"
   );
   console.log("[project-open] sibling-and-reload-ready");

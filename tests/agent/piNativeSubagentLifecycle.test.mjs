@@ -713,6 +713,13 @@ await test("full translation children receive the built-in contract once and rea
   assert.ok(searchProjectText);
   assert.ok(write);
   assert.ok(validate);
+  assert.ok(validate.parameters.properties.fromLine);
+  assert.ok(validate.parameters.properties.toLine);
+  assert.match(
+    readProjectFile.description,
+    /bound source document.*readTranslationContext.*do not use readProjectFile/is,
+    "translation workers must be directed to line-aware source context instead of a char-zero source-file page"
+  );
 
   try {
     const readResult = await read.execute("compact-reference-read", {});

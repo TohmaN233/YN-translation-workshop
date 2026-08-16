@@ -631,6 +631,7 @@ function createPiSubagentReadOnlyProjectTools(
     proofreadSearchCache?: PiProofreadExactSearchCache;
     searchResultLimit?: number;
     boundProofreadContext?: boolean;
+    boundTranslationContext?: boolean;
     maxProjectFileReadChars?: number;
   } = {}
 ): AgentTool[] {
@@ -753,7 +754,11 @@ function createPiSubagentReadOnlyProjectTools(
       name: "readProjectFile",
       label: "Read file",
       description: options.indexedReferenceReads === "search-only"
-        ? `${options.boundProofreadContext ? "readAssignedProofreadContext already supplies the complete bound source/current translation and exact boundary rows; do not reread them, raw assets, or neighboring files. " : ""}Read one bounded UTF-8 page only when the task needs that exact additional file, including style references and user-provided external references. A bound source document id or source filename resolves to the actual Host-bound file. The approved glossary, character bible, and glossary-candidate files are indexed references: assigned context already returns direct matches, and any additional lookup must use searchProjectText with one exact term instead of bulk-reading those files. Continue a genuinely needed long non-index file with offsetChars. This tool never writes.`
+        ? `${options.boundProofreadContext
+          ? "readAssignedProofreadContext already supplies the complete bound source/current translation and exact boundary rows; do not reread them, raw assets, or neighboring files. "
+          : options.boundTranslationContext
+            ? "For the bound source document, readAssignedSource supplies owned rows and readTranslationContext supplies line-aware surrounding context; do not use readProjectFile because its page starts at a character offset unrelated to the assignment. "
+            : ""}Read one bounded UTF-8 page only when the task needs that exact additional file, including style references, prior translations, and user-provided external references. A bound source document id or source filename resolves to the actual Host-bound file. The approved glossary, character bible, and glossary-candidate files are indexed references: assigned context already returns direct matches, and any additional lookup must use searchProjectText with one exact term instead of bulk-reading those files. Continue a genuinely needed long non-index file with offsetChars. This tool never writes.`
         : "Read one bounded UTF-8 page only when the task needs that exact file, including source context, translation candidates, canonical glossary/character assets, and user-provided external references. A bound source document id or source filename resolves to the actual Host-bound file. Do not bulk-read generated historical review HTML or reread every available project asset for each assignment. Continue a genuinely needed long file with offsetChars. This tool never writes.",
       parameters: Type.Object({
         path: Type.String({ minLength: 1 }),
@@ -1854,7 +1859,7 @@ export const MAX_ASSIGNED_TRANSLATION_CHUNK_LINES = 1024;
 export const MAX_ASSIGNED_TRANSLATION_REPAIR_TURNS = 4;
 export const MAX_TRANSLATION_REVIEW_REPAIR_CYCLES = 3;
 const MAX_TRANSLATION_CONTEXT_LINES = 40;
-export const MAX_TRANSLATION_MODEL_PAGE_LINES = 256;
+export const MAX_TRANSLATION_MODEL_PAGE_LINES = 500;
 const MAX_SPARSE_TRANSLATION_ENTRY_LINES = 16;
 const MAX_HOST_CONTRACT_NO_PROGRESS_TURNS = 3;
 const TRANSLATION_WIRE_BLOCK_LINES = 16;
@@ -2293,6 +2298,14 @@ export function createPiTranslationSubagentTools(
   const glossaryCandidatesEnabled = context.request.glossaryCandidates !== false;
   const characterFactsEnabled = context.request.characterBible !== false;
   const validateSchema = Type.Object({
+    fromLine: Type.Optional(Type.Integer({
+      minimum: context.task.fromLine,
+      maximum: context.task.toLine
+    })),
+    toLine: Type.Optional(Type.Integer({
+      minimum: context.task.fromLine,
+      maximum: context.task.toLine
+    })),
     ...(context.executionMode === "bounded_repair" ? {
       misalignedLines: Type.Array(
         Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }), {
@@ -2343,7 +2356,8 @@ export function createPiTranslationSubagentTools(
   return [
     ...createPiSubagentReadOnlyProjectTools(context, {
       indexedReferenceReads: "search-only",
-      searchResultLimit: 12
+      searchResultLimit: 12,
+      boundTranslationContext: true
     }).map((tool) => ({
       ...tool,
       hostControl: "continue" as const
@@ -2836,6 +2850,18 @@ export function createPiTranslationSubagentTools(
       parameters: validateSchema,
       async execute(_toolCallId, params, signal) {
         throwIfAborted(context.signal, signal);
+        const envelope = params as { fromLine?: number; toLine?: number };
+        if ((envelope.fromLine === undefined) !== (envelope.toLine === undefined)) {
+          throw new Error("validateAssignedTranslation requires both fromLine and toLine when either is provided.");
+        }
+        if (envelope.fromLine !== undefined && (
+          envelope.fromLine !== context.task.fromLine
+          || envelope.toLine !== context.task.toLine
+        )) {
+          throw new Error(
+            `validateAssignedTranslation range must match the assigned L${context.task.fromLine}-L${context.task.toLine}.`
+          );
+        }
         if (!progress.translationWritten) {
           const missing = missingAssignedRange(progress.writtenLines!, context.task);
           throw new Error(
@@ -4307,7 +4333,7 @@ export function createPiTranslationRuntimeSpec(
       ...(context.request.workDescription?.trim() ? [`Work description: ${context.request.workDescription.trim()}`] : []),
       ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
       ...sourceInstruction,
-      "Read the complete translationReference from the first result. Use projectReferences.directMatches when present. Do not bulk-read the indexed glossary, character bible, or glossary candidates; exact-search one source term only for a real uncovered ambiguity. Other project files and prior translations remain readable on demand. Use readTranslationContext for bounded surrounding context when needed.",
+      "Read the complete translationReference from the first result. Use projectReferences.directMatches when present. Do not bulk-read the indexed glossary, character bible, or glossary candidates; exact-search one source term only for a real uncovered ambiguity. For the bound source document, use only readAssignedSource and readTranslationContext so context stays line-aware and centered on the assignment. Other project files and prior translations remain readable on demand.",
       ...(glossaryCandidatesEnabled ? [] : [
         "New glossary-candidate collection is disabled. Existing candidate entries in projectReferences remain read-only consistency references, but do not construct or report new candidate discoveries. The selected formal glossary, when present, remains authoritative."
       ]),

@@ -335,8 +335,11 @@ await test("full translation keeps one explicit mechanical-review gate", () => {
   assert.match(system, /runTranslationSubagents.*complete Host-owned translation queue/i);
   assert.match(system, /optional workerCount.*1 through 3/i);
   assert.match(system, /Host queue owns assignment, validation, review, retry, and settlement/i);
-  assert.match(system, /character bible unavailable.*do not bulk-read the source.*after the batch.*readTranslationDiscoveries/is);
-  assert.match(system, /Do not pre-scan the source or pre-populate the file.*Host terminology gate/i);
+  assert.match(system, /character bible is unavailable.*structured character records.*initializeTranslationStarterAssets.*bounded source sample/is);
+  assert.match(system, /user-supplied Wiki URLs.*references do not provide enough.*representative source windows/is);
+  assert.match(system, /initializeTranslationStarterAssets exactly once.*Host serializes canonical JSON and Markdown/is);
+  assert.match(system, /Never hand-author these files through writeProjectFile/i);
+  assert.match(system, /already established target.*atomically fill the missing companion asset/is);
   assert.equal(occurrences(system, "runTranslationSubagents"), 1);
   assert.doesNotMatch(system, /mechanically scans every row|deterministic clean-row sample/i);
   assert.doesNotMatch(system, /current-user wording|magic wording|authorization gate|authorized exactly/i);

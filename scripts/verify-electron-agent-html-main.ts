@@ -1321,6 +1321,7 @@ async function run(): Promise<void> {
     const reviewCount = document.querySelector("#promptReviewSubagentCount");
     count.value = "4";
     count.dispatchEvent(new Event("input", { bubbles: true }));
+    count.dispatchEvent(new Event("blur"));
     await new Promise((resolve) => setTimeout(resolve, 220));
     return {
       count: count.value,
@@ -1336,6 +1337,7 @@ async function run(): Promise<void> {
     const reviewCount = document.querySelector("#promptReviewSubagentCount");
     reviewCount.value = "2";
     reviewCount.dispatchEvent(new Event("input", { bubbles: true }));
+    reviewCount.dispatchEvent(new Event("blur"));
     await new Promise((resolve) => setTimeout(resolve, 220));
   })()`);
   await waitForProjectState((state) => state.reviewSubagentCount === 2);
@@ -1343,6 +1345,7 @@ async function run(): Promise<void> {
     const reviewCount = document.querySelector("#promptReviewSubagentCount");
     reviewCount.value = "";
     reviewCount.dispatchEvent(new Event("input", { bubbles: true }));
+    reviewCount.dispatchEvent(new Event("blur"));
     await new Promise((resolve) => setTimeout(resolve, 220));
   })()`);
   await waitForProjectState((state) => state.reviewSubagentCount === null);

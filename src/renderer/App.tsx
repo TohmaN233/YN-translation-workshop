@@ -263,15 +263,18 @@ function App() {
   const hydratingProject = useRef(false);
   const autoSaveTimer = useRef<number | undefined>(undefined);
   const suppressNextAutoSave = useRef(false);
+  const projectTextFieldEditing = useRef(false);
+  const formRef = useRef(form);
   const workspaceAssetsRequestId = useRef(0);
   const userSelectedFormKeys = useRef(new Set<keyof FormState>());
+  formRef.current = form;
 
   useEffect(() => {
     document.documentElement.lang = form.locale;
   }, [form.locale]);
 
   useEffect(() => {
-    if (!form.outputDir || hydratingProject.current) {
+    if (!form.outputDir || hydratingProject.current || projectTextFieldEditing.current) {
       return undefined;
     }
     if (suppressNextAutoSave.current) {
@@ -303,6 +306,13 @@ function App() {
 
   useEffect(() => window.workshop.onProjectStateUpdate(({ outputDir, state }) => {
     if (!form.outputDir || !sameProjectPath(outputDir, form.outputDir)) return;
+    if (projectTextFieldEditing.current) {
+      if (autoSaveTimer.current) {
+        window.clearTimeout(autoSaveTimer.current);
+        autoSaveTimer.current = undefined;
+      }
+      return;
+    }
     if (Object.prototype.hasOwnProperty.call(state, "customPreserveRules")) {
       const rules = normalizeCustomPreserveRules(state.customPreserveRules);
       setSavedCustomPreserveRules(rules);
@@ -358,6 +368,30 @@ function App() {
 
   function updateForm(next: Partial<FormState>) {
     setForm((current) => ({ ...current, ...next }));
+  }
+
+  function isDeferredProjectTextField(target: EventTarget | null) {
+    if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return false;
+    return Boolean(target.closest("label.field") && !target.closest(".promptBox"));
+  }
+
+  function beginProjectTextFieldEdit(target: EventTarget | null) {
+    if (!isDeferredProjectTextField(target)) return;
+    projectTextFieldEditing.current = true;
+    if (autoSaveTimer.current) {
+      window.clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = undefined;
+    }
+  }
+
+  function commitProjectTextFieldEdit(target: EventTarget | null) {
+    if (!isDeferredProjectTextField(target)) return;
+    projectTextFieldEditing.current = false;
+    if (autoSaveTimer.current) {
+      window.clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = undefined;
+    }
+    window.setTimeout(() => void saveProject().catch(showActionError), 0);
   }
 
   function showActionError(error: unknown) {
@@ -645,7 +679,8 @@ function App() {
   }
 
   async function saveProject(nextLastOutput = lastOutput, outputKind?: "line" | "proposal") {
-    if (!form.outputDir) {
+    const formSnapshot = formRef.current;
+    if (!formSnapshot.outputDir) {
       return;
     }
     if (outputKind === "line") {
@@ -654,8 +689,8 @@ function App() {
     if (outputKind === "proposal") {
       lastProposalReviewHtml.current = nextLastOutput;
     }
-    await window.workshop.saveProject(form.outputDir, {
-      ...form,
+    await window.workshop.saveProject(formSnapshot.outputDir, {
+      ...formSnapshot,
       lastHtml: nextLastOutput,
       lastOutput: nextLastOutput,
       ...(lastLineReviewHtml.current ? { lastLineReviewHtml: lastLineReviewHtml.current, lineReviewPath: lastLineReviewHtml.current } : {}),
@@ -1069,7 +1104,11 @@ function App() {
   }
 
   return (
-    <main className="shell">
+    <main
+      className="shell"
+      onInputCapture={(event) => beginProjectTextFieldEdit(event.target)}
+      onBlurCapture={(event) => commitProjectTextFieldEdit(event.target)}
+    >
       <section className="topbar">
         <div className="brandBlock">
           <img className="brandIcon" src={appIcon} alt="" aria-hidden="true" />

@@ -46,6 +46,12 @@ export interface WorkspaceAgentContext {
   characterBible?: string;
 }
 
+export interface WorkspaceCharacterGlossaryConflict {
+  source: string;
+  glossaryTarget: string;
+  characterTarget: string;
+}
+
 export interface GeneratedGlossaryImportCounts {
   imported: number;
   added: number;
@@ -370,6 +376,17 @@ async function commitWorkspaceGlossaryCandidatesUnlocked(
       outcomes.push({ source, target, status: "inserted" });
       changed = true;
     }
+    for (const entry of entries) {
+      const aliases = entry.aliases ?? [];
+      const retainedAliases = aliases.filter((alias) => {
+        const owner = bySource.get(normalized(alias));
+        return !owner || owner === entry || normalized(owner.target) === normalized(entry.target);
+      });
+      if (retainedAliases.length === aliases.length) continue;
+      changed = true;
+      if (retainedAliases.length > 0) entry.aliases = retainedAliases;
+      else delete entry.aliases;
+    }
     const committedContent = `${JSON.stringify({ entries }, null, 2)}\n`;
     validateGeneratedGlossaryContent(committedContent, glossaryPath);
     if (changed || previousContent === undefined) {
@@ -497,6 +514,30 @@ export async function readWorkspaceAgentContext(outputDir: string): Promise<Work
       ? undefined
       : validateGeneratedCharacterBibleContent(characterBibleSource, paths.characterBible)
   };
+}
+
+export async function readWorkspaceCharacterGlossaryConflicts(
+  outputDir: string
+): Promise<WorkspaceCharacterGlossaryConflict[]> {
+  const [workspace, assets] = await Promise.all([
+    readWorkspaceAgentContext(outputDir),
+    readProjectAssets({ outputDir: projectDir(outputDir) })
+  ]);
+  const charactersBySource = new Map(assets.characterBible.characters.flatMap((entry) => {
+    const source = typeof entry.name === "string" ? normalized(entry.name) : "";
+    const target = typeof entry.target === "string" ? normalized(entry.target) : "";
+    return source && target ? [[source, target] as const] : [];
+  }));
+  return (workspace.glossaryCandidates ?? []).flatMap((entry) => {
+    const characterTarget = charactersBySource.get(normalized(entry.source));
+    return characterTarget && characterTarget !== normalized(entry.target)
+      ? [{
+          source: entry.source,
+          glossaryTarget: entry.target,
+          characterTarget
+        }]
+      : [];
+  });
 }
 
 export const getWorkspaceAssetsStatus = readWorkspaceAssetsStatus;

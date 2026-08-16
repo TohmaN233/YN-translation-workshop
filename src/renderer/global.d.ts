@@ -136,8 +136,8 @@ type WorkshopCandidateImportPlan = {
 
 type WorkshopAgentArtifactApi = {
   discoverAgentArtifacts: (args: { projectDir: string; sourcePaths?: string[] }) => Promise<WorkshopCandidateArtifact[]>;
-  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string }) => Promise<WorkshopTranslationValidationResult>;
-  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string }) => Promise<WorkshopCandidateImportPlan>;
+  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string }) => Promise<WorkshopTranslationValidationResult>;
+  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string }) => Promise<WorkshopCandidateImportPlan>;
   buildAgentRepairPrompt: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US" }) => Promise<string>;
 };
 

@@ -20,7 +20,7 @@ function outputBlocks(lines) {
     blocks.push({
       id: Math.floor(index / 16).toString(36),
       lines: lines.slice(index, index + 16)
-        .map((line, lineIndex) => `${lineIndex.toString(36)}译文 ${line}`)
+        .map((line, lineIndex) => `${lineIndex.toString(36)}第${line}行的完整中文翻译内容。`)
     });
   }
   return blocks;
@@ -42,22 +42,21 @@ models.setProvider(provider.provider);
 provider.setResponses([
   fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "assignment-source" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
-    fromLine: 1,
-    toLine: sourceLines.length,
     blocks: outputBlocks(Array.from({ length: 16 }, (_, index) => index + 1))
   }, { id: "initial-partial-write" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
-    entries: Array.from({ length: 256 }, (_, index) => ({
+    entries: Array.from({ length: 240 }, (_, index) => ({
       line: index + 17,
-      translation: `译文 ${index + 17}`
+      translation: `第${index + 17}行的完整中文翻译内容。`
     }))
   }, { id: "first-host-repair" }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
-    entries: Array.from({ length: 28 }, (_, index) => ({
-      line: index + 273,
-      translation: `译文 ${index + 273}`
-    }))
-  }, { id: "second-host-repair" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("readAssignedSource", {
+    fromLine: 257,
+    toLine: 300
+  }, { id: "remaining-source" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
+    blocks: outputBlocks(Array.from({ length: 44 }, (_, index) => index + 257))
+  }, { id: "second-page-write" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "host-repair-validate" }), { stopReason: "toolUse" })
 ]);
 
@@ -91,7 +90,16 @@ try {
   await supervisor.waitForAll();
 
   const batch = supervisor.list()[0];
-  assert.equal(batch.status, "completed", batch.error);
+  const diagnosticTranscript = await supervisor.inspectTranscript(batch.subagents[0].id);
+  const diagnosticTools = diagnosticTranscript.flatMap((message) => (
+    message.role === "assistant" && Array.isArray(message.content)
+      ? message.content.filter((block) => block.type === "toolCall").map((block) => block.name)
+      : []
+  ));
+  const diagnosticErrors = diagnosticTranscript
+    .filter((message) => message.role === "toolResult" && message.isError)
+    .map((message) => message.content?.[0]?.text ?? String(message.content));
+  assert.equal(batch.status, "completed", `${batch.error}\nTools: ${diagnosticTools.join(", ")}\nErrors: ${diagnosticErrors.join(" | ")}`);
   const childId = cards.at(-1)?.details?.subagentId;
   assert.ok(childId, "the completed worker card must reference its native Pi child session");
   const child = await new PiSessionRepository(outputDir).openChild(childId);
@@ -109,7 +117,8 @@ try {
   );
   assert.match(userPrompts[1], /repairAssignedTranslation once/);
   assert.match(userPrompts[1], /target language required by the workflow \(en->zh-CN\)/i);
-  assert.match(userPrompts[2], /repairAssignedTranslation once/);
+  assert.match(userPrompts[2], /unread or unwritten pages/i);
+  assert.match(userPrompts[2], /writeAssignedTranslation/);
   assert.match(userPrompts[2], /target language required by the workflow \(en->zh-CN\)/i);
   assert.match(userPrompts[3], /mandatory native tool sequence is incomplete/i);
   assert.match(userPrompts[3], /Call validateAssignedTranslation now/i);

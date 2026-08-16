@@ -279,4 +279,20 @@ assert.ok(
   "an explicit blank final candidate row must retain its line identity during staging review"
 );
 
+const jaZhOneBoundaryDifference = createTranslationChunkReviewAudit({
+  documentId: "ja-zh-boundary.txt",
+  sourceText: "一文目。二文目。",
+  candidateText: "第一句。第二句",
+  candidatePath: "C:\\project\\AI_translation\\ja-zh-boundary_translated.txt",
+  languagePair: "ja->zh-CN",
+  fromLine: 1,
+  toLine: 1,
+  sourceLineCount: 1
+});
+assert.equal(
+  jaZhOneBoundaryDifference.checks[0]?.signals.includes("sentence_boundary_count_mismatch") ?? false,
+  false,
+  "one Japanese-to-Chinese punctuation-boundary difference is too noisy to force semantic review"
+);
+
 console.log("ok translation alignment state persists bounded scopes, deterministic risk sampling, and legacy evidence");

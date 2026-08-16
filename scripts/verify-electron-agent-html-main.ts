@@ -41,6 +41,7 @@ const root = process.cwd();
 const workspace = await mkdtemp(path.join(os.tmpdir(), "yn-electron-pi-native-"));
 const externalReferenceDir = await mkdtemp(path.join(os.tmpdir(), "yn-electron-external-reference-"));
 const externalReferencePath = path.join(externalReferenceDir, "outside-project-lore.md");
+const selectedGlossaryPath = path.join(externalReferenceDir, "selected-glossary.json");
 let verifierProjectState: Record<string, unknown> = {};
 const sourcePath = path.join(workspace, "source.txt");
 const translationPath = path.join(workspace, "approved-translation.txt");
@@ -391,6 +392,8 @@ const faux = fauxProvider({ tokensPerSecond: 40, tokenSize: { min: 1, max: 2 } }
 const models = createModels();
 models.setProvider(faux.provider);
 const childProviders = new Map<string, ReturnType<typeof fauxProvider>>();
+const mainTranslationProviderId = "verify-translation-lane";
+let mainTranslationSelectionCount = 0;
 const translationBlocks = (lines: readonly string[]) => {
   const nonEmpty = lines.filter((text) => text.trim());
   const blocks = [];
@@ -515,7 +518,16 @@ folderChild.setResponses(Array.from({ length: 40 }, () => async (context) => {
     ));
     const assignedLines = (result?.details as { lines?: Array<{ text?: string }> } | undefined)?.lines ?? [];
     const translatedLines = assignedLines.length > 0
-      ? assignedLines.map((line) => line.text?.includes("甲") ? "翻译甲" : line.text?.includes("乙") ? "翻译乙" : "翻译")
+      ? assignedLines.map((line) => {
+          const source = line.text ?? "";
+          if (!source.trim()) return "";
+          if (source.includes("{name}")) return "你好 {name}";
+          if (source.includes("さようなら")) return "再见";
+          if (source.includes("終わり")) return "结束";
+          if (source.includes("甲")) return "翻译甲";
+          if (source.includes("乙")) return "翻译乙";
+          return "翻译";
+        })
       : ["翻译甲", "翻译乙"];
     return fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
       blocks: translationBlocks(translatedLines)
@@ -558,12 +570,7 @@ faux.setResponses([
   fauxAssistantMessage(fauxText("工具调用与结果已经**配对**。")),
   fauxAssistantMessage(fauxToolCall("inspectTranslationContext", {}, { id: "tool_translation_inspect" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxText("过早声称翻译完成。")),
-  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {
-    tasks: [
-      { fromLine: 1, toLine: 2, providerId: "verify-child-a", label: "Subagent 1" },
-      { fromLine: 3, toLine: 4, providerId: "verify-child-b", label: "Subagent 2" }
-    ]
-  }, { id: "tool_subagents_1" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {}, { id: "tool_subagents_1" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxText("两个 subagent 已在后台运行，主 Agent 仍可立即交互。")),
   fauxAssistantMessage(fauxText("主 Agent 已在 subagent 运行期间即时回复。")),
   fauxAssistantMessage(fauxToolCall("validateTranslationArtifact", {}, { id: "tool_translation_validate" }), { stopReason: "toolUse" }),
@@ -581,9 +588,15 @@ faux.setResponses([
 
 const service = new PiNativeSessionService({
   createModelSelection: async ({ providerId, modelId }) => {
-    const provider = !providerId || providerId === faux.provider.id || providerId === "openai-chatgpt"
-      ? faux
-      : childProviders.get(providerId);
+    const mainTranslationProvider = providerId === mainTranslationProviderId
+      ? childProviders.get(
+          ["verify-child-a", "verify-child-b"][mainTranslationSelectionCount++] ?? reviewProviderId
+        )
+      : undefined;
+    const provider = mainTranslationProvider
+      ?? (!providerId || providerId === faux.provider.id || providerId === "openai-chatgpt"
+        ? faux
+        : childProviders.get(providerId));
     assert(provider, `Unexpected verifier provider ${String(providerId)}`);
     return {
       models,
@@ -741,6 +754,12 @@ async function run(): Promise<void> {
     verifierProjectState = { ...verifierProjectState, ...patch };
     return verifierProjectState;
   });
+  ipcMain.handle("files:readTextFile", async (_event, args?: { path?: unknown }) => {
+    const filePath = typeof args?.path === "string" ? args.path.trim() : "";
+    if (!filePath || !path.isAbsolute(filePath)) throw new Error("Text file reads require an absolute path.");
+    const resolved = path.resolve(filePath);
+    return { path: resolved, text: await readFile(resolved, "utf8") };
+  });
   ipcMain.handle("files:writeAuditWhitelistFile", async (_event, args: {
     outputDir?: string;
     sourcePath?: string;
@@ -776,6 +795,13 @@ async function run(): Promise<void> {
   await writeFile(sourcePath, "こんにちは {name}\n\nさようなら\n終わり", "utf8");
   await writeFile(translationPath, "你好 {name}\n\n再见\n结束", "utf8");
   await writeFile(externalReferencePath, "External lore: Aurora Bridge\n", "utf8");
+  const selectedGlossaryEntries = [{
+    source: "こんにちは",
+    target: "您好",
+    aliases: ["你好"],
+    status: "confirmed" as const
+  }];
+  await writeFile(selectedGlossaryPath, JSON.stringify({ entries: selectedGlossaryEntries }), "utf8");
   const localProofreadSourcePath = path.join(workspace, "local-proofread-source.txt");
   const localProofreadTranslationPath = path.join(
     workspace,
@@ -983,7 +1009,13 @@ async function run(): Promise<void> {
     sourceText: "こんにちは {name}\n\nさようなら\n終わり",
     translationText: "你好 {name}\n\n再见\n结束",
     lineReviewPath: htmlPath,
-    workflow: { outputDir: workspace, sourcePath, translationPath }
+    workflow: {
+      outputDir: workspace,
+      sourcePath,
+      translationPath,
+      glossaryPath: selectedGlossaryPath,
+      glossaryEntries: selectedGlossaryEntries
+    }
   }), "utf8");
   await writeFile(secondHtmlPath, renderLineReviewHtml({
     title: "Pi native verifier second file",
@@ -1194,7 +1226,7 @@ async function run(): Promise<void> {
     subagentModelId: reviewProvider.getModel().id,
     reviewSubagentCount: 2
   });
-  verifierProjectState = { reviewSubagentCount: 3 };
+  verifierProjectState = { reviewSubagentCount: 3, glossaryPath: selectedGlossaryPath };
   win.webContents.on("console-message", (details) => {
     console.log(`[renderer:${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`);
   });
@@ -1203,13 +1235,26 @@ async function run(): Promise<void> {
   await win.webContents.executeJavaScript("(() => { window.confirm = () => true; return true; })()");
 
   await clickSelector(win, "#glossaryDrawerToggle");
+  await waitFor(win, 'document.querySelector("#glossaryCount")?.textContent === "1" && document.querySelector(".glossary-source")?.value === "こんにちは"');
+  const canonicalGlossaryPath = path.join(workspace, ".translation-workshop", "glossary.json");
+  const canonicalGlossaryExists = await readFile(canonicalGlossaryPath, "utf8").then(
+    () => true,
+    (error: unknown) => {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+      throw error;
+    }
+  );
+  assert(!canonicalGlossaryExists,
+    "Opening an externally bound glossary unexpectedly imported it into the canonical project asset");
   await waitFor(win, 'document.querySelector("#importGeneratedGlossary")?.hidden === false');
   const generatedGlossaryButtonText = await win.webContents.executeJavaScript('document.querySelector("#importGeneratedGlossary")?.textContent || ""');
   assert(generatedGlossaryButtonText.includes("1"), `Generated glossary import did not show its pending count: ${generatedGlossaryButtonText}`);
   await clickSelector(win, "#importGeneratedGlossary");
   await waitFor(win, 'document.querySelector("#importGeneratedGlossary")?.hidden === true && document.querySelector("#glossaryCount")?.textContent === "1"');
-  const importedGlossary = JSON.parse(await readFile(path.join(workspace, ".translation-workshop", "glossary.json"), "utf8"));
+  const importedGlossary = JSON.parse(await readFile(canonicalGlossaryPath, "utf8"));
   assert(importedGlossary.entries?.[0]?.source === "固有名詞", "Generated glossary one-click import did not persist the formal glossary");
+  assert(verifierProjectState.glossaryPath === canonicalGlossaryPath,
+    "Explicit canonical glossary import did not persist the new workflow glossary binding");
   await clickSelector(win, "#glossaryDrawerClose");
   mark("generated-glossary-one-click-import");
 
@@ -1262,12 +1307,13 @@ async function run(): Promise<void> {
     };
   })()`);
   assert(promptSubagentModelState.enabled, "Prompt settings did not restore subagent enabled state");
-    assert(promptSubagentModelState.count === "", "Prompt settings unexpectedly materialized a default subagent count");
-    assert(promptSubagentModelState.reviewCount === "", "Prompt settings unexpectedly materialized a default review Agent count");
+  assert(promptSubagentModelState.count === "3", "Prompt settings did not materialize the default subagent count");
+  assert(promptSubagentModelState.reviewCount === "", "Prompt settings unexpectedly materialized a default review Agent count");
   assert(promptSubagentModelState.reviewCountVisible, "Prompt settings did not render the review Agent count as a visible control");
   assert(/Review Agent count/i.test(promptSubagentModelState.reviewCountLabel), "Prompt settings lost the review Agent count label");
   await waitForProjectState((state) => (
-    state.reviewSubagentCount === null
+    state.subagentCount === 3
+    && state.reviewSubagentCount === null
     && state.promptSettingsVersion === PROMPT_SETTINGS_VERSION
   ));
   const inheritedReviewCountState = await win.webContents.executeJavaScript(`(async () => {
@@ -1386,7 +1432,7 @@ async function run(): Promise<void> {
     && state.montecarloRoundMin === 2
     && state.montecarloRoundMax === 5
     && state.subagentEnabled === true
-    && state.subagentCount === null
+    && state.subagentCount === 3
     && state.reviewSubagentCount === null
     && state.subagentProviderId === ""
     && state.subagentModelId === ""
@@ -1432,7 +1478,7 @@ async function run(): Promise<void> {
   assert(resetPromptUi.glossaryCandidates && resetPromptUi.characterBible && !resetPromptUi.reuseExistingTranslation, "Prompt reset did not restore translation toggles");
   assert(resetPromptUi.proofreadMode === "split" && resetPromptUi.candidateRatio === "1.5", "Prompt reset did not restore proofread defaults");
   assert(resetPromptUi.montecarloSize === "3000" && resetPromptUi.montecarloRoundMin === "2" && resetPromptUi.montecarloRoundMax === "5", "Prompt reset did not restore Monte Carlo defaults");
-  assert(resetPromptUi.subagentEnabled && resetPromptUi.subagentCount === "" && resetPromptUi.reviewSubagentCount === "", "Prompt reset did not restore Agent count defaults");
+  assert(resetPromptUi.subagentEnabled && resetPromptUi.subagentCount === "3" && resetPromptUi.reviewSubagentCount === "", "Prompt reset did not restore Agent count defaults");
   assert(resetPromptUi.subagentModel === "" && resetPromptUi.customRuleCount === 0, "Prompt reset did not clear model or preservation-rule overrides");
   await win.webContents.executeJavaScript('document.querySelector("#resetPromptSettings")?.scrollIntoView({ block: "center", behavior: "instant" })');
   await capturePaintedWindow(win, promptSettingsScreenshot);
@@ -1671,6 +1717,15 @@ async function run(): Promise<void> {
   await waitFor(win, 'document.querySelector("[data-agent-tool-call=echo]").innerText.includes("paired-result")');
   mark("tool-paired");
 
+  const mainTranslationSettings = {
+    splitSize: 2,
+    subagentCount: 2,
+    reviewSubagentCount: 2,
+    subagentProviderId: mainTranslationProviderId,
+    subagentModelId: childProviders.get("verify-child-a")!.getModel().id
+  };
+  await patchProjectState(workspace, mainTranslationSettings);
+  verifierProjectState = { ...verifierProjectState, ...mainTranslationSettings };
   const translationPrompt = buildTranslatePrompt({
     sourcePath,
     outputDir: workspace,
@@ -1716,6 +1771,11 @@ async function run(): Promise<void> {
   mark(`subagents-running-parent-interactive-${parentDuringChildrenMs.toFixed(1)}ms`);
   await waitFor(win, '[...document.querySelectorAll("[data-agent-subagent-card=true]")].every((card) => card.innerText.includes("Subagent closed"))');
   await waitFor(win, 'document.body.innerText.includes("两个 subagent 已完成，主 Agent 已汇总")');
+  const terminalTranslationState = await service.getRunState(workspace, (await service.bootstrap(workspace)).activeSessionId);
+  const failedTranslationCards = terminalTranslationState.subagentMessages.filter((message) => (
+    message.customType === "subagent.translation" && message.details?.status === "failed"
+  ));
+  assert(failedTranslationCards.length === 0, `Host-planned translation child failed: ${JSON.stringify(failedTranslationCards)}`);
   await waitFor(win, '!document.querySelector("#agentChatReactRoot .ynAgentInputStop, #agentChatReactRoot .ynAgentSubagentStop")');
   await waitFor(win, '!document.querySelector("[data-agent-queued-input]")');
   const toolDetailsStayedOpen = await win.webContents.executeJavaScript(

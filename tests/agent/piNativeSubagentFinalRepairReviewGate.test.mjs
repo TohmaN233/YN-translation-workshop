@@ -54,10 +54,16 @@ const provider = fauxProvider({ provider: "final-repair-child", tokensPerSecond:
 models.setProvider(provider.provider);
 const repeatedBoundaryTranslation = "边界之夜已然降临";
 provider.setResponses([
-  fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "chunk-1-read" }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
-    blocks: wireBlocks(1, 1024, (line) => line >= 1023 ? repeatedBoundaryTranslation : translatedLine(line))
-  }, { id: "chunk-1-write" }), { stopReason: "toolUse" }),
+  ...Array.from({ length: 4 }, (_, page) => {
+    const fromLine = page * 256 + 1;
+    const toLine = fromLine + 255;
+    return [
+      fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: `chunk-1-page-${page + 1}-read` }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
+        blocks: wireBlocks(fromLine, toLine, (line) => line >= 1023 ? repeatedBoundaryTranslation : translatedLine(line))
+      }, { id: `chunk-1-page-${page + 1}-write` }), { stopReason: "toolUse" })
+    ];
+  }).flat(),
   fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "chunk-1-validate" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "chunk-2-read" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {

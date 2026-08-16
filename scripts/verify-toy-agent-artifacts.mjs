@@ -48,15 +48,15 @@ async function listDir(directory) {
 }
 
 async function main() {
-  console.log("=== Cut 1: runtime skill source ===");
-  const sync = spawnSync(process.execPath, ["scripts/check-runtime-skills.mjs"], {
+  console.log("=== Cut 1: runtime protocol source ===");
+  const sync = spawnSync(process.execPath, ["scripts/check-runtime-protocol.mjs"], {
     cwd: repoRoot,
     encoding: "utf8"
   });
   if (sync.status === 0) {
-    ok("runtime skills are unified");
+    ok("runtime protocols are complete");
   } else {
-    notOk("runtime skills are unified", sync.stderr || sync.stdout);
+    notOk("runtime protocols are complete", sync.stderr || sync.stdout);
   }
 
   console.log("");

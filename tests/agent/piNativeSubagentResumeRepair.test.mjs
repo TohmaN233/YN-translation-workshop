@@ -56,6 +56,7 @@ const supervisor = new YnSubagentSupervisor({
 });
 
 try {
+  let reviewCount = 0;
   supervisor.startTranslationBatch({
     request: {
       outputDir,
@@ -67,13 +68,24 @@ try {
       languagePair: "en->zh-CN"
     },
     tasks: [{ documentId: "source.txt", fromLine: 1, toLine: 2 }],
-    onChunkReadyForReview: async () => ({ accepted: true }),
+    onChunkReadyForReview: async (review) => {
+      reviewCount += 1;
+      if (reviewCount === 1) {
+        assert.equal(review.validation.warnings.some((finding) => finding.code === "glossary_missing"), true);
+        return {
+          accepted: false,
+          feedback: [{ line: 1, reason: "HeroTerm must use the project glossary target 英雄术语." }]
+        };
+      }
+      return { accepted: true };
+    },
     maxWorkers: 1
   });
   await supervisor.waitForAll();
 
   const batch = supervisor.list()[0];
   assert.equal(batch.status, "completed", batch.error);
+  assert.equal(reviewCount, 2, "the warning must be semantically rejected once and the exact repair re-reviewed");
   assert.equal(await readFile(path.join(outputDir, "AI_translation", "source_translated.txt"), "utf8"), "英雄术语\n二\n");
   const repository = new PiSessionRepository(outputDir);
   const [childMetadata] = await repository.listChildMetadata();
@@ -84,7 +96,8 @@ try {
     .map((block) => block.text)
     .join("\n");
   assert.match(firstPrompt, /call readAssignedSource/i);
-  assert.match(firstPrompt, /before repairing/i);
+  assert.match(firstPrompt, /L1: HeroTerm must use the project glossary target/);
+  assert.match(firstPrompt, /compact spans covering the rejected rows/i);
   assert.doesNotMatch(firstPrompt, /do not call readAssignedSource/i);
 } finally {
   supervisor.abortAll();

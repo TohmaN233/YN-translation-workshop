@@ -46,9 +46,8 @@ if not exist "dist\renderer\index.html" (
 
 echo.
 echo ========================================
-echo   Agent Workbench (agent-workbench-evolution)
+echo   YN Translation Workshop 2.0
 echo   Path: %~dp0
-echo   Use THIS launcher, not G:\YN-translation-workshop
 echo ========================================
 echo.
 

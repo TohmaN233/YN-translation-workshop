@@ -191,7 +191,7 @@ await test("persistent proofread worker resets assignment context and reinjects 
 
     assert.equal(fx.contextReads.length, 2);
     assert.equal(typeof fx.contextReads[0].payload.workflow, "string");
-    assert.match(fx.contextReads[0].payload.referenceCache.workflow.sourcePath, /subagent-task-template\.md$/);
+    assert.match(fx.contextReads[0].payload.referenceCache.workflow.sourcePath, /proofread-child\.md$/);
     assert.match(fx.contextReads[0].payload.referenceCache.workflow.sha256, /^[a-f0-9]{64}$/);
     assert.equal(fx.contextReads[0].payload.projectReferences.directMatches.approvedGlossary.length, 1);
     assert.equal(

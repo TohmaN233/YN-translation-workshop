@@ -13,7 +13,10 @@ import {
 
 import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
 import { YnSubagentSupervisor } from "../../src/main/agent/piNative/subagentSupervisor.ts";
-import { MAX_ASSIGNED_TRANSLATION_CHUNK_LINES } from "../../src/main/agent/piNative/subagentRunner.ts";
+import {
+  MAX_ASSIGNED_TRANSLATION_CHUNK_LINES,
+  MAX_TRANSLATION_MODEL_PAGE_LINES
+} from "../../src/main/agent/piNative/subagentRunner.ts";
 
 assert.ok(
   MAX_ASSIGNED_TRANSLATION_CHUNK_LINES === 1024,
@@ -46,11 +49,18 @@ const provider = fauxProvider({
   tokenSize: { min: 250_000, max: 250_000 }
 });
 models.setProvider(provider.provider);
+const firstChunkPageResponses = [];
+for (let offset = 0; offset < firstChunk.length; offset += MAX_TRANSLATION_MODEL_PAGE_LINES) {
+  const page = Math.floor(offset / MAX_TRANSLATION_MODEL_PAGE_LINES) + 1;
+  firstChunkPageResponses.push(
+    fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: `chunk-1-page-${page}-source` }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
+      blocks: translationBlocks(firstChunk.slice(offset, offset + MAX_TRANSLATION_MODEL_PAGE_LINES))
+    }, { id: `chunk-1-page-${page}-write` }), { stopReason: "toolUse" })
+  );
+}
 provider.setResponses([
-  fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "chunk-1-source" }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
-    blocks: translationBlocks(firstChunk)
-  }, { id: "chunk-1-write" }), { stopReason: "toolUse" }),
+  ...firstChunkPageResponses,
   fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "chunk-1-validate" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "chunk-2-source" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
@@ -150,7 +160,7 @@ try {
     "worker progress must stay lightweight and must never embed the child transcript"
   );
   assert.equal(persistedCards.at(-1).details.status, "completed");
-  assert.match(persistedCards.at(-1).details.resultSummary, /Review-worker-accepted candidate for source\.txt.*accepted before queue advance/i);
+  assert.match(persistedCards.at(-1).details.resultSummary, /Review-worker-accepted candidate source\.txt L1-L1025.*accepted before queue advance/i);
   const repository = new PiSessionRepository(outputDir);
   const [childMetadata] = await repository.listChildMetadata();
   const childContext = await (await repository.openChild(childMetadata.id)).buildContext();

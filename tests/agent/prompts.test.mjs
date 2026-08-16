@@ -35,8 +35,8 @@ await test("translate prompt names the native workflow and output directory with
   assert.match(prompt, /Output directory: project\/AI_translation/);
   assert.match(prompt, /Selected glossary: glossary\.json/);
   assert.match(prompt, /Character bible: on/);
-  assert.match(prompt, /Subagents: enabled; maximum=project ceiling/);
-  assert.match(prompt, /Translation review Agents: maximum=project ceiling/);
+  assert.match(prompt, /Subagents: enabled; maximum=3/);
+  assert.match(prompt, /Translation review Agents: maximum=3/);
   assert.doesNotMatch(prompt, /Existing translation\/reference path/);
   assert.doesNotMatch(prompt, /Translation path:/);
   assert.doesNotMatch(prompt, /Runtime contract/);
@@ -76,7 +76,7 @@ await test("proofread prompt names the native workflow and keeps findings contra
   assert.match(prompt, /Workflow: yn-proofread-v1/);
   assert.match(prompt, /Output directory: project\/report/);
   assert.match(prompt, /Mode: split 1000/);
-  assert.match(prompt, /Subagents: enabled; maximum=project ceiling/);
+  assert.match(prompt, /Subagents: enabled; maximum=3/);
   assert.match(prompt, /translation\.proofread\.json/);
   assert.doesNotMatch(prompt, /\.md\b|summary/i);
   assert.doesNotMatch(prompt, /Runtime contract/);
@@ -140,7 +140,8 @@ await test("generated glossary prompt excludes ordinary dictionary vocabulary", 
     prompt,
     workflowIntent: "translation",
     glossaryCandidates: true,
-    characterBible: true
+    characterBible: true,
+    subagentEnabled: false
   });
   assert.match(system, /exclude ordinary vocabulary and uncertain entries/i);
   assert.match(system, /before writing the character bible.*searchProjectText/i);
@@ -179,7 +180,7 @@ await test("subagent enable and count settings remain part of the native prompt 
   assert.match(custom, /Subagents: enabled; maximum=4/);
   assert.match(custom, /Translation review Agents: maximum=4/);
   assert.equal(promptParameterDefaults("project", { subagentEnabled: false }).subagentEnabled, false);
-  assert.equal(promptParameterDefaults("project").subagentCount, undefined);
+  assert.equal(promptParameterDefaults("project").subagentCount, 3);
   assert.equal(promptParameterDefaults("project").reviewSubagentCount, undefined);
   assert.equal(promptParameterDefaults("project", { subagentCount: 4 }).subagentCount, 4);
   assert.equal(promptParameterDefaults("project", { subagentCount: 4 }).reviewSubagentCount, undefined);
@@ -326,11 +327,16 @@ await test("full translation keeps one explicit mechanical-review gate", () => {
     workflowIntent: "translation",
     subagentEnabled: true,
     subagentCount: 3,
-    reviewSubagentCount: 2
+    reviewSubagentCount: 2,
+    glossaryCandidates: true,
+    characterBible: true
   }, { fullWorkflow: true });
 
   assert.match(system, /runTranslationSubagents.*complete Host-owned translation queue/i);
+  assert.match(system, /optional workerCount.*1 through 3/i);
   assert.match(system, /Host queue owns assignment, validation, review, retry, and settlement/i);
+  assert.match(system, /character bible unavailable.*do not bulk-read the source.*after the batch.*readTranslationDiscoveries/is);
+  assert.match(system, /Do not pre-scan the source or pre-populate the file.*Host terminology gate/i);
   assert.equal(occurrences(system, "runTranslationSubagents"), 1);
   assert.doesNotMatch(system, /mechanically scans every row|deterministic clean-row sample/i);
   assert.doesNotMatch(system, /current-user wording|magic wording|authorization gate|authorized exactly/i);

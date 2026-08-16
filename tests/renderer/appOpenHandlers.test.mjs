@@ -81,6 +81,23 @@ await test("opening a project renders line review first and restores secondary s
   );
 });
 
+await test("switching to a new project cannot inherit project-scoped paths or proxy state", async () => {
+  const appSource = await readFile("src/renderer/App.tsx", "utf8");
+  const loadProjectBody = functionBody(appSource, "loadProjectState");
+  assert.match(loadProjectBody, /if \(!loaded\)[\s\S]*?rebuildNewProjectForm\(initialFormState\(\), current, selectedKeys, outputDir\)/);
+  assert.match(loadProjectBody, /const defaults = initialFormState\(\)/);
+  assert.match(loadProjectBody, /\.\.\.defaults,[\s\S]*?\.\.\.loadedForm/);
+  assert.match(
+    loadProjectBody,
+    /translateOutputDir:\s*loaded\.translateOutputDir\s*\?\?\s*defaultTranslateOutputDir\(projectOutputDir\)/
+  );
+  assert.match(
+    loadProjectBody,
+    /proofreadOutputDir:\s*loaded\.proofreadOutputDir\s*\?\?\s*defaultProofreadOutputDir\(projectOutputDir\)/
+  );
+  assert.doesNotMatch(loadProjectBody, /loaded\.agentProxyEnabled\s*\?\?\s*current\.agentProxyEnabled/);
+});
+
 await test("the glossary picker binds the selected reference without importing or replacing it with the project asset path", async () => {
   const source = await readFile("src/renderer/App.tsx", "utf8");
   const htmlSource = await readFile("src/shared/core/html.ts", "utf8");
@@ -93,6 +110,23 @@ await test("the glossary picker binds the selected reference without importing o
   assert.doesNotMatch(source, /patch\(\{ glossaryPath: projectGlossaryPath \}\)/);
   assert.ok(setBoundGlossaryPathBody, "setBoundGlossaryPath body not found");
   assert.doesNotMatch(setBoundGlossaryPathBody, /updateProjectState/);
+  assert.match(htmlSource, /if \(boundGlossaryPath\(\)\) \{\s*await syncGlossaryFromBoundFile\(\)/);
+  assert.doesNotMatch(
+    htmlSource.match(/async function syncGlossaryFromBoundFile\(\) \{([\s\S]*?)\n\}/)?.[1] ?? "",
+    /readProjectAssets/,
+    "a selected glossary must be read from its bound path rather than replaced by the canonical project asset"
+  );
+  assert.match(
+    htmlSource,
+    /async function adoptBoundGlossaryPath\(path\) \{[\s\S]*?await persistProjectState\(\{ glossaryPath: value \}\);[\s\S]*?setBoundGlossaryPath\(value\);[\s\S]*?\}/,
+    "explicit glossary adoption must persist the Agent-facing binding before switching the HTML"
+  );
+  assert.match(htmlSource, /if \(glossaryPath\) await adoptBoundGlossaryPath\(glossaryPath\)/);
+  assert.match(htmlSource, /const canonicalGlossaryIsBound = !boundPath/);
+  assert.match(htmlSource, /Object\.prototype\.hasOwnProperty\.call\(value, "glossaryPath"\)/);
+  assert.match(htmlSource, /if \(hasGlossaryPath\) \{\s*projectGlossaryPath = glossaryPath;\s*workflowPaths\(\)\.glossaryPath = glossaryPath;/);
+  assert.match(htmlSource, /if \(boundGlossaryPath\(\)\) void syncGlossaryFromBoundFile\(\);\s*else void hydrateProjectPromptSettings\(\);/,
+    "an explicit empty project binding must clear the stale embedded glossary and restore only a real canonical fallback");
 });
 
 console.log("");

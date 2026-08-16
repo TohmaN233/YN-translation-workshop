@@ -1,336 +1,290 @@
-# translation-workshop
+# YN Translation Workshop 2.0
 
-> 本地翻译 / 校对工作台。  
-> 面向人工审阅优先的翻译流程，也可以配合 Codex / Claude Code Agent 提高效率。
+一个把人工逐行编辑、项目资产、完整 AI 翻译、完整 AI 校对和远程操作放进同一工作台的本地翻译工具。
 
-[English README](README.en.md)
+你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
-translation-workshop 用于把源文与译文按行配对，生成可人工改写的校对 HTML；也可以生成 Codex / Claude Code 的翻译与校对提示词，并把校对报告 Markdown 转换为逐条审阅用 HTML。
+[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.0)
 
-我做这个项目的动机很简单：很多 AI 翻译工具看起来很强，但对真正的翻译/汉化流程并不友好。AI 输出无论多漂亮，想达到稳定的商业质量，最终仍然需要人工审核。缺少一个舒服、清晰、可回溯的前端，本身就是翻译工作流里的大问题。
+## 2.0 是什么
 
-这个项目希望同时照顾三类使用者：
+2.0 的工作流不是一段预填提示词，而是一条由 Pi Agent runtime、YN Host、受限 Function、持久状态、产物校验和完成门共同执行的流程。产品只提供两条完整 Workflow：
 
-- 不使用 AI 的翻译者：也能获得舒服的行对行翻译与校对界面。
-- 使用 AI 的翻译者：能借助 Agent 做翻译/校对，同时保留人工审阅的可控性。
-- 不熟悉源语言的用户：也能通过 AI 翻译、AI 校对和可视化报告完成基本翻译流程。
+1. **初翻**：生成严格行对齐的候选译文，逐片机械校验、独立复审、精确修复，再提升为正式候选。
+2. **校对**：先扫描全部对齐行，再以逐片精审或分层抽样方式运行语义校对，输出一份 Findings JSON 和可视化审阅页。
+
+术语一致性、角色口吻、旧译复用、最终 QA 都是这两条 Workflow 内部的能力，不会再伪装成只有提示词、没有 Host 契约的独立工作流。模型、Provider、Agent 会话和并发设置都直接在应用内完成。
 
 ## 下载
 
-Windows 用户推荐下载：
-
-**`translation-workshop-Setup-2.0.0-x64.exe`**
-
-不想安装时，可以下载便携版：
-
-**`translation-workshop-Portable-2.0.0-x64.exe`**
-
-Release 页面：  
-<https://github.com/TohmaN233/YN-translation-workshop/releases>
-
-Windows 如果遇到命令行中文乱码，可以下载仓库里的 [`set_utf8.reg`](./set_utf8.reg) 后双击运行，让控制台默认使用 UTF-8 编码；不放心的话，运行前可以先用记事本打开检查内容。
-
-## 更新说明
-
-### v2.0.0
-
-- **原生 Pi Agent OS**：Agent 前端、会话、流式消息、工具调用、thinking、subagent 与长会话压缩已切换到 Pi / pi-web 基底，旧 YN job/runtime 不再进入产品路径。
-- **翻译与校对工作流**：支持文件夹任务、持久并行 worker、逐块校验、失败修复、术语表、角色圣经和结构化校对结果。
-- **网页参考资料**：Agent 可通过 Pi 原生 `fetchWebReference` 工具读取用户提供的公开 HTTP(S) 页面；Wikipedia 使用 MediaWiki API 提取正文，普通网页使用 HTML 解析器抽取可读内容，并将缓存共享给翻译/校对 subagent。
-- **检查更新**：安装版启动后会静默检查 GitHub Releases，也可从 `Help > Check for Updates...` 手动检查；安装版支持下载后重启安装，便携版会打开发布页供手动更新。
-- **发布验收**：Windows 安装版和便携版均使用 `2.0.0` 版本资源，并附带 GitHub Releases 自动更新元数据。
-
-### v1.1.1
-
-- **提示词与 skill 更新**：Codex / Claude Code 校对 skill 强化报告契约，要求报告正文使用目标语言、`Source` / `Current translation` 使用完整原行、`Suggested fix` 给出完整替换译文。
-- **审阅报告解析**：生成审阅 HTML 前会严格处理重复编号；若 AI 报告里出现重复的 `H1-001`、`M2-004`、`L1-003` 等 ID，会接在该分类当前最大编号后重新编号，避免查找、跳转和一键替换互相覆盖。
-- **Agent 启动上下文**：软件内启动 Codex / Claude Code CLI 时，默认只开放 translation-workshop 的翻译 / 校对 skill，减少其他全局 skill 对当前任务的上下文污染；安装命令默认带 `--replace`，覆盖前会备份旧目标。
-- **局域网与公网访问**：HTML 支持启动 6 位 PIN 保护的共享工作区，手机、平板或远程设备可以访问正在打开的软件，进行正文校对、审阅建议处理和 Agent 交互；局域网地址也可通过 Cloudflare Tunnel / ngrok 等外部工具穿透到公网。
-
-### v1.0.5
-
-- **Codex proofread skill**：精简校对报告提示词，报告正文统一使用目标语言，程序解析必需字段保持固定英文；强化 fix proposal 的行号与字段格式约束。
-- **发送给 AI 的提示词**：翻译和校对提示词都强调输出内容使用目标语言；`Suggested fix` 等固定字段名必须保持原样。
-- **术语表体验**：术语表面板显示区域扩大，支持按原文、译文、当前译文搜索；术语列表改为动态渲染。
-- **兜底报告提示词**：当检测到 AI 生成了疑似 fix proposal，但格式不符合审阅 HTML 解析要求时，自动生成中英双语对应的格式修复提示词，并打开 Agent 窗口方便直接发送。
-
-## 内置 Skills
-
-项目内置 Codex 与 Claude Code 两套 skill / command。目前支持 Agent 翻译流程，不支持单独调用 API 做提示词工程翻译。
-
-- [translate-text 说明](skills/translate-text.README.md)：批量翻译、术语表、角色设定。
-- [proofread-translation 说明](skills/proofread-translation.README.md)：逐行校对、Monte Carlo 抽样校对和修正建议报告。
-
-目录结构：
-
-- Codex skill：`skills/codex/<skill-name>/SKILL.md`
-- Claude Code command：`skills/claude/commands/<skill-name>.md`
-
-## 界面预览
-
-<p align="center">
-  <img src="graph_for_intro/face_ch.png" alt="中文界面" width="340">
-  <img src="graph_for_intro/face_en.png" alt="English UI" width="340">
-</p>
-
-UI 支持中文 / English 双语切换。主界面提供文件选择、输出目录、格式选项、输入模式、skill 安装提示和生成入口。
-
-## 主要功能
-
-### 行对行校对 HTML
-
-选择源文件、译文文件和输出文件夹后，即可生成行对行 HTML。译文文件可为空，此时进入单纯翻译模式。
-
-支持：
-
-- TXT / EPUB
-- 分离文件模式
-- 双语 TXT / 双语 EPUB 的相邻行拆分
-- 文件夹批量输入
-- 分页、跳页、搜索、滚动位置记忆
-- 人工改写状态标记
-- 重新打开后定位到上次编辑位置，黄框表示上次离开/当前关注行
-
-<p align="center">
-  <img src="graph_for_intro/t1.png" alt="行对行校对 HTML" width="860">
-</p>
-
-TXT / EPUB 可以随时导出。TXT 还支持写回绑定的译文文件，覆盖前会自动创建时间戳备份。
-
-### 局域网同步
-
-HTML 在 Electron 内打开时，可以启动局域网同步。启动时设置一个固定 6 位 PIN，手机或平板访问应用生成的局域网地址后输入 PIN，即可进入共享工作区。
-
-共享工作区支持正文校对和审阅建议两个标签页。若从审阅 HTML 启动同步，且已绑定正文 HTML，同一个链接会同时显示审阅建议与正文行；移动端改写会同步回电脑端 HTML 缓存。
-
-外部穿透：translation-workshop 不内置公网穿透工具。如果你使用 Cloudflare Tunnel、ngrok 等工具，可将它们指向本地同步端口。
-
-例如桌面端显示：
-
-```text
-http://127.0.0.1:54321/s/abcdef...
-```
-
-则 Cloudflare Tunnel 可以运行：
-
-```powershell
-cloudflared tunnel --url http://127.0.0.1:54321
-```
-
-ngrok 可以运行：
-
-```powershell
-ngrok http 54321
-```
-
-打开公网地址后输入软件里设置的 6 位 PIN。新版在只有一个同步会话时会从穿透根地址自动跳转到当前会话；如果没有跳转，请把本地链接里的 `/s/...` 路径接到公网域名后面。
-
-### 术语表与替换
-
-翻译过程中可以随时浏览术语表、修改译名，并对当前页或全文执行术语替换。
-
-术语检查会自动标注源语言中出现、但译文侧缺失的术语；长名词优先覆盖短名词。缺失术语会以 H3 标记并高亮对应行。
-
-<p align="center">
-  <img src="graph_for_intro/t2.png" alt="术语表与术语替换" width="860">
-</p>
-
-### Agent 提示词与交互控制台
-
-翻译和校对都提供参数窗口。你可以先设置语言方向、文本类型、输出目录、split / subagent 等参数，再生成提示词。
-
-<p align="center">
-  <img src="graph_for_intro/t3.png" alt="翻译提示词参数窗口" width="860">
-</p>
-
-应用内置真实终端控制台，可与 Codex / Claude Code 交互。使用前请先安装对应 CLI，并完成登录。
-
-### 校对报告审阅 HTML
-
-校对完成后，选择或自动查找 Markdown 报告，即可生成修正建议审阅 HTML。
-
-<p align="center">
-  <img src="graph_for_intro/t5.png" alt="校对报告审阅 HTML" width="860">
-</p>
-
-审阅 HTML 可以和正文绑定：
-
-- 将报告发现的问题标记回正文对应行。
-- 跳转到正文上下文。
-- 一键接受 AI 建议译文。
-- 手动改写并标记人工处理状态。
-
-<p align="center">
-  <img src="graph_for_intro/t6.png" alt="正文与校对报告联动" width="860">
-</p>
-
-项目状态会保存到输出目录下的 `.translation-workshop/`，之后可以通过打开同一输出文件夹继续工作。
-
-## 像软件一样启动
-
-Windows:
-
-```bat
-start-workshop.cmd
-```
-
-macOS / Linux / Git Bash:
-
-```bash
-./start-workshop.sh
-```
-
-启动脚本会在缺少 `node_modules` 时安装依赖，在缺少 `dist` 时构建，然后启动 Electron 应用。
-
-## 基本流程
-
-1. 首次使用时选择 Codex 或 Claude Code。
-2. 查看内置 skill / command 路径和安装状态，按需复制安装命令。
-3. 选择源文 TXT / EPUB 文件，或选择源文件夹。
-4. 可选选择译文 TXT / EPUB 文件，或选择译文文件夹。
-5. 选择输出文件夹。
-6. 生成行对行 HTML。
-7. 在 HTML 中人工翻译/修改、跳页、搜索、替换术语。
-8. 需要 AI 翻译时生成翻译提示词，打开 Agent 控制台。
-9. 翻译完成后导入或同步译文 TXT。
-10. 生成校对提示词，复制或发送到交互式 Agent 控制台。
-11. 校对完成后选择或自动查找 Markdown 报告，生成修正建议审阅 HTML。
-12. 完成校对后使用 `写入 TXT` 覆盖绑定译文，或使用 `导出 TXT` 另存。
-
-## Codex Skill 配置
-
-内置路径：
-
-- 翻译：`skills/codex/translate-text`
-- 校对：`skills/codex/proofread-translation`
-
-应用只复制安装命令，不会自动写入你的全局 Codex 配置。推荐使用 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用。该命令需要 Node.js 18 或更新版本，并默认使用 `--replace` 更新已有 skill；旧目标会先备份到 `~/.translation-workshop/skill-backups/`：
-
-```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global --replace
-```
-
-如果已经 clone 仓库，也可以用本地路径安装：
-
-```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global --replace
-```
-
-安装目标：
-
-- `~/.codex/skills/translate-text/SKILL.md`
-- `~/.codex/skills/proofread-translation/SKILL.md`
-
-推荐命令会更新已有 skill，并在覆盖前备份旧目标。
-
-## Claude Code Skill 配置
-
-内置路径：
-
-- 翻译：`skills/claude/commands/translate-text.md`
-- 校对：`skills/claude/commands/proofread-translation.md`
-
-应用只复制安装命令，不会自动写入你的全局 Claude Code 配置。推荐使用 GitHub 安装命令，安装版、便携版、未 clone 源码时都可用。该命令需要 Node.js 18 或更新版本，并默认使用 `--replace` 更新已有 command；旧目标会先备份到 `~/.translation-workshop/skill-backups/`：
-
-```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global --replace
-```
-
-如果已经 clone 仓库，也可以用本地路径安装：
-
-```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global --replace
-```
-
-安装目标：
-
-- `~/.claude/commands/translate-text.md`
-- `~/.claude/commands/proofread-translation.md`
-
-推荐命令会更新已有 command，并在覆盖前备份旧目标。
-
-## 文件支持
-
-| 格式 | 当前支持 |
-| --- | --- |
-| TXT | 行对行 HTML、写回、导出 |
-| EPUB | 文本抽取并生成行对行 HTML |
-| 双语 TXT | 按相邻两行的源文 / 译文位置拆分 |
-| 双语 EPUB | 按相邻两行的源文 / 译文位置拆分 |
-| Glossary | JSON、tab 分隔、`=>`、`->`、`=`、逗号分隔 |
-| Markdown report | 校对报告识别与审阅 HTML |
-
-## 安全说明
-
-- 源文件永远只读，不会被修改。
-- 应用不会自动安装全局 Codex / Claude Code skill，只做只读检测并复制安装命令。
-- 推荐安装命令带 `--replace`，会先备份具体目标文件 / 目录，再更新。
-- `写入 TXT` 只有在 HTML 从 Electron 应用打开时才会写入绑定译文路径。
-- Agent 控制台是真实终端交互；应用不会隐藏后台调用，也不会假装判断 Agent 已完成。完成后请手动同步译文或查找报告。
-- 局域网同步只暴露当前共享会话，不提供任意文件读取或目录浏览；访问需要 6 位 PIN，停止同步后会话链接失效。若你在共享页启用 Agent 控制台，PIN 访问者可以和当前 Agent 交互，因此不要把链接或 PIN 发给不可信的人。
-
-## 致谢
-
-特别感谢 OpenAI Codex 同学在工程和设计上提供了诸多帮助。某位伟人曾经说过，一个项目是由 99% 的 token 与 1% 的灵感组成的。
-觉得本项目有启发性或者本工具好用的话麻烦给个⭐支持。
-
-## 高级：Monte Carlo 压力测试提示词
+- Windows 安装版：`translation-workshop-Setup-2.0.0-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.0.0-x64.exe`
+- 校验文件：`SHA256SUMS.txt`
+
+安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。
+
+## 完整功能清单
+
+### 1. 项目、输入与文件绑定
+
+- 新建、载入、保存和切换独立项目；项目设置、工作流状态、资产和会话都保存在项目自己的 `.translation-workshop/` 中。
+- 最近项目跟随实际打开或保存的项目，不会被文件选择器里的旧路径覆盖。
+- 支持单个 TXT、TXT 文件夹、单个 EPUB 和相邻行双语 TXT / EPUB。
+- EPUB 会提取成 UTF-8 工作文本；ruby 只保留基文，原始 EPUB 仍作为导出和重打包来源。
+- 分离文件模式可分别绑定原文和译文；双语模式可指定奇偶位置分别作为原文与译文。
+- 文件夹模式自动匹配源文与译文，并维护一个权威批次索引。
+- 文件顺序支持阶段屏障。例如 `A, {B, C}, D` 会先完成 A，再并行处理 B/C，最后处理 D。
+- 翻译输出和校对报告默认绑定当前项目的 `AI_translation/` 与 `report/`，切换项目时不会沿用上一个项目的路径。
+- 一个统一的分片大小同时用于初翻与校对；并发 Worker 数和独立复审 Worker 数分别设置为上限，实际数量会随任务量缩减。
+- 自定义保留规则可保护变量、事件码、标签、控制码和其他不可改载荷；无效正则会直接报错。
+- 支持中英文界面、HTML 主题、项目级 Agent 代理开关和持久项目设置。
+
+### 2. 行对行翻译与审阅前端
+
+- 不启用 Agent 也能完成从读取、逐行编辑、搜索到写回的人工翻译流程。
+- 单文件页和文件夹总览页；文件夹子页面、sidecar 与批次索引使用同一身份绑定。
+- 原文与译文逐行对齐显示，支持直接编辑译文、保存人工编辑状态和刷新磁盘候选。
+- 分页、页码跳转、全文搜索、滚动位置恢复、最近焦点行定位和文件标签切换。
+- 按问题严重度标记行、显示高亮、清除问题、管理只读机械证据与可忽略项。
+- 从选中行向 Agent 询问有界上下文，不需要把整份文件塞进对话。
+- 校对建议默认可执行；可逐条接受、拒绝或手动改写完整替换文本。
+- 一键应用已接受建议，并把批次内全部 canonical 子页面同步到当前译文。
+- 可导出 TXT，也可写回已绑定译文；写回前检查路径绑定、基线、sidecar、行数和冲突。
+- 写回和覆盖前创建时间戳备份；原文文件始终只读。
+- 旧版 HTML 打开时按明确版本标记自动升级到当前协议，不要求重新生成全部页面。
+
+### 3. 术语、角色、文风与翻译记忆
+
+- **正式术语表**：项目内部的权威 canonical glossary。选择外部 glossary 后，工作流会同时保留 canonical 中不冲突的正式词；导入已接受候选时先合并现有 canonical、外部 glossary 与候选，冲突则整次拒绝，成功后再把项目绑定切到 canonical。
+- **候选术语**：Worker 只能在自己负责的证据行中上报新专名、译名和别名，不直接修改共享资产。
+- **角色表**：保存姓名、性别、代词、称呼、关系和口吻等可复用事实。
+- **文风指南**：保存作品级语气、表达偏好和格式约束。
+- **翻译记忆**：检索项目中已经接受的原译文对齐片段。
+- 支持 JSON、Tab、`=>`、`->`、`=` 和逗号分隔术语输入。
+- 行对行页面可编辑术语、搜索并替换译文中的命中项、导入候选条目。
+- 每个 assignment 只注入当前原文直接命中的完整结构化记录；缺失歧义才做单词精确搜索。
+- 关闭候选收集只禁止新增候选，已有候选仍可作为只读参考。
+- 同一原词出现竞争译名时会关闭新任务领取门；Parent 决定后，Host 全量重扫当前清单并优先修复全部受影响行。
+- glossary candidate、角色事实、DomainRun 状态和 Host 持久化在同一事务边界提交或回滚。
+
+### 4. 模型、Provider 与 Agent 会话
+
+- 支持 OpenAI / Codex OAuth，以及 OpenAI-compatible API、API key 和显式模型目录。
+- Provider、OAuth profile、当前模型和默认 thinking level 是用户级配置，可跨项目使用。
+- Agent 网络代理默认关闭；只有当前项目明确启用时才会使用项目代理地址。
+- 会话列表、创建与切换会话、独立弹出 Agent 窗口、流式输出和 Markdown 展示。
+- thinking、Function 调用和 subagent 以结构化对话 block 展示，不把内部协议文本混进普通回复。
+- 支持图片输入时，根据当前模型目录声明决定是否开放附件。
+- 显示输入、输出、缓存 token 和估算成本；支持 `/compact`、复制、Provider 设置、新建会话等产品内命令。
+- 工作进行中可发送 Steer，当前工作结束后可排队 Follow-up；Stop 会终止活动 runtime 和 Worker pool。
+- Parent 与 Child 使用同一套 Pi Agent runtime、`AgentMessage[]` 和 Pi JSONL 会话。
+- 长会话使用 Pi 原生 compaction；完整 Child 对话留在自己的 JSONL，Parent 只保存轻量状态和会话引用。
+
+### 5. 完整初翻 Workflow
+
+- Parent 读取当前界面绑定和 Host 状态，选择不超过项目上限的实际并发数，并负责最终汇总。
+- Host 根据权威 manifest、文件阶段、统一分片大小、旧译复用掩码和现有证据规划真实债务；模型不能自创文件或行范围。
+- 翻译池使用持久 Worker 动态领取互不重叠的 assignment，完成一块后再领下一块，避免每个文件私有队列造成长尾。
+- assignment 只获得自己的写权限；理解对话、代词或场景时可读取短邻近上下文，但不会扩大写入范围。
+- 译文先写入 Host 管理的 staging，成功写入后立刻持久化路径、hash 和待审状态。
+- 强制检查行数、空行、placeholder、标签、控制码、自定义保留规则和精确行身份。
+- 独立只读复审池检查全部机械风险行和稳定抽样的普通行；普通行样本随分块大小增长。
+- 复审只返回具体失败行与短修改要求，通过行不会逐行生成理由或报告。
+- 失败回到写出该块的同一翻译 Worker 做有界精确修复，不重启整块翻译。
+- 无进展或修复耗尽时，把 hash-current staging 和精确失败行交给 Parent 接管，保留其他有效行和既有证据。
+- 术语冲突进入同一批次的 priority repair wave；修复清零前不会越过优先队列继续普通任务。
+- 全部 assignment 结束后运行一次全文机械校验；未被既有证据覆盖的 warning 再由 Parent 做配对语义检查。
+- 只有真阳性 warning 会成为精确修复债务；假阳性保存为 hash-bound evidence，避免重复花费 token。
+- Stop、崩溃或重启后可从持久 staging、ownership、evidence 和 Pi session 继续。
+
+### 6. 旧译审计与选择性复用
+
+- 默认关闭复用：完整初翻首次写入前对旧候选做 SHA-256 备份并清空一次，保证干净重翻。
+- 开启后先对全部对齐行做机械快筛；行数、空行、placeholder、标签和明显占位文本错误直接进入重译。
+- 非目标语言、原文复制、异常长度、重复译文、AI 污染和术语/角色/文风命中只是风险证据，不会自动判死刑。
+- 无风险的目标语言对齐行自动复用；只有高风险稀疏行进入只读语义审计。
+- 审计只返回 `reuse` 或 `retranslate`，成功提交后不再调用模型复述计数。
+- 用户对整批只做一次选择；Host 事务性保留可复用行并清空重译行。
+- 后续翻译队列只包含真实重译债务，不会为了连续覆盖把保留行再次交给模型。
+- 冷启动按 owner、document、source hash 和保留基线恢复，不会把本轮刚写出的候选误当成启动前旧译。
+
+### 7. 完整校对 Workflow
+
+- 任何语义 Worker 启动前，Host 对清单内所有文档和全部对齐行运行 H3/H4/H7/H8/H9 等确定性扫描。
+- 扫描结果绑定 source、candidate、glossary、character bible 和 style hash；输入变化会使旧证据失效。
+- 确定性信号只是供 Worker 结合原文、译文和邻近上下文判断的证据，不会直接变成 finding。
+- **逐片精审**：Worker 语义检查自己范围内的每一行；分片大小只决定派发和保存边界。
+- **Monte Carlo**：Host 规划不重复的 HOT / WARM / COLD 分层样本，并记录真实覆盖。
+- 达到最低轮数后，只有连续两轮无新增才算收敛；轮数上限仍有新增时由用户选择继续三轮、只精审 HOT 区域或按当前结果停止。
+- 校对 Worker 只读原文、译文和项目资产，只能提交带证据的结构化 findings 与专名候选。
+- 文件夹模式先预扫描全部文件，再把所有文档放进同一个跨文件 staged assignment 队列。
+- findings 按 scope 原子替换和去重，必须包含全局行号、问题类型、证据和完整可替换建议。
+- 无变化修正、越界行、普通目标语言标点差异和格式不合格的提交会被拒绝。
+- 单文件和文件夹都只持久化一份 findings JSON；人类审阅 HTML 由产品从该 JSON 生成。
+
+### 8. Harness、Host 与可靠性
+
+- **Runtime** 负责模型调用、Function call、继续执行、Steer / Follow-up 队列、provider retry 和 compaction。
+- **Harness** 把 runtime、系统提示、Function 集、持久状态和完成条件组装成可持续执行的 Agent 环境。
+- **Host** 负责 manifest、assignment、阶段、写入 ownership、文件锁、hash、validator、事务与 completion gate。
+- 通用调查、局部修复、完整初翻和完整校对分别拥有不同 typed operation scope。
+- 完整批次在创建 Worker 前原子预留；重复活动批次会在模型 runtime 创建前被拒绝。
+- Parent 和 Child 可以按需读取参考，但只有 Host 授予的 document / range / exact lines 能写产物。
+- staging 提升、domain revision、alignment evidence 与 Host JSONL 持久化是一个可回滚提交边界。
+- Function 失败会回到同一个 Pi turn，或形成明确的 Parent repair / resume 状态，不会静默吞错或伪装完成。
+- 完成不是模型说“完成了”，而是 Host 确认所有任务、修复债务、证据、产物和最终校验都结清。
+- 关键阶段、Worker、assignment、provider 错误、staging 与 hash 都有持久记录，便于停止、恢复和排查。
+
+#### 为什么更稳定
+
+- 模型只做语义工作，文件身份、范围、并发写入和完成判断由确定性 Host 管理。
+- 候选先进入 staging，不会把半成品直接覆盖到 canonical artifact。
+- 翻译 Worker 与独立复审 Worker 分离，失败精确回到原 Worker；无进展会停止盲重试。
+- 所有恢复依据都绑定当前文件内容 hash；过期授权和过期证据不能继续生效。
+- 关键共享资产更新和产物提升使用事务，任一步失败都会回滚到可恢复状态。
+
+#### 为什么节约 token
+
+- Host 自己规划分片和风险扫描，不让模型全文重读后再决定做什么。
+- assignment 只注入直接命中的术语、角色和短邻近上下文；缺什么再精确搜索什么。
+- 机械快筛、placeholder 检查、行数检查和确定性校对信号不占模型推理。
+- 独立复审只返回失败行，通过行不生成逐行解释。
+- Parent 不嵌入 Child 全对话，只读取轻量状态和结构化 discoveries。
+- 旧译复用只把高风险稀疏行送入语义审计，保留行不会重新翻译。
+- hash-bound 通过证据和 warning 假阳性证据可复用，修改一行不会让整份文件全部重审。
+
+### 9. 网页与本地参考资料
+
+- Agent 可读取用户明确提供的 HTTP(S) 页面并缓存可读正文。
+- Wikipedia 通过 MediaWiki API 提取正文；普通网页提取主要可读内容。
+- 缓存参考可供 Parent 与 Child 复用，不需要每个 assignment 重新下载。
+- 可只读访问用户明确提供的项目外绝对路径、旧译文和备份译文。
+- 所有产物写入仍受项目边界、文档身份和行 ownership 约束。
+
+### 10. 局域网与远程操作
+
+- 在桌面应用中打开工作 HTML 后启动 LAN 同步，并设置 6 位 PIN。
+- 手机、平板或另一台电脑可打开文件夹总览和单文件页。
+- 远程端可搜索、翻页、编辑译文、接受或拒绝建议、同步页面并使用 Agent 面板。
+- 远程 Prompt、Steer 和 Follow-up 使用桌面端同一持久 Pi session，不会另建一份远程 transcript。
+- SSE 只负责低延迟增量显示；断线或代理缓冲后，浏览器会从 canonical Pi messages 收敛到最终状态。
+- 桌面应用必须保持运行；LAN 只共享当前工作会话，不开放任意目录浏览。
+- 产品不内置公网隧道。需要外网访问时，可把 Cloudflare Tunnel、ngrok 等工具指向页面显示的本地地址。
+- 公网地址等于暴露工作台入口。请使用不可猜测的 PIN，不要公开 URL，结束后关闭隧道和 LAN 同步。
+
+### 11. 更新、恢复与兼容
+
+- 安装版支持 GitHub Release 更新检查、下载和重启安装；便携版跳转到 Release 下载。
+- 旧行对行 HTML、旧 proposal HTML 和旧项目字段有明确的升级与迁移路径。
+- 旧分片设置只在迁移时读取一次，之后统一写入当前 canonical 设置。
+- Stop 会终止活动 runtime，但保留 hash-current staging、校对证据和未完成债务。
+- 显式继续会在同一个 Pi session 与 Host batch 中恢复，不另起一批假装重跑。
+- Provider 传输错误保留脱敏 cause、provider、model、session 和重试记录，便于定位真实失败。
+
+## Agent Function 索引
+
+普通用户不需要手动调用这些 Function。它们是 Harness 交给 Parent 和 Child 的受限操作面；同名只读函数在两个角色中分别暴露，所以共有 **52 个唯一名称、55 个可调用面**。参数、读取内容、写入目标、拒绝条件和下一步见[技术手册 Function Registry](https://tohman233.github.io/YN-translation-workshop/functions.html)。
 
 <details>
-<summary>展开提示词模板</summary>
+<summary><strong>Parent Functions（38）</strong></summary>
 
-```text
-You are a Translation Project Manager. please ask 3 (or any number, larger is harder to pass the test) sub-agents to do the following job, start at different seeds.
-
-Please use the proofread-translation skill to run a Monte Carlo translation-quality stress test on the following source/translation pair.
-
-Goal:
-- Check whether a large translation still contains serious translation-quality issues.
-- Focus only on true actionable issues found in sampled lines; every candidate must be manually judged.
-- Do not repeat global scans, old-report comparisons, or full terminology audits that have already been completed, unless I explicitly ask for them.
-
-Inputs:
-- Review mode: montecarlo
-- Type: {game/novel/technical/subtitle/academic}
-- Source language: {SOURCE_LANGUAGE}
-- Target language: {TARGET_LANGUAGE}
-- Source file: {SOURCE_FILE}
-- Translation file: {TRANSLATION_FILE}
-- Glossary file, optional: {GLOSSARY_FILE}
-- Sample size per round: {SAMPLE_SIZE, default 5000}
-- Confirmed-issue line exclusion set: {KNOWN_ISSUE_LINES, may be empty}
-
-Scope for this stress test:
-- Focus on HIGH translation-quality risks: mistranslation, misaligned line, omission, empty translation, severe over-translation/line bleed, AI/reviewer meta-language contamination, source-language residue, number/list-index errors, lost or translated code placeholders/tags, abnormal expansion, and hallucination.
-- If an H9 expansion/hallucination issue is found in the sample, retranslate the full source line and provide that full replacement as the suggested translation.
-
-Output requirements:
-- Every issue must include: global line number, source text, current translation, issue explanation, severity, and a complete directly replaceable suggested translation.
-- Every severity level (HIGH/MEDIUM/LOW) must include a complete suggested translation. Do not provide only a direction, a partial replacement, or meta wording such as "suggest changing to".
-- The suggested translation field must contain only the final replacement text itself.
-- If a candidate is a false positive, explain why and continue; it does not count as a failure.
-- If a sampled line is in the confirmed-issue exclusion set, mark it as a known issue and exclude it; it does not count as a failure.
-
-Convergence rule:
-- Start counting from the translation state after the most recent applied fix.
-- If a new true issue is found: report the full suggested translation and stop. The manager will apply the fix, then convergence counting must restart.
-- If no new true issue is found, continue with a different seed.
-- This lane converges after {CLEAN_ROUNDS, default 2} consecutive different seeds produce no new true issues.
-- Multiple agents run in parallel, every lane must independently satisfy this convergence rule. O.W., all agent should do a totally new round after fixes of manager.
-
-Environment note:
-- On Windows PowerShell, force UTF-8 output before reading files or running scripts:
-  [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new()
-- If Python is used, set:
-  $env:PYTHONUTF8='1'
-  $env:PYTHONIOENCODING='utf-8'
-
-Final response:
-- List the seeds used.
-- State whether convergence was reached.
-- List any new true issues found.
-- Summarize false-positive candidates.
-- List excluded known-issue lines.
-```
+| 类别 | Functions |
+| --- | --- |
+| 工作流控制 | `resumeYnWorkflow` |
+| 共享资产 | `readTranslationDiscoveries`, `resolveTranslationDiscoveries` |
+| 当前界面 | `readYnInterfaceContext` |
+| 局部校对 | `inspectProofreadRange`, `recordProofreadParentReview` |
+| 网页参考 | `fetchWebReference` |
+| 项目上下文 | `inspectTranslationContext`, `selectSourceDocument` |
+| 旧译复用 | `prepareTranslationReuseAudit`, `readTranslationReuseAudit`, `recordTranslationReuseAudit`, `runTranslationReuseAudit`, `applyTranslationReuseDecision` |
+| 模型与 Child | `listAvailableModels`, `inspectSubagents`, `steerSubagent` |
+| 文件与检索 | `readSourceLines`, `readTranslationLines`, `readProjectFile`, `listProjectDir`, `searchProjectText`, `searchTranslationMemory` |
+| warning 与对齐 | `readTranslationAlignmentRows`, `inspectTranslationWarnings`, `recordTranslationWarningChecks`, `inspectTranslationAlignment`, `recordTranslationAlignmentChecks` |
+| 翻译产物 | `writeProjectFile`, `writeTranslationChunk`, `validateTranslationArtifact` |
+| 校对产物 | `writeProofreadFindings`, `resolveProofreadGlossaryCandidates`, `finalizeProofreadReport`, `resolveProofreadMontecarloLimit` |
+| 调度 | `runProofreadSubagents`, `runSubagents`, `runTranslationSubagents` |
 
 </details>
+
+<details>
+<summary><strong>Child Functions（17）</strong></summary>
+
+| 角色 | Functions |
+| --- | --- |
+| 通用只读 | `listProjectDir`, `searchProjectText`, `readProjectFile` |
+| 翻译 Worker | `readTranslationContext`, `readAssignedSource`, `writeAssignedTranslation`, `repairAssignedTranslation`, `validateAssignedTranslation` |
+| 校对 Worker | `readAssignedProofreadContext`, `readProofreadReference`, `writeAssignedFindings` |
+| 局部委派 | `readBoundSourceLines`, `readBoundTranslationLines` |
+| 独立翻译复审 | `readAssignedTranslationReview`, `submitTranslationReview` |
+| 旧译语义审计 | `readAssignedTranslationAudit`, `submitTranslationAudit` |
+
+</details>
+
+## 一次完整使用流程
+
+```mermaid
+flowchart LR
+  A[新建项目并绑定原文] --> B[生成行对行 HTML]
+  B --> C[配置 Provider 和模型]
+  C --> D[运行初翻 Workflow]
+  D --> E[刷新并人工抽查候选]
+  E --> F[运行校对 Workflow]
+  F --> G[生成审阅 HTML]
+  G --> H[接受 拒绝或手改建议]
+  H --> I[安全写回或导出 TXT]
+```
+
+第一次使用建议先处理 50 到 200 行，确认编码、行对齐、语言方向、术语、控制码和写回路径，再运行完整项目。具体参数怎么填、每个按钮怎么用、如何远程访问，请直接阅读[普通用户教程](https://tohman233.github.io/YN-translation-workshop/guides.html)。
+
+## 产物与数据位置
+
+| 类型 | 内容 |
+| --- | --- |
+| 行对行工作页 | 单文件 HTML，或文件夹 index + canonical child HTML + sidecar |
+| 候选译文 | 与原文严格行对齐的 TXT 和 Host staging artifact |
+| 校对结果 | 唯一 Findings JSON，以及由它生成的逐条审阅 HTML |
+| 项目资产 | 正式术语表、候选术语、角色表、文风指南、翻译记忆 |
+| 运行状态 | Host batch、assignment、证据、恢复债务和 Pi JSONL sessions |
+| 备份 | 写回、清空旧译或覆盖资产前生成的时间戳备份 |
+
+源文件永远只读。候选译文、HTML 页面状态和真实译文文件分开保存；不满足绑定、基线、行数或校验契约时，写回会明确失败。
+
+## 开发与验证
+
+要求 Node.js `>=22.6.0`。
+
+```bash
+npm ci
+npm run dev
+```
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm run verify:electron-agent-html
+npm run verify:electron-lan-agent
+```
+
+Windows 发布包：
+
+```bash
+npm run package:win
+npm run verify:release
+```
+
+运行时翻译协议和 JSON schema 位于 `translation-protocol/`；产品通过内置系统提示、Host Functions、validator 和 completion gate 执行它们。
+
+## 隐私与安全
+
+- Provider credential 保存在 Electron 用户数据目录，不进入项目仓库。
+- 翻译资产、Agent 会话、Host 状态和备份按项目隔离。
+- 项目代理默认关闭，进程环境中的代理变量不会静默开启 Agent 网络代理。
+- LAN 访问者持有 PIN 后可以操作当前共享会话，请只在可信网络或受控隧道中使用。
+- 仓库不跟踪本机 Agent 指令、运行记忆、私有测试路径、编辑导出稿或个人教程源文件。
+
+## License
+
+[MIT](LICENSE)
+
+感谢 OpenAI Codex 以及所有参与测试、翻译和反馈的人。

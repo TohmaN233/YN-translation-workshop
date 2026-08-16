@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -10,7 +10,10 @@ import {
   fauxText,
   fauxToolCall
 } from "@earendil-works/pi-ai";
-import { MAX_TRANSLATION_REVIEW_REPAIR_CYCLES } from "../../src/main/agent/piNative/subagentRunner.ts";
+import {
+  MAX_ASSIGNED_TRANSLATION_REPAIR_TURNS,
+  MAX_TRANSLATION_REVIEW_REPAIR_CYCLES
+} from "../../src/main/agent/piNative/subagentRunner.ts";
 import { YnSubagentSupervisor } from "../../src/main/agent/piNative/subagentSupervisor.ts";
 import { ParentTakeoverAssignmentError } from "../../src/main/agent/piNative/assignmentFailure.ts";
 
@@ -29,10 +32,18 @@ function translationTurn(prefix, translatedText, repair = false) {
   return turn;
 }
 
-async function runSupervisorScenario({ name, responses, review }) {
+async function runSupervisorScenario({
+  name,
+  responses,
+  review,
+  parentCompletionContext,
+  sourceText = "first line\n",
+  tasks = [{ documentId: "source.txt", fromLine: 1, toLine: 1 }],
+  languagePair = "en->zh-CN"
+}) {
   const outputDir = await mkdtemp(path.join(os.tmpdir(), `yn-pi-translation-${name}-`));
   const sourcePath = path.join(outputDir, "source.txt");
-  await writeFile(sourcePath, "first line\n", "utf8");
+  await writeFile(sourcePath, sourceText, "utf8");
   const models = createModels();
   const provider = fauxProvider({ provider: name, tokensPerSecond: 10_000 });
   models.setProvider(provider.provider);
@@ -49,6 +60,7 @@ async function runSupervisorScenario({ name, responses, review }) {
       modelId: provider.getModel().id
     })
   });
+  const checkpointPaths = [];
   try {
     supervisor.startTranslationBatch({
       request: {
@@ -58,20 +70,81 @@ async function runSupervisorScenario({ name, responses, review }) {
         prompt: "translate the assigned line",
         providerId: provider.provider.id,
         modelId: provider.getModel().id,
-        languagePair: "en->zh-CN"
+        languagePair
       },
-      tasks: [{ documentId: "source.txt", fromLine: 1, toLine: 1 }],
+      tasks,
       maxWorkers: 1,
-      onChunkReadyForReview: review
+      onChunkReadyForReview: review,
+      onStagingCandidateCheckpoint: async (checkpoint) => {
+        checkpointPaths.push(checkpoint.candidatePath);
+      },
+      parentCompletionContext
     });
     await supervisor.waitForAll();
-    return { batch: supervisor.list()[0], parentMessages };
+    let retainedStagingText;
+    const checkpointPath = checkpointPaths.at(-1);
+    if (checkpointPath) {
+      try {
+        retainedStagingText = await readFile(checkpointPath, "utf8");
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    return { batch: supervisor.list()[0], parentMessages, retainedStagingText };
   } finally {
     supervisor.abortAll();
     await supervisor.waitForAll();
     await rm(outputDir, { recursive: true, force: true });
   }
 }
+
+let unexpectedMechanicalAssignmentRetryCalls = 0;
+const mechanicalNoProgressResponses = [
+  fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, {
+    id: "mechanical-read"
+  }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
+    entries: [
+      { line: 1, translation: "第一行" },
+      { line: 2, translation: "シントー" }
+    ]
+  }, { id: "mechanical-initial-write" }), { stopReason: "toolUse" }),
+  ...Array.from({ length: MAX_ASSIGNED_TRANSLATION_REPAIR_TURNS }, (_, index) => (
+    fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
+      entries: [{ line: 2, translation: "シントー" }]
+    }, { id: `mechanical-invalid-repair-${index + 1}` }), { stopReason: "toolUse" })
+  )),
+  ...Array.from({ length: 8 }, () => async () => {
+    unexpectedMechanicalAssignmentRetryCalls += 1;
+    return fauxAssistantMessage(fauxText("The Host incorrectly restarted the complete assignment."));
+  })
+];
+const mechanicalNoProgressRun = await runSupervisorScenario({
+  name: "mechanical-no-progress",
+  sourceText: "first line\nシントー\n",
+  languagePair: "ja->zh-CN",
+  tasks: [{ documentId: "source.txt", fromLine: 1, toLine: 2 }],
+  responses: mechanicalNoProgressResponses,
+  review: async () => {
+    throw new Error("mechanically rejected staging must not reach the review worker");
+  }
+});
+const mechanicalNoProgressBatch = mechanicalNoProgressRun.batch;
+assert.equal(mechanicalNoProgressBatch.status, "failed");
+assert.equal(
+  mechanicalNoProgressBatch.subagents[0].assignmentCount,
+  1,
+  "mechanical repair exhaustion must not restart the complete assignment"
+);
+assert.equal(unexpectedMechanicalAssignmentRetryCalls, 0);
+assert.equal(mechanicalNoProgressBatch.subagents[0].failureDisposition, "parent_takeover_required");
+assert.deepEqual(mechanicalNoProgressBatch.subagents[0].parentTakeovers?.[0]?.rejectedLines, [2]);
+assert.match(mechanicalNoProgressBatch.subagents[0].parentTakeovers?.[0]?.feedback || "", /likely_untranslated/i);
+assert.equal(
+  mechanicalNoProgressRun.retainedStagingText,
+  "第一行\n\n",
+  "the valid part of the hash-current staging candidate must survive parent takeover"
+);
 
 let unchangedReviewCalls = 0;
 const unchangedRun = await runSupervisorScenario({
@@ -103,8 +176,9 @@ assert.equal(
 );
 assert.equal(unchangedBatch.subagents[0].failureDisposition, "parent_takeover_required");
 assert.equal(unchangedRun.parentMessages.length, 1);
-assert.match(unchangedRun.parentMessages[0].content, /retained staging candidate/i);
-assert.match(unchangedRun.parentMessages[0].content, /wait for an explicit user continuation/i);
+assert.match(unchangedRun.parentMessages[0].content, /exact retained evidence/i);
+assert.match(unchangedRun.parentMessages[0].content, /Host could not complete the parent takeover handoff/i);
+assert.doesNotMatch(unchangedRun.parentMessages[0].content, /explicit user continuation/i);
 assert.equal(
   unchangedRun.parentMessages[0].details?.failureDisposition,
   "parent_takeover_required"
@@ -132,7 +206,11 @@ const changedRun = await runSupervisorScenario({
           : `semantic_attempt_${changedReviewCalls}: repair the source meaning on line 1`
       }]
     };
-  }
+  },
+  parentCompletionContext: () => ({
+    content: "Host parent takeover is ready.",
+    details: { parentTakeoverReady: true, parentTakeovers: [{ documentId: "source.txt", rejectedLines: [1] }] }
+  })
 });
 const changedBatch = changedRun.batch;
 assert.equal(changedBatch.status, "failed");
@@ -145,7 +223,9 @@ assert.equal(
   "the supervisor must not restart a changed-candidate assignment after its bounded review budget is exhausted"
 );
 assert.equal(changedBatch.subagents[0].failureDisposition, "parent_takeover_required");
-assert.match(changedRun.parentMessages[0].content, /do not automatically restart the queue/i);
+assert.match(changedRun.parentMessages[0].content, /Continue now without asking the user/i);
+assert.match(changedRun.parentMessages[0].content, /repair only those rows through writeTranslationChunk/i);
+assert.doesNotMatch(changedRun.parentMessages[0].content, /explicit user continuation/i);
 
 const malformedRun = await runSupervisorScenario({
   name: "review-malformed-rejection",
@@ -164,6 +244,9 @@ const accumulatedSupervisor = new YnSubagentSupervisor({
   publishLiveCustomMessage: async () => {},
   notifyParent: async (message) => accumulatedParentMessages.push(message)
 });
+let accumulatedWorkerGeneration = 0;
+const accumulatedWorkerEvents = [];
+const accumulatedCompletedLines = [];
 accumulatedSupervisor.startBatch({
   kind: "translation",
   request: {
@@ -183,22 +266,30 @@ accumulatedSupervisor.startBatch({
   label: (task) => `L${task.fromLine}`,
   range: (task) => task,
   documentId: (task) => task.documentId,
-  createWorker: async () => ({
-    run: async (task) => {
-      throw new ParentTakeoverAssignmentError(
-        `review rejected L${task.fromLine}`,
-        {
-          documentId: task.documentId,
-          fromLine: task.fromLine,
-          toLine: task.toLine,
-          rejectedLines: [task.fromLine],
-          feedback: `L${task.fromLine} must be repaired by the parent`
+  createWorker: async () => {
+    const generation = ++accumulatedWorkerGeneration;
+    accumulatedWorkerEvents.push(`create-${generation}`);
+    return {
+      run: async (task) => {
+        if (generation === 1) {
+          throw new ParentTakeoverAssignmentError(
+            `review rejected L${task.fromLine}`,
+            {
+              documentId: task.documentId,
+              fromLine: task.fromLine,
+              toLine: task.toLine,
+              rejectedLines: [task.fromLine],
+              feedback: `L${task.fromLine} must be repaired by the parent`
+            }
+          );
         }
-      );
-    },
-    finish: async () => {},
-    dispose: async () => {}
-  }),
+        accumulatedCompletedLines.push(task.fromLine);
+        return { line: task.fromLine };
+      },
+      finish: async () => accumulatedWorkerEvents.push(`finish-${generation}`),
+      dispose: async () => accumulatedWorkerEvents.push(`dispose-${generation}`)
+    };
+  },
   run: async () => {
     throw new Error("persistent worker was not used");
   }
@@ -209,6 +300,18 @@ assert.equal(
   accumulatedBatch.subagents[0].assignmentCount,
   1,
   "a worker whose current assignment exhausted its repair budget must stop before claiming another assignment"
+);
+assert.equal(
+  accumulatedBatch.subagents.length,
+  2,
+  "the supervisor must replace the exhausted child while reserved assignments remain"
+);
+assert.equal(accumulatedBatch.subagents[1].assignmentCount, 1);
+assert.equal(accumulatedBatch.subagents[1].completedAssignments, 1);
+assert.deepEqual(accumulatedCompletedLines, [2]);
+assert.ok(
+  accumulatedWorkerEvents.indexOf("dispose-1") < accumulatedWorkerEvents.indexOf("create-2"),
+  "the exhausted child must be fully disposed before its replacement runtime starts"
 );
 assert.deepEqual(
   accumulatedBatch.subagents[0].parentTakeovers?.map((entry) => entry.rejectedLines),

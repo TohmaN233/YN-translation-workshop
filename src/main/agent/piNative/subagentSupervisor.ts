@@ -131,6 +131,22 @@ export interface YnSubagentWriteScope {
   documentId: string;
   fromLine: number;
   toLine: number;
+  lines?: number[];
+}
+
+function writeScopesOverlap(left: YnSubagentWriteScope, right: YnSubagentWriteScope): boolean {
+  if (
+    left.documentId !== right.documentId
+    || left.fromLine > right.toLine
+    || right.fromLine > left.toLine
+  ) return false;
+  const leftLines = left.lines?.length ? new Set(left.lines) : undefined;
+  const rightLines = right.lines?.length ? new Set(right.lines) : undefined;
+  if (!leftLines && !rightLines) return true;
+  if (leftLines && rightLines) return [...leftLines].some((line) => rightLines.has(line));
+  const sparse = leftLines ?? rightLines!;
+  const range = leftLines ? right : left;
+  return [...sparse].some((line) => line >= range.fromLine && line <= range.toLine);
 }
 
 type PreparedTranslationReview =
@@ -270,7 +286,7 @@ export class YnSubagentSupervisor {
     signal?: AbortSignal;
     onArtifactMutation?: (
       documentId: string | undefined,
-      range?: { fromLine: number; toLine: number }
+      range?: { fromLine: number; toLine: number; lines?: number[] }
     ) => Promise<void> | void;
     parentCompletionContext?: (outcome: YnSubagentBatchOutcome<PiGeneralSubagentResult | PiTranslationSubagentResult>) => {
       content?: string;
@@ -289,7 +305,8 @@ export class YnSubagentSupervisor {
         ? {
             documentId: task.documentId!,
             fromLine: task.fromLine!,
-            toLine: task.toLine!
+            toLine: task.toLine!,
+            ...(task.lines?.length ? { lines: [...task.lines] } : {})
           }
         : undefined,
       parentCompletionContext: options.parentCompletionContext ?? (({ results }) => ({
@@ -341,7 +358,8 @@ export class YnSubagentSupervisor {
               label: task.label,
               providerId: task.providerId,
               modelId: task.modelId,
-              instruction: task.prompt
+              instruction: task.prompt,
+              ...(task.lines?.length ? { selectedLines: [...task.lines] } : {})
             },
             subagentId,
             publishCustomMessage: this.options.publishCustomMessage,
@@ -378,7 +396,7 @@ export class YnSubagentSupervisor {
     signal?: AbortSignal;
     onArtifactMutation?: (
       documentId: string | undefined,
-      range?: { fromLine: number; toLine: number }
+      range?: { fromLine: number; toLine: number; lines?: number[] }
     ) => Promise<void> | void;
     onStagingCandidateCheckpoint?: (
       checkpoint: PiTranslationStagingCheckpoint
@@ -588,7 +606,7 @@ export class YnSubagentSupervisor {
     signal?: AbortSignal;
     onArtifactMutation?: (
       documentId: string | undefined,
-      range?: { fromLine: number; toLine: number }
+      range?: { fromLine: number; toLine: number; lines?: number[] }
     ) => Promise<void> | void;
     onTaskCompleted?: (
       result: PiProofreadSubagentResult,
@@ -703,11 +721,7 @@ export class YnSubagentSupervisor {
 
   hasWriteConflict(scope: YnSubagentWriteScope): boolean {
     for (const activeScopes of this.activeWriteScopes.values()) {
-      if (activeScopes.some((active) => (
-        active.documentId === scope.documentId
-        && active.fromLine <= scope.toLine
-        && active.toLine >= scope.fromLine
-      ))) return true;
+      if (activeScopes.some((active) => writeScopesOverlap(active, scope))) return true;
     }
     return false;
   }
@@ -1071,12 +1085,19 @@ export class YnSubagentSupervisor {
       if (!Number.isInteger(scope.fromLine) || !Number.isInteger(scope.toLine) || scope.fromLine < 1 || scope.toLine < scope.fromLine) {
         throw new Error(`Invalid Pi child write scope ${scope.documentId} L${scope.fromLine}-L${scope.toLine}.`);
       }
+      if (scope.lines?.length) {
+        const unique = new Set(scope.lines);
+        if (
+          unique.size !== scope.lines.length
+          || scope.lines.some((line) => (
+            !Number.isInteger(line) || line < scope.fromLine || line > scope.toLine
+          ))
+        ) {
+          throw new Error(`Invalid sparse Pi child write scope ${scope.documentId} L${scope.fromLine}-L${scope.toLine}.`);
+        }
+      }
       for (const [activeId, activeScopes] of this.activeWriteScopes) {
-        const conflict = activeScopes.find((active) => (
-          active.documentId === scope.documentId
-          && active.fromLine <= scope.toLine
-          && scope.fromLine <= active.toLine
-        ));
+        const conflict = activeScopes.find((active) => writeScopesOverlap(active, scope));
         if (conflict) {
           throw new Error(
             `Pi child write scope ${scope.documentId} L${scope.fromLine}-L${scope.toLine} overlaps active batch ${activeId} L${conflict.fromLine}-L${conflict.toLine}.`
@@ -1279,7 +1300,12 @@ export class YnSubagentSupervisor {
       && (options.createWorker || options.createIdleWorker) || priorityTasks.length > 0
       ? Array.from({ length: workerCount }, () => undefined)
       : initialTasks;
-    const records = recordSeeds.map((firstTask, workerIndex): YnSubagentRecord<TResult> => {
+    const records: YnSubagentRecord<TResult>[] = [];
+    const createBatchWorkerRecord = (
+      firstTask: TTask | undefined,
+      workerIndex: number,
+      taskAlreadyClaimed = false
+    ): YnSubagentRecord<TResult> => {
       const id = `subagent_${randomUUID()}`;
       const range = firstTask ? options.range(firstTask) : {};
       const firstDocumentId = firstTask ? options.documentId?.(firstTask) : undefined;
@@ -1295,7 +1321,7 @@ export class YnSubagentSupervisor {
         fromLine: range.fromLine,
         toLine: range.toLine,
         status: "running",
-        startedAt,
+        startedAt: Date.now(),
         ...(documentIds.length > 0 ? { documentIds } : {}),
         assignmentCount: 0,
         completedAssignments: 0,
@@ -1307,6 +1333,7 @@ export class YnSubagentSupervisor {
       record.promise = Promise.resolve()
         .then(async () => {
           let workerFailure: unknown;
+          let replaceWorkerAfterFailure = false;
           const rememberFailure = (error: unknown) => {
             workerFailure ??= error;
             firstFailure ??= error;
@@ -1332,9 +1359,11 @@ export class YnSubagentSupervisor {
             };
             let task: TTask | undefined;
             if (options.createWorker) {
-              task = firstTasksComeFromQueue ? await claimNextTask(workerIndex) : firstTask;
+              task = taskAlreadyClaimed
+                ? firstTask
+                : firstTasksComeFromQueue ? await claimNextTask(workerIndex) : firstTask;
               if (task !== undefined) {
-                if (!firstTasksComeFromQueue) await waitForClaimGate();
+                if (!firstTasksComeFromQueue && !taskAlreadyClaimed) await waitForClaimGate();
                 bindRecordToTask(task);
                 try {
                   persistentWorker = await options.createWorker({
@@ -1364,7 +1393,9 @@ export class YnSubagentSupervisor {
                   label: record.label,
                   registerControl
                 });
-              task = firstTasksComeFromQueue ? await claimNextTask(workerIndex) : firstTask;
+              task = taskAlreadyClaimed
+                ? firstTask
+                : firstTasksComeFromQueue ? await claimNextTask(workerIndex) : firstTask;
             }
             while (task !== undefined) {
               if (abortController.signal.aborted) break;
@@ -1406,6 +1437,7 @@ export class YnSubagentSupervisor {
                   if (isParentTakeoverAssignmentError(error)) {
                     record.failureDisposition = error.failureDisposition;
                     record.parentTakeovers = [...(record.parentTakeovers ?? []), error.details];
+                    replaceWorkerAfterFailure = true;
                   }
                   if (isSubagentTransportExhaustedError(error)) {
                     record.failureDisposition = error.failureDisposition;
@@ -1468,9 +1500,20 @@ export class YnSubagentSupervisor {
             }
             record.control = undefined;
           }
+          if (replaceWorkerAfterFailure && !abortController.signal.aborted) {
+            const replacementTask = await claimNextTask(workerIndex);
+            if (replacementTask !== undefined) {
+              const replacement = createBatchWorkerRecord(replacementTask, workerIndex, true);
+              records.push(replacement);
+              await replacement.promise;
+            }
+          }
         });
       return record;
-    });
+    };
+    for (const [workerIndex, firstTask] of recordSeeds.entries()) {
+      records.push(createBatchWorkerRecord(firstTask, workerIndex));
+    }
 
     const batch: YnSubagentBatchRecord<TResult> = {
       id: batchId,
@@ -1608,6 +1651,7 @@ export class YnSubagentSupervisor {
     const parentTakeovers = batch.subagents.flatMap((child) => (
       (child.parentTakeovers ?? []).map((takeover) => ({ subagentId: child.id, ...takeover }))
     ));
+    const parentTakeoverReady = context?.details?.parentTakeoverReady === true;
     const assignmentFailures = batch.subagents.flatMap((child) => child.assignmentFailures ?? []);
     return {
       role: "custom",
@@ -1620,8 +1664,10 @@ export class YnSubagentSupervisor {
           ? "The background wait is over. Do not keep waiting or repeat a prior status response. Resume the parent workflow now: inspect the child artifacts, merge as needed, run the final host validation, and report the result."
           : transportRetryExhausted
             ? "The provider transport remained unavailable after the bounded native Pi retry budget. Do not automatically start another child batch or drain more assignments. Report this recoverable pause to the user and wait for an explicit continuation after connectivity is available; accepted artifacts and outstanding Host debt remain intact."
+            : parentTakeoverRequired && parentTakeoverReady
+            ? `The failed assignment exhausted its bounded child repair path and has already been transferred to the parent-owned repair path. Exact evidence is available in ${JSON.stringify(parentTakeovers)}. Continue now without asking the user and without starting another child batch: follow completionContext.parentTakeovers, repair only those rows through writeTranslationChunk, complete the parent alignment audit, and run final validation.`
             : parentTakeoverRequired
-            ? `The failed assignment exhausted its bounded child repair path. Its retained staging candidate and exact rejected lines remain available in ${JSON.stringify(parentTakeovers)}. Do not write the canonical artifact directly and do not automatically restart the queue. Report the recoverable pause and wait for an explicit user continuation; after that, resume only this retained assignment through the Host queue.`
+            ? `The failed assignment exhausted its bounded child repair path, but the Host could not complete the parent takeover handoff. Exact retained evidence is available in ${JSON.stringify(parentTakeovers)}. Report this Host handoff failure without starting another child batch or claiming completion.`
             : "The assignment exhausted its bounded retry path. Do not automatically start another batch or let this worker claim more tasks. Report the recoverable pause and wait for an explicit user continuation; accepted results and exact outstanding Host debt remain intact."
       ].join("\n"),
       display: false,

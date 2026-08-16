@@ -120,7 +120,7 @@ function customPreserveRuleLines(rules: ReturnType<typeof normalizeCustomPreserv
 }
 
 export function promptParameterDefaults(projectDir: string, advanced: PromptAdvancedOptions = {}) {
-  const subagentCount = optionalPositiveNumber(advanced.subagentCount);
+  const subagentCount = optionalPositiveNumber(advanced.subagentCount) ?? 3;
   return {
     languagePair: clean(advanced.languagePair) || "ja->zh-CN",
     style: clean(advanced.style) || "game",

@@ -6,20 +6,20 @@ import type {
 const MAX_VALIDATION_FINDING_SAMPLES = 24;
 const MAX_VALIDATION_LINE_RANGES = 128;
 
-const YN_TRANSLATION_QUALITY_WARNING_CODES = new Set([
-  "empty_line_displaced",
-  "likely_untranslated",
-  "glossary_missing",
-  "character_name_missing",
-  "character_voice_required_missing",
-  "character_voice_forbidden_term",
-  "style_forbidden_term"
-]);
-
 const YN_TRANSLATION_STRUCTURAL_WARNING_CODES = new Set([
   "empty_line_displaced",
   "likely_untranslated"
 ]);
+
+export interface YnTranslationArtifactAcceptanceOptions {
+  acceptedQualityWarningKeys?: ReadonlySet<string>;
+}
+
+export function ynTranslationQualityWarningKey(finding: ValidationFinding): string | undefined {
+  return Number.isInteger(finding.line) && Number(finding.line) > 0
+    ? `${Number(finding.line)}\0${finding.code}`
+    : undefined;
+}
 
 function selectedWarnings(
   validation: TranslationValidationResult,
@@ -29,9 +29,16 @@ function selectedWarnings(
 }
 
 export function ynTranslationQualityWarnings(
-  validation: TranslationValidationResult
+  validation: TranslationValidationResult,
+  options: YnTranslationArtifactAcceptanceOptions = {}
 ): ValidationFinding[] {
-  return selectedWarnings(validation, YN_TRANSLATION_QUALITY_WARNING_CODES);
+  // Every warning is semantic post-translation review work. Keeping this
+  // unfiltered prevents a newly added validator warning code from silently
+  // bypassing the final review contract.
+  return validation.warnings.filter((finding) => {
+    const key = ynTranslationQualityWarningKey(finding);
+    return !key || !options.acceptedQualityWarningKeys?.has(key);
+  });
 }
 
 export function ynTranslationStructuralWarnings(
@@ -42,16 +49,27 @@ export function ynTranslationStructuralWarnings(
 
 export function ynTranslationValidationDebt(
   validation: TranslationValidationResult,
-  acceptance: "artifact" | "chunk" = "artifact"
+  acceptance: "artifact" | "chunk" = "artifact",
+  options: YnTranslationArtifactAcceptanceOptions = {}
 ): number {
   const warnings = acceptance === "artifact"
-    ? ynTranslationQualityWarnings(validation)
+    ? ynTranslationQualityWarnings(validation, options)
     : ynTranslationStructuralWarnings(validation);
   return validation.blocking.length + warnings.length;
 }
 
-export function isYnTranslationArtifactAccepted(validation: TranslationValidationResult): boolean {
-  return validation.ok && ynTranslationQualityWarnings(validation).length === 0;
+export function isYnTranslationArtifactAccepted(
+  validation: TranslationValidationResult,
+  _options: YnTranslationArtifactAcceptanceOptions = {}
+): boolean {
+  return validation.ok;
+}
+
+export function isYnTranslationWarningReviewComplete(
+  validation: TranslationValidationResult,
+  options: YnTranslationArtifactAcceptanceOptions = {}
+): boolean {
+  return ynTranslationQualityWarnings(validation, options).length === 0;
 }
 
 export function isYnTranslationChunkWritable(validation: TranslationValidationResult): boolean {
@@ -98,9 +116,11 @@ function findingSample(findings: ValidationFinding[]) {
 
 export function compactYnTranslationValidation(
   validation: TranslationValidationResult,
-  acceptance: "artifact" | "chunk" = "artifact"
+  acceptance: "artifact" | "chunk" = "artifact",
+  options: YnTranslationArtifactAcceptanceOptions = {}
 ) {
-  const qualityWarnings = ynTranslationQualityWarnings(validation);
+  const allQualityWarnings = ynTranslationQualityWarnings(validation);
+  const qualityWarnings = ynTranslationQualityWarnings(validation, options);
   const structuralWarnings = ynTranslationStructuralWarnings(validation);
   const qualityDebt = acceptance === "artifact" ? qualityWarnings : [];
   const actionable = acceptance === "artifact"
@@ -112,15 +132,17 @@ export function compactYnTranslationValidation(
   return {
     ok: validation.ok,
     accepted: acceptance === "artifact"
-      ? isYnTranslationArtifactAccepted(validation)
+      ? isYnTranslationArtifactAccepted(validation, options)
       : isYnTranslationChunkWritable(validation),
+    warningReviewComplete: acceptance !== "artifact" || qualityDebt.length === 0,
     summary: validation.summary,
     sourceLineCount: validation.sourceLineCount,
     candidateLineCount: validation.candidateLineCount,
     blockingCount: validation.blocking.length,
     warningCount: validation.warnings.length,
-    qualityWarningCount: qualityWarnings.length,
+    qualityWarningCount: allQualityWarnings.length,
     qualityDebtCount: qualityDebt.length,
+    warningReviewDebtCount: qualityDebt.length,
     blockingByCode: findingCounts(validation.blocking),
     warningByCode: findingCounts(validation.warnings),
     warningLineRanges: warningLines.ranges,
@@ -128,6 +150,7 @@ export function compactYnTranslationValidation(
     blockingLineRanges: blockingLines.ranges,
     omittedBlockingRangeCount: blockingLines.omittedRangeCount,
     qualityDebtLineRanges: qualityDebtLines.ranges,
+    warningReviewDebtLineRanges: qualityDebtLines.ranges,
     omittedQualityDebtRangeCount: qualityDebtLines.omittedRangeCount,
     findingSamples: findingSample(actionable),
     warningSamples: findingSample(validation.warnings),
@@ -158,9 +181,8 @@ export function assertYnTranslationArtifactAccepted(
   validation: TranslationValidationResult,
   scope: string
 ): void {
-  const warnings = ynTranslationQualityWarnings(validation);
-  if (validation.ok && warnings.length === 0) return;
-  const findings = [...validation.blocking, ...warnings];
+  if (validation.ok) return;
+  const findings = [...validation.blocking];
   const lines = compactLineRanges(findings);
   const samples = findingSample(findings);
   throw new Error([

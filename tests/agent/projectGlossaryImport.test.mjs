@@ -20,6 +20,10 @@ try {
     JSON.parse(await readFile(assets.paths.glossary, "utf8")),
     { entries: [{ source: "王都騎士団", target: "王都骑士团" }] }
   );
+  assert.equal(
+    path.resolve(JSON.parse(await readFile(path.join(outputDir, ".translation-workshop", "project.json"), "utf8")).glossaryPath),
+    path.resolve(assets.paths.glossary)
+  );
 
   await Promise.all([
     updateProjectGlossaryEntry({ outputDir, entry: { source: "王都騎士団", target: "王城骑士团" } }),

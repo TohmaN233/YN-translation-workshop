@@ -11,6 +11,8 @@ import {
   readProjectAssets,
   readProjectStyleForbiddenTerms,
   readProjectTranslationValidationAssets,
+  readWorkflowProjectAssets,
+  readWorkflowTranslationValidationAssets,
   saveProjectAssets
 } from "../../src/main/agent/projectAssets.ts";
 import { commitWorkspaceGlossaryCandidates } from "../../src/main/agent/workspaceAssets.ts";
@@ -54,6 +56,97 @@ await test("concurrent provisional glossary commits serialize and preserve the f
     assert.deepEqual(candidate.entries.map((entry) => [entry.source, entry.target]), [["ゲートオープン", "开门"]]);
   } finally {
     await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+await test("provisional glossary commits remove aliases owned by a different primary source", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "tw-candidate-alias-owner-"));
+  try {
+    await commitWorkspaceGlossaryCandidates(outputDir, [{
+      source: "ホン・チーメイ",
+      target: "洪芝梅",
+      aliases: ["チー"],
+      status: "pending"
+    }, {
+      source: "チー",
+      target: "奇",
+      status: "pending"
+    }]);
+    const candidate = JSON.parse(await readFile(
+      path.join(outputDir, "AI_translation", "_workspace", "glossary_candidates.json"),
+      "utf8"
+    ));
+    assert.equal(Object.hasOwn(candidate.entries[0], "aliases"), false,
+      "a target alternative cannot also identify a different source/target record");
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+await test("a selected glossary stays authoritative while workflow reads retain nonconflicting canonical terms", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "tw-selected-glossary-project-"));
+  const referenceDir = await mkdtemp(path.join(os.tmpdir(), "tw-selected-glossary-reference-"));
+  const selectedPath = path.join(referenceDir, "selected.json");
+  try {
+    await mkdir(path.join(outputDir, ".translation-workshop"), { recursive: true });
+    await writeFile(path.join(outputDir, ".translation-workshop", "glossary.json"), JSON.stringify({
+      entries: [
+        { source: "Alice", target: "错误旧译" },
+        { source: "Archive", target: "档案馆" }
+      ]
+    }), "utf8");
+    await writeFile(selectedPath, JSON.stringify({ entries: [{
+      source: "Alice",
+      target: "爱丽丝",
+      aliases: ["艾丽丝"],
+      status: "confirmed"
+    }] }), "utf8");
+
+    const assets = await readWorkflowProjectAssets({ outputDir, glossaryPath: selectedPath });
+    assert.equal(assets.paths.glossary, selectedPath);
+    assert.equal(assets.available.glossary, true);
+    assert.deepEqual(assets.glossary.entries, [
+      {
+        source: "Alice",
+        target: "爱丽丝",
+        aliases: ["艾丽丝"],
+        status: "confirmed"
+      },
+      { source: "Archive", target: "档案馆" }
+    ]);
+    const validation = await readWorkflowTranslationValidationAssets({ outputDir, glossaryPath: selectedPath });
+    assert.deepEqual(validation.glossaryEntries, assets.glossary.entries);
+    assert.deepEqual((await readProjectAssets({ outputDir })).glossary.entries, [
+      { source: "Alice", target: "错误旧译" },
+      { source: "Archive", target: "档案馆" }
+    ], "reading a selected reference must not import or overwrite it into the canonical asset");
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+    await rm(referenceDir, { recursive: true, force: true });
+  }
+});
+
+await test("a missing or unparseable selected glossary fails instead of falling back to canonical", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "tw-selected-glossary-fail-fast-project-"));
+  const referenceDir = await mkdtemp(path.join(os.tmpdir(), "tw-selected-glossary-fail-fast-reference-"));
+  const selectedPath = path.join(referenceDir, "selected.json");
+  try {
+    await mkdir(path.join(outputDir, ".translation-workshop"), { recursive: true });
+    await writeFile(path.join(outputDir, ".translation-workshop", "glossary.json"), JSON.stringify({
+      entries: [{ source: "Alice", target: "旧译" }]
+    }), "utf8");
+    await assert.rejects(
+      readWorkflowProjectAssets({ outputDir, glossaryPath: selectedPath }),
+      /Failed to read selected glossary/i
+    );
+    await writeFile(selectedPath, JSON.stringify({ entries: [{ source: "Alice" }] }), "utf8");
+    await assert.rejects(
+      readWorkflowTranslationValidationAssets({ outputDir, glossaryPath: selectedPath }),
+      /no parseable source\/target entries/i
+    );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+    await rm(referenceDir, { recursive: true, force: true });
   }
 });
 

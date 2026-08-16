@@ -364,9 +364,9 @@ try {
   });
   assert.equal(partial.details.accepted, false);
   assert.equal(partial.details.repairMode, "entries");
-  assert.equal(partial.details.requiredLineCount, 292);
-  assert.equal(partial.details.requiredBatchLines.length, 256);
-  assert.equal(partial.details.remainingRequiredLineCount, 36);
+  assert.equal(partial.details.requiredLineCount, 248);
+  assert.equal(partial.details.requiredBatchLines.length, 248);
+  assert.equal(partial.details.remainingRequiredLineCount, 0);
   assert.equal(Object.hasOwn(partial.details, "requiredLineContext"), false);
   assert.equal(Object.hasOwn(partial.details, "requiredBlocks"), false,
     "large repair results must carry only line ownership, never host-injected source blocks");
@@ -383,13 +383,24 @@ try {
     entries: partial.details.requiredBatchLines.map((line) => ({ line, translation: `译文 ${line}` }))
   });
   assert.equal(firstRepair.details.accepted, false);
-  assert.equal(firstRepair.details.repairMode, "entries");
-  assert.equal(firstRepair.details.requiredLineCount, 36);
+  assert.equal(firstRepair.details.requiredLineCount, 0);
   assert.equal(firstRepair.details.remainingRequiredLineCount, 0);
-  assert.equal(firstRepair.details.requiredBatchLines.length, 36);
+  assert.equal(firstRepair.details.requiredBatchLines.length, 0);
 
-  const repaired = await repair.execute("block-repair-complete", {
-    entries: firstRepair.details.requiredBatchLines.map((line) => ({ line, translation: `译文 ${line}` }))
+  const remainingSource = await read.execute("block-repair-read-page-2", {});
+  assert.equal(remainingSource.details.fromLine, 257);
+  assert.equal(remainingSource.details.toLine, 300);
+  const repaired = await write.execute("block-repair-complete-page-2", {
+    blocks: Array.from({ length: 3 }, (_, blockIndex) => {
+      const firstLine = 257 + blockIndex * 16;
+      const count = Math.min(16, 301 - firstLine);
+      return {
+        id: blockIndex.toString(36),
+        lines: Array.from({ length: count }, (_, relativeIndex) => (
+          `${relativeIndex.toString(36)}译文 ${firstLine + relativeIndex}`
+        ))
+      };
+    })
   });
   assert.equal(repaired.details.accepted, true);
   assert.equal(repaired.details.requiredLineCount, 0);

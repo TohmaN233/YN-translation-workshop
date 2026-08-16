@@ -63,12 +63,16 @@ export function buildYnSystemPrompt(
 
   const translationAssets = [
     request.glossaryPath?.trim()
-      ? "Use the selected glossary as authoritative."
+      ? "Use the selected glossary as authoritative. Do not bulk-read it: Host assignment reads inject direct matches and exact indexed search handles a real ambiguity."
       : glossaryEnabled
-        ? "Create the workspace glossary candidate only when inspectTranslationContext reports it unavailable. Include consistency-sensitive names and setting terms; exclude ordinary vocabulary and uncertain entries."
+        ? subagentCount > 0
+          ? "Glossary-candidate collection is enabled for consistency-sensitive names and setting terms; exclude ordinary vocabulary and uncertain entries. Do not pre-scan the source or pre-populate the file: accepted translation chunks commit discoveries through the Host terminology gate. If the completed run reports no candidates and the requested file is still absent, create one validated empty candidate document then."
+          : "Create the workspace glossary candidate only when inspectTranslationContext reports it unavailable. Include consistency-sensitive names and setting terms; exclude ordinary vocabulary and uncertain entries."
         : "Glossary candidate generation is disabled.",
     characterBibleEnabled
-      ? `Create the workspace character bible only when inspectTranslationContext reports it unavailable. Use this format:\n${CHARACTER_BIBLE_BUILD_INSTRUCTIONS}`
+      ? subagentCount > 0
+        ? "If inspectTranslationContext reports the character bible unavailable, do not bulk-read the source or construct it before worker launch. Translation children report evidence-backed character facts; after the batch, page readTranslationDiscoveries and accept or reject those records so the Host creates the validated character bible. Exact-search only facts that remain unknown; never infer gender from a translated name."
+        : `Create the workspace character bible only when inspectTranslationContext reports it unavailable. Use this format:\n${CHARACTER_BIBLE_BUILD_INSTRUCTIONS}`
       : "Character-bible generation is disabled."
   ];
   const translationReuse = request.reuseExistingTranslation === true
@@ -79,7 +83,7 @@ export function buildYnSystemPrompt(
       + " Ask once whether to keep AI-approved work or discard it, then apply that choice."
     : "Existing-translation reuse is disabled; the Host will back up and discard meaningful existing candidates once when the first write batch begins.";
   const translationExecution = subagentCount > 0
-    ? `Call runTranslationSubagents only for the complete Host-owned translation queue, with a useful translation worker count up to ${subagentCount}; review workers may use up to ${reviewSubagentCount}. Folder workflows pass no model-authored tasks or ranges. Host queue owns assignment, validation, review, retry, and settlement.`
+    ? `Call runTranslationSubagents only for the complete Host-owned translation queue. Its optional workerCount is a concurrency ceiling from 1 through ${subagentCount}; omit it to use the project ceiling. The Host caps live workers to real assignments; review workers may use up to ${reviewSubagentCount}. Never pass model-authored tasks or ranges. Host queue owns assignment, validation, review, retry, and settlement.`
     : "Subagents are disabled. The parent translates through Host-owned chunk writes and validation.";
   const translationWorkflow = [
     "TRANSLATION WORKFLOW:",
@@ -88,7 +92,7 @@ export function buildYnSystemPrompt(
     `2. ${translationReuse}`,
     `3. ${translationExecution}`,
     "4. Use writeTranslationChunk for trivial exact-range parent corrections; never restart the complete queue for a few known lines.",
-    "5. Call validateTranslationArtifact after work settles. Repair only reported debt, then report the candidate path and validation result.",
+    "5. Call validateTranslationArtifact after work settles. Blocking findings fail artifact validation. Warnings do not fail that validation: if warningReviewComplete is false, call inspectTranslationWarnings, judge every exact source/canonical-translation pair, and call recordTranslationWarningChecks with only true-positive failures. For asset-backed warnings, warningEvidence.expectedTarget is the canonical target: never guess a replacement or rewrite the glossary/character bible to match the candidate. Repair only those exact lines, then rerun validation. Never use translation_repair merely to audit an unresolved warning or alignment row.",
     ""
   ];
 
@@ -107,8 +111,8 @@ export function buildYnSystemPrompt(
   const localWorkflow = request.workflowIntent === "translation" ? [
     "LOCAL TRANSLATION REPAIR:",
     "Inspect only the affected document and exact rows. For a trivial bounded repair, the parent uses writeTranslationChunk directly.",
-    "For useful child delegation, call runSubagents(mode=translation_repair) with non-overlapping tasks and exact documentId, fromLine, and toLine.",
-    "After writes, resolve only the Host-reported alignment debt and validate the artifact. Do not rebuild shared assets or launch the complete queue.",
+    "For useful child delegation, call runSubagents(mode=translation_repair) with non-overlapping tasks, exact documentId/fromLine/toLine, and typed lines listing every writable row. The range is only a read-only envelope and never authorizes unlisted rows.",
+    "After writes, resolve only the Host-reported alignment debt and validate the artifact. Use readTranslationAlignmentRows for active parent alignment pages; never reread a full chunk merely to audit sparse rows. Do not rebuild shared assets or launch the complete queue.",
     "runTranslationSubagents is only for the complete Host-owned translation queue.",
     ""
   ] : request.workflowIntent === "proofread" ? [
@@ -124,7 +128,7 @@ export function buildYnSystemPrompt(
     "DELEGATION:",
     fullWorkflow
       ? "Use specialized workflow tools only for the complete Host workflow; use runSubagents for separate bounded project tasks."
-      : "Use only independently useful child tasks. Translation writes require mode=translation_repair plus exact documentId/fromLine/toLine.",
+      : "Use only independently useful child tasks. Translation writes require mode=translation_repair plus exact documentId/fromLine/toLine and typed writable lines.",
     "Child batches run in the background. Briefly report launch, then end the turn; native completion follow-up wakes the parent. Do not poll unless the user asks or work appears stalled.",
     "The complete workflow's typed child provider/model setting is already applied by its specialized Host launch tool; do not call listAvailableModels before launch. Use that bounded filtered lookup only when the current user explicitly requests a different child model. Children inherit the parent model unless deliberately overridden. Children cannot delegate further.",
     ""
@@ -133,7 +137,7 @@ export function buildYnSystemPrompt(
     subagentCount > 0
       ? `For useful child delegation, call runSubagents with only the independently useful number of up to ${subagentCount} concurrent tasks.`
       : "Use runSubagents only when the user explicitly asks for useful child delegation.",
-    "Translation write tasks use mode=translation_repair and exact documentId/fromLine/toLine. Never use runTranslationSubagents for a bounded repair.",
+    "Translation write tasks use mode=translation_repair, exact documentId/fromLine/toLine, and typed lines listing every writable row. Never use runTranslationSubagents for a bounded repair.",
     "Give the same child the exact Host error after a rejection so it repairs the task; do not restart a complete workflow.",
     ""
   ];

@@ -24,9 +24,9 @@ import {
   type TranslationValidationResult
 } from "../../../shared/validation/translationValidator.ts";
 import type { PiSessionPromptRequest } from "../../../shared/agent/piSessionContract.ts";
-import { readProjectAssets } from "../projectAssets.ts";
+import { readProjectAssets, readWorkflowProjectAssets } from "../projectAssets.ts";
 import { listProjectDir, readProjectFile, searchProjectText } from "../projectFileTools.ts";
-import { relativeProjectPath } from "../projectPathGuard.ts";
+import { resolveReadablePath } from "../projectPathGuard.ts";
 import { readWorkspaceAgentContext } from "../workspaceAssets.ts";
 import { writeProofreadFindings } from "../writeProofreadFindings.ts";
 import {
@@ -34,7 +34,8 @@ import {
   prepareTranslationStagingCandidate,
   promoteTranslationStagingRange,
   resolveTranslationCandidatePath,
-  writeTranslationChunk
+  writeTranslationChunk,
+  writeTranslationLines
 } from "../writeTranslationChunk.ts";
 import { createPiModelSelection, type PiModelSelection } from "./providerRegistry.ts";
 import {
@@ -52,7 +53,6 @@ import {
   compactYnTranslationValidation,
   isYnTranslationArtifactAccepted,
   isYnTranslationChunkWritable,
-  ynTranslationQualityWarnings,
   ynTranslationStructuralWarnings
 } from "./translationArtifactValidation.ts";
 import { createYnTranslationValidationOptions } from "./translationValidationContext.ts";
@@ -83,6 +83,8 @@ interface PiSubagentRangeTask extends PiSubagentTaskBase {
 
 export interface PiTranslationSubagentTask extends PiSubagentRangeTask {
   instruction?: string;
+  /** Exact writable rows for a prompt-defined sparse bounded repair. */
+  selectedLines?: number[];
   reviewFeedback?: Array<{ line: number; reason: string }>;
   /** Host-injected priority repair that must settle before the original queue resumes. */
   terminologyRepair?: true;
@@ -237,7 +239,7 @@ interface PiSubagentContext<TTask extends PiSubagentTaskBase> {
   registerControl?: (control: PiSubagentControl) => void;
   onArtifactMutation?: (
     documentId: string | undefined,
-    range?: { fromLine: number; toLine: number }
+    range?: { fromLine: number; toLine: number; lines?: number[] }
   ) => Promise<void> | void;
   signal?: AbortSignal;
   providerStreamTimeouts?: PiProviderStreamTimeouts;
@@ -351,7 +353,9 @@ export interface PiTranslationProgress {
   readLines?: Set<number>;
   writtenLines?: Set<number>;
   mutatedLines?: Set<number>;
+  activeSourcePage?: { fromLine: number; toLine: number };
   requiredBatchLines?: Set<number>;
+  requiredBatchIssues?: PiTranslationStagingCheckpoint["repairIssues"];
   discoveries?: PiTranslationDiscoveries;
   translationAlignmentHash?: string;
 }
@@ -384,7 +388,8 @@ function cleanDiscoveryText(value: unknown, label: string): string {
 function normalizeTranslationDiscoveries(
   input: Partial<PiTranslationDiscoveries> | undefined,
   task: PiSubagentRangeTask,
-  sourceLines: string[]
+  sourceLines: string[],
+  candidateLines: string[]
 ): { discoveries: PiTranslationDiscoveries; rejectedDiscoveries: PiRejectedTranslationDiscovery[] } {
   const glossaryCandidates: PiTranslationGlossaryDiscovery[] = [];
   const characterFacts: PiTranslationCharacterDiscovery[] = [];
@@ -400,10 +405,23 @@ function normalizeTranslationDiscoveries(
       if (!(sourceLines[evidenceLine - 1] ?? "").includes(source)) {
         throw new Error(`Glossary discovery ${source} is not present on evidence line L${evidenceLine}.`);
       }
+      const candidateEvidence = candidateLines[evidenceLine - 1] ?? "";
+      if (!candidateEvidence.includes(target)) {
+        throw new Error(`Glossary discovery target ${target} is not present in the translated evidence line L${evidenceLine}.`);
+      }
       if (!["proper_noun", "character", "organization", "place", "title", "setting_term"].includes(candidate.category)) {
         throw new Error(`Glossary discovery ${source} has an unsupported category.`);
       }
-      const aliases = [...new Set((candidate.aliases ?? []).map((alias) => String(alias).trim()).filter(Boolean))];
+      const proposedAliases = [...new Set((candidate.aliases ?? []).map((alias) => String(alias).trim()).filter(Boolean))];
+      const aliases = proposedAliases.filter((alias) => candidateEvidence.includes(alias));
+      const unsupportedAliases = proposedAliases.filter((alias) => !candidateEvidence.includes(alias));
+      if (unsupportedAliases.length > 0) {
+        rejectedDiscoveries.push({
+          kind: "glossary_candidate",
+          index,
+          reason: `Glossary discovery ${source} omitted aliases without translated-line evidence: ${unsupportedAliases.join(", ")}. aliases accepts target-language renderings only.`
+        });
+      }
       glossaryCandidates.push({
         source,
         target,
@@ -613,9 +631,11 @@ function createPiSubagentReadOnlyProjectTools(
     proofreadSearchCache?: PiProofreadExactSearchCache;
     searchResultLimit?: number;
     boundProofreadContext?: boolean;
+    maxProjectFileReadChars?: number;
   } = {}
 ): AgentTool[] {
-  const indexedReferencePaths = new Map([
+  const maxProjectFileReadChars = Math.max(1, Math.min(32_000, options.maxProjectFileReadChars ?? 32_000));
+  const indexedReferenceEntries: Array<[string, string]> = [
     [
       path.resolve(context.request.outputDir, ".translation-workshop", "glossary.json"),
       "approved glossary"
@@ -628,7 +648,11 @@ function createPiSubagentReadOnlyProjectTools(
       path.resolve(context.request.outputDir, "AI_translation", "_workspace", "glossary_candidates.json"),
       "glossary candidates"
     ]
-  ].map(([filePath, label]) => [
+  ];
+  if (context.request.glossaryPath?.trim()) {
+    indexedReferenceEntries.push([path.resolve(context.request.glossaryPath), "approved glossary"]);
+  }
+  const indexedReferencePaths = new Map(indexedReferenceEntries.map(([filePath, label]) => [
     process.platform === "win32" ? filePath.toLowerCase() : filePath,
     label
   ]));
@@ -734,11 +758,12 @@ function createPiSubagentReadOnlyProjectTools(
       parameters: Type.Object({
         path: Type.String({ minLength: 1 }),
         offsetChars: Type.Optional(Type.Integer({ minimum: 0 })),
-        maxChars: Type.Optional(Type.Integer({ minimum: 1, maximum: 32_000 }))
+        maxChars: Type.Optional(Type.Integer({ minimum: 1, maximum: maxProjectFileReadChars }))
       }, { additionalProperties: false }),
       async execute(_toolCallId, params, signal) {
         throwIfAborted(context.signal, signal);
         const input = params as { path: string; offsetChars?: number; maxChars?: number };
+        const requestedChars = input.maxChars ?? Math.min(16_000, maxProjectFileReadChars);
         const indexedLabel = indexedReferenceLabel(input.path);
         if (indexedLabel) {
           throw new Error(
@@ -750,7 +775,7 @@ function createPiSubagentReadOnlyProjectTools(
           outputDir: context.request.outputDir,
           relativePath: resolvePiReadablePath(context.request, input.path),
           offsetChars: input.offsetChars,
-          maxChars: input.maxChars ?? 16_000
+          maxChars: requestedChars
         });
         if (!result.ok) throw new Error(result.error);
         return textResult(result);
@@ -1055,11 +1080,11 @@ async function optionalContext(
   return sections.join("\n\n");
 }
 
-async function readPackagedSkillReference(relativePath: string, label: string): Promise<string> {
-  return (await readPackagedSkillReferenceDocument(relativePath, label)).content;
+async function readPackagedProtocolReference(relativePath: string, label: string): Promise<string> {
+  return (await readPackagedProtocolReferenceDocument(relativePath, label)).content;
 }
 
-async function readPackagedSkillReferenceDocument(
+async function readPackagedProtocolReferenceDocument(
   relativePath: string,
   label: string
 ): Promise<{ path: string; content: string }> {
@@ -1084,22 +1109,22 @@ async function readPackagedSkillReferenceDocument(
 }
 
 async function readTranslationSubagentGuidance(): Promise<string> {
-  return readPackagedSkillReference(
-    path.join("skills", "translate-text", "references", "subagent-task-template.md"),
+  return readPackagedProtocolReference(
+    path.join("translation-protocol", "translation-child.md"),
     "Translation subagent guidance"
   );
 }
 
 async function readProofreadSubagentGuidance(): Promise<string> {
-  return readPackagedSkillReference(
-    path.join("skills", "proofread-translation", "references", "subagent-task-template.md"),
+  return readPackagedProtocolReference(
+    path.join("translation-protocol", "proofread-child.md"),
     "Proofreading child task contract"
   );
 }
 
 async function readProofreadSubagentGuidanceDocument(): Promise<{ path: string; content: string }> {
-  return readPackagedSkillReferenceDocument(
-    path.join("skills", "proofread-translation", "references", "subagent-task-template.md"),
+  return readPackagedProtocolReferenceDocument(
+    path.join("translation-protocol", "proofread-child.md"),
     "Proofreading child task contract"
   );
 }
@@ -1173,7 +1198,7 @@ async function searchIndexedProjectReference(
   const query = queryValue.trim();
   if (!query) throw new Error("query is required.");
   const [assets, workspaceAssets] = await Promise.all([
-    readProjectAssets({ outputDir: request.outputDir }),
+    readWorkflowProjectAssets({ outputDir: request.outputDir, glossaryPath: request.glossaryPath }),
     readWorkspaceAgentContext(request.outputDir)
   ]);
   const source = kind === "approved glossary"
@@ -1197,15 +1222,16 @@ async function searchIndexedProjectReference(
     });
     return ranks.length > 0 ? [{ entry, index, rank: Math.min(...ranks) }] : [];
   }).sort((left, right) => left.rank - right.rank || left.index - right.index);
+  const readable = resolveReadablePath(request.outputDir, source.path);
   return {
     ok: true as const,
     path: source.path,
-    relativePath: relativeProjectPath(request.outputDir, source.path),
-    outsideProject: false,
+    relativePath: readable.relativePath,
+    outsideProject: readable.outsideProject,
     query,
     indexedReference: kind,
     matches: ranked.slice(0, maxResults).map(({ entry, index }) => ({
-      path: relativeProjectPath(request.outputDir, source.path),
+      path: readable.relativePath,
       line: index + 1,
       text: JSON.stringify(entry)
     })),
@@ -1244,13 +1270,17 @@ function directReferenceMatches(
 
 async function translationProjectReferences(request: PiSessionPromptRequest, sourceText: string) {
   const [assets, workspaceAssets] = await Promise.all([
-    readProjectAssets({ outputDir: request.outputDir }),
+    readWorkflowProjectAssets({ outputDir: request.outputDir, glossaryPath: request.glossaryPath }),
     readWorkspaceAgentContext(request.outputDir)
   ]);
-  const reference = (absolutePath: string, available: boolean) => ({
-    path: relativeProjectPath(request.outputDir, absolutePath),
-    available
-  });
+  const reference = (absolutePath: string, available: boolean) => {
+    const readable = resolveReadablePath(request.outputDir, absolutePath);
+    return {
+      path: readable.relativePath,
+      available,
+      ...(readable.outsideProject ? { outsideProject: true } : {})
+    };
+  };
   const directMatchBudget = {
     remainingEntries: MAX_DIRECT_REFERENCE_MATCHES,
     remainingChars: MAX_DIRECT_REFERENCE_MATCH_CHARS
@@ -1258,7 +1288,7 @@ async function translationProjectReferences(request: PiSessionPromptRequest, sou
   const approvedGlossary = directReferenceMatches(
     assets.glossary.entries,
     sourceText,
-    ["source", "aliases"],
+    ["source"],
     directMatchBudget
   );
   const approvedGlossarySources = new Set(approvedGlossary.entries.map((entry) => (
@@ -1275,7 +1305,7 @@ async function translationProjectReferences(request: PiSessionPromptRequest, sou
       .filter((entry) => !approvedGlossarySources.has(entry.source.trim().normalize("NFC")))
       .map((entry) => ({ ...entry })),
     sourceText,
-    ["source", "aliases"],
+    ["source"],
     directMatchBudget
   );
   const directMatches = {
@@ -1384,7 +1414,7 @@ async function loadFixedProofreadReferences(request: PiSessionPromptRequest): Pr
 }> {
   const [workflow, assets] = await Promise.all([
     readProofreadSubagentGuidanceDocument(),
-    readProjectAssets({ outputDir: request.outputDir })
+    readWorkflowProjectAssets({ outputDir: request.outputDir, glossaryPath: request.glossaryPath })
   ]);
   const references = [
     proofreadReferenceDocument(
@@ -1525,23 +1555,37 @@ function validateAssignedSemanticAlignment(
       "Bounded translation validation requires misalignedLines; use an empty array when no assigned row remains misaligned."
     );
   }
+  const selectedLines = selectedTranslationRepairLines(context.task);
+  const selectedSet = selectedLines.length > 0 ? new Set(selectedLines) : undefined;
   const uniqueLines = new Set<number>();
   for (const line of misalignedLines) {
     if (uniqueLines.has(line)) {
       throw new Error(`Duplicate misaligned line L${line}.`);
     }
-    if (line < context.task.fromLine || line > context.task.toLine) {
+    if (
+      line < context.task.fromLine
+      || line > context.task.toLine
+      || (selectedSet && !selectedSet.has(line))
+    ) {
       throw new Error(
-        `Misaligned line L${line} is outside assigned range L${context.task.fromLine}-L${context.task.toLine}.`
+        selectedSet
+          ? `Misaligned line L${line} is outside the Host-selected repair lines (${selectedLines.map((selected) => `L${selected}`).join(", ")}).`
+          : `Misaligned line L${line} is outside assigned range L${context.task.fromLine}-L${context.task.toLine}.`
       );
     }
     uniqueLines.add(line);
   }
 
+  const sourceForAlignment = selectedLines.length > 0
+    ? selectedLines.map((line) => artifact.sourceSlice[line - context.task.fromLine] ?? "")
+    : artifact.sourceSlice;
+  const candidateForAlignment = selectedLines.length > 0
+    ? selectedLines.map((line) => artifact.candidateSlice[line - context.task.fromLine] ?? "")
+    : artifact.candidateSlice;
   const audit = createTranslationAlignmentAudit({
     documentId: documentId(context.request),
-    sourceText: artifact.sourceSlice.join("\n"),
-    candidateText: artifact.candidateSlice.join("\n"),
+    sourceText: sourceForAlignment.join("\n"),
+    candidateText: candidateForAlignment.join("\n"),
     candidatePath: artifact.candidatePath,
     languagePair: context.request.languagePair
   });
@@ -1559,7 +1603,7 @@ function validateAssignedSemanticAlignment(
   return {
     auditId: audit.auditId,
     inputHash: audit.inputHash,
-    checkedLineCount: artifact.sourceSlice.length,
+    checkedLineCount: sourceForAlignment.length,
     mechanicalSignalCount: audit.checks.filter((check) => check.signals.length > 0).length
   };
 }
@@ -1570,10 +1614,17 @@ function assertCurrentAssignedSemanticAlignment(
   artifact: Awaited<ReturnType<typeof validateAssignedRange>>
 ): void {
   if (context.executionMode !== "bounded_repair") return;
+  const selectedLines = selectedTranslationRepairLines(context.task);
+  const sourceForAlignment = selectedLines.length > 0
+    ? selectedLines.map((line) => artifact.sourceSlice[line - context.task.fromLine] ?? "")
+    : artifact.sourceSlice;
+  const candidateForAlignment = selectedLines.length > 0
+    ? selectedLines.map((line) => artifact.candidateSlice[line - context.task.fromLine] ?? "")
+    : artifact.candidateSlice;
   const current = createTranslationAlignmentAudit({
     documentId: documentId(context.request),
-    sourceText: artifact.sourceSlice.join("\n"),
-    candidateText: artifact.candidateSlice.join("\n"),
+    sourceText: sourceForAlignment.join("\n"),
+    candidateText: candidateForAlignment.join("\n"),
     candidatePath: artifact.candidatePath,
     languagePair: context.request.languagePair
   });
@@ -1620,7 +1671,7 @@ export interface AssignedTranslationRepairPlanInput {
 export function buildAssignedTranslationRepairPlan(input: AssignedTranslationRepairPlanInput) {
   const findings = input.executionMode === "bounded_repair"
     ? [...input.validation.blocking, ...ynTranslationStructuralWarnings(input.validation)]
-    : [...input.validation.blocking, ...ynTranslationQualityWarnings(input.validation)];
+    : [...input.validation.blocking];
   const rawIssues: Array<{
     code: string;
     severity: "blocking" | "warning";
@@ -1728,6 +1779,48 @@ function assignedCandidateHash(
   }));
 }
 
+function assignedTranslationRepairExhaustionError(args: {
+  context: PiTranslationSubagentContext;
+  progress: PiTranslationProgress;
+  artifact: Awaited<ReturnType<typeof validateAssignedRange>>;
+  message: string;
+}): NonRetryableAssignmentError {
+  const rejectedLines = [...new Set(args.progress.requiredBatchLines ?? [])]
+    .filter((line) => line >= args.context.task.fromLine && line <= args.context.task.toLine)
+    .sort((left, right) => left - right);
+  if (rejectedLines.length === 0) return new NonRetryableAssignmentError(args.message);
+
+  const rejectedLineSet = new Set(rejectedLines);
+  const issueFeedback = (args.progress.requiredBatchIssues ?? [])
+    .filter((issue) => issue.absoluteLine !== undefined && rejectedLineSet.has(issue.absoluteLine))
+    .map((issue) => `L${issue.absoluteLine} ${issue.code}: ${issue.detail}`);
+  const validationFeedback = [
+    ...args.artifact.validation.blocking,
+    ...ynTranslationStructuralWarnings(args.artifact.validation)
+  ].flatMap((finding) => {
+    if (finding.line === undefined) return [];
+    const absoluteLine = args.context.task.fromLine + finding.line - 1;
+    return rejectedLineSet.has(absoluteLine)
+      ? [`L${absoluteLine} ${finding.code}: ${finding.detail}`]
+      : [];
+  });
+  const feedback = [...new Set([...issueFeedback, ...validationFeedback])].join("; ")
+    || rejectedLines.map((line) => (
+      `L${line} host_required: write a fresh structurally valid translated value`
+    )).join("; ");
+  return new ParentTakeoverAssignmentError(args.message, {
+    documentId: args.context.task.documentId || documentId(args.context.request),
+    fromLine: args.context.task.fromLine,
+    toLine: args.context.task.toLine,
+    rejectedLines,
+    feedback,
+    ...(args.context.workingCandidatePath
+      ? { stagingCandidatePath: args.context.workingCandidatePath }
+      : {}),
+    candidateHash: assignedCandidateHash(args.context, args.artifact)
+  });
+}
+
 function normalizedTranslationReviewFeedback(
   decision: Extract<PiTranslationChunkReviewDecision, { accepted: false }>,
   range: { fromLine: number; toLine: number }
@@ -1760,7 +1853,8 @@ function reviewFeedbackSummary(feedback: Array<{ line: number; reason: string }>
 export const MAX_ASSIGNED_TRANSLATION_CHUNK_LINES = 1024;
 export const MAX_ASSIGNED_TRANSLATION_REPAIR_TURNS = 4;
 export const MAX_TRANSLATION_REVIEW_REPAIR_CYCLES = 3;
-const MAX_TRANSLATION_CONTEXT_LINES = 200;
+const MAX_TRANSLATION_CONTEXT_LINES = 40;
+export const MAX_TRANSLATION_MODEL_PAGE_LINES = 256;
 const MAX_SPARSE_TRANSLATION_ENTRY_LINES = 16;
 const MAX_HOST_CONTRACT_NO_PROGRESS_TURNS = 3;
 const TRANSLATION_WIRE_BLOCK_LINES = 16;
@@ -1910,6 +2004,18 @@ interface AssignedChunkInput {
   toLine?: number;
 }
 
+function selectedTranslationRepairLines(task: PiTranslationSubagentTask): number[] {
+  const selected = [...new Set(task.selectedLines ?? [])].sort((left, right) => left - right);
+  for (const line of selected) {
+    if (!Number.isInteger(line) || line < task.fromLine || line > task.toLine) {
+      throw new Error(
+        `Selected translation repair line L${line} must stay inside L${task.fromLine}-L${task.toLine}.`
+      );
+    }
+  }
+  return selected;
+}
+
 function assignedRange(
   task: PiSubagentRangeTask,
   input: AssignedChunkInput,
@@ -2004,13 +2110,14 @@ function areLinesCovered(lines: Set<number>, requiredLines: readonly number[]): 
 
 function missingAssignedRange(
   lines: Set<number>,
-  task: PiSubagentRangeTask
+  task: PiSubagentRangeTask,
+  pageLines = MAX_TRANSLATION_MODEL_PAGE_LINES
 ): { fromLine: number; toLine: number } | undefined {
   let fromLine: number | undefined;
   for (let line = task.fromLine; line <= task.toLine; line += 1) {
     if (!lines.has(line)) {
       fromLine ??= line;
-      if (line - fromLine + 1 >= MAX_ASSIGNED_TRANSLATION_CHUNK_LINES) {
+      if (line - fromLine + 1 >= pageLines) {
         return { fromLine, toLine: line };
       }
     } else if (fromLine !== undefined) {
@@ -2020,11 +2127,61 @@ function missingAssignedRange(
   return fromLine === undefined ? undefined : { fromLine, toLine: task.toLine };
 }
 
-function translationPreparationDebt(progress: PiTranslationProgress, task: PiSubagentRangeTask): number {
+function assignedSourcePageRange(
+  task: PiSubagentRangeTask,
+  input: AssignedChunkInput,
+  readLines: Set<number>
+): { range: { fromLine: number; toLine: number }; requestedToLine?: number } {
+  const hasFrom = input.fromLine !== undefined;
+  const hasTo = input.toLine !== undefined;
+  if (hasFrom !== hasTo) {
+    throw new Error("readAssignedSource requires both fromLine and toLine.");
+  }
+  if (!hasFrom) {
+    return {
+      range: missingAssignedRange(readLines, task)
+        ?? {
+          fromLine: task.fromLine,
+          toLine: Math.min(task.toLine, task.fromLine + MAX_TRANSLATION_MODEL_PAGE_LINES - 1)
+        }
+    };
+  }
+  const requested = assignedRange(task, input, "readAssignedSource");
+  const toLine = Math.min(requested.toLine, requested.fromLine + MAX_TRANSLATION_MODEL_PAGE_LINES - 1);
+  return {
+    range: { fromLine: requested.fromLine, toLine },
+    ...(toLine < requested.toLine ? { requestedToLine: requested.toLine } : {})
+  };
+}
+
+function assignedWritePageRange(
+  task: PiSubagentRangeTask,
+  input: AssignedChunkInput,
+  activeSourcePage: { fromLine: number; toLine: number } | undefined
+): { fromLine: number; toLine: number } {
+  const hasFrom = input.fromLine !== undefined;
+  const hasTo = input.toLine !== undefined;
+  if (hasFrom !== hasTo) {
+    throw new Error("writeAssignedTranslation requires both fromLine and toLine.");
+  }
+  if (hasFrom) {
+    return assignedRange(task, input, "writeAssignedTranslation", MAX_TRANSLATION_MODEL_PAGE_LINES);
+  }
+  if (!activeSourcePage) {
+    throw new Error("Call readAssignedSource before writing the current model page.");
+  }
+  return activeSourcePage;
+}
+
+function translationPreparationDebt(progress: PiTranslationProgress, task: PiTranslationSubagentTask): number {
   const readLines = progress.readLines ?? new Set<number>();
   const writtenLines = progress.writtenLines ?? new Set<number>();
   let debt = progress.referenceRead ? 0 : 1;
-  for (let line = task.fromLine; line <= task.toLine; line += 1) {
+  const selected = selectedTranslationRepairLines(task);
+  const lines = selected.length > 0
+    ? selected
+    : Array.from({ length: task.toLine - task.fromLine + 1 }, (_, index) => task.fromLine + index);
+  for (const line of lines) {
     if (!readLines.has(line)) debt += 1;
     if (!writtenLines.has(line)) debt += 1;
   }
@@ -2089,10 +2246,15 @@ export function createPiTranslationSubagentTools(
   progress.readLines ??= new Set<number>();
   progress.writtenLines ??= new Set<number>();
   progress.mutatedLines ??= new Set<number>();
-  const readSchema = Type.Object({
-    fromLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine })),
-    toLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine }))
-  }, { additionalProperties: false });
+  const selectedRepairLines = context.executionMode === "bounded_repair"
+    ? selectedTranslationRepairLines(context.task)
+    : [];
+  const readSchema = selectedRepairLines.length > 0
+    ? Type.Object({}, { additionalProperties: false })
+    : Type.Object({
+        fromLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine })),
+        toLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine }))
+      }, { additionalProperties: false });
   const translatedBlockSchema = Type.Object({
     id: Type.String({ description: "The exact sourceBlocks id." }),
     lines: Type.Array(Type.String(), {
@@ -2150,7 +2312,13 @@ export function createPiTranslationSubagentTools(
       ]),
       evidenceLine: Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }),
       rationale: Type.String({ minLength: 1, maxLength: 1_000 }),
-      aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 16 }))
+      aliases: Type.Optional(Type.Array(Type.String({
+        minLength: 1,
+        description: "An alternate target-language rendering of this same source term; never put a source-language nickname or abbreviation here. Report a source nickname as its own candidate."
+      }), {
+        maxItems: 16,
+        description: "Optional accepted target-language alternatives only."
+      }))
     }, { additionalProperties: false }), { maxItems: 64 })) } : {}),
     ...(characterFactsEnabled ? { characterFacts: Type.Optional(Type.Array(Type.Object({
       sourceName: Type.String({ minLength: 1 }),
@@ -2174,7 +2342,8 @@ export function createPiTranslationSubagentTools(
   let executeAssignedTranslationWrite!: NonNullable<AgentTool["execute"]>;
   return [
     ...createPiSubagentReadOnlyProjectTools(context, {
-      indexedReferenceReads: "search-only"
+      indexedReferenceReads: "search-only",
+      searchResultLimit: 12
     }).map((tool) => ({
       ...tool,
       hostControl: "continue" as const
@@ -2183,7 +2352,7 @@ export function createPiTranslationSubagentTools(
       name: "readTranslationContext",
       label: "readTranslationContext",
       hostControl: "continue",
-      description: `Read up to ${MAX_TRANSLATION_CONTEXT_LINES} numbered source and current-translation rows anywhere in the bound document for dialogue, pronoun, terminology, and scene context. This is read-only and never expands the Host-owned write range L${context.task.fromLine}-L${context.task.toLine}.`,
+      description: `Read a page of up to ${MAX_TRANSLATION_CONTEXT_LINES} numbered source and current-translation rows anywhere in the bound document for dialogue, pronoun, terminology, and scene context. Continue with nextFromLine as often as the translation requires. This is read-only and never expands the Host-owned write range L${context.task.fromLine}-L${context.task.toLine}.`,
       parameters: Type.Object({
         fromLine: Type.Integer({ minimum: 1 }),
         toLine: Type.Integer({ minimum: 1 })
@@ -2197,9 +2366,7 @@ export function createPiTranslationSubagentTools(
             `Translation context range L${input.fromLine}-L${input.toLine} is outside the bound source with ${sourceLines.length} lines.`
           );
         }
-        if (input.toLine - input.fromLine + 1 > MAX_TRANSLATION_CONTEXT_LINES) {
-          throw new Error(`Translation context reads may contain at most ${MAX_TRANSLATION_CONTEXT_LINES} lines.`);
-        }
+        const toLine = Math.min(input.toLine, input.fromLine + MAX_TRANSLATION_CONTEXT_LINES - 1);
         let translationLines: string[] = [];
         try {
 	          translationLines = splitTextLines(await readFile(translationWorkingCandidatePath(context), "utf8"));
@@ -2209,11 +2376,16 @@ export function createPiTranslationSubagentTools(
         throwIfAborted(context.signal, signal);
         return textResult({
           fromLine: input.fromLine,
-          toLine: input.toLine,
+          toLine,
+          ...(toLine < input.toLine ? {
+            requestedToLine: input.toLine,
+            hasMore: true,
+            nextFromLine: toLine + 1
+          } : { hasMore: false }),
           totalLines: sourceLines.length,
           assignment: { fromLine: context.task.fromLine, toLine: context.task.toLine },
           writeAllowed: false,
-          rows: Array.from({ length: input.toLine - input.fromLine + 1 }, (_, index) => {
+          rows: Array.from({ length: toLine - input.fromLine + 1 }, (_, index) => {
             const line = input.fromLine + index;
             return {
               line,
@@ -2236,16 +2408,34 @@ export function createPiTranslationSubagentTools(
         throwIfAborted(context.signal, signal);
         const input = params as AssignedChunkInput;
         const firstReferenceRead = !progress.referenceRead;
-        const range = assignedChunkRange(context.task, input, "readAssignedSource");
         const lines = splitTextLines(await readFile(sourcePath(context.request), "utf8"));
-        const assignedSourceText = lines.slice(range.fromLine - 1, range.toLine).join("\n");
+        const sourcePage = selectedRepairLines.length > 0
+          ? { range: { fromLine: selectedRepairLines[0], toLine: selectedRepairLines.at(-1)! } }
+          : assignedSourcePageRange(context.task, input, progress.readLines!);
+        const range = sourcePage.range;
+        const sourceBlocks = selectedRepairLines.length > 0
+          ? contiguousLineRanges(selectedRepairLines).flatMap((selectedRange) => (
+              translationWireBlocks(
+                lines.slice(selectedRange.fromLine - 1, selectedRange.toLine),
+                selectedRange.fromLine
+              ).map((block) => ({
+                ...translationWireSourceBlock(block),
+                id: `s${selectedRange.fromLine}-${block.id}`
+              }))
+            ))
+          : translationWireBlocks(
+              lines.slice(range.fromLine - 1, range.toLine),
+              range.fromLine
+            ).map(translationWireSourceBlock);
+        const visibleSourceLines = selectedRepairLines.length > 0
+          ? selectedRepairLines.map((line) => lines[line - 1] ?? "")
+          : lines.slice(range.fromLine - 1, range.toLine);
+        const assignedSourceText = visibleSourceLines.join("\n");
         const [referenceContext, projectReferences] = await Promise.all([
           firstReferenceRead
             ? translationReferenceContext(context.request, context.executionMode, context.task)
             : Promise.resolve(undefined),
-          firstReferenceRead
-            ? translationProjectReferences(context.request, assignedSourceText)
-            : Promise.resolve(undefined)
+          translationProjectReferences(context.request, assignedSourceText)
         ]);
         let currentTranslation: string[] = [];
         if (context.executionMode === "bounded_repair" || context.executionMode === "chunk_review_repair") {
@@ -2257,21 +2447,40 @@ export function createPiTranslationSubagentTools(
         }
         throwIfAborted(context.signal, signal);
         progress.referenceRead = true;
-        markCovered(progress.readLines!, range);
-        progress.sourceRead = isCovered(progress.readLines!, context.task);
+        progress.activeSourcePage = range;
+        if (selectedRepairLines.length > 0) {
+          for (const line of selectedRepairLines) progress.readLines!.add(line);
+          progress.sourceRead = areLinesCovered(progress.readLines!, selectedRepairLines);
+        } else {
+          markCovered(progress.readLines!, range);
+          progress.sourceRead = isCovered(progress.readLines!, context.task);
+        }
         return textResult({
-          ...range,
+          ...(selectedRepairLines.length > 0
+            ? { selectedLines: selectedRepairLines, selectedLineCount: selectedRepairLines.length }
+            : {
+                ...range,
+                ...(sourcePage.requestedToLine ? { requestedToLine: sourcePage.requestedToLine } : {}),
+                hasMore: !progress.sourceRead,
+                ...(!progress.sourceRead
+                  ? { nextFromLine: missingAssignedRange(progress.readLines!, context.task)?.fromLine }
+                  : {})
+              }),
           totalLines: lines.length,
-          assignment: { fromLine: context.task.fromLine, toLine: context.task.toLine },
-          sourceBlocks: translationWireBlocks(
-            lines.slice(range.fromLine - 1, range.toLine),
-            range.fromLine
-          ).map(translationWireSourceBlock),
+          assignment: {
+            fromLine: context.task.fromLine,
+            toLine: context.task.toLine,
+            ...(selectedRepairLines.length > 0 ? { selectedLines: selectedRepairLines } : {})
+          },
+          sourceBlocks,
           ...(context.executionMode === "bounded_repair" || context.executionMode === "chunk_review_repair" ? {
-            currentTranslationEntries: Array.from(
-              { length: range.toLine - range.fromLine + 1 },
-              (_, index) => `${range.fromLine + index}:${currentTranslation[range.fromLine + index - 1] ?? ""}`
-            ),
+            currentTranslationEntries: (selectedRepairLines.length > 0
+              ? selectedRepairLines
+              : Array.from(
+                  { length: range.toLine - range.fromLine + 1 },
+                  (_, index) => range.fromLine + index
+                )
+            ).map((line) => `${line}:${currentTranslation[line - 1] ?? ""}`),
             artifactContract: {
               sourcePath: sourcePath(context.request),
               sourceReadOnly: true,
@@ -2281,7 +2490,7 @@ export function createPiTranslationSubagentTools(
             }
           } : {}),
           ...(referenceContext ? { translationReference: referenceContext } : {}),
-          ...(projectReferences ? { projectReferences } : {}),
+          projectReferences,
           blockFormat: "Each source block includes absoluteLines parallel to lines for exact evidenceLine lookup. Return translations as { id, lines: [\"relativeIdtranslation\", ...] }; the first character of every translated item is the 0-f relative marker and has no delimiter."
         });
       }
@@ -2290,7 +2499,7 @@ export function createPiTranslationSubagentTools(
       name: "writeAssignedTranslation",
       label: "writeAssignedTranslation",
       hostControl: "return_after_tool_batch",
-      description: `Merge host-identified translation blocks into one chunk of at most ${MAX_ASSIGNED_TRANSLATION_CHUNK_LINES} lines. The host retains every valid identified line.`,
+      description: `Merge the current model page of at most ${MAX_TRANSLATION_MODEL_PAGE_LINES} lines into the Host-owned logical assignment. The same worker retains assignment ownership and the Host retains every valid identified line.`,
       parameters: writeSchema,
       executionMode: "sequential",
       execute: executeAssignedTranslationWrite = async (_toolCallId, params, signal) => {
@@ -2306,9 +2515,15 @@ export function createPiTranslationSubagentTools(
         const submittedRepairLines = requiredBatchLines.length > 0 && Array.isArray(input.entries)
           ? input.entries.map((entry) => normalizeTranslationRepairEntry(entry, "repairAssignedTranslation").line)
           : undefined;
+        const unauthorizedRepairLines = submittedRepairLines?.filter((line) => !progress.requiredBatchLines!.has(line)) ?? [];
+        if (unauthorizedRepairLines.length > 0) {
+          throw new Error(
+            `Translated ${unauthorizedRepairLines.map((line) => `L${line}`).join(", ")} outside the Host-required sparse repair set (${requiredBatchLines.slice(0, 16).map((line) => `L${line}`).join(", ")}).`
+          );
+        }
         const range = requiredBatchLines.length > 0
           ? assignedSparseRepairRange(context.task, input, "repairAssignedTranslation")
-          : assignedChunkRange(context.task, input, "writeAssignedTranslation");
+          : assignedWritePageRange(context.task, input, progress.activeSourcePage);
         const missingReadLines = submittedRepairLines?.filter((line) => !progress.readLines!.has(line)) ?? [];
         if (submittedRepairLines
           ? !areLinesCovered(progress.readLines!, submittedRepairLines)
@@ -2397,10 +2612,11 @@ export function createPiTranslationSubagentTools(
         for (const [line, text] of translations) {
           if (text.trim() === "") structurallyRejectedLines.add(line);
         }
-        for (const finding of [
+        const proposedStructuralFindings = [
           ...proposedValidation.blocking,
           ...ynTranslationStructuralWarnings(proposedValidation)
-        ]) {
+        ];
+        for (const finding of proposedStructuralFindings) {
           if (finding.line !== undefined) structurallyRejectedLines.add(range.fromLine + finding.line - 1);
         }
         const persistedLines = proposedLines.map((text, index) => {
@@ -2416,19 +2632,52 @@ export function createPiTranslationSubagentTools(
           await createYnTranslationValidationOptions(context.request)
         );
         throwIfAborted(context.signal, signal);
-	        const result = await writeTranslationChunk({
-	          outputDir: context.request.outputDir,
-	          sourcePaths: [sourcePath(context.request)],
-	          documentId: documentId(context.request),
-	          ...(context.workingCandidatePath ? { candidatePath: context.workingCandidatePath } : {}),
-	          ...range,
-	          lines: persistedLines
-	        });
+        const sparseEntries = selectedRepairLines.length > 0
+          ? [...translations.keys()]
+              .filter((line) => !structurallyRejectedLines.has(line))
+              .sort((left, right) => left - right)
+              .map((line) => ({
+                line,
+                text: persistedLines[line - range.fromLine] ?? existing[line - 1] ?? ""
+              }))
+          : [];
+	        const result = selectedRepairLines.length > 0
+            ? sparseEntries.length > 0
+              ? await writeTranslationLines({
+                  outputDir: context.request.outputDir,
+                  sourcePaths: [sourcePath(context.request)],
+                  documentId: documentId(context.request),
+                  ...(context.workingCandidatePath ? { candidatePath: context.workingCandidatePath } : {}),
+                  entries: sparseEntries
+                })
+              : {
+                  ok: true,
+                  path: translationWorkingCandidatePath(context),
+                  fromLine: range.fromLine,
+                  toLine: range.toLine,
+                  linesWritten: 0,
+                  totalCandidateLines: existing.length,
+                  sourceLineCount: sourceLines.length,
+                  created: false
+                }
+            : await writeTranslationChunk({
+	              outputDir: context.request.outputDir,
+	              sourcePaths: [sourcePath(context.request)],
+	              documentId: documentId(context.request),
+	              ...(context.workingCandidatePath ? { candidatePath: context.workingCandidatePath } : {}),
+	              ...range,
+	              lines: persistedLines
+	            });
 	        if (result.ok) {
 	          progress.translationValidated = false;
 	          progress.translationAlignmentHash = undefined;
-	          if (!context.workingCandidatePath) {
-	            await context.onArtifactMutation?.(context.task.documentId, range);
+	          if (!context.workingCandidatePath && (selectedRepairLines.length === 0 || sparseEntries.length > 0)) {
+	            await context.onArtifactMutation?.(
+                context.task.documentId,
+                selectedRepairLines.length > 0
+                  ? { ...range, lines: sparseEntries.map((entry) => entry.line) }
+                  : range
+              );
 	          }
 	        }
         if (!result.ok) throw new Error(result.error || "Failed to write the assigned translation range.");
@@ -2441,10 +2690,28 @@ export function createPiTranslationSubagentTools(
         });
         for (const line of structurallyRejectedLines) progress.writtenLines!.delete(line);
         progress.translationWritten = isCovered(progress.writtenLines!, context.task);
+        progress.activeSourcePage = undefined;
         const validationRepairLines = new Set<number>();
-        const validationRepairFindings = context.executionMode === "bounded_repair"
+        const submittedRejectedLines = new Set([...translations.keys()].filter((line) => (
+          structurallyRejectedLines.has(line)
+        )));
+        const submittedRejectionFindings = proposedStructuralFindings.filter((finding) => {
+          if (finding.line === undefined) return false;
+          return submittedRejectedLines.has(range.fromLine + finding.line - 1);
+        });
+        const persistedRepairFindings = context.executionMode === "bounded_repair"
           ? [...persistedValidation.blocking, ...ynTranslationStructuralWarnings(persistedValidation)]
-          : [...persistedValidation.blocking, ...ynTranslationQualityWarnings(persistedValidation)];
+          : [...persistedValidation.blocking];
+        const validationRepairFindings = [...new Map([
+          ...submittedRejectionFindings,
+          ...persistedRepairFindings.filter((finding) => {
+            if (finding.line === undefined) return submittedRejectionFindings.length === 0;
+            return !submittedRejectedLines.has(range.fromLine + finding.line - 1);
+          })
+        ].map((finding) => [
+          `${finding.code}\0${finding.line ?? "range"}\0${finding.detail}`,
+          finding
+        ])).values()];
         for (const finding of validationRepairFindings) {
           if (finding.line !== undefined) validationRepairLines.add(range.fromLine + finding.line - 1);
         }
@@ -2481,6 +2748,7 @@ export function createPiTranslationSubagentTools(
             absoluteLine: line
           });
         }
+        progress.requiredBatchIssues = requiredLines.length > 0 ? repairIssues : undefined;
         const accepted = progress.translationWritten
           && requiredLines.length === 0
           && (context.executionMode === "bounded_repair"
@@ -2586,13 +2854,18 @@ export function createPiTranslationSubagentTools(
           (params as { misalignedLines?: number[] }).misalignedLines
         );
         const submittedDiscoveries = params as Partial<PiTranslationDiscoveries>;
+        const [discoverySourceLines, discoveryCandidateLines] = await Promise.all([
+          readFile(sourcePath(context.request), "utf8").then(splitTextLines),
+          readFile(result.candidatePath, "utf8").then(splitTextLines)
+        ]);
         const discoveryReport = normalizeTranslationDiscoveries(
           {
             glossaryCandidates: glossaryCandidatesEnabled ? submittedDiscoveries.glossaryCandidates ?? [] : [],
             characterFacts: characterFactsEnabled ? submittedDiscoveries.characterFacts ?? [] : []
           },
           context.task,
-          splitTextLines(await readFile(sourcePath(context.request), "utf8"))
+          discoverySourceLines,
+          discoveryCandidateLines
         );
         progress.discoveries = discoveryReport.discoveries;
         progress.translationValidated = true;
@@ -2700,7 +2973,13 @@ export function createPiProofreadSubagentTools(
     ]),
     evidenceLine: Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }),
     rationale: Type.String({ minLength: 1, maxLength: 1_000 }),
-    aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 16 }))
+    aliases: Type.Optional(Type.Array(Type.String({
+      minLength: 1,
+      description: "An alternate target-language rendering only; never a source-language nickname or abbreviation."
+    }), {
+      maxItems: 16,
+      description: "Optional accepted target-language alternatives only."
+    }))
   }, { additionalProperties: false });
   return [
     ...createPiSubagentReadOnlyProjectTools(context, {
@@ -2975,7 +3254,7 @@ export function createPiProofreadSubagentTools(
         const discoveryReport = normalizeTranslationDiscoveries({
           glossaryCandidates: input.glossaryCandidates ?? [],
           characterFacts: []
-        }, context.task, sourceLines);
+        }, context.task, sourceLines, translationLines);
         if (discoveryReport.rejectedDiscoveries.length > 0) {
           throw new Error(
             `Proofreading glossary candidates failed Host validation: ${discoveryReport.rejectedDiscoveries
@@ -3109,7 +3388,10 @@ function createPiTranslationReviewRuntimeSpec(
   let assignmentRead = false;
   let submitted: PiTranslationChunkReviewDecision | undefined;
   const tools = (): AgentTool[] => [
-    ...createPiSubagentReadOnlyProjectTools(context, { indexedReferenceReads: "search-only" }),
+    ...createPiSubagentReadOnlyProjectTools(context, {
+      indexedReferenceReads: "search-only",
+      maxProjectFileReadChars: 8_000
+    }),
     {
       name: "readAssignedTranslationReview",
       label: "Read assigned translation review",
@@ -3135,15 +3417,20 @@ function createPiTranslationReviewRuntimeSpec(
           line: Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }),
           code: Type.String({ minLength: 1, maxLength: 80 }),
           note: Type.String({ minLength: 1, maxLength: 240 })
-        }, { additionalProperties: false }), {
-          maxItems: context.task.toLine - context.task.fromLine + 1
-        })
+        }, { additionalProperties: false }))
       }, { additionalProperties: false }),
       executionMode: "sequential",
       async execute(_toolCallId, params, signal) {
         throwIfAborted(context.signal, signal);
         if (!assignmentRead) throw new Error("Read the assigned translation review before submitting failures.");
         const input = params as { failures: PiTranslationReviewFailure[] };
+        const maximumFailureCount = context.task.toLine - context.task.fromLine + 1;
+        if (input.failures.length > maximumFailureCount) {
+          throw new Error(
+            `Translation review L${context.task.fromLine}-L${context.task.toLine} accepts at most `
+            + `${maximumFailureCount} failure entries; received ${input.failures.length}.`
+          );
+        }
         submitted = await context.submitAssignment(context.task, input.failures, signal);
         return {
           ...textResult({
@@ -3166,7 +3453,7 @@ function createPiTranslationReviewRuntimeSpec(
       "FIRST TOOL: call readAssignedTranslationReview once. Inspect every selected row. Neighboring rows are context, but include one as a failure when it clearly shares or continues the same defect; Host will promote that row and expand the next repair review around it.",
       "Focus on one-to-one line identity, omissions, merged/split/shifted meaning, placeholder/meta text, untranslated residue, and material mistranslation. This is not the later full proofreading workflow; do not polish style or report minor wording preferences. Target-language punctuation and typography choices alone, including adding a conventional Chinese sentence-final mark inside a closing quote, are never safety-gate failures.",
       "The first tool result includes canonical projectReferences paths and direct matches for its review windows. Use those direct matches first. Do not invent shorthand paths such as 'glossary'. Use searchProjectText/readProjectFile only for one specific unresolved ambiguity, copying the exact returned path, and do not recursively search the project or read generated review HTML.",
-      "Then call submitTranslationReview exactly once. Use failures=[] when the selected scope is safe. For a real problem, include only its absolute line, a compact machine-readable code, and a short actionable note that names the defect and required correction. Never list aligned rows and never explain why correct rows pass.",
+      "Then call submitTranslationReview exactly once with the single argument {failures:[...]}; never copy JSON Schema keywords such as maxItems into tool arguments. Use failures=[] when the selected scope is safe. For a real problem, include only its absolute line, a compact machine-readable code, and a short actionable note that names the defect and required correction. Never list aligned rows and never explain why correct rows pass.",
       "Do not modify any file and do not launch another subagent."
     ].join("\n"),
     tools,
@@ -3944,6 +4231,9 @@ export function createPiTranslationRuntimeSpec(
   discoveries: PiTranslationDiscoveries;
 }> {
   const assignmentLength = context.task.toLine - context.task.fromLine + 1;
+  const boundedSelectedLines = context.executionMode === "bounded_repair"
+    ? selectedTranslationRepairLines(context.task)
+    : [];
   const glossaryCandidatesEnabled = context.request.glossaryCandidates !== false;
   const characterFactsEnabled = context.request.characterBible !== false;
   const discoveryInstruction = glossaryCandidatesEnabled || characterFactsEnabled
@@ -3952,10 +4242,10 @@ export function createPiTranslationRuntimeSpec(
         characterFactsEnabled ? "character facts" : ""
       ].filter(Boolean).join(" and ")}, or omit those optional fields when there are none.`
     : "Call validateAssignedTranslation when requested. Glossary-candidate and character-fact collection are disabled; do not report either field.";
-  const sourceInstruction = assignmentLength > MAX_ASSIGNED_TRANSLATION_CHUNK_LINES
+  const sourceInstruction = assignmentLength > MAX_TRANSLATION_MODEL_PAGE_LINES
     ? [
-      `Process the assignment in ordered chunks of at most ${MAX_ASSIGNED_TRANSLATION_CHUNK_LINES} lines.`,
-      "For each chunk, call readAssignedSource with fromLine/toLine before writeAssignedTranslation."
+      `Process the logical assignment in ordered model pages of at most ${MAX_TRANSLATION_MODEL_PAGE_LINES} lines.`,
+      "For each page, call readAssignedSource and writeAssignedTranslation before requesting the next page. Omitted ranges automatically advance to the next unread page; paging never changes assignment ownership or its final review boundary."
     ]
     : ["Call readAssignedSource once for the exact assigned range before writeAssignedTranslation."];
   const boundedRepairPrompt = [
@@ -3965,16 +4255,25 @@ export function createPiTranslationRuntimeSpec(
     `Target document: ${documentId(context.request)}.`,
     `Source file (read-only, UTF-8): ${sourcePath(context.request)}`,
     `Current translation candidate (UTF-8): ${translationWorkingCandidatePath(context)}`,
-    `Assigned lines: L${context.task.fromLine}-L${context.task.toLine} (1-based, inclusive). Language pair: ${context.request.languagePair}.`,
+    ...(boundedSelectedLines.length > 0
+      ? [
+          `Read-only envelope: L${context.task.fromLine}-L${context.task.toLine}. Exact writable lines: ${boundedSelectedLines.map((line) => `L${line}`).join(", ")}. Language pair: ${context.request.languagePair}.`,
+          "The Host rejects every write outside that exact sparse set; the envelope grants no additional write ownership."
+        ]
+      : [`Assigned lines: L${context.task.fromLine}-L${context.task.toLine} (1-based, inclusive). Language pair: ${context.request.languagePair}.`]),
     ...(context.request.style?.trim() ? [`Project style: ${context.request.style.trim()}`] : []),
     ...(context.request.workDescription?.trim() ? [`Work description: ${context.request.workDescription.trim()}`] : []),
     ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
-    "FIRST TOOL: call readAssignedSource for the exact target. It returns aligned text, canonical projectReferences paths, and directMatches for indexed assets. Use directMatches first; whole-file glossary, character-bible, and glossary-candidate reads are disabled. Search one exact source term only when the repair has a real uncovered ambiguity. available:false means the asset does not exist and must not be probed. Use readTranslationContext for bounded surrounding context when needed.",
+    boundedSelectedLines.length > 0
+      ? "FIRST TOOL: call readAssignedSource with no arguments. It returns only the exact writable rows. Use readTranslationContext separately for bounded read-only context; context never expands write ownership."
+      : "FIRST TOOL: call readAssignedSource for the exact target. It returns aligned text, canonical projectReferences paths, and directMatches for indexed assets. Use directMatches first; whole-file glossary, character-bible, and glossary-candidate reads are disabled. Search one exact source term only when the repair has a real uncovered ambiguity. available:false means the asset does not exist and must not be probed. Use readTranslationContext for bounded surrounding context when needed.",
     "Stay inside this repair. Do not probe unavailable assets, rebuild shared assets, or launch a complete workflow. Never write to the source file.",
-    assignmentLength <= MAX_SPARSE_TRANSLATION_ENTRY_LINES
+    boundedSelectedLines.length > 0 || assignmentLength <= MAX_SPARSE_TRANSLATION_ENTRY_LINES
       ? "Write the requested correction with repairAssignedTranslation using structured { line, translation } entries."
       : "Write the requested correction with writeAssignedTranslation blocks matching the returned sourceBlocks.",
-    "After writing, semantically compare every assigned source/candidate row, then call validateAssignedTranslation with misalignedLines containing only absolute lines that still fail; use [] when none fail. Do not emit pass reasons.",
+    boundedSelectedLines.length > 0
+      ? "After writing, semantically compare only the exact writable source/candidate rows, then call validateAssignedTranslation with misalignedLines containing only exact writable lines that still fail; use [] when none fail. Do not emit pass reasons."
+      : "After writing, semantically compare every assigned source/candidate row, then call validateAssignedTranslation with misalignedLines containing only absolute lines that still fail; use [] when none fail. Do not emit pass reasons.",
     "A successful validateAssignedTranslation call returns directly to the Host. Do not spend another model turn on a prose confirmation."
   ].join("\n");
   const chunkReviewFeedback = context.task.reviewFeedback ?? [];
@@ -4015,7 +4314,7 @@ export function createPiTranslationRuntimeSpec(
       "Write every returned sourceBlocks item with writeAssignedTranslation in the exact block format described by that tool result. Repair only Host-reported lines with repairAssignedTranslation.",
       discoveryInstruction,
       ...(glossaryCandidatesEnabled || characterFactsEnabled ? [
-        "Report only proper names, named organizations/places/titles, coined setting terms, and character facts. Do not propose ordinary dictionary words or everyday phrases. Mark unresolved gender/pronouns as unknown with source-line evidence so the parent can research them; never guess."
+        "Report only proper names, named organizations/places/titles, coined setting terms, and character facts. Do not propose ordinary dictionary words or everyday phrases. glossaryCandidates.aliases means alternate target-language renderings only; report a source-language nickname or abbreviation as its own source candidate. Mark unresolved gender/pronouns as unknown with source-line evidence so the parent can research them; never guess."
       ] : []),
       "Every non-empty output line must be the actual translation of its matching source line. Never write progress narration, labels such as 'translation below', summaries, or generic placeholder prose such as （本段译文）, 本行译文, 译文待补, or 'translation goes here' into the translation artifact.",
       "Do not modify the source file or return the translation only in chat. A successful validateAssignedTranslation call returns directly to the Host; do not spend another model turn on a prose confirmation."
@@ -4025,6 +4324,16 @@ export function createPiTranslationRuntimeSpec(
     async execute(runtime, session, taskPrompt, onRetry) {
       const existingArtifact = await validateExistingAssignedRange(context);
       const chunkReviewRepair = context.executionMode === "chunk_review_repair";
+      if (boundedSelectedLines.length > 0) {
+        if (!existingArtifact || !isStructurallyCompleteAssignedTranslation(existingArtifact)) {
+          throw new Error(
+            `Sparse bounded repair requires a structurally complete retained candidate inside L${context.task.fromLine}-L${context.task.toLine}.`
+          );
+        }
+        progress.requiredBatchLines = new Set(boundedSelectedLines);
+        markCovered(progress.writtenLines ??= new Set<number>(), context.task);
+        progress.translationWritten = true;
+      }
       if (chunkReviewRepair) {
         if (!existingArtifact || !isStructurallyCompleteAssignedTranslation(existingArtifact)) {
           throw new Error(
@@ -4042,7 +4351,7 @@ export function createPiTranslationRuntimeSpec(
       }
 	      const resumeRepair = existingArtifact !== undefined
 	        && hasExistingAssignedTranslation(existingArtifact)
-	        && !existingArtifact.accepted
+	        && !isYnTranslationChunkWritable(existingArtifact.validation)
 	        && isLineAlignedAssignedTranslation(existingArtifact);
       if (resumeRepair) {
         markCovered(progress.writtenLines ??= new Set<number>(), context.task);
@@ -4055,7 +4364,7 @@ export function createPiTranslationRuntimeSpec(
           sourceSlice: existingArtifact.sourceSlice,
           validation: existingArtifact.validation,
           languagePair: context.request.languagePair,
-          executionMode: context.executionMode,
+          executionMode: "bounded_repair",
           glossaryCandidates: glossaryCandidatesEnabled
         })
         : undefined;
@@ -4130,10 +4439,16 @@ export function createPiTranslationRuntimeSpec(
             noProgressTurns += 1;
             if (noProgressTurns >= MAX_HOST_CONTRACT_NO_PROGRESS_TURNS) {
               const finalToolError = await latestFailedToolFeedback(session);
-              throw new Error([
+              const message = [
                 `Translation subagent made no host-contract progress after ${noProgressTurns} corrective turns: ${remaining.join(", ")}.`,
                 ...(finalToolError ? [`Latest host tool rejection: ${finalToolError}`] : [])
-              ].join(" "));
+              ].join(" ");
+              throw assignedTranslationRepairExhaustionError({
+                context,
+                progress,
+                artifact: await validateAssignedRange(context),
+                message
+              });
             }
           } else {
             noProgressTurns = 0;
@@ -4157,13 +4472,15 @@ export function createPiTranslationRuntimeSpec(
       let previousRepairFingerprint: string | undefined;
       while (
         (!artifact.accepted || (progress.requiredBatchLines?.size ?? 0) > 0)
+        && (progress.translationWritten || repairPlan.repairLines.length > 0)
         && repairTurn < MAX_ASSIGNED_TRANSLATION_REPAIR_TURNS
       ) {
         repairTurn += 1;
         progress.requiredBatchLines = new Set(repairPlan.repairLines);
         const hasPriorRepairEvidence = await latestToolResultHasRepairEvidence(session);
         const repeatedEvidence = previousRepairFingerprint === repairPlan.fingerprint;
-        const repairPrompt = hasPriorRepairEvidence
+        const latestRepairToolError = await latestFailedToolFeedback(session);
+        const repairPromptBody = hasPriorRepairEvidence
           ? repeatedEvidence
             ? [
                 "The previous repair made no host-validation progress.",
@@ -4178,6 +4495,13 @@ export function createPiTranslationRuntimeSpec(
                 "Read only compact source spans needed for those lines, call repairAssignedTranslation once, then validateAssignedTranslation."
               ].join("\n")
           : repairPlan.prompt;
+        const repairPrompt = [
+          repairPromptBody,
+          ...(latestRepairToolError ? [
+            `Latest host tool rejection: ${latestRepairToolError}`,
+            "This child is still write-capable only for the exact Host-required lines; correct the tool arguments without widening the task."
+          ] : [])
+        ].join("\n");
         response = await promptSubagentTurn({
           runtime,
           session,
@@ -4208,17 +4532,70 @@ export function createPiTranslationRuntimeSpec(
         previousRepairFingerprint = repairPlan.fingerprint;
         repairPlan = repairedPlan;
       }
+      if (!progress.translationWritten && repairPlan.repairLines.length === 0) {
+        let missingPreparation = missingTranslationPreparation(progress, context.task);
+        let preparationDebt = translationPreparationDebt(progress, context.task);
+        let noProgressTurns = 0;
+        while (missingPreparation.length > 0) {
+          const latestToolError = await latestFailedToolFeedback(session);
+          response = await promptSubagentTurn({
+            runtime,
+            session,
+            prompt: [
+              "The current model page is repaired, but the logical assignment still has unread or unwritten pages.",
+              `Complete only these missing native tools now, in order: ${missingPreparation.join(", ")}.`,
+              `Translate the next page into the target language required by the workflow${context.request.languagePair?.trim() ? ` (${context.request.languagePair.trim()})` : ""}.`,
+              ...(latestToolError ? [`Latest host tool rejection: ${latestToolError}`] : []),
+              "Continue the same assignment with the next bounded source page. Do not use sparse repair entries for lines that have not yet been written."
+            ].join("\n"),
+            signal: context.signal,
+            onRetry
+          });
+          const remaining = missingTranslationPreparation(progress, context.task);
+          const remainingDebt = translationPreparationDebt(progress, context.task);
+          if (remainingDebt >= preparationDebt) {
+            noProgressTurns += 1;
+            if (noProgressTurns >= MAX_HOST_CONTRACT_NO_PROGRESS_TURNS) {
+              const finalToolError = await latestFailedToolFeedback(session);
+              const message = [
+                `Translation subagent made no pagination progress after ${noProgressTurns} corrective turns: ${remaining.join(", ")}.`,
+                ...(finalToolError ? [`Latest host tool rejection: ${finalToolError}`] : [])
+              ].join(" ");
+              throw assignedTranslationRepairExhaustionError({
+                context,
+                progress,
+                artifact: await validateAssignedRange(context),
+                message
+              });
+            }
+          } else {
+            noProgressTurns = 0;
+          }
+          missingPreparation = remaining;
+          preparationDebt = remainingDebt;
+        }
+        artifact = await validateAssignedRange(context);
+        repairPlan = buildAssignedTranslationRepairPlan({
+          fromLine: context.task.fromLine,
+          sourceSlice: artifact.sourceSlice,
+          validation: artifact.validation,
+          requiredLines: [...(progress.requiredBatchLines ?? [])],
+          languagePair: context.request.languagePair,
+          executionMode: context.executionMode,
+          glossaryCandidates: glossaryCandidatesEnabled
+        });
+      }
       const remainingRequiredLineCount = progress.requiredBatchLines?.size ?? 0;
       if (!artifact.accepted || remainingRequiredLineCount > 0) {
         const latestToolError = await latestFailedToolFeedback(session);
-        throw new Error(
-          [
-            `Subagent repair made no host-validation progress after ${MAX_ASSIGNED_TRANSLATION_REPAIR_TURNS} host-guided turns with ${remainingRequiredLineCount} required lines remaining (${repairNoProgressTurns} consecutive no-progress turns): ${artifact.validation.summary}`,
-            ...(latestToolError ? [`Latest host tool rejection: ${latestToolError}`] : [])
-          ].join(" ")
-        );
+        const message = [
+          `Subagent repair made no host-validation progress after ${MAX_ASSIGNED_TRANSLATION_REPAIR_TURNS} host-guided turns with ${remainingRequiredLineCount} required lines remaining (${repairNoProgressTurns} consecutive no-progress turns): ${artifact.validation.summary}`,
+          ...(latestToolError ? [`Latest host tool rejection: ${latestToolError}`] : [])
+        ].join(" ");
+        throw assignedTranslationRepairExhaustionError({ context, progress, artifact, message });
       }
       progress.requiredBatchLines = undefined;
+      progress.requiredBatchIssues = undefined;
       if (!progress.translationValidated) {
         response = await promptSubagentTurn({
           runtime,
@@ -4226,7 +4603,9 @@ export function createPiTranslationRuntimeSpec(
           prompt: [
             "The assigned translation candidate now passes child-side validation, but your mandatory native tool sequence is incomplete.",
             context.executionMode === "bounded_repair"
-              ? "Semantically compare every assigned source/candidate row, then call validateAssignedTranslation with misalignedLines containing only absolute lines that still fail; use [] when none fail. Do not emit pass reasons or rewrite until that native tool succeeds."
+              ? boundedSelectedLines.length > 0
+                ? "Semantically compare only the Host-selected writable rows, then call validateAssignedTranslation with misalignedLines containing only selected rows that still fail; use [] when none fail. Do not emit pass reasons or rewrite until that native tool succeeds."
+                : "Semantically compare every assigned source/candidate row, then call validateAssignedTranslation with misalignedLines containing only absolute lines that still fail; use [] when none fail. Do not emit pass reasons or rewrite until that native tool succeeds."
               : "Call validateAssignedTranslation now. Do not rewrite or answer until that native tool succeeds."
           ].join("\n"),
           signal: context.signal,
@@ -4593,7 +4972,11 @@ export async function createPiTranslationSubagentWorker(
             const existingArtifact = repairingRejectedChunk
               ? undefined
               : await validateExistingAssignedRange(chunkContext);
-            if (existingArtifact?.accepted) {
+            if (
+              existingArtifact
+              && isStructurallyCompleteAssignedTranslation(existingArtifact)
+              && isYnTranslationChunkWritable(existingArtifact.validation)
+            ) {
               const rangeLabel = `L${chunkTask.fromLine}-L${chunkTask.toLine}`;
               outcome = {
                 reply: `Reused structurally valid translation ${rangeLabel}; the review-worker safety check is still required.`,
@@ -4726,10 +5109,7 @@ export async function createPiTranslationSubagentWorker(
               `Whole-file validation is structurally incomplete after host chunk completion: ${finalArtifact.validation.summary}`
             );
           }
-          const finalRepairFindings = [
-            ...finalArtifact.validation.blocking,
-            ...ynTranslationQualityWarnings(finalArtifact.validation)
-          ];
+          const finalRepairFindings = [...finalArtifact.validation.blocking];
           let repairFeedback: Array<{ line: number; reason: string }> | undefined = finalRepairFindings
             .flatMap((finding) => finding.line === undefined
               ? []
@@ -4769,6 +5149,7 @@ export async function createPiTranslationSubagentWorker(
             repairProgress.writtenLines = new Set<number>();
             repairProgress.mutatedLines = new Set<number>();
             repairProgress.requiredBatchLines = undefined;
+            repairProgress.requiredBatchIssues = undefined;
             if (repairFeedback?.length) {
               repairProgress.requiredBatchLines = new Set(requiredReviewLines);
               markCovered(repairProgress.writtenLines, context.task);
@@ -4918,9 +5299,9 @@ export async function createPiTranslationSubagentWorker(
         const failedIndex = failedDocumentIds.indexOf(resolvedDocumentId);
         if (failedIndex >= 0) failedDocumentIds.splice(failedIndex, 1);
         lastError = "";
-        lastResultSummary = `${context.task.documentId
-          ? `Review-worker-accepted candidate for ${context.task.documentId}`
-          : `Review-worker-accepted candidate L${context.task.fromLine}-L${context.task.toLine}`}; every Host-sized chunk was accepted before queue advance. ${finalArtifact.validation.summary}`;
+        lastResultSummary = `Review-worker-accepted candidate ${context.task.documentId ?? assignmentDocumentId} `
+          + `L${context.task.fromLine}-L${context.task.toLine}; every Host-sized chunk was accepted before queue advance. `
+          + finalArtifact.validation.summary;
         await publishCard({
           status: "running",
           live: true,
@@ -5062,7 +5443,7 @@ function createPiProofreadRuntimeSpec(
       "FIRST TOOL: call readAssignedProofreadContext. It returns complete structured glossary/character records, unresolved non-canonical candidates, and prior exact-search evidence directly matched to this assignment. Reuse those results. Use one exact searchProjectText lookup only for a still-missing ambiguous term. Reference manifest entries with complete=true are already fully read; call readProofreadReference only for complete=false, starting at offset 0 and continuing exactly from nextOffset. Optional web references are only for relevant ambiguity.",
       "readAssignedProofreadContext already contains the complete owned rows for source/current translation and the exact boundary rows. Do not call listProjectDir to rediscover them, do not reread the bound source/current translation through general file reads, and do not browse raw assets or preceding files for context already supplied by Host.",
       "Confirm or reject Host signals and semantically review every assigned row. Signals are evidence, not automatic findings.",
-      "Call writeAssignedFindings once with exact one-based lines, complete replacement-ready fixes, rationales, and evidence-backed proper-term candidates. Every suggestedFix must change the current translation and preserve the exact leading control prefix from the bound source/current row. If both the source and current translation contain no leading prefix, do not invent one or diagnose its absence. glossaryCandidates.category must be one of proper_noun, character, organization, place, title, or setting_term. [] is valid when clean.",
+      "Call writeAssignedFindings once with exact one-based lines, complete replacement-ready fixes, rationales, and evidence-backed proper-term candidates. Every suggestedFix must change the current translation and preserve the exact leading control prefix from the bound source/current row. If both the source and current translation contain no leading prefix, do not invent one or diagnose its absence. glossaryCandidates.category must be one of proper_noun, character, organization, place, title, or setting_term; aliases contains alternate target-language renderings only, never source-language nicknames. [] is valid when clean.",
       "Never edit source, translation, or shared assets. A successful writeAssignedFindings call is terminal; do not spend another model turn summarizing it."
     ].join("\n"),
     tools: (subagentId) => createPiProofreadSubagentTools(

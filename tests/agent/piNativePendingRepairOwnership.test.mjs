@@ -7,7 +7,6 @@ import {
   createModels,
   fauxAssistantMessage,
   fauxProvider,
-  fauxText,
   fauxToolCall
 } from "@earendil-works/pi-ai";
 
@@ -44,25 +43,27 @@ models.setProvider(provider.provider);
 provider.setResponses([
   fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "assignment-source" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
-    fromLine: 1,
-    toLine: sourceLines.length,
     blocks: outputBlocks(
       Array.from({ length: 16 }, (_, index) => index + 1),
-      (line) => `译文 ${line}`
+      (line) => `第${line}行的完整中文翻译内容。`
     )
   }, { id: "initial-partial-write" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
-    entries: Array.from({ length: 256 }, (_, index) => ({
+    entries: Array.from({ length: 240 }, (_, index) => ({
       line: index + 17,
-      translation: `译文 ${index + 17}`
+      translation: `第${index + 17}行的完整中文翻译内容。`
     }))
   }, { id: "bounded-block-repair" }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
-    entries: Array.from({ length: 28 }, (_, index) => ({
-      line: index + 273,
-      translation: `待确认 ${index + 273}`
-    }))
-  }, { id: "remaining-block-repair" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("readAssignedSource", {
+    fromLine: 257,
+    toLine: 300
+  }, { id: "remaining-source" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
+    blocks: outputBlocks(
+      Array.from({ length: 44 }, (_, index) => index + 257),
+      (line) => line <= 272 ? `第${line}行的完整中文翻译内容。` : `待确认 ${line}`
+    )
+  }, { id: "remaining-page-write" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, {
     id: "final-validate"
   }), { stopReason: "toolUse" })
@@ -98,7 +99,16 @@ try {
   await supervisor.waitForAll();
 
   const batch = supervisor.list()[0];
-  assert.equal(batch.status, "completed", batch.error);
+  const diagnosticTranscript = await supervisor.inspectTranscript(batch.subagents[0].id);
+  const diagnosticTools = diagnosticTranscript.flatMap((message) => (
+    message.role === "assistant" && Array.isArray(message.content)
+      ? message.content.filter((block) => block.type === "toolCall").map((block) => block.name)
+      : []
+  ));
+  const diagnosticErrors = diagnosticTranscript
+    .filter((message) => message.role === "toolResult" && message.isError)
+    .map((message) => message.content?.[0]?.text ?? String(message.content));
+  assert.equal(batch.status, "completed", `${batch.error}\nTools: ${diagnosticTools.join(", ")}\nErrors: ${diagnosticErrors.join(" | ")}`);
   const childId = cards.at(-1)?.details?.subagentId;
   assert.ok(childId);
   const child = await new PiSessionRepository(outputDir).openChild(childId);
@@ -110,7 +120,8 @@ try {
       .join("\n"));
   assert.equal(userPrompts.length, 4, "host-required short lines and final validation need bounded Host-owned Pi turns");
   assert.match(userPrompts[1], /repairAssignedTranslation once/);
-  assert.match(userPrompts[2], /repairAssignedTranslation once/);
+  assert.match(userPrompts[2], /unread or unwritten pages/i);
+  assert.match(userPrompts[2], /writeAssignedTranslation/);
   assert.doesNotMatch(userPrompts[2], /mandatory native tool sequence/i);
   assert.match(userPrompts[3], /mandatory native tool sequence is incomplete/i);
 } finally {

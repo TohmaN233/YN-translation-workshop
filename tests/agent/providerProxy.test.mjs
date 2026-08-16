@@ -20,10 +20,10 @@ async function test(name, fn) {
   }
 }
 
-await test("provider proxy falls back to HTTPS_PROXY when project has no setting", async () => {
+await test("provider proxy stays disabled when project has no setting", async () => {
   assert.equal(
     await resolveProviderProxyUrl({ env: { HTTPS_PROXY: "http://127.0.0.1:7890" } }),
-    "http://127.0.0.1:7890"
+    ""
   );
 });
 
@@ -63,6 +63,7 @@ await test("project root resolves proxy settings from .translation-workshop", as
 });
 
 await test("fetchWithProxy attaches a dispatcher when proxy is enabled", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "tw-provider-enabled-proxy-"));
   const originalFetch = globalThis.fetch;
   let capturedInit;
   globalThis.fetch = async (_url, init) => {
@@ -70,12 +71,17 @@ await test("fetchWithProxy attaches a dispatcher when proxy is enabled", async (
     return new Response("ok");
   };
   try {
+    await writeFile(path.join(workspaceDir, "project.json"), JSON.stringify({
+      agentProxyEnabled: true,
+      agentProxyUrl: "http://127.0.0.1:7890"
+    }), "utf8");
     await fetchWithProxy("https://chatgpt.com/backend-api/codex/responses", {}, {
-      env: { HTTPS_PROXY: "http://127.0.0.1:7890" }
+      workspaceDir
     });
     assert.ok(capturedInit?.dispatcher);
   } finally {
     globalThis.fetch = originalFetch;
+    await rm(workspaceDir, { recursive: true, force: true });
   }
 });
 

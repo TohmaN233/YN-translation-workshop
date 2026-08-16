@@ -2239,7 +2239,7 @@ function buildReportFormatRepairPrompt(reportPath: string, locale: UiLocale): st
       "Please reorganize this proofreading report file in place:",
       reportPath,
       "",
-      "This file looks like a proofreading / fix proposal report, but its finding blocks do not match the structured fix_proposal format required by the proofread-translation skill, so translation-workshop cannot parse it.",
+      "This file looks like a proofreading / fix proposal report, but its finding blocks do not match the structured report protocol, so translation-workshop cannot parse it.",
       "",
       "Do not proofread the translation again. Only reorganize the existing report content.",
       "Do not omit any reported issue.",
@@ -2267,7 +2267,7 @@ function buildReportFormatRepairPrompt(reportPath: string, locale: UiLocale): st
     "请就地重新整理这个校对报告文件：",
     reportPath,
     "",
-    "该文件看起来像 proofreading / fix proposal 报告，但问题条目的 block 格式与 proofread-translation skill 要求的结构化 fix_proposal 格式不符，translation-workshop 无法解析。",
+    "该文件看起来像 proofreading / fix proposal 报告，但问题条目的 block 格式与结构化报告协议不符，translation-workshop 无法解析。",
     "",
     "请不要重新校对译文，只基于现有报告内容重排格式。",
     "不要遗漏任何已报告的问题。",
@@ -2429,9 +2429,14 @@ async function loadGlossaryEntries(glossaryPath: string | undefined): Promise<Gl
     return [];
   }
   try {
-    return parseGlossaryText(await readFile(glossaryPath, "utf8"));
-  } catch {
-    return [];
+    const source = await readFile(glossaryPath, "utf8");
+    const entries = parseGlossaryText(source);
+    if (source.trim() && entries.length === 0) {
+      throw new Error("the selected file contains no parseable source/target entries");
+    }
+    return entries;
+  } catch (error) {
+    throw new Error(`Failed to load selected glossary: ${glossaryPath}`, { cause: error });
   }
 }
 

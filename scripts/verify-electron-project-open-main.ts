@@ -482,11 +482,16 @@ async function run(): Promise<void> {
     (value) => value.entries?.some((entry) => entry.source === "Archive" && entry.target === "档案馆") === true,
     "canonical glossary import"
   );
-  assert(importedGlossary.entries?.length === 1, "Canonical glossary import left stale entries behind");
+  assert(
+    importedGlossary.entries?.some((entry) => entry.source === "Glass" && entry.target === "琉璃") === true
+      && importedGlossary.entries?.some((entry) => entry.source === "Archive" && entry.target === "档案馆") === true
+      && importedGlossary.entries.length === 2,
+    "Canonical glossary import did not consolidate the existing canonical and selected external glossary"
+  );
   const projectStateAfterCanonicalImport = JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>;
   assert(
-    path.resolve(String(projectStateAfterCanonicalImport.glossaryPath || "")) === path.resolve(importedGlossaryPath),
-    "A canonical project-asset update replaced the user-selected glossary reference path"
+    path.resolve(String(projectStateAfterCanonicalImport.glossaryPath || "")) === path.resolve(glossaryPath),
+    "A complete canonical glossary import did not switch the project binding to canonical"
   );
   assert(
     dialogOptions.some((options) => options.filters?.some((filter) => filter.name === "Glossary files")),
@@ -504,7 +509,10 @@ async function run(): Promise<void> {
 
   await activeView.webContents.executeJavaScript(`(() => {
     window.confirm = () => false;
-    const input = document.querySelector("#glossaryList .glossary-target");
+    const row = [...document.querySelectorAll("#glossaryList .glossary-entry")].find((item) =>
+      item.querySelector(".glossary-source")?.value === "Archive"
+    );
+    const input = row?.querySelector(".glossary-target");
     if (!input) throw new Error("Editable glossary target was not rendered");
     input.value = "文献馆";
     input.dispatchEvent(new Event("change", { bubbles: true }));

@@ -1,335 +1,290 @@
-# translation-workshop
+# YN Translation Workshop 2.0
 
-> A local translation / proofreading workbench.  
-> Built for human-review-first translation workflows, with optional Codex / Claude Code Agent assistance.
+A local workbench that brings human line editing, project assets, full AI translation, full AI proofreading, and remote operation into one application.
 
-[中文 README](README.md)
+You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
-translation-workshop pairs source text and translated text line by line, generates editable review HTML for human revision, helps generate Codex / Claude Code translation and proofreading prompts, and converts proofreading Markdown reports into item-by-item review HTML.
+[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.0)
 
-The motivation is simple: many AI translation tools look powerful, but they are not friendly to real translation or fan-translation workflows. No matter how impressive AI output looks, it still needs human review before it can reach stable production quality. A comfortable, visible, and traceable frontend is a major missing piece.
+## What 2.0 is
 
-This project is designed for three kinds of users:
+In 2.0, a workflow is not a prefilled prompt. It is an executable path backed by the Pi Agent runtime, YN Host, constrained Functions, durable state, artifact validators, and completion gates. The product exposes exactly two complete Workflows:
 
-- Translators who do not use AI: a comfortable line-by-line translation and proofreading interface.
-- Translators who do use AI: Agent-assisted translation / proofreading while keeping human review in control.
-- Users who do not know the source language: an AI-assisted path for translation, proofreading, and visual result review.
+1. **Initial translation** produces a strictly line-aligned candidate, mechanically validates and independently reviews every chunk, repairs exact failures, and promotes accepted output.
+2. **Proofread** scans every aligned row first, runs complete split review or stratified semantic sampling, and produces one Findings JSON plus a visual review page.
+
+Terminology consistency, character voice, existing-translation reuse, and final QA are capabilities inside those Workflows. Models, Providers, Agent sessions, and concurrency are configured directly in the application.
 
 ## Download
 
-Recommended for Windows users:
-
-**`translation-workshop-Setup-2.0.0-x64.exe`**
-
-If you do not want to install it, use the portable build:
-
-**`translation-workshop-Portable-2.0.0-x64.exe`**
-
-Release page:  
-<https://github.com/TohmaN233/YN-translation-workshop/releases>
-
-On Windows, if command-line Chinese text appears garbled, you can download and run [`set_utf8.reg`](./set_utf8.reg) to make consoles use UTF-8 by default. If you are unsure, open it in Notepad first and inspect the contents before running it.
-
-## Update Info
-
-### v2.0.0
-
-- **Native Pi Agent OS**: Agent UI, sessions, streaming messages, tools, thinking, subagents, and long-session compaction now use the Pi / pi-web foundation. The legacy YN job runtime is no longer on the product path.
-- **Translation and proofreading workflows**: folder jobs, persistent parallel workers, bounded validation, repair, glossary and character-bible assets, and structured proofreading findings are integrated.
-- **Web references**: the Agent can read public HTTP(S) pages through the native Pi `fetchWebReference` tool. Wikipedia uses the MediaWiki API, generic pages are parsed into readable text, and cached references are shared with translation/proofreading subagents.
-- **Update checks**: installed builds check GitHub Releases silently after startup and expose `Help > Check for Updates...`; installed builds can download and install after restart, while portable builds open the release page for manual updates.
-- **Release verification**: Windows installer and portable artifacts carry version `2.0.0` and include GitHub Releases update metadata.
-
-### v1.1.1
-
-- **Prompt and skill updates**: Codex / Claude Code proofreading skills now enforce a tighter report contract: report prose uses the target language, `Source` / `Current translation` must contain the full original row text, and `Suggested fix` must be a complete replacement translation.
-- **Review report parsing**: duplicate finding IDs are normalized before review HTML generation. If an AI report repeats IDs such as `H1-001`, `M2-004`, or `L1-003`, duplicates are renumbered after the current max for that category so search, jump, and one-click replacement stay stable.
-- **Agent launch context**: when the app starts Codex / Claude Code CLI, it defaults to the translation-workshop translate / proofread skills only, reducing context pollution from unrelated global skills. Skill install commands now include `--replace` by default and back up old targets before replacing them.
-- **LAN and public access**: HTML can start a 6-digit-PIN protected shared workspace. Phones, tablets, and remote devices can work against the software that is already open on the desktop, including line review, proposal review, and Agent interaction. The LAN address can also be exposed through external tools such as Cloudflare Tunnel or ngrok.
-
-### v1.0.5
-
-- **Codex proofread skill**: simplified the proofreading report prompt; report prose now uses the target language, parser-required labels stay fixed in English, and fix proposal line / field constraints are stricter.
-- **Prompts sent to AI**: translation and proofreading prompts both emphasize target-language output; fixed labels such as `Suggested fix` must stay unchanged.
-- **Glossary UI**: enlarged the glossary panel, added search across source terms, target terms, and current translations, and switched glossary entries to dynamic rendering.
-- **Fallback report repair prompt**: when a likely fix proposal cannot be parsed into review HTML, the app generates a localized repair prompt and opens the Agent panel for direct sending.
-
-## Bundled Skills
-
-The project bundles Codex and Claude Code versions of the skills. It currently supports Agent-based translation workflows, not direct API-only translation through prompt engineering.
-
-- [translate-text guide](skills/translate-text.README.md): batch translation, glossary handling, and character notes.
-- [proofread-translation guide](skills/proofread-translation.README.md): line-by-line proofreading, Monte Carlo sampling, and fix proposal reports.
-
-Layout:
-
-- Codex skill: `skills/codex/<skill-name>/SKILL.md`
-- Claude Code command: `skills/claude/commands/<skill-name>.md`
-
-## UI Preview
-
-<p align="center">
-  <img src="graph_for_intro/face_ch.png" alt="Chinese UI" width="340">
-  <img src="graph_for_intro/face_en.png" alt="English UI" width="340">
-</p>
-
-The UI supports Chinese / English switching. The main screen includes file selection, output directory, format options, input mode, skill setup hints, and generation actions.
-
-## Key Features
-
-### Line-Review HTML
-
-Select a source file, a translation file, and an output folder to generate line-review HTML. The translation file is optional; leaving it empty starts translation-only mode.
-
-Supported:
-
-- TXT / EPUB
-- Separate-file mode
-- Bilingual TXT / bilingual EPUB adjacent-line splitting
-- Folder input
-- Pagination, page jump, search, and scroll-position memory
-- Manual-edit state marking
-- Reopen to the last edited location; the yellow outline marks the last / active row
-
-<p align="center">
-  <img src="graph_for_intro/t1.png" alt="Line-review HTML" width="860">
-</p>
-
-TXT / EPUB can be exported at any time. TXT can also be written back to the bound translation file, with a timestamped backup before overwrite.
-
-### LAN Sync
-
-When HTML is opened inside Electron, it can start a LAN sync session. Set a fixed 6-digit PIN, then phones or tablets can visit the generated LAN address, enter the PIN, and open the shared workspace.
-
-The shared workspace supports both line-review and proposal-review tabs. When sync starts from a proposal-review HTML that is linked to a line-review HTML, the same link shows both the fix proposals and the source rows; mobile edits sync back to the desktop HTML cache.
-
-External tunnel: translation-workshop does not bundle public tunneling tools. If you use Cloudflare Tunnel, ngrok, or similar tools, point them to the local sync port.
-
-For example, if the desktop app shows:
-
-```text
-http://127.0.0.1:54321/s/abcdef...
-```
-
-Cloudflare Tunnel can run:
-
-```powershell
-cloudflared tunnel --url http://127.0.0.1:54321
-```
-
-ngrok can run:
-
-```powershell
-ngrok http 54321
-```
-
-Open the public URL and enter the 6-digit PIN set in the app. When there is only one active sync session, the new version redirects the tunnel root to that session automatically; if it does not, append the `/s/...` path from the local link to the public domain.
-
-### Glossary And Replacement
-
-You can browse the glossary while translating, edit term translations, and apply replacements to the current page or the full text.
-
-Glossary checking also highlights terms that appear in the source but are missing from the target. Longer terms take priority over shorter contained terms. Missing glossary translations are marked as H3 and highlighted.
-
-<p align="center">
-  <img src="graph_for_intro/t2.png" alt="Glossary tools and term replacement" width="860">
-</p>
-
-### Agent Prompts And Interactive Console
-
-Translation and proofreading both provide parameter dialogs. You can set language pair, genre, output directory, split / subagent options, and then generate the prompt.
-
-<p align="center">
-  <img src="graph_for_intro/t3.png" alt="Translation prompt parameter window" width="860">
-</p>
-
-The app includes a real terminal console for interacting with Codex / Claude Code. Install and log in to the corresponding CLI before use.
-
-### Proofreading Report Review HTML
-
-After proofreading finishes, select or auto-discover the Markdown report and generate fix-proposal review HTML.
-
-<p align="center">
-  <img src="graph_for_intro/t5.png" alt="Proofreading report review HTML" width="860">
-</p>
-
-The review HTML can be linked back to the line-review HTML:
-
-- Mark report issues on the corresponding source rows.
-- Jump back to the main review page for context.
-- Accept AI-suggested translations with one click.
-- Manually rewrite and mark human-handled status.
-
-<p align="center">
-  <img src="graph_for_intro/t6.png" alt="Line review and proofreading report linkage" width="860">
-</p>
-
-Project state is saved under `.translation-workshop/` in the selected output folder, so the same project folder can be reopened later.
-
-## Launch Like An App
-
-Windows:
-
-```bat
-start-workshop.cmd
-```
-
-macOS / Linux / Git Bash:
-
-```bash
-./start-workshop.sh
-```
-
-The launch scripts install dependencies when `node_modules` is missing, build when `dist` is missing, and then open the Electron app.
-
-## Basic Workflow
-
-1. Choose Codex or Claude Code on first launch.
-2. Check the bundled skill / command paths and install status, then copy the install command if needed.
-3. Select a source TXT / EPUB file, or a source folder.
-4. Optionally select a translation TXT / EPUB file, or a translation folder.
-5. Select an output folder.
-6. Generate line-review HTML.
-7. In the HTML, translate or revise target text manually, jump pages, search, and replace glossary terms.
-8. When AI translation is needed, generate a translation prompt and open the Agent Console.
-9. After translation finishes, import or sync the translated TXT.
-10. Generate a proofreading prompt, then copy it or send it to the interactive Agent Console.
-11. After proofreading finishes, select or auto-discover the Markdown report and generate fix-proposal review HTML.
-12. After review, use `Save TXT` to overwrite the bound translation TXT, or `Export TXT` to save a separate copy.
-
-## Codex Skill Setup
-
-Bundled paths:
-
-- Translate: `skills/codex/translate-text`
-- Proofread: `skills/codex/proofread-translation`
-
-The app only copies the install command. It does not automatically write to your global Codex configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups. It requires Node.js 18 or newer and uses `--replace` by default to update existing skills after backing them up under `~/.translation-workshop/skill-backups/`:
-
-```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent codex --global --replace
-```
-
-If you have cloned the repository, you can also install from the local path:
-
-```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent codex --global --replace
-```
-
-Install targets:
-
-- `~/.codex/skills/translate-text/SKILL.md`
-- `~/.codex/skills/proofread-translation/SKILL.md`
-
-The recommended command updates existing skills and backs up the old target before replacing it.
-
-## Claude Code Skill Setup
-
-Bundled paths:
-
-- Translate: `skills/claude/commands/translate-text.md`
-- Proofread: `skills/claude/commands/proofread-translation.md`
-
-The app only copies the install command. It does not automatically write to your global Claude Code configuration. The GitHub command is recommended and works for installed, portable, and no-clone setups. It requires Node.js 18 or newer and uses `--replace` by default to update existing commands after backing them up under `~/.translation-workshop/skill-backups/`:
-
-```powershell
-irm https://raw.githubusercontent.com/TohmaN233/YN-translation-workshop/main/scripts/install-skills.mjs | node - --github --agent claude --global --replace
-```
-
-If you have cloned the repository, you can also install from the local path:
-
-```bash
-node /path/to/translation-workshop/scripts/install-skills.mjs --agent claude --global --replace
-```
-
-Install targets:
-
-- `~/.claude/commands/translate-text.md`
-- `~/.claude/commands/proofread-translation.md`
-
-The recommended command updates existing commands and backs up the old target before replacing it.
-
-## File Support
-
-| Format | Current support |
-| --- | --- |
-| TXT | Line-review HTML, write back, export |
-| EPUB | Text extraction into line-review HTML |
-| Bilingual TXT | Adjacent-line source / translation position splitting |
-| Bilingual EPUB | Adjacent-line source / translation position splitting |
-| Glossary | JSON, tab-delimited, `=>`, `->`, `=`, and comma-separated pairs |
-| Markdown report | Report discovery and review HTML |
-
-## Safety Notes
-
-- Source files are read-only and never modified.
-- The app does not automatically install global Codex / Claude Code skills. It only performs read-only detection and copies install commands.
-- Recommended install commands include `--replace`, which backs up the exact target before updating it.
-- `Save TXT` writes to the bound translation path only when the HTML is opened from the Electron app.
-- The Agent Console is a real interactive terminal. The app does not run hidden background jobs or pretend to know completion. Sync translations or discover reports manually after the agent finishes.
-- LAN sync only exposes the current shared session. It does not provide arbitrary file reads or directory browsing; access requires the 6-digit PIN, and stopping sync invalidates the session link. If you enable the Agent Console in the shared page, PIN holders can interact with the current Agent, so do not share the link or PIN with untrusted people.
-
-## Acknowledgements
-
-Special thanks to OpenAI Codex for all the help with engineering and design. As a great person once said, a project is made of 99% tokens and 1% inspiration.
-
-## Advanced: Monte Carlo Stress-Test Prompt
+- Windows installer: `translation-workshop-Setup-2.0.0-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.0.0-x64.exe`
+- Checksums: `SHA256SUMS.txt`
+
+The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.
+
+## Complete feature list
+
+### 1. Projects, inputs, and bindings
+
+- Create, load, save, and switch isolated projects. Settings, workflow state, assets, and sessions live under each project's `.translation-workshop/` directory.
+- The recent-project pointer follows the project actually opened or saved.
+- Supports one TXT file, TXT folders, one EPUB, and adjacent-line bilingual TXT / EPUB.
+- EPUB becomes UTF-8 working text; ruby extraction keeps base text only, while the original EPUB remains export and repack metadata.
+- Separate-file mode binds source and translation independently. Bilingual mode assigns the first or second adjacent position to each language.
+- Folder mode matches source and translation documents and maintains one authoritative batch index.
+- Ordered folder stages support barriers. `A, {B, C}, D` completes A, runs B/C in parallel, then starts D.
+- Translation and report outputs rebind to the current project's `AI_translation/` and `report/` directories when projects change.
+- One canonical chunk size drives translation and proofreading. Translation and review Worker counts are ceilings that shrink to actual demand.
+- Custom preserve rules protect variables, event codes, tags, control codes, and other immutable payloads. Invalid regular expressions fail visibly.
+- Chinese/English UI, HTML themes, a project Agent-proxy switch, and persistent project settings.
+
+### 2. Line-by-line translation and review frontend
+
+- A complete manual workflow from reading and row editing through search and safe write-back, with no Agent required.
+- Single-file pages and folder indexes with one canonical child HTML / sidecar identity per batch document.
+- Aligned source and translation rows, direct candidate editing, human-edit state, and disk refresh.
+- Pagination, page jump, full-text search, scroll restoration, last-focused-row location, and file tabs.
+- Issue severity, row highlighting, explicit clearing, read-only mechanical evidence, and ignore handling.
+- Ask the Agent about bounded context from a selected row without loading the whole document into chat.
+- Accept, reject, or manually edit actionable proofreading suggestions.
+- Apply accepted proposals in one action and synchronize every canonical child in a folder batch.
+- Export TXT or write to the bound translation after binding, baseline, sidecar, line-count, and conflict checks.
+- Timestamped backups before overwrite. Source files are always read-only.
+- Legacy HTML upgrades through explicit protocol markers when opened; users do not need to regenerate every page.
+
+### 3. Terminology, characters, style, and memory
+
+- **Approved glossary**: the project's canonical glossary. A selected external glossary remains authoritative for overlapping terms while nonconflicting canonical entries stay available. Importing accepted candidates consolidates the existing canonical glossary, the external glossary, and the candidates; conflicts reject the whole operation, and only a successful merge switches the project binding to canonical.
+- **Glossary candidates**: evidence-backed names, targets, and aliases discovered only inside a Worker's owned rows.
+- **Character bible**: reusable names, gender, pronouns, forms of address, relationships, and voice facts.
+- **Style guide**: title-level tone, expression, and formatting constraints.
+- **Translation memory**: search across accepted source/translation segments.
+- Glossary input supports JSON, Tab, `=>`, `->`, `=`, and comma-separated records.
+- The line-review page can edit terms, search and replace target matches, and import candidates.
+- Each assignment receives only directly matched full structured records. Missing ambiguity uses exact-term search.
+- Disabling candidate collection blocks new discoveries but keeps existing candidates readable.
+- Competing targets close the new-assignment claim gate. After the Parent decides, the Host rescans the full current manifest and prioritizes every affected row.
+- Candidate assets, character facts, DomainRun state, and Host persistence commit or roll back together.
+
+### 4. Models, Providers, and Agent sessions
+
+- OpenAI / Codex OAuth plus OpenAI-compatible APIs, API keys, and explicit model catalogs.
+- Provider, OAuth profile, selected model, and default thinking level are user-level settings shared across projects.
+- Agent proxying is off by default and is used only when explicitly enabled for the current project.
+- Session list, session creation and switching, a separate Agent window, streaming output, and Markdown rendering.
+- Thinking, Function calls, and subagents appear as structured conversation blocks rather than leaked protocol text.
+- Image attachments appear only when the selected catalog model advertises image input.
+- Input, output, cache-token, and estimated-cost telemetry; product-backed commands include `/compact`, copy, Provider settings, and new session.
+- Send Steer while work is active and queue Follow-up after it settles. Stop terminates active runtimes and Worker pools.
+- Parent and Child use the same Pi Agent runtime, `AgentMessage[]`, and Pi JSONL sessions.
+- Long sessions use native Pi compaction. Full Child conversations stay in Child JSONL; the Parent stores only lightweight state and a session reference.
+
+### 5. Full initial-translation Workflow
+
+- The Parent reads current interface bindings and Host state, chooses real concurrency within the project ceiling, and owns final consolidation.
+- The Host plans real debt from the authoritative manifest, file stages, canonical chunk size, reuse mask, and accepted evidence. The model cannot invent documents or ranges.
+- Persistent translation Workers dynamically claim non-overlapping assignments, avoiding long per-file private queues.
+- Each assignment owns only exact writable lines. Bounded adjacent context can be read without expanding write ownership.
+- Translation first enters Host-managed staging, whose path, hash, and pending-review state are persisted immediately.
+- Mandatory line-count, blank-line, placeholder, tag, control-code, custom-preserve, and line-identity validation.
+- A separate read-only review pool checks every mechanical-risk row and stable samples of normal rows.
+- Review returns only exact failures and short executable instructions. Passing rows do not generate per-line prose.
+- Failures return to the same translation Worker for bounded exact repair instead of restarting a whole chunk.
+- No progress or exhausted repair hands hash-current staging and exact failed rows to the Parent while preserving accepted rows and evidence.
+- Terminology conflicts become a priority repair wave inside the same batch. Normal claims cannot pass an active priority wave.
+- One full-artifact mechanical validation runs after all assignments. Remaining warnings receive paired Parent semantic checks.
+- Only true-positive warnings become exact repair debt. False positives persist as hash-bound evidence.
+- Stop, crash, and restart recover from durable staging, ownership, evidence, and Pi sessions.
+
+### 6. Existing-translation audit and selective reuse
+
+- Reuse is off by default. Before the first full-run write, the Host creates a SHA-256 backup and clears the old candidate once.
+- When enabled, mechanical screening covers every aligned row. Line-count, blank-line, placeholder, tag, and obvious placeholder-text failures go directly to retranslation.
+- Wrong language, source copying, abnormal length, repeated targets, AI contamination, and asset signals are risk evidence, not automatic rejection.
+- Low-risk aligned target-language rows are reused automatically. Only sparse high-risk rows enter read-only semantic audit.
+- Audit returns only `reuse` or `retranslate` and does not spend another model turn restating counts.
+- One batch-level user decision transactionally retains accepted rows and clears retranslation rows.
+- The later queue contains only real retranslation debt. Retained rows are not resent to make coverage contiguous.
+- Cold recovery binds owner, document, source hash, and retained baseline, so output written by the current run is not mistaken for old input.
+
+### 7. Full proofreading Workflow
+
+- Before any semantic Worker starts, the Host runs deterministic H3/H4/H7/H8/H9 scans over all aligned rows in every manifest document.
+- Evidence binds source, candidate, glossary, character-bible, and style hashes. Any input change invalidates stale evidence.
+- Deterministic signals are evidence for contextual judgment, not automatic findings.
+- **Split review** semantically checks every owned row. Chunk size is only a dispatch and persistence boundary.
+- **Monte Carlo** uses Host-planned, non-overlapping HOT / WARM / COLD strata with real coverage tracking.
+- After minimum rounds, convergence requires two consecutive rounds with no new findings. At the round limit, the user can add three rounds, switch to HOT split review, or stop with current results.
+- Proofread Workers are read-only and may submit only evidence-bound structured findings and proper-name candidates.
+- Folder mode prescans all files before entering one cross-file staged assignment queue.
+- Findings replace their scope atomically and deduplicate. Each requires a global row, category, evidence, and complete replacement line.
+- No-op fixes, out-of-range rows, routine target-language punctuation differences, and malformed submissions are rejected.
+- Single-file and folder runs persist exactly one Findings JSON. The product renders human review HTML from that JSON.
+
+### 8. Harness, Host, and reliability
+
+- **Runtime** owns model calls, Function calls, continuation, Steer / Follow-up queues, Provider retry, and compaction.
+- **Harness** assembles runtime, system prompt, Function set, durable state, and completion conditions into a continuing Agent environment.
+- **Host** owns manifests, assignments, stages, write ownership, locks, hashes, validators, transactions, and completion gates.
+- General investigation, local repair, full translation, and full proofreading use different typed operation scopes.
+- Complete batches reserve atomically before Workers start. Duplicate active batches fail before model runtime creation.
+- Parent and Child may read required references, but only Host-granted document, range, or exact-line ownership can write artifacts.
+- Staging promotion, domain revision, alignment evidence, and Host JSONL persistence form one rollback-capable transaction boundary.
+- Function failure returns to the same Pi turn or becomes explicit Parent repair / resume state. It is not swallowed or reported as success.
+- A workflow completes only when the Host settles tasks, repair debt, evidence, artifacts, and final validation.
+- Critical phases, Workers, assignments, Provider errors, staging, and hashes remain observable and durable.
+
+#### Why it is stable
+
+- Models perform semantic work; deterministic Host code controls identity, scope, concurrent writes, and completion.
+- Partial output stays in staging instead of overwriting the canonical artifact.
+- Translation and independent review use separate pools. Failures return precisely, and no-progress retries stop.
+- Recovery evidence binds current content hashes. Stale grants and stale evidence cannot remain active.
+- Shared-asset updates and artifact promotion are transactional and roll back to a recoverable state.
+
+#### Why it saves tokens
+
+- Host code plans chunks and risk scans instead of asking a model to reread whole files and plan them.
+- Assignments receive directly matched assets and short context; missing terms use exact search.
+- Mechanical screening, placeholders, line counts, and deterministic proofreading signals consume no model reasoning.
+- Independent review reports failures only and produces no per-line explanation for accepted rows.
+- The Parent never embeds full Child transcripts; it reads lightweight state and structured discoveries.
+- Existing-translation reuse sends only sparse risky rows to semantic audit.
+- Hash-bound acceptance and warning evidence survive unrelated edits, avoiding full-document rereview.
+
+### 9. Web and local references
+
+- The Agent can read explicitly supplied HTTP(S) pages and cache readable content.
+- Wikipedia uses the MediaWiki API. Ordinary pages use main-content extraction.
+- Parent and Children reuse cached references instead of redownloading them for every assignment.
+- Explicit absolute paths outside the project, old translations, and backups may be read as references.
+- All artifact writes remain bound to project identity and exact Host ownership.
+
+### 10. LAN and remote operation
+
+- Open a work HTML in the desktop app, start LAN sync, and choose a six-digit PIN.
+- Phones, tablets, and other computers can open folder indexes and single-file pages.
+- Remote users can search, page, edit translations, accept or reject proposals, synchronize pages, and use the Agent panel.
+- Remote Prompt, Steer, and Follow-up use the desktop's same durable Pi session rather than a separate remote transcript.
+- SSE provides low-latency display only. After disconnects or proxy buffering, the browser converges from canonical Pi messages.
+- The desktop app must remain running. LAN exposes the current shared work session, not arbitrary directory browsing.
+- Public tunneling is not built in. Cloudflare Tunnel, ngrok, or a similar tool can target the displayed local address.
+- A public URL exposes the workbench entry point. Use an unguessable PIN, never publish the URL, and stop both tunnel and LAN sync when finished.
+
+### 11. Updates, recovery, and compatibility
+
+- Installed builds can check GitHub Releases, download updates, and restart into installation. Portable builds open the release download.
+- Legacy line-review HTML, proposal HTML, and project fields have explicit upgrade paths.
+- Legacy chunk settings are read once during migration and then replaced by the canonical setting.
+- Stop terminates active runtimes while preserving hash-current staging, review evidence, and unfinished debt.
+- Explicit resume continues the same Pi session and Host batch rather than starting a fake replacement run.
+- Provider transport failures preserve redacted cause, Provider, model, session, and retry records for diagnosis.
+
+## Agent Function index
+
+Ordinary users do not need to call these Functions manually. They are the constrained operation surfaces supplied by the Harness. Shared read-only names appear in both roles, producing **52 unique names and 55 callable surfaces**. Parameters, reads, writes, rejection conditions, and next actions are indexed in the [technical Function Registry](https://tohman233.github.io/YN-translation-workshop/functions.html).
 
 <details>
-<summary>Expand prompt template</summary>
+<summary><strong>Parent Functions (38)</strong></summary>
 
-```text
-You are a Translation Project Manager. please ask 3 (or any number, larger is harder to pass the test) sub-agents to do the following job, start at different seeds.
-
-Please use the proofread-translation skill to run a Monte Carlo translation-quality stress test on the following source/translation pair.
-
-Goal:
-- Check whether a large translation still contains serious translation-quality issues.
-- Focus only on true actionable issues found in sampled lines; every candidate must be manually judged.
-- Do not repeat global scans, old-report comparisons, or full terminology audits that have already been completed, unless I explicitly ask for them.
-
-Inputs:
-- Review mode: montecarlo
-- Type: {game/novel/technical/subtitle/academic}
-- Source language: {SOURCE_LANGUAGE}
-- Target language: {TARGET_LANGUAGE}
-- Source file: {SOURCE_FILE}
-- Translation file: {TRANSLATION_FILE}
-- Glossary file, optional: {GLOSSARY_FILE}
-- Sample size per round: {SAMPLE_SIZE, default 5000}
-- Confirmed-issue line exclusion set: {KNOWN_ISSUE_LINES, may be empty}
-
-Scope for this stress test:
-- Focus on HIGH translation-quality risks: mistranslation, misaligned line, omission, empty translation, severe over-translation/line bleed, AI/reviewer meta-language contamination, source-language residue, number/list-index errors, lost or translated code placeholders/tags, abnormal expansion, and hallucination.
-- If an H9 expansion/hallucination issue is found in the sample, retranslate the full source line and provide that full replacement as the suggested translation.
-
-Output requirements:
-- Every issue must include: global line number, source text, current translation, issue explanation, severity, and a complete directly replaceable suggested translation.
-- Every severity level (HIGH/MEDIUM/LOW) must include a complete suggested translation. Do not provide only a direction, a partial replacement, or meta wording such as "suggest changing to".
-- The suggested translation field must contain only the final replacement text itself.
-- If a candidate is a false positive, explain why and continue; it does not count as a failure.
-- If a sampled line is in the confirmed-issue exclusion set, mark it as a known issue and exclude it; it does not count as a failure.
-
-Convergence rule:
-- Start counting from the translation state after the most recent applied fix.
-- If a new true issue is found: report the full suggested translation and stop. The manager will apply the fix, then convergence counting must restart.
-- If no new true issue is found, continue with a different seed.
-- This lane converges after {CLEAN_ROUNDS, default 2} consecutive different seeds produce no new true issues.
-- Multiple agents run in parallel, every lane must independently satisfy this convergence rule. O.W., all agent should do a totally new round after fixes of manager.
-
-Environment note:
-- On Windows PowerShell, force UTF-8 output before reading files or running scripts:
-  [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new()
-- If Python is used, set:
-  $env:PYTHONUTF8='1'
-  $env:PYTHONIOENCODING='utf-8'
-
-Final response:
-- List the seeds used.
-- State whether convergence was reached.
-- List any new true issues found.
-- Summarize false-positive candidates.
-- List excluded known-issue lines.
-```
+| Area | Functions |
+| --- | --- |
+| Workflow control | `resumeYnWorkflow` |
+| Shared assets | `readTranslationDiscoveries`, `resolveTranslationDiscoveries` |
+| Current interface | `readYnInterfaceContext` |
+| Local proofreading | `inspectProofreadRange`, `recordProofreadParentReview` |
+| Web reference | `fetchWebReference` |
+| Project context | `inspectTranslationContext`, `selectSourceDocument` |
+| Existing translation | `prepareTranslationReuseAudit`, `readTranslationReuseAudit`, `recordTranslationReuseAudit`, `runTranslationReuseAudit`, `applyTranslationReuseDecision` |
+| Models and Children | `listAvailableModels`, `inspectSubagents`, `steerSubagent` |
+| Files and search | `readSourceLines`, `readTranslationLines`, `readProjectFile`, `listProjectDir`, `searchProjectText`, `searchTranslationMemory` |
+| Warnings and alignment | `readTranslationAlignmentRows`, `inspectTranslationWarnings`, `recordTranslationWarningChecks`, `inspectTranslationAlignment`, `recordTranslationAlignmentChecks` |
+| Translation artifacts | `writeProjectFile`, `writeTranslationChunk`, `validateTranslationArtifact` |
+| Proofread artifacts | `writeProofreadFindings`, `resolveProofreadGlossaryCandidates`, `finalizeProofreadReport`, `resolveProofreadMontecarloLimit` |
+| Scheduling | `runProofreadSubagents`, `runSubagents`, `runTranslationSubagents` |
 
 </details>
+
+<details>
+<summary><strong>Child Functions (17)</strong></summary>
+
+| Role | Functions |
+| --- | --- |
+| General read-only | `listProjectDir`, `searchProjectText`, `readProjectFile` |
+| Translation Worker | `readTranslationContext`, `readAssignedSource`, `writeAssignedTranslation`, `repairAssignedTranslation`, `validateAssignedTranslation` |
+| Proofread Worker | `readAssignedProofreadContext`, `readProofreadReference`, `writeAssignedFindings` |
+| Local delegation | `readBoundSourceLines`, `readBoundTranslationLines` |
+| Independent translation review | `readAssignedTranslationReview`, `submitTranslationReview` |
+| Existing-translation audit | `readAssignedTranslationAudit`, `submitTranslationAudit` |
+
+</details>
+
+## One complete run
+
+```mermaid
+flowchart LR
+  A[Create project and bind source] --> B[Generate line-review HTML]
+  B --> C[Configure Provider and model]
+  C --> D[Run Initial translation]
+  D --> E[Refresh and inspect candidate]
+  E --> F[Run Proofread]
+  F --> G[Generate review HTML]
+  G --> H[Accept reject or edit suggestions]
+  H --> I[Safely write or export TXT]
+```
+
+For a first run, process 50 to 200 rows. Confirm encoding, alignment, language direction, terminology, control codes, and write-back paths before starting a complete project. The [user guide](https://tohman233.github.io/YN-translation-workshop/guides.html) explains every field, command, and remote step.
+
+## Artifacts and data
+
+| Type | Contents |
+| --- | --- |
+| Line-review work pages | One HTML, or folder index + canonical child HTML + sidecars |
+| Translation candidate | Strictly aligned TXT and Host staging artifacts |
+| Proofread result | One Findings JSON and its itemized visual review HTML |
+| Project assets | Approved glossary, candidates, character bible, style guide, translation memory |
+| Runtime state | Host batches, assignments, evidence, recovery debt, and Pi JSONL sessions |
+| Backups | Timestamped copies before write-back, old-candidate clearing, or asset overwrite |
+
+Source files are always read-only. Candidate text, HTML page state, and real translation files remain separate. Invalid bindings, baselines, line counts, or validation contracts fail explicitly.
+
+## Development and verification
+
+Requires Node.js `>=22.6.0`.
+
+```bash
+npm ci
+npm run dev
+```
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm run verify:electron-agent-html
+npm run verify:electron-lan-agent
+```
+
+Windows release build:
+
+```bash
+npm run package:win
+npm run verify:release
+```
+
+Runtime translation protocols and JSON schemas live in `translation-protocol/`. The product executes them through built-in system prompts, Host Functions, validators, and completion gates.
+
+## Privacy and security
+
+- Provider credentials live in Electron user data and never in a project repository.
+- Translation assets, Agent sessions, Host state, and backups are isolated per project.
+- Project Agent proxying is off by default; process proxy variables cannot silently enable it.
+- Anyone with the LAN PIN can operate the current shared session. Use only trusted networks or controlled tunnels.
+- The repository does not track local Agent instructions, runtime memory, private test paths, editing exports, or personal tutorial source files.
+
+## License
+
+[MIT](LICENSE)
+
+Thanks to OpenAI Codex and everyone who tested, translated, and reported issues.

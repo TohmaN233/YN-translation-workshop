@@ -1,13 +1,8 @@
 # Translation Workflow
 
-## Role
+## Scope
 
-Adopt this role for the task: you are a professional bilingual translator for the
-requested language pair. The work requires fluent target-language writing,
-faithful source comprehension, stable terminology, and directly usable
-translated text.
-
-This protocol is for translation production, not proofreading. It is optimized
+This workflow is for translation production, not proofreading. It is optimized
 for large structured text where line count, placeholders, glossary terms, and
 character voice must stay stable.
 
@@ -16,6 +11,9 @@ character voice must stay stable.
 - Produce directly usable translated text. Do not insert meta phrases such as
   "建议译文", "可译为", "意思是", "translation:", or explanatory notes into
   translated lines.
+- Every non-empty translated line must be a complete target-language line that
+  can replace the matching source line as-is. Do not output fragments, partial
+  alternatives, TODOs, comments, labels, or explanations as translated text.
 - Preserve one-to-one line alignment whenever the source is line based: source
   line `N` must map to translation line `N`; keep empty lines empty. Before
   finalizing, self-check that source line count equals output line count and
@@ -141,7 +139,29 @@ When terms conflict:
 
 ## Character Bible
 
-Maintain `translation/settings/CHARACTER_BIBLE.md` as a live file. Track:
+Maintain `AI_translation/_workspace/character_bible.md` as a live file. Before
+writing it, search each character name in project text and read nearby context
+for pronouns, titles, relationships, or self-identification. Stop searching a
+character once evidence establishes the fact. Use `unknown` only after project
+context and available canon references remain insufficient.
+
+Use this exact section shape:
+
+```md
+# Character Bible
+
+## <source name> / <target name>
+- Source/target name: <source> -> <target>
+- Identity/role: <identity, role, faction>
+- Gender/pronouns: <gender; pronouns> (confidence: confirmed|inferred|unknown)
+- Voice/register: <voice and register>
+- Relationships: <known relationships or unknown>
+- Terms of address: <forms of address or unknown>
+- Catchphrases: <recurring expressions or unknown>
+- Evidence: <file and nearby source context supporting the facts>
+```
+
+Track:
 
 - source name and translation;
 - identity, role, faction, relationship;
@@ -222,9 +242,16 @@ Require each agent to return or write:
 - character-bible updates;
 - uncertainties or conflicts.
 
-Merge agent outputs deterministically:
+Accept each agent chunk through a closed loop before that worker advances:
 
-- validate line counts before accepting a chunk;
+- mechanically scan every row for line identity, empty lines, placeholders,
+  tags/control codes, likely untranslated text, generic placeholders, abnormal
+  length/adjacency, and repeated candidates used for distinct source lines;
+- semantically review every mechanically flagged row plus a deterministic sample
+  of otherwise clean rows;
+- if any reviewed row fails, return its exact absolute line and reason to the
+  same child, require a repair in that same child session, and repeat the scan;
+- accept the chunk before that worker may claim its next queued assignment;
 - preserve earlier confirmed glossary terms;
 - log term conflicts instead of silently changing prior chunks;
 - update the glossary and character bible before assigning later chunks;
@@ -237,16 +264,18 @@ Merge agent outputs deterministically:
 
 ## Assembly And Validation
 
-After all chunks are complete:
+After all chunks have individually passed that closed loop:
 
-1. Concatenate chunks in numeric order.
-2. Verify final translated line count equals source line count.
-3. Check placeholder/tag/control-code preservation with a deterministic scan
+1. Verify the Host has current hash-bound accepted review evidence covering every
+   chunk without gaps or overlaps. Do not repeat a full-row semantic pass.
+2. Concatenate chunks in numeric order.
+3. Verify final translated line count equals source line count.
+4. Check placeholder/tag/control-code preservation with a deterministic scan
    when feasible.
-4. Spot-check glossary compliance for confirmed terms.
-5. Check that character glossary entries have gender/pronoun `info` when known.
-6. Write the final output with UTF-8.
-7. Mark state as complete.
+5. Spot-check glossary compliance for confirmed terms.
+6. Check that character glossary entries have gender/pronoun `info` when known.
+7. Write the final output with UTF-8.
+8. Mark state as complete.
 
 Final report should include:
 
@@ -263,6 +292,11 @@ Final report should include:
 
 For final translated files, write only translated lines. Keep reports, term
 updates, and questions outside the translated file.
+
+Before marking any chunk or final output complete, verify that every translated
+line is a complete target-language replacement line. A line that only contains a
+note, explanation, option list, placeholder, or partial phrase is incomplete and
+must be rewritten before saving.
 
 For chunk reports, include:
 

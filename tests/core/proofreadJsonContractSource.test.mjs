@@ -17,7 +17,7 @@ async function test(name, fn) {
 }
 
 await test("proofread protocol names findings json as the primary machine contract", async () => {
-  const protocol = await readFile("skills/proofread-translation/references/proofread-workflow.md", "utf8");
+  const protocol = await readFile("translation-protocol/proofread.md", "utf8");
   assert.match(protocol, /Structured findings JSON: `\[basename\]\.proofread\.json`/);
   assert.match(protocol, /exactly one persisted output/i);
   assert.doesNotMatch(protocol, /Human summary:/i);

@@ -90,7 +90,7 @@ await test("legacy folder review migration preserves the folder batch prompt", (
   assert.doesNotMatch(upgraded, /batchPromptPanel/);
   assert.match(upgraded, /Source folder: G:\/project\/source/);
   assert.match(upgraded, /File order \(removed names are skipped; braces remove relative ordering only\)/);
-  assert.match(upgraded, /Subagents: enabled; maximum=project ceiling/);
+  assert.match(upgraded, /Subagents: enabled; maximum=3/);
   assert.doesNotMatch(upgraded, /Subagents: enabled; maximum=2/);
   assert.doesNotMatch(upgraded, /runTranslationSubagents|worker queue|line ranges/);
   assert.match(upgraded, /"inputMode":"bilingual"/);
@@ -308,7 +308,7 @@ await test("app-open upgrade uses the explicit line-review protocol marker", asy
   assert.equal(needsLegacyLineReviewUpgrade("<!doctype html><p>not a line review</p>"), false);
 });
 
-await test("new line-review HTML does not materialize an unset subagent count", async () => {
+await test("new line-review HTML materializes the product default subagent count", async () => {
   const { renderLineReviewHtml } = await import("../../src/shared/core/html.ts");
   const html = renderLineReviewHtml({
     title: "unset child ceiling",
@@ -320,10 +320,10 @@ await test("new line-review HTML does not materialize an unset subagent count", 
   const payload = html.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
   assert.ok(payload);
   const workflow = JSON.parse(payload).workflow;
-  assert.equal(Object.hasOwn(workflow.promptDefaults, "subagentCount"), false);
+  assert.equal(workflow.promptDefaults.subagentCount, 3);
   assert.equal(Object.hasOwn(workflow.promptDefaults, "reviewSubagentCount"), false);
-  assert.doesNotMatch(workflow.prompts.translate, /maximum=2/);
-  assert.doesNotMatch(workflow.prompts.proofread, /maximum=2/);
+  assert.match(workflow.prompts.translate, /maximum=3/);
+  assert.match(workflow.prompts.proofread, /maximum=3/);
 });
 
 await test("v16 line-review upgrade preserves advanced proofreading and subagent settings", async () => {
@@ -512,8 +512,11 @@ await test("renderLineReviewHtml inline script is valid JavaScript", async () =>
   assert.match(html, /languagePair:\s*promptLanguagePair\?\.value\.trim\(\)\s*\|\|\s*defaults\.languagePair/);
   assert.match(html, /setFieldValue\(promptLanguagePair, settings\.languagePair\)/);
   assert.match(html, /readProjectState/);
-  assert.match(html, /readProjectAssets/);
-  assert.match(html, /syncGlossaryFromText\(JSON\.stringify\(assets\?\.glossary/);
+  assert.match(html, /if \(boundGlossaryPath\(\)\) \{\s*await syncGlossaryFromBoundFile\(\)/);
+  assert.match(html, /assets\?\.available\?\.glossary === true/);
+  assert.match(html, /const canonicalGlossaryIsBound = !boundPath/);
+  assert.match(html, /await persistProjectState\(\{ glossaryPath: value \}\);\s*setBoundGlossaryPath\(value\)/);
+  assert.match(html, /Object\.prototype\.hasOwnProperty\.call\(value, "glossaryPath"\)/);
   assert.match(html, /onProjectStateUpdate/);
   assert.match(html, /await persistProjectState\(settings\)/);
   assert.ok(
@@ -656,6 +659,7 @@ await test("prompt reset embeds product defaults without losing the current fold
     montecarloRoundMin: 2,
     montecarloRoundMax: 5,
     subagentEnabled: true,
+    subagentCount: 3,
     folderSourceDocuments: [
       { id: "b.txt", path: "G:/proj/source/b.txt" },
       { id: "a.txt", path: "G:/proj/source/a.txt" }
@@ -667,8 +671,9 @@ await test("prompt reset embeds product defaults without losing the current fold
   });
   assert.match(html, /defaultFolderTranslationOrder\(defaults\.folderSourceDocuments\)/);
   assert.match(html, /documentIds\.map\(\(documentId\) => JSON\.stringify\(documentId\)\)/);
-  assert.match(html, /subagentCount:\s*null/);
+  assert.doesNotMatch(html, /subagentCount:\s*null/);
   assert.match(html, /reviewSubagentCount:\s*null/);
+  assert.match(html, /settings\.subagentCount\s*=\s*promptStoredDefaults\(\)\.subagentCount/);
 });
 
 await test("line review upgrades prompt settings that predate the editable language pair", async () => {

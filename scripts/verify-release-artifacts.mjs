@@ -54,7 +54,13 @@ for (const requiredEntry of [
   assert.ok(archiveEntries.has(requiredEntry), `Packaged app is missing ${requiredEntry}`);
 }
 const packagedScripts = [...archiveEntries].filter((entry) => entry.startsWith("/scripts/"));
-assert.deepEqual(packagedScripts, ["/scripts/install-skills.mjs"], "Packaged app contains development-only scripts");
+assert.deepEqual(packagedScripts, [], "Packaged app contains development-only scripts");
+for (const requiredProtocol of [
+  "/translation-protocol/translation-child.md",
+  "/translation-protocol/proofread-child.md",
+]) {
+  assert.ok(archiveEntries.has(requiredProtocol), `Packaged app is missing ${requiredProtocol}`);
+}
 
 const packedPackage = JSON.parse(extractFile(asarPath, "package.json").toString("utf8"));
 const packedUpdater = JSON.parse(

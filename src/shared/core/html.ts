@@ -1071,11 +1071,11 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 30;
+export const LINE_REVIEW_PROTOCOL_VERSION = 31;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 8;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
-export const PROMPT_SETTINGS_VERSION = 37;
+export const PROMPT_SETTINGS_VERSION = 38;
 
 export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   const locale = options.locale ?? "zh-CN";
@@ -1827,7 +1827,6 @@ function promptFactoryDefaults() {
     ...defaults,
     folderTranslationOrder,
     customPreserveRules: [],
-    subagentCount: null,
     reviewSubagentCount: null,
     subagentProviderId: "",
     subagentModelId: "",
@@ -1856,6 +1855,9 @@ function promptSettingsFromProjectState(value) {
     // Older HTML materialized the inherited review-worker fallback as an explicit
     // project value. Clear it once; users can set a real override in the new field.
     settings.reviewSubagentCount = null;
+    if (optionalPositivePromptNumber(settings.subagentCount) === undefined) {
+      settings.subagentCount = promptStoredDefaults().subagentCount;
+    }
     settings.promptSettingsVersion = promptSettingsVersion;
   }
   return settings;
@@ -1868,8 +1870,10 @@ function normalizedProjectOutputDir(value) {
 function applyProjectPromptSettings(value) {
   projectPromptSettings = promptSettingsFromProjectState(value);
   const needsPromptSettingsMigration = Number(value?.promptSettingsVersion || 0) < promptSettingsVersion;
+  const hasGlossaryPath = Boolean(value && typeof value === "object"
+    && Object.prototype.hasOwnProperty.call(value, "glossaryPath"));
   const glossaryPath = String(value?.glossaryPath || "").trim();
-  if (glossaryPath) {
+  if (hasGlossaryPath) {
     projectGlossaryPath = glossaryPath;
     workflowPaths().glossaryPath = glossaryPath;
   }
@@ -1880,6 +1884,7 @@ function applyProjectPromptSettings(value) {
       setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
     });
   }
+  return hasGlossaryPath;
 }
 
 async function hydrateProjectPromptSettings() {
@@ -1887,15 +1892,20 @@ async function hydrateProjectPromptSettings() {
   const bridge = writeBridge();
   if (!outputDir || outputDir.startsWith("[") || !bridge?.readProjectState) return;
   try {
-    applyProjectPromptSettings(await bridge.readProjectState(outputDir));
-    if (bridge.readProjectAssets) {
-      const assets = await bridge.readProjectAssets({ outputDir });
-      const glossaryPath = String(assets?.paths?.glossary || boundGlossaryPath()).trim();
-      if (syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), glossaryPath || "project glossary", true)) {
-        if (glossaryPath) setBoundGlossaryPath(glossaryPath);
-      }
-    } else if (boundGlossaryPath()) {
+    const hasProjectGlossaryPath = applyProjectPromptSettings(await bridge.readProjectState(outputDir));
+    if (boundGlossaryPath()) {
       await syncGlossaryFromBoundFile();
+    } else if (bridge.readProjectAssets) {
+      const assets = await bridge.readProjectAssets({ outputDir });
+      const glossaryPath = String(assets?.paths?.glossary || "").trim();
+      if (assets?.available?.glossary === true
+        && syncGlossaryFromText(JSON.stringify(assets.glossary), glossaryPath || "project glossary", true)) {
+        if (glossaryPath) setBoundGlossaryPath(glossaryPath);
+      } else if (hasProjectGlossaryPath) {
+        syncGlossaryFromText("", "project glossary", true);
+      }
+    } else if (hasProjectGlossaryPath) {
+      syncGlossaryFromText("", "project glossary", true);
     }
   } catch (error) {
     setAiStatus("Project settings load failed: " + (error?.message || String(error)));
@@ -2876,7 +2886,8 @@ async function discoverAgentArtifacts() {
             sourcePath: artifact.sourcePath,
             candidatePath: artifact.path,
             locale,
-            languagePair: artifactLanguagePair()
+            languagePair: artifactLanguagePair(),
+            glossaryPath: boundGlossaryPath() || undefined
           });
         } catch (error) {
           validation = {
@@ -2906,7 +2917,8 @@ async function importArtifactAsDraft(candidatePath, sourcePath) {
       sourcePath,
       candidatePath,
       locale: data.locale || "zh-CN",
-      languagePair: artifactLanguagePair()
+      languagePair: artifactLanguagePair(),
+      glossaryPath: boundGlossaryPath() || undefined
     });
     if (!plan.ok) {
       setAiStatus((data.labels.importBlocked || "Import blocked by validation") + ": " + (plan.validation.blocking[0]?.detail || ""));
@@ -3223,12 +3235,11 @@ function writeBridge() {
 }
 const unsubscribeProjectState = writeBridge()?.onProjectStateUpdate?.((payload) => {
   if (normalizedProjectOutputDir(payload?.outputDir) !== normalizedProjectOutputDir(workflow.paths?.outputDir)) return;
-  applyProjectPromptSettings(payload?.state || payload?.patch);
-  const glossaryPath = String(payload?.state?.glossaryPath || payload?.patch?.glossaryPath || "").trim();
-  if (glossaryPath) {
-    projectGlossaryPath = glossaryPath;
-    workflowPaths().glossaryPath = glossaryPath;
-    void syncGlossaryFromBoundFile();
+  const nextProjectState = payload?.state || payload?.patch;
+  const hasGlossaryPath = applyProjectPromptSettings(nextProjectState);
+  if (hasGlossaryPath) {
+    if (boundGlossaryPath()) void syncGlossaryFromBoundFile();
+    else void hydrateProjectPromptSettings();
   }
 });
 window.addEventListener("beforeunload", () => unsubscribeProjectState?.(), { once: true });
@@ -3353,8 +3364,8 @@ async function importGeneratedGlossary() {
     const result = await bridge.importGeneratedGlossaryCandidates({ outputDir });
     const glossary = result?.assets?.glossary;
     const glossaryPath = result?.assets?.paths?.glossary || "";
+    if (glossaryPath) await adoptBoundGlossaryPath(glossaryPath);
     if (!syncGlossaryFromText(JSON.stringify(glossary || { entries: [] }), glossaryPath || "project glossary", true)) return;
-    if (glossaryPath) setBoundGlossaryPath(glossaryPath);
     applyGeneratedGlossaryStatus({ pending: { glossaryCandidates: 0 }, actions: { importGlossaryCandidates: false } });
     setAiStatus((data.labels.generatedGlossaryImported || "Agent glossary candidates imported") + ": " + Number(result?.counts?.added || 0));
   } catch (error) {
@@ -3371,9 +3382,13 @@ const unsubscribeProjectAssets = writeBridge()?.onProjectAssetsUpdate?.((payload
   if (normalizedWorkspacePath(payload?.outputDir) !== normalizedWorkspacePath(workflow.paths?.outputDir)) return;
   const glossaryPath = String(payload?.assets?.paths?.glossary || "").trim();
   const glossary = payload?.assets?.glossary;
-  if (glossaryPath && glossary && syncGlossaryFromText(JSON.stringify(glossary), glossaryPath, true)) {
+  const boundPath = boundGlossaryPath();
+  const canonicalGlossaryIsBound = !boundPath
+    || normalizedWorkspacePath(boundPath) === normalizedWorkspacePath(glossaryPath);
+  if (canonicalGlossaryIsBound && glossaryPath && glossary
+    && syncGlossaryFromText(JSON.stringify(glossary), glossaryPath, true)) {
     setBoundGlossaryPath(glossaryPath);
-  } else if (!payload?.assets) {
+  } else if (!payload?.assets && boundPath) {
     void syncGlossaryFromBoundFile();
   }
 });
@@ -3411,6 +3426,12 @@ function setBoundGlossaryPath(path) {
   if (!value) return;
   projectGlossaryPath = value;
   workflowPaths().glossaryPath = value;
+}
+async function adoptBoundGlossaryPath(path) {
+  const value = String(path || "").trim();
+  if (!value) throw new Error("Canonical glossary path is missing.");
+  await persistProjectState({ glossaryPath: value });
+  setBoundGlossaryPath(value);
 }
 function glossarySearchQuery() {
   return String(glossarySearchEl?.value || "").trim().toLocaleLowerCase();
@@ -3734,10 +3755,10 @@ async function applyEditedGlossaryTerm(input) {
       }
     });
     const glossaryPath = String(assets?.paths?.glossary || boundGlossaryPath()).trim();
+    if (glossaryPath) await adoptBoundGlossaryPath(glossaryPath);
     if (!syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), glossaryPath || "project glossary", true)) {
       throw new Error("Canonical project glossary response could not be applied.");
     }
-    if (glossaryPath) setBoundGlossaryPath(glossaryPath);
   } catch (error) {
     input.value = previousTarget;
     input.dataset.currentTarget = previousTarget;
@@ -3768,7 +3789,19 @@ function cleanGlossaryTerm(value) {
 function entryFromGlossaryObject(value) {
   const source = cleanGlossaryTerm(value.source ?? value.src ?? value.original ?? value.term ?? value.from ?? value.ja ?? value.jp ?? value.key);
   const target = cleanGlossaryTerm(value.target ?? value.dst ?? value.translation ?? value.translated ?? value.to ?? value.zh ?? value.cn ?? value.value);
-  return source && target ? { source, target } : undefined;
+  if (!source || !target) return undefined;
+  const aliases = Array.isArray(value.aliases)
+    ? [...new Set(value.aliases.map(cleanGlossaryTerm).filter(Boolean))]
+    : [];
+  const info = cleanGlossaryTerm(value.info);
+  const status = ["confirmed", "auto", "pending"].includes(value.status) ? value.status : undefined;
+  return {
+    source,
+    target,
+    ...(aliases.length ? { aliases } : {}),
+    ...(info ? { info } : {}),
+    ...(status ? { status } : {})
+  };
 }
 function parseGlossaryTextLocal(text) {
   try {
@@ -3847,19 +3880,6 @@ function syncGlossaryFromText(text, label, allowEmpty = false) {
 async function syncGlossaryFromBoundFile() {
   const glossaryPath = boundGlossaryPath();
   const bridge = writeBridge();
-  const outputDir = workflow.paths?.outputDir || "";
-  if (outputDir && bridge?.readProjectAssets) {
-    try {
-      const assets = await bridge.readProjectAssets({ outputDir });
-      const projectPath = String(assets?.paths?.glossary || glossaryPath).trim();
-      if (syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), projectPath || "project glossary", true)) {
-        if (projectPath) setBoundGlossaryPath(projectPath);
-      }
-    } catch (error) {
-      setAiStatus((data.labels.glossaryReadFailed || "Glossary sync failed") + ": " + (error?.message || String(error)));
-    }
-    return;
-  }
   if (!glossaryPath) {
     setAiStatus(data.labels.glossarySyncMissingTarget || "This HTML has no bound glossary file. Import a glossary first.");
     return;
@@ -3891,8 +3911,9 @@ async function importGlossaryFromFile() {
     if (outputDir && bridge.importProjectGlossaryFile) {
       const assets = await bridge.importProjectGlossaryFile({ outputDir, path: filePath });
       const glossaryPath = String(assets?.paths?.glossary || "").trim();
+      if (glossaryPath) await adoptBoundGlossaryPath(glossaryPath);
       if (syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), glossaryPath || filePath, true)) {
-        setBoundGlossaryPath(glossaryPath || filePath);
+        if (!glossaryPath) setBoundGlossaryPath(filePath);
       }
       return;
     }
@@ -3941,10 +3962,10 @@ async function writeCurrentGlossaryFile() {
   try {
     const assets = await bridge.replaceProjectGlossary({ outputDir, entries: currentGlossaryEntries() });
     const projectPath = String(assets?.paths?.glossary || glossaryPath).trim();
+    await adoptBoundGlossaryPath(projectPath);
     if (!syncGlossaryFromText(JSON.stringify(assets?.glossary || { entries: [] }), projectPath || "project glossary", true)) {
       throw new Error("Canonical project glossary response could not be applied.");
     }
-    setBoundGlossaryPath(projectPath);
     setAiStatus((data.labels.glossaryWritten || "Glossary written") + ": " + projectPath);
   } catch (error) {
     setAiStatus((data.labels.glossaryWriteFailed || "Glossary write failed") + ": " + (error?.message || String(error)));

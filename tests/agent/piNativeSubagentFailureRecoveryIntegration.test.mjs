@@ -61,23 +61,13 @@ models.setProvider(parent.provider);
 providers.set(parent.provider.id, parent);
 parent.setResponses([
   fauxAssistantMessage(fauxToolCall("inspectTranslationContext", {}, { id: "inspect-context" }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {
-    tasks: [
-      { fromLine: 1, toLine: 1, providerId: "first-healthy", label: "first-healthy" },
-      { fromLine: 2, toLine: 2, providerId: "first-failing", label: "first-failing" }
-    ]
-  }, { id: "spawn-first-batch" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {}, { id: "spawn-first-batch" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxText("The first native Pi batch is running in the background.")),
   fauxAssistantMessage(fauxText("One child failed after the healthy sibling completed. The workflow is paused until the user explicitly continues it.")),
   fauxAssistantMessage(fauxToolCall("resumeYnWorkflow", {}, {
     id: "resume-after-explicit-user-continuation"
   }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {
-    tasks: [
-      { fromLine: 1, toLine: 1, providerId: "retry-a", label: "retry-a" },
-      { fromLine: 2, toLine: 2, providerId: "retry-b", label: "retry-b" }
-    ]
-  }, { id: "spawn-repair-batch" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {}, { id: "spawn-repair-batch" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxText("The failed range is being repaired by a new native Pi batch.")),
   fauxAssistantMessage(fauxToolCall("validateTranslationArtifact", {}, {
     id: "validate-recovered-artifact"
@@ -130,7 +120,7 @@ firstFailing.setResponses([
   }
 ]);
 
-for (const [index, providerId] of ["retry-a", "retry-b"].entries()) {
+for (const providerId of ["retry-a"]) {
   const child = fauxProvider({ provider: providerId, tokensPerSecond: 1000 });
   models.setProvider(child.provider);
   providers.set(providerId, child);
@@ -142,7 +132,7 @@ for (const [index, providerId] of ["retry-a", "retry-b"].entries()) {
       }), { stopReason: "toolUse" });
     },
     fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
-      entries: [{ line: index + 1, translation: index === 0 ? "一" : "二" }]
+      entries: [{ line: 2, translation: "二" }]
     }, { id: `${providerId}-write` }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, {
       id: `${providerId}-validate`
@@ -150,14 +140,24 @@ for (const [index, providerId] of ["retry-a", "retry-b"].entries()) {
   ]);
 }
 
+let translationSelectionCount = 0;
+const translationProviders = [
+  "first-healthy",
+  "first-failing",
+  reviewer.provider.id,
+  "retry-a",
+  reviewer.provider.id
+];
 const service = new PiNativeSessionService({
   createModelSelection: async ({ providerId }) => {
-    const provider = providers.get(providerId || parent.provider.id);
+    const provider = providerId === "translation-test-lane"
+      ? providers.get(translationProviders[translationSelectionCount++])
+      : providers.get(providerId || parent.provider.id);
     assert.ok(provider, `unknown test provider ${providerId}`);
     return {
       models,
       model: provider.getModel(),
-      providerId: provider.provider.id,
+      providerId: providerId === "translation-test-lane" ? providerId : provider.provider.id,
       modelId: provider.getModel().id
     };
   },
@@ -196,8 +196,10 @@ try {
     languagePair: "en->zh-CN",
     providerId: parent.provider.id,
     modelId: parent.getModel().id,
-    subagentProviderId: reviewer.provider.id,
-    subagentModelId: reviewer.getModel().id,
+    subagentProviderId: "translation-test-lane",
+    subagentModelId: firstHealthy.getModel().id,
+    subagentCount: 2,
+    translationSplitSize: 1,
     reviewSubagentCount: 1,
     sourcePath
   });
@@ -212,11 +214,12 @@ try {
   await waitUntil(async () => {
     const state = await service.getRunState(workspaceDir, session.id);
     return state.subagentMessages.filter((message) => (
-      message.details?.closed && /^first-/.test(String(message.details?.label))
+      message.customType === "subagent.translation" && message.details?.closed
     )).length === 2;
   }, "the failed assignment to enter an explicit-continuation pause");
-  await waitUntil(async () => (await service.getRunState(workspaceDir, session.id)).running === false,
-    "the parent to report the recovery pause");
+  await waitForSettled(2);
+  assert.equal((await service.getRunState(workspaceDir, session.id)).running, false,
+    "the parent did not finish reporting the recovery pause");
 
   let messages = await service.loadMessages(workspaceDir, session.id);
   assert.equal(toolCalls(messages, "runTranslationSubagents").length, 1,
@@ -224,7 +227,7 @@ try {
   assert.equal(toolCalls(messages, "validateTranslationArtifact").length, 0);
   const firstState = await service.getRunState(workspaceDir, session.id);
   const firstTerminal = firstState.subagentMessages.filter((message) => (
-    message.details?.closed && /^first-/.test(String(message.details?.label))
+    message.customType === "subagent.translation" && message.details?.closed
   ));
   assert.deepEqual(
     firstTerminal.map((message) => message.details.status).sort(),
@@ -240,17 +243,19 @@ try {
     languagePair: "en->zh-CN",
     providerId: parent.provider.id,
     modelId: parent.getModel().id,
-    subagentProviderId: reviewer.provider.id,
-    subagentModelId: reviewer.getModel().id,
+    subagentProviderId: "translation-test-lane",
+    subagentModelId: firstHealthy.getModel().id,
+    subagentCount: 2,
+    translationSplitSize: 1,
     reviewSubagentCount: 1,
     sourcePath
   });
   await waitUntil(async () => {
     const state = await service.getRunState(workspaceDir, session.id);
     return state.subagentMessages.filter((message) => (
-      message.details?.status === "running" && /^retry-/.test(String(message.details?.label))
-    )).length === 2;
-  }, "the two explicitly resumed child runtimes");
+      message.customType === "subagent.translation" && message.details?.status === "running"
+    )).length === 1;
+  }, "the single outstanding resumed child runtime");
 
   releaseRetryBatch.resolve();
   await waitUntil(async () => {

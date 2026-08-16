@@ -7,12 +7,9 @@
     "node": ">=22.6.0"
   },
   "main": "dist/main/main.js",
-  "bin": {
-    "translation-workshop-skills": "scripts/install-skills.mjs"
-  },
   "scripts": {
-    "test": "npm run typecheck && npm run test:skills && npm run test:unit",
-    "test:skills": "node scripts/check-runtime-skills.mjs",
+    "test": "npm run typecheck && npm run test:protocol && npm run test:unit",
+    "test:protocol": "node scripts/check-runtime-protocol.mjs",
     "test:unit": "node tests/run.mjs",
     "setup:toy-agent-artifacts": "node --experimental-strip-types scripts/setup-toy-agent-artifacts.mjs",
     "verify:toy-agent-artifacts": "node --experimental-strip-types scripts/verify-toy-agent-artifacts.mjs",
@@ -73,8 +70,7 @@
     "files": [
       "dist/**/*",
       "assets/**/*",
-      "skills/**/*",
-      "scripts/install-skills.mjs",
+      "translation-protocol/**/*",
       "README.md",
       "README.en.md",
       "LICENSE",
@@ -82,8 +78,7 @@
       "package.json"
     ],
     "asarUnpack": [
-      "skills/**/*",
-      "scripts/install-skills.mjs"
+      "translation-protocol/**/*"
     ],
     "win": {
       "icon": "build/icon.ico",

@@ -76,6 +76,9 @@ export interface YnTranslationTerminologyDebt {
   source: string;
   expectedTarget: string;
   observedTargets: string[];
+  sourceLineHash?: string;
+  candidateLineHash?: string;
+  referenceHash?: string;
 }
 
 export interface YnTranslationDiscoveryConflict {
@@ -132,7 +135,7 @@ export interface YnDomainRunContract {
   recordTranslationReuseAuditReady(auditIds: string[]): void;
   recordTranslationReuseDecision(auditId: string, documentId: string, fullyReused: boolean): void;
   restoreAppliedTranslationReuseDecision(documentId: string, fullyReused: boolean): void;
-  recordWorkflowWrite(relativePath: string): void;
+  recordWorkflowWrite(relativePath: string): (() => void) | undefined;
   recordTranslationWrite(kind: "translation"): () => void;
   recordTranslationArtifactMutation(
     documentId?: string,
@@ -797,7 +800,12 @@ export function createYnDomainRunContract({
           ));
         }
         if (document.artifactRevision === 0 || document.validatedArtifactRevision !== document.artifactRevision) {
-          reasons.push(documentReason(document, "run successful whole-artifact validation"));
+          reasons.push(documentReason(
+            document,
+            document.bestTranslationValidationDebt && document.bestTranslationValidationDebt > 0
+              ? `complete final warning review for ${document.bestTranslationValidationDebt} unreviewed warning signal(s), repair true positives, then rerun whole-artifact validation`
+              : "run successful whole-artifact validation"
+          ));
         }
       } else {
         for (const range of document.proofreadDirtyRanges) {
@@ -1100,7 +1108,10 @@ export function createYnDomainRunContract({
       // A bounded operation may write a project asset while another complete
       // workflow is parked. That write must not silently satisfy or resume the
       // parked workflow's completion contract.
-      if (suspended) return;
+      if (suspended) return undefined;
+      const previousGlossaryReady = glossaryReady;
+      const previousCharacterBibleReady = characterBibleReady;
+      const previousProgressRevision = progressRevision;
       const normalized = relativePath.replace(/\\/g, "/");
       if (normalized === "AI_translation/_workspace/glossary_candidates.json" && !glossaryReady) {
         glossaryReady = true;
@@ -1110,6 +1121,15 @@ export function createYnDomainRunContract({
         characterBibleReady = true;
         markProgress();
       }
+      if (
+        previousGlossaryReady === glossaryReady
+        && previousCharacterBibleReady === characterBibleReady
+      ) return undefined;
+      return () => {
+        glossaryReady = previousGlossaryReady;
+        characterBibleReady = previousCharacterBibleReady;
+        progressRevision = previousProgressRevision;
+      };
     },
     recordTranslationWrite(kind) {
       const previousActiveKind = activeKind;

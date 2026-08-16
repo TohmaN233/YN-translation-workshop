@@ -5,6 +5,7 @@ import path from "node:path";
 
 import {
   patchProjectState,
+  patchProjectStateIfUnchanged,
   readProjectState,
   saveProjectState,
   subscribeProjectState
@@ -177,6 +178,24 @@ await test("invalid custom preserve regex fails before corrupting project settin
     assert.deepEqual((await readProjectState(outputDir)).customPreserveRules, [
       { label: "valid", pattern: "^ID:", flags: "u" }
     ]);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+await test("conditional project updates reject a stale glossary binding without changing state", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-project-state-"));
+  try {
+    await patchProjectState(outputDir, { glossaryPath: "C:\\reference-a.json" });
+    await assert.rejects(
+      patchProjectStateIfUnchanged(
+        outputDir,
+        { glossaryPath: "C:\\reference-b.json" },
+        { glossaryPath: "C:\\canonical.json" }
+      ),
+      /glossaryPath no longer matches/i
+    );
+    assert.equal((await readProjectState(outputDir)).glossaryPath, "C:\\reference-a.json");
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }

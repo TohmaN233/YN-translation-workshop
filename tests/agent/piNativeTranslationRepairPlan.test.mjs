@@ -80,9 +80,10 @@ const unresolvedProperNounPlan = buildAssignedTranslationRepairPlan({
   validation: unresolvedProperNounValidation
 });
 assert.ok(unresolvedProperNounValidation.warnings.some((finding) => finding.code === "likely_untranslated"));
-assert.equal(isYnTranslationArtifactAccepted(unresolvedProperNounValidation), false,
-  "unresolved source-language residue must return to the same child unless project assets justify it");
-assert.equal(unresolvedProperNounPlan.issues.length, 1);
+assert.equal(isYnTranslationArtifactAccepted(unresolvedProperNounValidation), true,
+  "a warning must not fail structural artifact acceptance; semantic review decides whether it is a true positive");
+assert.equal(unresolvedProperNounPlan.issues.length, 0,
+  "a warning must not enter the mandatory child repair plan before semantic review");
 assert.doesNotMatch(unresolvedProperNounPlan.prompt, /アルカディア/,
   "repair prompts must not inject source-derived terms; the child reads them through readAssignedSource");
 

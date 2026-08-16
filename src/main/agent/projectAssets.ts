@@ -1,8 +1,9 @@
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { parseGlossaryText } from "../../shared/core/glossary.ts";
 import { writeTextFileAtomically } from "../atomicFile.ts";
+import { patchProjectStateIfUnchanged, readProjectState } from "../projectState.ts";
 import { readTranslationMemoryStats, type TranslationMemoryStats, translationMemoryPath } from "./translationMemory.ts";
 
 export type AssetProposalKind = "glossary" | "character_bible";
@@ -506,6 +507,240 @@ export async function readProjectAssets(args: { outputDir: string }): Promise<Pr
   });
 }
 
+function sameAssetPath(left: string, right: string): boolean {
+  const resolvedLeft = path.resolve(left);
+  const resolvedRight = path.resolve(right);
+  return process.platform === "win32"
+    ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
+    : resolvedLeft === resolvedRight;
+}
+
+interface GlossaryMergeCounts {
+  imported: number;
+  added: number;
+  deduplicated: number;
+  aliasesAdded: number;
+}
+
+function glossaryValue(value: unknown): string {
+  return String(value ?? "").trim().normalize("NFC");
+}
+
+function glossaryKey(value: unknown): string {
+  return glossaryValue(value).toLocaleLowerCase();
+}
+
+function glossaryAliases(entry: Record<string, unknown>): string[] {
+  return Array.isArray(entry.aliases)
+    ? entry.aliases.filter((alias): alias is string => typeof alias === "string" && Boolean(alias.trim()))
+      .map((alias) => alias.trim())
+    : [];
+}
+
+function mergeMatchingGlossaryEntry(
+  existing: Record<string, unknown>,
+  incoming: Record<string, unknown>
+): { entry: Record<string, unknown>; aliasesAdded: number } {
+  const aliases = glossaryAliases(existing);
+  const aliasKeys = new Set(aliases.map(glossaryKey));
+  let aliasesAdded = 0;
+  for (const alias of glossaryAliases(incoming)) {
+    if (aliasKeys.has(glossaryKey(alias))) continue;
+    aliases.push(alias);
+    aliasKeys.add(glossaryKey(alias));
+    aliasesAdded += 1;
+  }
+  const entry = { ...existing };
+  if (aliases.length > 0) entry.aliases = aliases;
+  for (const field of ["info", "status"] as const) {
+    if (!glossaryValue(entry[field]) && glossaryValue(incoming[field])) entry[field] = incoming[field];
+  }
+  return { entry, aliasesAdded };
+}
+
+function mergeGlossaryLayers(
+  baseEntries: Record<string, unknown>[],
+  incomingEntries: Record<string, unknown>[],
+  options: { conflict: "reject" | "replace"; conflictPath: string }
+): { entries: Record<string, unknown>[]; counts: GlossaryMergeCounts } {
+  const entries: Record<string, unknown>[] = [];
+  const indexBySource = new Map<string, number>();
+  const addBase = (incoming: Record<string, unknown>): void => {
+    const source = glossaryKey(incoming.source);
+    const index = indexBySource.get(source);
+    if (index === undefined) {
+      indexBySource.set(source, entries.length);
+      entries.push({ ...incoming, ...(glossaryAliases(incoming).length > 0 ? { aliases: glossaryAliases(incoming) } : {}) });
+      return;
+    }
+    const existing = entries[index];
+    if (glossaryKey(existing.target) !== glossaryKey(incoming.target)) {
+      throw new Error(
+        `Glossary conflict at ${options.conflictPath}: source ${JSON.stringify(String(incoming.source))} has different targets.`
+      );
+    }
+    entries[index] = mergeMatchingGlossaryEntry(existing, incoming).entry;
+  };
+  for (const entry of baseEntries) addBase(entry);
+
+  let added = 0;
+  let deduplicated = 0;
+  let aliasesAdded = 0;
+  for (const incoming of incomingEntries) {
+    const source = glossaryKey(incoming.source);
+    const index = indexBySource.get(source);
+    if (index === undefined) {
+      indexBySource.set(source, entries.length);
+      const aliases = glossaryAliases(incoming);
+      entries.push({ ...incoming, ...(aliases.length > 0 ? { aliases } : {}) });
+      added += 1;
+      aliasesAdded += aliases.length;
+      continue;
+    }
+    const existing = entries[index];
+    if (glossaryKey(existing.target) !== glossaryKey(incoming.target)) {
+      if (options.conflict === "reject") {
+        throw new Error(
+          `Glossary conflict at ${options.conflictPath}: source ${JSON.stringify(String(incoming.source))} has different targets.`
+        );
+      }
+      const aliases = glossaryAliases(incoming);
+      entries[index] = {
+        ...existing,
+        ...incoming,
+        ...(aliases.length > 0 ? { aliases } : { aliases: undefined })
+      };
+      deduplicated += 1;
+      aliasesAdded += aliases.length;
+      continue;
+    }
+    const merged = mergeMatchingGlossaryEntry(existing, incoming);
+    entries[index] = merged.entry;
+    deduplicated += 1;
+    aliasesAdded += merged.aliasesAdded;
+  }
+  return {
+    entries: entries.map((entry) => {
+      if (entry.aliases !== undefined) return entry;
+      const { aliases: _aliases, ...rest } = entry;
+      return rest;
+    }),
+    counts: { imported: incomingEntries.length, added, deduplicated, aliasesAdded }
+  };
+}
+
+async function selectedGlossaryLayer(outputDir: string, canonicalPath: string): Promise<{
+  inspectedBinding: unknown;
+  path?: string;
+  entries: Record<string, unknown>[];
+}> {
+  const state = await readProjectState(outputDir);
+  const inspectedBinding = state.glossaryPath;
+  const selectedValue = typeof inspectedBinding === "string" ? inspectedBinding.trim() : "";
+  if (!selectedValue) return { inspectedBinding, entries: [] };
+  if (!path.isAbsolute(selectedValue)) {
+    throw new Error(`Selected glossary path must be absolute: ${selectedValue}`);
+  }
+  const selectedPath = path.resolve(selectedValue);
+  if (sameAssetPath(selectedPath, canonicalPath)) {
+    return { inspectedBinding, path: selectedPath, entries: [] };
+  }
+  let source: string;
+  try {
+    source = await readFile(selectedPath, "utf8");
+  } catch (error) {
+    throw new Error(`Failed to read selected glossary: ${selectedPath}`, { cause: error });
+  }
+  const entries = parseGlossaryText(source).map((entry) => ({ ...entry }));
+  if (source.trim() && entries.length === 0) {
+    throw new Error(`Selected glossary contains no parseable source/target entries: ${selectedPath}`);
+  }
+  assertFormalAssetEntries("glossary", entries, selectedPath);
+  return { inspectedBinding, path: selectedPath, entries };
+}
+
+function assetsWithGlossary(
+  assets: ProjectAssets,
+  glossaryPath: string,
+  entries: Record<string, unknown>[]
+): ProjectAssets {
+  return {
+    ...assets,
+    paths: { ...assets.paths, glossary: glossaryPath },
+    available: { ...assets.available, glossary: true },
+    glossary: { entries: entries.map((entry) => ({ ...entry })) }
+  };
+}
+
+async function writeCanonicalGlossaryAndBindUnlocked(args: {
+  outputDir: string;
+  paths: ReturnType<typeof assetPaths>;
+  currentAssets: ProjectAssets;
+  entries: Record<string, unknown>[];
+  inspectedBinding: unknown;
+}): Promise<ProjectAssets> {
+  assertFormalAssetEntries("glossary", args.entries, args.paths.glossary);
+  const previousContent = await readOptionalText(args.paths.glossary);
+  const content = JSON.stringify({ entries: args.entries }, null, 2);
+  await mkdir(workspaceDir(args.outputDir), { recursive: true });
+  await writeTextFileAtomically(args.paths.glossary, content);
+  try {
+    await patchProjectStateIfUnchanged(
+      args.outputDir,
+      { glossaryPath: args.inspectedBinding },
+      { glossaryPath: args.paths.glossary }
+    );
+  } catch (error) {
+    try {
+      if (previousContent === undefined) await rm(args.paths.glossary, { force: true });
+      else await writeTextFileAtomically(args.paths.glossary, previousContent);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "Canonical glossary consolidation failed and could not be rolled back."
+      );
+    }
+    throw error;
+  }
+  return assetsWithGlossary(args.currentAssets, args.paths.glossary, args.entries);
+}
+
+/** Read the canonical glossary plus any selected external authority without mutating either file. */
+export async function readWorkflowProjectAssets(args: {
+  outputDir: string;
+  glossaryPath?: string;
+}): Promise<ProjectAssets> {
+  const assets = await readProjectAssets({ outputDir: args.outputDir });
+  const selectedPath = args.glossaryPath?.trim();
+  if (!selectedPath) return assets;
+  if (!path.isAbsolute(selectedPath)) {
+    throw new Error(`Selected glossary path must be absolute: ${selectedPath}`);
+  }
+  const glossaryPath = path.resolve(selectedPath);
+  if (sameAssetPath(glossaryPath, assets.paths.glossary)) return assets;
+  let source: string;
+  try {
+    source = await readFile(glossaryPath, "utf8");
+  } catch (error) {
+    throw new Error(`Failed to read selected glossary: ${glossaryPath}`, { cause: error });
+  }
+  const selectedEntries = parseGlossaryText(source).map((entry) => ({ ...entry }));
+  if (source.trim() && selectedEntries.length === 0) {
+    throw new Error(`Selected glossary contains no parseable source/target entries: ${glossaryPath}`);
+  }
+  assertFormalAssetEntries("glossary", selectedEntries, glossaryPath);
+  const { entries } = mergeGlossaryLayers(assets.glossary.entries, selectedEntries, {
+    conflict: "replace",
+    conflictPath: glossaryPath
+  });
+  return {
+    ...assets,
+    paths: { ...assets.paths, glossary: glossaryPath },
+    available: { ...assets.available, glossary: true },
+    glossary: { entries }
+  };
+}
+
 function projectGlossaryEntries(assets: ProjectAssets): GlossaryValidationEntry[] {
   return assets.glossary.entries.map((entry, index) => {
     const source = requiredAssetString(entry, "source", assets.paths.glossary, "entries", index);
@@ -517,7 +752,7 @@ function projectGlossaryEntries(assets: ProjectAssets): GlossaryValidationEntry[
     return {
       source,
       target,
-      aliases: aliases.length > 0 ? aliases : undefined,
+      ...(aliases.length > 0 ? { aliases } : {}),
       ...(info ? { info } : {}),
       ...(status ? { status } : {})
     };
@@ -594,6 +829,18 @@ export async function readProjectTranslationValidationAssets(
   };
 }
 
+export async function readWorkflowTranslationValidationAssets(args: {
+  outputDir: string;
+  glossaryPath?: string;
+}): Promise<ProjectTranslationValidationAssets> {
+  const assets = await readWorkflowProjectAssets(args);
+  return {
+    glossaryEntries: projectGlossaryEntries(assets),
+    characterEntries: projectCharacterEntries(assets),
+    styleForbiddenTerms: parseStyleForbiddenTerms(assets.styleGuide)
+  };
+}
+
 export async function readProjectGlossaryEntries(outputDir: string): Promise<GlossaryValidationEntry[]> {
   return (await readProjectTranslationValidationAssets(outputDir)).glossaryEntries;
 }
@@ -610,9 +857,25 @@ export async function replaceProjectGlossaryEntries(args: {
     await ensureLegacyCharacterBibleMigratedUnlocked(args.outputDir);
     const paths = assetPaths(args.outputDir);
     assertFormalAssetEntries("glossary", args.entries, paths.glossary);
-    await mkdir(workspaceDir(args.outputDir), { recursive: true });
-    await writeTextFileAtomically(paths.glossary, JSON.stringify({ entries: args.entries }, null, 2));
-    return readProjectAssetsUnlocked({ outputDir: args.outputDir });
+    const currentAssets = await readProjectAssetsUnlocked({ outputDir: args.outputDir });
+    const selected = await selectedGlossaryLayer(args.outputDir, paths.glossary);
+    const entries = selected.path && !sameAssetPath(selected.path, paths.glossary)
+      ? mergeGlossaryLayers(
+          mergeGlossaryLayers(currentAssets.glossary.entries, selected.entries, {
+            conflict: "replace",
+            conflictPath: selected.path
+          }).entries,
+          args.entries,
+          { conflict: "replace", conflictPath: paths.glossary }
+        ).entries
+      : args.entries.map((entry) => ({ ...entry }));
+    return writeCanonicalGlossaryAndBindUnlocked({
+      outputDir: args.outputDir,
+      paths,
+      currentAssets,
+      entries,
+      inspectedBinding: selected.inspectedBinding
+    });
   });
 }
 
@@ -651,66 +914,27 @@ export async function mergeProjectGlossaryEntries(args: {
     const paths = assetPaths(args.outputDir);
     assertFormalAssetEntries("glossary", args.entries, paths.glossary);
     const currentAssets = await readProjectAssetsUnlocked({ outputDir: args.outputDir });
-    const entries = currentAssets.glossary.entries.map((entry) => ({ ...entry }));
-    const normalize = (value: unknown) => String(value ?? "").trim().normalize("NFC").toLocaleLowerCase();
-    const bySource = new Map<string, Record<string, unknown>>();
-    for (const entry of entries) {
-      const source = normalize(entry.source);
-      const existing = bySource.get(source);
-      if (existing && normalize(existing.target) !== normalize(entry.target)) {
-        throw new Error(`Glossary conflict at ${paths.glossary}: source ${JSON.stringify(String(entry.source))} has different targets.`);
-      }
-      bySource.set(source, entry);
-    }
-
-    let added = 0;
-    let deduplicated = 0;
-    let aliasesAdded = 0;
-    let changed = false;
-    for (const incoming of args.entries) {
-      const source = normalize(incoming.source);
-      const existing = bySource.get(source);
-      if (!existing) {
-        const entry = { ...incoming };
-        entries.push(entry);
-        bySource.set(source, entry);
-        added += 1;
-        aliasesAdded += Array.isArray(incoming.aliases) ? incoming.aliases.length : 0;
-        changed = true;
-        continue;
-      }
-      if (normalize(existing.target) !== normalize(incoming.target)) {
-        throw new Error(`Glossary conflict at ${paths.glossary}: source ${JSON.stringify(String(incoming.source))} has different targets.`);
-      }
-      deduplicated += 1;
-      const currentAliases = Array.isArray(existing.aliases)
-        ? existing.aliases.filter((alias): alias is string => typeof alias === "string")
-        : [];
-      const aliasKeys = new Set(currentAliases.map(normalize));
-      for (const alias of Array.isArray(incoming.aliases) ? incoming.aliases : []) {
-        if (typeof alias !== "string" || !alias.trim() || aliasKeys.has(normalize(alias))) continue;
-        currentAliases.push(alias.trim());
-        aliasKeys.add(normalize(alias));
-        aliasesAdded += 1;
-        changed = true;
-      }
-      if (currentAliases.length > 0) existing.aliases = currentAliases;
-      for (const field of ["info", "status"] as const) {
-        if (!String(existing[field] ?? "").trim() && String(incoming[field] ?? "").trim()) {
-          existing[field] = incoming[field];
-          changed = true;
-        }
-      }
-    }
-
-    if (changed) {
-      assertFormalAssetEntries("glossary", entries, paths.glossary);
-      await mkdir(workspaceDir(args.outputDir), { recursive: true });
-      await writeTextFileAtomically(paths.glossary, JSON.stringify({ entries }, null, 2));
-    }
+    const selected = await selectedGlossaryLayer(args.outputDir, paths.glossary);
+    const baseEntries = selected.path
+      ? mergeGlossaryLayers(currentAssets.glossary.entries, selected.entries, {
+          conflict: "replace",
+          conflictPath: selected.path
+        }).entries
+      : currentAssets.glossary.entries;
+    const merged = mergeGlossaryLayers(baseEntries, args.entries, {
+      conflict: "reject",
+      conflictPath: paths.glossary
+    });
+    const assets = await writeCanonicalGlossaryAndBindUnlocked({
+      outputDir: args.outputDir,
+      paths,
+      currentAssets,
+      entries: merged.entries,
+      inspectedBinding: selected.inspectedBinding
+    });
     return {
-      assets: await readProjectAssetsUnlocked({ outputDir: args.outputDir }),
-      counts: { imported: args.entries.length, added, deduplicated, aliasesAdded }
+      assets,
+      counts: merged.counts
     };
   });
 }
@@ -723,10 +947,10 @@ export async function importProjectGlossaryFile(args: {
   if (entries.length === 0) {
     throw new Error(`No glossary entries parsed from ${args.filePath}.`);
   }
-  return replaceProjectGlossaryEntries({
+  return (await mergeProjectGlossaryEntries({
     outputDir: args.outputDir,
     entries: entries.map((entry) => ({ ...entry }))
-  });
+  })).assets;
 }
 
 export async function proposeAssetUpdate(args: {

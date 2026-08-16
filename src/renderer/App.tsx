@@ -16,6 +16,7 @@ import zhCN from "../shared/i18n/zh-CN.json";
 import appIcon from "./assets/app-icon.png";
 import companionFull from "./assets/companion-full.png";
 import { parsePiWebAgentWindowRoute, PiWebAgentWindow } from "./agent/PiWebAgentWindow.tsx";
+import { rebuildNewProjectForm } from "./newProjectForm.ts";
 import "./styles.css";
 
 type Locale = "zh-CN" | "en-US";
@@ -181,13 +182,8 @@ const glossaryFileFilters = [
   { name: "All files", extensions: ["*"] }
 ];
 
-function App() {
-  const agentWindowRoute = parsePiWebAgentWindowRoute();
-  if (agentWindowRoute) {
-    return <PiWebAgentWindow route={agentWindowRoute} />;
-  }
-
-  const [form, setForm] = useState<FormState>({
+function initialFormState(): FormState {
+  return {
     locale: "zh-CN",
     inputMode: "separate",
     sourcePath: "",
@@ -219,7 +215,16 @@ function App() {
     workflowTemplateId: "initial_translation",
     agentProxyEnabled: false,
     agentProxyUrl: "http://127.0.0.1:3067"
-  });
+  };
+}
+
+function App() {
+  const agentWindowRoute = parsePiWebAgentWindowRoute();
+  if (agentWindowRoute) {
+    return <PiWebAgentWindow route={agentWindowRoute} />;
+  }
+
+  const [form, setForm] = useState<FormState>(initialFormState);
   const [prompt, setPrompt] = useState("");
   const [promptKind, setPromptKind] = useState<AgentTaskKind>("translate");
   const [status, setStatus] = useState("");
@@ -259,6 +264,7 @@ function App() {
   const autoSaveTimer = useRef<number | undefined>(undefined);
   const suppressNextAutoSave = useRef(false);
   const workspaceAssetsRequestId = useRef(0);
+  const userSelectedFormKeys = useRef(new Set<keyof FormState>());
 
   useEffect(() => {
     document.documentElement.lang = form.locale;
@@ -344,6 +350,13 @@ function App() {
   }, [form.outputDir]);
 
   function patch(next: Partial<FormState>) {
+    for (const key of Object.keys(next) as Array<keyof FormState>) {
+      userSelectedFormKeys.current.add(key);
+    }
+    updateForm(next);
+  }
+
+  function updateForm(next: Partial<FormState>) {
     setForm((current) => ({ ...current, ...next }));
   }
 
@@ -399,8 +412,10 @@ function App() {
     setWorkspaceAssets(undefined);
     const loaded = asLoadedProject(await window.workshop.loadProject(outputDir));
     if (!loaded) {
+      const selectedKeys = [...userSelectedFormKeys.current];
       hydratingProject.current = true;
-      patch({ outputDir });
+      setForm((current) => rebuildNewProjectForm(initialFormState(), current, selectedKeys, outputDir));
+      userSelectedFormKeys.current.clear();
       setSavedCustomPreserveRules([]);
       setCustomPreserveRuleDrafts([]);
       window.setTimeout(() => {
@@ -423,40 +438,22 @@ function App() {
     setSavedCustomPreserveRules(loadedCustomPreserveRules);
     setCustomPreserveRuleDrafts(preserveRuleDrafts(loadedCustomPreserveRules));
     hydratingProject.current = true;
-    setForm((current) => ({
-      ...current,
-      locale: loaded.locale ?? current.locale,
-      inputMode: loaded.inputMode ?? current.inputMode,
-      sourcePath: loaded.sourcePath ?? current.sourcePath,
-      sourceKind: loaded.sourceKind === "folder" ? "folder" : loaded.sourceKind === "file" ? "file" : current.sourceKind,
-      translationPath: loaded.translationPath ?? current.translationPath,
+    const defaults = initialFormState();
+    const loadedForm = formPatchFromProjectState(loaded);
+    setForm({
+      ...defaults,
+      ...loadedForm,
+      sourceKind: loaded.sourceKind === "folder" ? "folder" : "file",
       outputDir: projectOutputDir,
-      glossaryPath: loaded.glossaryPath ?? current.glossaryPath,
-      fileType: loaded.fileType ?? current.fileType,
-      pageSize: loaded.pageSize ?? current.pageSize,
-      startPage: loaded.startPage ?? current.startPage,
-      languagePair: loaded.languagePair ?? current.languagePair,
-      style: loaded.style ?? current.style,
-      translateOutputDir: loaded.translateOutputDir ?? current.translateOutputDir,
-      proofreadOutputDir: loaded.proofreadOutputDir ?? current.proofreadOutputDir,
-      split: loaded.split ?? current.split,
-      splitSize: loaded.splitSize ?? current.splitSize,
-      glossaryCandidates: loaded.glossaryCandidates ?? current.glossaryCandidates,
-      characterBible: loaded.characterBible ?? current.characterBible,
-      proofreadMode: loaded.proofreadMode ?? current.proofreadMode,
-      candidateRatio: loaded.candidateRatio ?? current.candidateRatio,
-      montecarloSize: loaded.montecarloSize ?? current.montecarloSize,
-      montecarloRoundMin: loaded.montecarloRoundMin ?? current.montecarloRoundMin,
-      montecarloRoundMax: loaded.montecarloRoundMax ?? current.montecarloRoundMax,
-      translationType: loaded.translationType ?? current.translationType,
-      workDescription: loaded.workDescription ?? current.workDescription,
-      reportPath: loaded.reportPath ?? current.reportPath,
-      sourcePosition: loaded.sourcePosition ?? loaded.sourceColumn ?? current.sourcePosition,
-      translationPosition: loaded.translationPosition ?? loaded.translationColumn ?? current.translationPosition,
+      translateOutputDir: loaded.translateOutputDir ?? defaultTranslateOutputDir(projectOutputDir),
+      proofreadOutputDir: loaded.proofreadOutputDir ?? defaultProofreadOutputDir(projectOutputDir),
+      sourcePosition: loaded.sourcePosition ?? loaded.sourceColumn ?? defaults.sourcePosition,
+      translationPosition: loaded.translationPosition ?? loaded.translationColumn ?? defaults.translationPosition,
       workflowTemplateId: getWorkflowTemplate(loaded.workflowTemplateId).id,
-      agentProxyEnabled: loaded.agentProxyEnabled ?? current.agentProxyEnabled,
-      agentProxyUrl: loaded.agentProxyUrl ?? current.agentProxyUrl
-    }));
+      agentProxyEnabled: loaded.agentProxyEnabled ?? false,
+      agentProxyUrl: loaded.agentProxyUrl ?? "http://127.0.0.1:3067"
+    });
+    userSelectedFormKeys.current.clear();
     window.setTimeout(() => {
       hydratingProject.current = false;
     }, 0);
@@ -793,7 +790,7 @@ function App() {
     const found = await window.workshop.findProofreadReport(form.outputDir);
     setReportCandidates(found);
     if (found[0]) {
-      patch({ reportPath: found[0].path });
+      updateForm({ reportPath: found[0].path });
       setStatus(`${t.reportFound} ${found[0].path}`);
       return found[0].path;
     }
@@ -831,7 +828,7 @@ function App() {
     const result = await window.workshop.importGeneratedGlossaryCandidates({ outputDir: form.outputDir });
     setProjectAssets(result.assets as ProjectAssetSummary);
     const importedGlossaryPath = String((result.assets as ProjectAssetSummary).paths?.glossary ?? "");
-    if (!form.glossaryPath.trim() && importedGlossaryPath) patch({ glossaryPath: importedGlossaryPath });
+    if (!form.glossaryPath.trim() && importedGlossaryPath) updateForm({ glossaryPath: importedGlossaryPath });
     setStatus(`${t.generatedGlossaryImported ?? "Generated glossary imported"}: ${result.counts.added} added, ${result.counts.deduplicated} existing.`);
     setWorkspaceAssets(await window.workshop.readWorkspaceAssetsStatus({ outputDir: form.outputDir }));
   }
@@ -1041,7 +1038,7 @@ function App() {
         locale: form.locale
       });
       if (result.reportPath) {
-        patch({ reportPath: result.reportPath });
+        updateForm({ reportPath: result.reportPath });
       }
       if (result.lineReviewPath) {
         lastLineReviewHtml.current = result.lineReviewPath;
@@ -1050,7 +1047,7 @@ function App() {
         setPromptKind("proofread");
         setPrompt(result.fallbackPrompt);
         if (result.reportPath) {
-          patch({ reportPath: result.reportPath });
+          updateForm({ reportPath: result.reportPath });
         }
         setStatus(t.reviewFormatFallback ?? "AI report failed format validation. A repair prompt was generated.");
         return;

@@ -3,9 +3,9 @@ import { contextBridge, ipcRenderer } from "electron";
 const agentArtifactApi = {
   discoverAgentArtifacts: (args: { projectDir: string; sourcePaths?: string[] }) =>
     ipcRenderer.invoke("agent-artifacts:discover", args),
-  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string }) =>
+  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string }) =>
     ipcRenderer.invoke("agent-artifacts:validate", args),
-  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string }) =>
+  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string }) =>
     ipcRenderer.invoke("agent-artifacts:importPlan", args),
   buildAgentRepairPrompt: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string }) =>
     ipcRenderer.invoke("agent-artifacts:repairPrompt", args)

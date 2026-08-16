@@ -25,7 +25,7 @@ No `translation.txt` is bound on purpose — this simulates **translate-only** m
 
 ## Quick start (recommended)
 
-From repo root (`G:\YN-translation-workshop-agent`):
+From the repository root:
 
 ```cmd
 npm run setup:toy-agent-artifacts
@@ -81,9 +81,6 @@ Runs protocol sync + validator matrix + discovery without Electron.
 
 ## Cut 1 detail
 
-Protocol source lives in `translation-protocol/`. Regenerate skill shells:
-
-```cmd
-npm run render:skills
-npm run test:protocol-sync
-```
+The model-independent workflow contracts and JSON schemas live in
+`translation-protocol/`. Run `npm run test:protocol` to verify the packaged
+runtime references.

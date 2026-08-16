@@ -27,6 +27,7 @@ const childBPath = path.join(workspace, "review-b.html");
 const childEpubPath = path.join(workspace, "review-book.html");
 const folderPath = path.join(workspace, "folder-review.html");
 const projectStatePath = path.join(workspace, ".translation-workshop", "project.json");
+const selectedGlossaryPath = path.join(workspace, "references", "selected-glossary.json");
 const folderPromptScreenshotPath = path.join(root, "artifacts", "electron-folder-batch-prompt.png");
 const screenshotPath = path.join(root, "artifacts", "electron-folder-native-tabs.png");
 const agentScreenshotPath = path.join(root, "artifacts", "electron-folder-native-tab-agent.png");
@@ -96,6 +97,7 @@ async function captureRenderedPage(contents: WebContents, label: string): Promis
 await mkdir(sourceDir, { recursive: true });
 await mkdir(path.dirname(extractedEpubPath), { recursive: true });
 await mkdir(path.dirname(translationEpubPath), { recursive: true });
+await mkdir(path.dirname(selectedGlossaryPath), { recursive: true });
 await mkdir(path.dirname(screenshotPath), { recursive: true });
 await Promise.all([
   writeFile(sourceAPath, "source a\nsource a2", "utf8"),
@@ -104,7 +106,10 @@ await Promise.all([
   writeFile(extractedEpubPath, "book source\nbook source 2", "utf8"),
   writeFile(translationAPath, "translation a\ntranslation a2", "utf8"),
   writeFile(translationBPath, "translation b\ntranslation b2", "utf8"),
-  writeFile(translationEpubPath, "book translation\nbook translation 2", "utf8")
+  writeFile(translationEpubPath, "book translation\nbook translation 2", "utf8"),
+  writeFile(selectedGlossaryPath, JSON.stringify({
+    entries: [{ source: "source", target: "原文", status: "confirmed" }]
+  }), "utf8")
 ]);
 
 const legacyChild = (title: string, sourcePath: string, translationPath: string, lineReviewPath: string) => {
@@ -182,6 +187,8 @@ const legacyFolderHtml = renderBatchLineReviewIndexHtml({
     sourcePath: sourceDir,
     sourceKind: "folder",
     outputDir: workspace,
+    glossaryPath: selectedGlossaryPath,
+    glossaryEntries: [{ source: "source", target: "原文", status: "confirmed" }],
     advanced: { languagePair: "ja->zh-CN" }
   }
 })
@@ -270,7 +277,7 @@ async function run(): Promise<void> {
   assert(folderPromptState.prompt.includes(`Source folder: ${sourceDir}`), "Folder prompt lost the selected folder path");
   assert(folderPromptState.prompt.includes("File order"), "Folder prompt lost the typed file-order setting");
   assert(folderPromptState.prompt.includes("removed names are skipped"), "Folder prompt lost the typed skip semantics");
-  assert(folderPromptState.prompt.includes("Subagents: enabled; maximum=project ceiling"), "Folder prompt materialized an unset worker count");
+  assert(folderPromptState.prompt.includes("Subagents: enabled; maximum=3"), "Folder prompt did not materialize the default worker count");
   assert(!folderPromptState.prompt.includes("Subagents: enabled; maximum=2"), "Folder prompt reintroduced the product fallback as a user setting");
   assert(!folderPromptState.prompt.includes("runTranslationSubagents"), "Generated prompt duplicated host runtime instructions");
   assert(folderPromptState.childSourceKind === "file", "Folder child editing scope was incorrectly changed");
@@ -515,8 +522,8 @@ async function run(): Promise<void> {
     `Folder prompt request lost translationSplitSize: ${JSON.stringify(workflowMetadata)}`);
   assert(workflowMetadata.subagentCount === 5,
     `Folder prompt request lost the selected worker count: ${JSON.stringify(workflowMetadata)}`);
-  assert(samePath(String(workflowMetadata.glossaryPath ?? ""), path.join(workspace, ".translation-workshop", "glossary.json")),
-    `Folder prompt request lost the canonical glossary path: ${JSON.stringify(workflowMetadata)}`);
+  assert(samePath(String(workflowMetadata.glossaryPath ?? ""), selectedGlossaryPath),
+    `Folder prompt request lost the selected glossary path: ${JSON.stringify(workflowMetadata)}`);
   assert(workflowMetadata.glossaryCandidates === true,
     `Folder prompt request lost the glossary-candidate choice: ${JSON.stringify(workflowMetadata)}`);
   assert(workflowMetadata.characterBible === true,

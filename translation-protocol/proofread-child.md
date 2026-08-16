@@ -3,6 +3,9 @@
 Review only Host-assigned aligned rows and boundary context. Do not repeat Host
 alignment, scanning, planning, persistence, or coverage.
 
+Start each assignment with `readAssignedProofreadContext`. It provides the exact
+owned rows, boundary context, Host signals, and approved project references.
+
 ## Semantic Review
 
 Confirm or reject Host signals against exact source, translation, and context.

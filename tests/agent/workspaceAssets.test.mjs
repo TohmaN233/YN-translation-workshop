@@ -191,6 +191,72 @@ await test("successful import writes formal glossary and returns updated assets 
   }
 });
 
+await test("candidate import consolidates the selected glossary into canonical before switching the binding", async () => {
+  const fx = await fixture();
+  const projectDir = path.join(fx.outputDir, ".translation-workshop");
+  const canonicalPath = path.join(projectDir, "glossary.json");
+  const selectedPath = path.join(fx.outputDir, "selected-glossary.json");
+  try {
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(canonicalPath, JSON.stringify({
+      entries: [{ source: "既有术语", target: "既有译名" }]
+    }), "utf8");
+    await writeFile(selectedPath, JSON.stringify({
+      entries: [{ source: "外部术语", target: "外部译名" }]
+    }), "utf8");
+    await writeFile(path.join(projectDir, "project.json"), JSON.stringify({
+      outputDir: fx.outputDir,
+      glossaryPath: selectedPath
+    }), "utf8");
+    await writeFile(fx.paths.glossaryCandidates, JSON.stringify({
+      entries: [{ source: "候选术语", target: "候选译名", status: "confirmed" }]
+    }), "utf8");
+
+    const result = await importGeneratedGlossaryCandidates(fx.outputDir);
+    assert.deepEqual(result.assets.glossary.entries, [
+      { source: "既有术语", target: "既有译名" },
+      { source: "外部术语", target: "外部译名" },
+      { source: "候选术语", target: "候选译名", status: "confirmed" }
+    ]);
+    const state = JSON.parse(await readFile(path.join(projectDir, "project.json"), "utf8"));
+    assert.equal(path.resolve(state.glossaryPath), path.resolve(canonicalPath));
+  } finally {
+    await cleanup(fx.outputDir);
+  }
+});
+
+await test("candidate consolidation leaves canonical and the external binding unchanged on conflict", async () => {
+  const fx = await fixture();
+  const projectDir = path.join(fx.outputDir, ".translation-workshop");
+  const canonicalPath = path.join(projectDir, "glossary.json");
+  const selectedPath = path.join(fx.outputDir, "selected-glossary.json");
+  const originalCanonical = JSON.stringify({ entries: [{ source: "既有术语", target: "既有译名" }] }, null, 2);
+  try {
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(canonicalPath, originalCanonical, "utf8");
+    await writeFile(selectedPath, JSON.stringify({
+      entries: [{ source: "冲突术语", target: "外部译名" }]
+    }), "utf8");
+    await writeFile(path.join(projectDir, "project.json"), JSON.stringify({
+      outputDir: fx.outputDir,
+      glossaryPath: selectedPath
+    }), "utf8");
+    await writeFile(fx.paths.glossaryCandidates, JSON.stringify({
+      entries: [{ source: "冲突术语", target: "候选译名" }]
+    }), "utf8");
+
+    await assert.rejects(
+      importGeneratedGlossaryCandidates(fx.outputDir),
+      /glossary conflict/i
+    );
+    assert.equal(await readFile(canonicalPath, "utf8"), originalCanonical);
+    const state = JSON.parse(await readFile(path.join(projectDir, "project.json"), "utf8"));
+    assert.equal(path.resolve(state.glossaryPath), path.resolve(selectedPath));
+  } finally {
+    await cleanup(fx.outputDir);
+  }
+});
+
 await test("character gender and pronoun metadata survives generated glossary import", async () => {
   const fx = await fixture();
   try {

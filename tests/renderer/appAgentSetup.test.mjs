@@ -16,18 +16,19 @@ async function test(name, fn) {
   }
 }
 
-await test("App setup exposes only Agent network settings, not a skill installer", async () => {
+await test("App setup exposes only current Agent network settings", async () => {
   const source = await readFile("src/renderer/App.tsx", "utf8");
   assert.doesNotMatch(source, /skillInstallCommand|skillInstallStatus|copySkillInstallCommand|bundledSkills/);
   assert.match(source, /agentProxyEnabled/);
   assert.match(source, /agentProxyUrl/);
+  assert.match(source, /agentProxyEnabled:\s*false/);
 });
 
-await test("Pi Agent window contains no skill selector or external-install controls", async () => {
+await test("Pi Agent window contains no retired external-install controls", async () => {
   const chatInput = await readFile("src/renderer/agent/piweb/ChatInput.tsx", "utf8");
   const settings = await readFile("src/renderer/agent/piweb/ProviderSettingsPanel.tsx", "utf8");
-  assert.doesNotMatch(chatInput, /skill selector|install skill/i);
-  assert.doesNotMatch(settings, /skill selector|install skill/i);
+  assert.doesNotMatch(chatInput, /external-install controls/i);
+  assert.doesNotMatch(settings, /external-install controls/i);
 });
 
 await test("provider settings edits explicit model ids using project-scoped Pi model discovery", async () => {

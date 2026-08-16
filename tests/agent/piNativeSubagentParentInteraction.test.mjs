@@ -37,12 +37,7 @@ const parent = fauxProvider({ provider: "parent", tokensPerSecond: 1000 });
 models.setProvider(parent.provider);
 providers.set(parent.provider.id, parent);
 parent.setResponses([
-  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {
-    tasks: [
-      { fromLine: 1, toLine: 1, providerId: "child-a", label: "shard-1" },
-      { fromLine: 2, toLine: 2, providerId: "child-b", label: "shard-2" }
-    ]
-  }, { id: "spawn-children" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {}, { id: "spawn-children" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxText("Children started in the background; I remain available.")),
   fauxAssistantMessage(fauxText("Both children are still running, and I can answer you now.")),
   fauxAssistantMessage(fauxText("The completion notification arrived; I am resuming merge and validation."))
@@ -76,14 +71,17 @@ for (const [index, providerId] of ["child-a", "child-b"].entries()) {
   ]);
 }
 
+let translationSelectionCount = 0;
 const service = new PiNativeSessionService({
   createModelSelection: async ({ providerId }) => {
-    const provider = providers.get(providerId || "parent");
+    const provider = providerId === "translation-test-lane"
+      ? providers.get(["child-a", "child-b"][translationSelectionCount++] ?? "review")
+      : providers.get(providerId || "parent");
     assert.ok(provider, `unknown test provider ${providerId}`);
     return {
       models,
       model: provider.getModel(),
-      providerId: provider.provider.id,
+      providerId: providerId === "translation-test-lane" ? providerId : provider.provider.id,
       modelId: provider.getModel().id
     };
   },
@@ -127,12 +125,15 @@ try {
   await service.prompt({
     outputDir: workspaceDir,
     sessionId: session.id,
-    prompt: "Translate both lines with two child runtimes.",
+    prompt: "Workflow: yn-translation-v1.\nTranslate both lines with two child runtimes.",
+    workflowIntent: "translation",
     providerId: "parent",
     modelId: parent.getModel().id,
     languagePair: "en->zh-CN",
-    subagentProviderId: "review",
-    subagentModelId: reviewer.getModel().id,
+    subagentProviderId: "translation-test-lane",
+    subagentModelId: providers.get("child-a").getModel().id,
+    subagentCount: 2,
+    translationSplitSize: 1,
     reviewSubagentCount: 1,
     sourcePath
   });
@@ -169,8 +170,10 @@ try {
     providerId: "parent",
     modelId: parent.getModel().id,
     languagePair: "en->zh-CN",
-    subagentProviderId: "review",
-    subagentModelId: reviewer.getModel().id,
+    subagentProviderId: "translation-test-lane",
+    subagentModelId: providers.get("child-a").getModel().id,
+    subagentCount: 2,
+    translationSplitSize: 1,
     reviewSubagentCount: 1,
     sourcePath
   });

@@ -7,6 +7,15 @@ export interface TranslationAlignmentCheckState {
   signals: string[];
   verdict?: "aligned" | "misaligned";
   reason?: string;
+  warningVerdicts?: Array<{
+    identity: string;
+    code: string;
+    sourceLineHash: string;
+    candidateLineHash: string;
+    referenceHash: string;
+    verdict?: "aligned" | "misaligned";
+    reason?: string;
+  }>;
 }
 
 export interface TranslationAlignmentDocumentState {
@@ -160,7 +169,31 @@ export function normalizeTranslationAlignmentState(value: unknown): TranslationA
       line: check.line,
       signals: [...new Set(check.signals)],
       ...(check.verdict ? { verdict: check.verdict } : {}),
-      ...(typeof check.reason === "string" ? { reason: check.reason } : {})
+      ...(typeof check.reason === "string" ? { reason: check.reason } : {}),
+      ...(Array.isArray(check.warningVerdicts) ? {
+        warningVerdicts: check.warningVerdicts.flatMap((rawVerdict) => {
+          if (
+            !isRecord(rawVerdict)
+            || typeof rawVerdict.identity !== "string"
+            || typeof rawVerdict.code !== "string"
+            || typeof rawVerdict.sourceLineHash !== "string"
+            || typeof rawVerdict.candidateLineHash !== "string"
+            || typeof rawVerdict.referenceHash !== "string"
+            || (rawVerdict.verdict !== undefined
+              && rawVerdict.verdict !== "aligned"
+              && rawVerdict.verdict !== "misaligned")
+          ) return [];
+          return [{
+            identity: rawVerdict.identity,
+            code: rawVerdict.code,
+            sourceLineHash: rawVerdict.sourceLineHash,
+            candidateLineHash: rawVerdict.candidateLineHash,
+            referenceHash: rawVerdict.referenceHash,
+            ...(rawVerdict.verdict ? { verdict: rawVerdict.verdict } : {}),
+            ...(typeof rawVerdict.reason === "string" ? { reason: rawVerdict.reason } : {})
+          }];
+        })
+      } : {})
     }));
     documents[documentId] = {
       auditId: raw.auditId,
@@ -340,6 +373,9 @@ export function createTranslationAlignmentAudit(input: {
   const candidateSources = new Map<string, Set<string>>();
   const sourceBoundaryCounts = sourceLines.map(sentenceBoundaryCount);
   const candidateBoundaryCounts = candidateLines.map(sentenceBoundaryCount);
+  const normalizedLanguagePair = input.languagePair?.trim().toLocaleLowerCase() ?? "";
+  const japaneseToChinese = /^(?:ja|japanese|日本語)\s*(?:->|→|=>|>|—)/u.test(normalizedLanguagePair)
+    && /(?:zh|chinese|中文|汉语|漢語)/u.test(normalizedLanguagePair);
   const ratios = sourceLines.map((source, index) => {
     const sourceLength = visibleLength(source);
     const candidateLength = visibleLength(candidateLines[index] ?? "");
@@ -355,7 +391,7 @@ export function createTranslationAlignmentAudit(input: {
     if (sourceLength >= 8 && candidateLength >= 12 && ratio >= 2.5) addSignal(index + 1, "severe_length_expansion");
     const boundaryDifference = Math.abs(sourceBoundaryCounts[index] - candidateBoundaryCounts[index]);
     if (
-      boundaryDifference >= 1
+      boundaryDifference >= (japaneseToChinese ? 2 : 1)
       && Math.max(sourceBoundaryCounts[index], candidateBoundaryCounts[index]) >= 2
     ) {
       addSignal(index + 1, "sentence_boundary_count_mismatch");

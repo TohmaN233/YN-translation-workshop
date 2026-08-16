@@ -1,6 +1,9 @@
 export interface GlossaryEntry {
   source: string;
   target: string;
+  aliases?: string[];
+  info?: string;
+  status?: "confirmed" | "auto" | "pending";
 }
 
 export interface GlossaryReplacementResult {
@@ -40,7 +43,21 @@ function cleanTerm(value: unknown): string {
 function entryFromObject(value: Record<string, unknown>): GlossaryEntry | undefined {
   const source = cleanTerm(value.source ?? value.src ?? value.original ?? value.term ?? value["原文"] ?? value["源文"] ?? value["术语"]);
   const target = cleanTerm(value.target ?? value.dst ?? value.translation ?? value.translated ?? value["译文"] ?? value["标准译名"] ?? value["译名"]);
-  return source && target ? { source, target } : undefined;
+  if (!source || !target) return undefined;
+  const aliases = Array.isArray(value.aliases)
+    ? [...new Set(value.aliases.map(cleanTerm).filter(Boolean))]
+    : [];
+  const info = cleanTerm(value.info);
+  const status = value.status === "confirmed" || value.status === "auto" || value.status === "pending"
+    ? value.status
+    : undefined;
+  return {
+    source,
+    target,
+    ...(aliases.length > 0 ? { aliases } : {}),
+    ...(info ? { info } : {}),
+    ...(status ? { status } : {})
+  };
 }
 
 function parseJsonGlossary(text: string): GlossaryEntry[] | undefined {

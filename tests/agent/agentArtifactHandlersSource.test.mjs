@@ -27,28 +27,18 @@ await test("agent artifact IPC keeps source and candidate paths inside projectDi
   assert.ok((source.match(/resolveProjectPath\(args\.projectDir, args\.candidatePath\)/g) || []).length >= 3);
 });
 
-await test("agent artifact validation passes project glossary into validator", async () => {
+await test("agent artifact validation uses the workflow-selected glossary and project reference assets", async () => {
   const source = await readFile("src/main/ipc/agentArtifactHandlers.ts", "utf8");
-  assert.match(source, /readProjectGlossaryEntries/);
+  assert.match(source, /readWorkflowTranslationValidationAssets/);
+  assert.match(source, /glossaryPath\?: string;/);
+  assert.ok((source.match(/readWorkflowTranslationValidationAssets\(\{\s+outputDir: args\.projectDir,\s+glossaryPath: args\.glossaryPath\s+\}\)/g) || []).length >= 2);
   assert.match(source, /glossaryEntries/);
   assert.match(source, /validateTranslationCandidate\(sourceText, candidateText, \{[\s\S]*glossaryEntries/);
-  assert.match(source, /buildCandidateImportPlan\([\s\S]*await readProjectGlossaryEntries\(args\.projectDir\)/);
-});
-
-await test("agent artifact validation passes character bible into validator", async () => {
-  const source = await readFile("src/main/ipc/agentArtifactHandlers.ts", "utf8");
-  assert.match(source, /readProjectCharacterEntries/);
   assert.match(source, /characterEntries/);
   assert.match(source, /validateTranslationCandidate\(sourceText, candidateText, \{[\s\S]*characterEntries/);
-  assert.match(source, /buildCandidateImportPlan\([\s\S]*await readProjectCharacterEntries\(args\.projectDir\)/);
-});
-
-await test("agent artifact validation passes style guide forbidden terms into validator", async () => {
-  const source = await readFile("src/main/ipc/agentArtifactHandlers.ts", "utf8");
-  assert.match(source, /readProjectStyleForbiddenTerms/);
   assert.match(source, /styleForbiddenTerms/);
   assert.match(source, /validateTranslationCandidate\(sourceText, candidateText, \{[\s\S]*styleForbiddenTerms/);
-  assert.match(source, /buildCandidateImportPlan\([\s\S]*await readProjectStyleForbiddenTerms\(args\.projectDir\)/);
+  assert.match(source, /buildCandidateImportPlan\([\s\S]*glossaryEntries,[\s\S]*characterEntries,[\s\S]*styleForbiddenTerms/);
 });
 
 await test("agent artifact import records accepted candidates into translation memory", async () => {

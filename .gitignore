@@ -27,3 +27,10 @@ Thumbs.db
 .video-work/
 artifacts/
 video-output/
+
+# Local Agent instructions, working memory, and private source notes.
+/AGENTS.md
+/docs/agent-runtime-memory.md
+/docs/archive/
+/yn_translation_agent_workbench_rfc*.md
+/宝宝教程-以汉化一本小说为例/

@@ -138,12 +138,30 @@ async function enqueueProjectWrite<T>(outputDir: string, work: () => Promise<T>)
 }
 
 export async function patchProjectState(outputDir: string, patch: ProjectState): Promise<ProjectState> {
+  return patchProjectStateIfUnchanged(outputDir, {}, patch);
+}
+
+export async function patchProjectStateIfUnchanged(
+  outputDir: string,
+  expected: ProjectState,
+  patch: ProjectState
+): Promise<ProjectState> {
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
     throw new Error("Project state patch must be an object.");
+  }
+  if (!expected || typeof expected !== "object" || Array.isArray(expected)) {
+    throw new Error("Expected project state fields must be an object.");
   }
   const root = projectRoot(outputDir);
   return enqueueProjectWrite(root, async () => {
     const current = await readProjectState(root);
+    for (const [key, value] of Object.entries(expected)) {
+      if (current[key] !== value) {
+        throw new Error(
+          `Project state changed before the atomic update: ${key} no longer matches the inspected value.`
+        );
+      }
+    }
     const state = canonicalProjectState({
       ...current,
       ...patch,

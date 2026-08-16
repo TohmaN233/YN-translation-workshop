@@ -466,7 +466,7 @@ await test("translation child cannot complete by omitting a nonempty assigned so
   }
 });
 
-await test("translation child cannot claim host validation while violating project glossary, character, voice, and style rules", async () => {
+await test("translation child preserves project-rule warnings for the read-only semantic review stage", async () => {
   const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-child-project-rules-"));
   const sourcePath = path.join(outputDir, "source.txt");
   const workspace = path.join(outputDir, ".translation-workshop");
@@ -491,18 +491,11 @@ await test("translation child cannot claim host validation while violating proje
   provider.setResponses([
     fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "project-read" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", translationEntries(invalidLines), { id: "project-write" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "project-validate" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage(fauxText("Host validation passed.")),
-    fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", translationEntries(invalidLines), { id: "project-repair-write" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "project-repair-validate" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage(fauxText("The same invalid translation is complete.")),
-    fauxAssistantMessage(fauxText("No project-rule correction is needed.")),
-    fauxAssistantMessage(fauxText("I will keep the same invalid wording.")),
-    fauxAssistantMessage(fauxText("The assignment remains complete."))
+    fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "project-validate" }), { stopReason: "toolUse" })
   ]);
 
   try {
-    await assert.rejects(() => subagentRunner.runPiTranslationSubagent({
+    const result = await subagentRunner.runPiTranslationSubagent({
       request: {
         outputDir,
         sourcePath,
@@ -520,13 +513,24 @@ await test("translation child cannot claim host validation while violating proje
         providerId: provider.provider.id,
         modelId: provider.getModel().id
       })
-    }), /host-(?:contract|validation) progress/i);
+    });
+    assert.equal(result.validation.ok, true, "project-rule warnings must not fail structural artifact validation");
+    const warningCodes = new Set(result.validation.warnings.map((finding) => finding.code));
+    for (const code of [
+      "glossary_missing",
+      "character_name_missing",
+      "character_voice_required_missing",
+      "character_voice_forbidden_term",
+      "style_forbidden_term"
+    ]) {
+      assert.equal(warningCodes.has(code), true, `${code} must remain observable for semantic review`);
+    }
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
 });
 
-await test("quality warnings retain the translated candidate and return line-specific repair evidence", async () => {
+await test("quality warnings retain the translated candidate without entering the mandatory repair loop", async () => {
   const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-child-quality-retention-"));
   const sourcePath = path.join(outputDir, "source.txt");
   const workspace = path.join(outputDir, ".translation-workshop");
@@ -565,14 +569,13 @@ await test("quality warnings retain the translated candidate and return line-spe
       translationEntries(["英雄"])
     );
 
-    assert.equal(result.details.accepted, false);
-    assert.deepEqual(result.details.requiredBatchLines, [1]);
+    assert.equal(result.details.accepted, true);
+    assert.deepEqual(result.details.requiredBatchLines, []);
     assert.equal(Object.hasOwn(result.details, "requiredLineContext"), false);
-    assert.equal(result.details.repairIssues[0].code, "glossary_missing");
-    assert.equal(result.details.repairIssues[0].absoluteLine, 1);
-    assert.match(result.details.repairIssues[0].detail, /勇者大人/);
+    assert.deepEqual(result.details.repairIssues, []);
+    assert.equal(result.details.validation.warningCount, 1);
     assert.equal(progress.translationWritten, true);
-    assert.deepEqual([...progress.requiredBatchLines], [1]);
+    assert.equal(progress.requiredBatchLines, undefined);
     assert.equal(
       await readFile(path.join(outputDir, "AI_translation", "source_translated.txt"), "utf8"),
       "英雄\n",
@@ -763,6 +766,13 @@ await test("full translation children receive the built-in contract once and rea
       "a successful write must not impersonate the mandatory discovery/validation submission");
     const invalidOptionalDiscoveryArgs = {
       glossaryCandidates: [{
+        source: "Alice",
+        target: "爱丽丝",
+        category: "character",
+        evidenceLine: 1,
+        rationale: "the translated evidence line establishes this rendering",
+        aliases: ["Alice"]
+      }, {
         source: "missing-term",
         target: "无效候选",
         category: "proper_noun",
@@ -777,13 +787,88 @@ await test("full translation children receive the built-in contract once and rea
     });
     const validation = await validate.execute("compact-reference-validate", schemaValidatedArgs);
     assert.equal(validation.details.validation.accepted, true);
-    assert.deepEqual(validation.details.discoveries, { glossaryCandidates: [], characterFacts: [] });
-    assert.equal(validation.details.rejectedDiscoveries.length, 1);
-    assert.match(validation.details.rejectedDiscoveries[0].reason, /not present on evidence line/i);
+    assert.deepEqual(validation.details.discoveries, { glossaryCandidates: [{
+      source: "Alice",
+      target: "爱丽丝",
+      category: "character",
+      evidenceLine: 1,
+      rationale: "the translated evidence line establishes this rendering"
+    }], characterFacts: [] });
+    assert.equal(validation.details.rejectedDiscoveries.length, 2);
+    assert.ok(validation.details.rejectedDiscoveries.some((entry) => /aliases without translated-line evidence/i.test(entry.reason)));
+    assert.ok(validation.details.rejectedDiscoveries.some((entry) => /not present on evidence line/i.test(entry.reason)));
     assert.equal(validation.terminate, true,
       "successful artifact validation must end the Pi tool turn even when an optional discovery is rejected");
   } finally {
     await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+await test("translation children use the selected external glossary without bulk-reading it", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-child-selected-glossary-project-"));
+  const referenceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-child-selected-glossary-reference-"));
+  const sourcePath = path.join(outputDir, "source.txt");
+  const selectedPath = path.join(referenceDir, "selected-glossary.json");
+  try {
+    await writeFile(sourcePath, "Alice met 虹宮. TARGET_ALIAS_ONLY appeared.\n", "utf8");
+    await mkdir(path.join(outputDir, ".translation-workshop"), { recursive: true });
+    await writeFile(path.join(outputDir, ".translation-workshop", "glossary.json"), JSON.stringify({
+      entries: [{ source: "Alice", target: "错误旧译" }]
+    }), "utf8");
+    await writeFile(selectedPath, JSON.stringify({ entries: [
+      { source: "Alice", target: "爱丽丝", aliases: ["艾丽丝"], status: "confirmed" },
+      { source: "虹宮トーヤ", target: "虹宫斗也", aliases: ["虹宮"], status: "confirmed" },
+      { source: "NotInSource", target: "规范译名", aliases: ["TARGET_ALIAS_ONLY"], status: "confirmed" }
+    ] }), "utf8");
+    const progress = {
+      sourceRead: false,
+      translationWritten: false,
+      translationValidated: false
+    };
+    const tools = subagentRunner.createPiTranslationSubagentTools({
+      request: {
+        outputDir,
+        sourcePath,
+        glossaryPath: selectedPath,
+        sessionId: "pi_selected_external_glossary",
+        prompt: "translate the assigned line",
+        providerId: "test",
+        modelId: "test",
+        languagePair: "en->zh-CN"
+      },
+      task: { fromLine: 1, toLine: 1 },
+      executionMode: "full_workflow",
+      publishCustomMessage: async () => {}
+    }, progress);
+    const read = tools.find((tool) => tool.name === "readAssignedSource");
+    const readProjectFile = tools.find((tool) => tool.name === "readProjectFile");
+    const searchProjectText = tools.find((tool) => tool.name === "searchProjectText");
+    assert.ok(read);
+    assert.ok(readProjectFile);
+    assert.ok(searchProjectText);
+
+    const readResult = await read.execute("selected-glossary-read", {});
+    assert.equal(readResult.details.projectReferences.approvedGlossary.path, selectedPath);
+    assert.equal(readResult.details.projectReferences.approvedGlossary.outsideProject, true);
+    assert.deepEqual(readResult.details.projectReferences.directMatches.approvedGlossary, [
+      { source: "Alice", target: "爱丽丝", aliases: ["艾丽丝"], status: "confirmed" },
+      { source: "虹宮トーヤ", target: "虹宫斗也", aliases: ["虹宮"], status: "confirmed" }
+    ], "target-language alternatives must not independently match source text");
+    assert.doesNotMatch(JSON.stringify(readResult.details), /错误旧译/);
+    const searched = await searchProjectText.execute("selected-glossary-search", {
+      path: selectedPath,
+      query: "虹宮"
+    });
+    assert.equal(searched.details.matches.length, 1);
+    assert.match(searched.details.matches[0].text, /虹宮トーヤ/);
+    assert.match(searched.details.matches[0].text, /虹宫斗也/);
+    await assert.rejects(
+      readProjectFile.execute("selected-glossary-bulk-read", { path: selectedPath }),
+      /Whole-file reads are disabled for the indexed approved glossary/i
+    );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+    await rm(referenceDir, { recursive: true, force: true });
   }
 });
 
@@ -905,6 +990,7 @@ await test("a translation child repairs every rejected line in one host-required
   const models = createModels();
   const provider = fauxProvider({ provider: "progressive-repair", tokensPerSecond: 1000 });
   let repairPrompt = "";
+  let initialRepairResult;
   models.setProvider(provider.provider);
   provider.setResponses([
     fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "read" }), { stopReason: "toolUse" }),
@@ -912,6 +998,16 @@ await test("a translation child repairs every rejected line in one host-required
       entries: translationEntries(["いち", "に", "さん"]).entries
     }, { id: "write-initial" }), { stopReason: "toolUse" }),
     async (context) => {
+      const latestRepairResult = [...context.messages].reverse().find((message) => (
+        message.role === "toolResult" && message.toolName === "repairAssignedTranslation"
+      ));
+      const resultText = Array.isArray(latestRepairResult?.content)
+        ? latestRepairResult.content
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("\n")
+        : "";
+      initialRepairResult = JSON.parse(resultText);
       const latestUser = [...context.messages].reverse().find((message) => message.role === "user");
       repairPrompt = typeof latestUser?.content === "string"
         ? latestUser.content
@@ -961,6 +1057,15 @@ await test("a translation child repairs every rejected line in one host-required
       "一\n二\n三\n"
     );
     assert.equal(cards.at(-1)?.details?.status, "completed");
+    assert.deepEqual(
+      initialRepairResult.repairIssues.map((issue) => ({ code: issue.code, line: issue.absoluteLine })),
+      [
+        { code: "likely_untranslated", line: 1 },
+        { code: "likely_untranslated", line: 2 },
+        { code: "likely_untranslated", line: 3 }
+      ],
+      "the repair result must report why the submitted values were rejected, not secondary blank-candidate line counts"
+    );
     assert.match(repairPrompt, /immediately preceding native tool result/i);
     assert.doesNotMatch(repairPrompt, /"sourceLineCount"|"candidateLineCount"|"issues"/i);
     assert.match(cards.at(-1)?.details?.resultSummary || "", /child-validated candidate L1-L3.*review-worker safety check required/i);
@@ -1889,7 +1994,7 @@ await test("later folder stages receive discoveries completed by an earlier stag
   provider.setResponses([
     fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "discover_read" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
-      blocks: [{ id: "0", lines: ["0专名"] }]
+      blocks: [{ id: "0", lines: [`0${discoveryCandidates.map((candidate) => candidate.target).join(" ")}`] }]
     }, { id: "discover_write" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {
       glossaryCandidates: discoveryCandidates,
@@ -2122,14 +2227,14 @@ await test("translation child tools process an assignment through validated line
     const validated = await validate.execute("chunk_validate_complete", {
       glossaryCandidates: [{
         source: "one",
-        target: "一号",
+        target: "一",
         category: "proper_noun",
         evidenceLine: 1,
         rationale: "Recurring named entity"
       }],
       characterFacts: [{
         sourceName: "two",
-        targetName: "二号",
+        targetName: "二",
         evidenceLine: 2,
         evidence: "The source names the speaker but provides no gender evidence.",
         gender: "unknown",
@@ -2243,7 +2348,7 @@ await test("translation discovery merge deduplicates exact child proposals witho
   assert.equal(merged.characterFacts.length, 1, "exact character facts should be deduplicated");
 });
 
-await test("large translation assignments reject whole-file reads and empty artifact writes", async () => {
+await test("large translation assignments page model reads and reject empty artifact writes", async () => {
   const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-large-translation-"));
   const sourcePath = path.join(outputDir, "source.txt");
   const sourceLines = Array.from({ length: subagentRunner.MAX_ASSIGNED_TRANSLATION_CHUNK_LINES + 1 }, (_, index) => `line ${index + 1}`);
@@ -2267,20 +2372,15 @@ await test("large translation assignments reject whole-file reads and empty arti
   assert.ok(write);
 
   try {
-    await assert.rejects(
-      () => read.execute("large_whole_read", {}),
-      new RegExp(`chunks of at most ${subagentRunner.MAX_ASSIGNED_TRANSLATION_CHUNK_LINES}`, "i")
-    );
-    await read.execute("large_first_read", {
-      fromLine: 1,
-      toLine: subagentRunner.MAX_ASSIGNED_TRANSLATION_CHUNK_LINES
-    });
+    const firstPage = await read.execute("large_first_page", {});
+    assert.equal(firstPage.details.fromLine, 1);
+    assert.equal(firstPage.details.toLine, subagentRunner.MAX_TRANSLATION_MODEL_PAGE_LINES);
+    assert.equal(firstPage.details.hasMore, true);
+    assert.equal(firstPage.details.nextFromLine, subagentRunner.MAX_TRANSLATION_MODEL_PAGE_LINES + 1);
     const partial = await write.execute("large_empty_write", {
-      fromLine: 1,
-      toLine: subagentRunner.MAX_ASSIGNED_TRANSLATION_CHUNK_LINES,
       blocks: []
     });
-    assert.equal(partial.details.missingLines.length, subagentRunner.MAX_ASSIGNED_TRANSLATION_CHUNK_LINES);
+    assert.equal(partial.details.missingLines.length, subagentRunner.MAX_TRANSLATION_MODEL_PAGE_LINES);
     const partialText = await readFile(path.join(outputDir, "AI_translation", "source_translated.txt"), "utf8");
     assert.equal(partialText.includes("line 1"), false, "empty writes must not materialize copied source placeholders");
     const validate = tools.find((tool) => tool.name === "validateAssignedTranslation");

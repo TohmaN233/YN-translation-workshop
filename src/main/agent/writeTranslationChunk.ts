@@ -27,6 +27,14 @@ export interface WriteTranslationChunkResult {
   error?: string;
 }
 
+export interface WriteTranslationLinesArgs {
+  outputDir: string;
+  sourcePaths: string[];
+  documentId: string;
+  entries: Array<{ line: number; text: string }>;
+  candidatePath?: string;
+}
+
 const chunkWriteLocks = new Map<string, Promise<void>>();
 const TRANSLATION_STAGING_DIR = path.join(".translation-workshop", "agent", "translation-staging");
 
@@ -290,6 +298,76 @@ export async function writeTranslationChunk(args: WriteTranslationChunkArgs): Pr
       fromLine,
       toLine,
       linesWritten: chunkLines.length,
+      totalCandidateLines: merged.length,
+      sourceLineCount,
+      created
+    };
+  });
+}
+
+export async function writeTranslationLines(args: WriteTranslationLinesArgs): Promise<WriteTranslationChunkResult> {
+  const entries = args.entries.map((entry) => ({
+    line: Math.floor(entry.line),
+    text: String(entry.text ?? "")
+  })).sort((left, right) => left.line - right.line);
+  if (entries.length === 0) {
+    throw new Error("A sparse translation write requires at least one exact line.");
+  }
+  const seen = new Set<number>();
+  for (const entry of entries) {
+    if (!Number.isInteger(entry.line) || entry.line < 1) {
+      throw new Error(`Invalid sparse translation line: ${entry.line}.`);
+    }
+    if (seen.has(entry.line)) throw new Error(`Sparse translation line ${entry.line} is duplicated.`);
+    seen.add(entry.line);
+  }
+  const fromLine = entries[0].line;
+  const toLine = entries.at(-1)!.line;
+  const sourceLineCount = await countSourceLines(args.sourcePaths);
+  if (toLine > sourceLineCount) {
+    return {
+      ok: false,
+      fromLine,
+      toLine,
+      linesWritten: 0,
+      totalCandidateLines: 0,
+      sourceLineCount,
+      created: false,
+      error: `Sparse translation line ${toLine} exceeds the ${sourceLineCount}-line source.`
+    };
+  }
+
+  const candidatePath = resolveWriteCandidatePath({
+    ...args,
+    fromLine,
+    toLine,
+    lines: []
+  });
+  if (candidatePath === resolveTranslationCandidatePath(args)) {
+    assertCandidatePath(args.outputDir, candidatePath);
+  } else {
+    assertStagingPath(args.outputDir, candidatePath);
+  }
+  return withTranslationCandidateLock(candidatePath, async () => {
+    await mkdir(path.dirname(candidatePath), { recursive: true });
+    let existing: string[] = [];
+    let created = false;
+    try {
+      existing = splitTextLines(await readFile(candidatePath, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      created = true;
+    }
+    const merged = existing.slice(0, sourceLineCount);
+    while (merged.length < sourceLineCount) merged.push("");
+    for (const entry of entries) merged[entry.line - 1] = entry.text;
+    await writeTextFileAtomically(candidatePath, `${merged.join("\n")}\n`);
+    return {
+      ok: true,
+      path: candidatePath,
+      fromLine,
+      toLine,
+      linesWritten: entries.length,
       totalCandidateLines: merged.length,
       sourceLineCount,
       created

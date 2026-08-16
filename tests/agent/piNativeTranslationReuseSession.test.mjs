@@ -38,7 +38,6 @@ await mkdir(path.join(outputDir, "AI_translation", "_workspace"), { recursive: t
 await writeFile(sourcePath, "Open the gate.\nSave now.\n", "utf8");
 await writeFile(candidatePath, "打开大门。\n现在保存。\n", "utf8");
 await writeFile(path.join(outputDir, "AI_translation", "_workspace", "glossary_candidates.json"), '{"entries":[]}\n', "utf8");
-await writeFile(path.join(outputDir, "AI_translation", "_workspace", "character_bible.md"), "# Character Bible\n", "utf8");
 
 const models = createModels();
 const provider = fauxProvider({ provider: "parent", tokensPerSecond: 1000 });

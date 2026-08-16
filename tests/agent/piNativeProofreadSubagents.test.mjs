@@ -1360,11 +1360,21 @@ await test("proofread children report missing proper nouns as structured parent-
       assert.match(schema, new RegExp(category));
     }
     await readContext.execute("read_context", {});
-    await assert.rejects(() => writeFindings.execute("reject_bad_category", {
+    await assert.rejects(() => writeFindings.execute("reject_target_without_evidence", {
       findings: [],
       glossaryCandidates: [{
         source: "こんにちは",
         target: "您好",
+        category: "setting_term",
+        evidenceLine: 1,
+        rationale: "The target must occur in the current translated evidence row."
+      }]
+    }), /target.*translated evidence/i);
+    await assert.rejects(() => writeFindings.execute("reject_bad_category", {
+      findings: [],
+      glossaryCandidates: [{
+        source: "こんにちは",
+        target: "你好",
         category: "活动名称",
         evidenceLine: 1,
         rationale: "Unsupported free-form category must not be silently discarded."
@@ -1375,7 +1385,7 @@ await test("proofread children report missing proper nouns as structured parent-
       findings: [],
       glossaryCandidates: [{
         source: "こんにちは",
-        target: "您好",
+        target: "你好",
         category: "setting_term",
         evidenceLine: 1,
         rationale: "Stable project-specific greeting label."
@@ -1383,7 +1393,7 @@ await test("proofread children report missing proper nouns as structured parent-
     });
     assert.deepEqual(progress.glossaryCandidates, [{
       source: "こんにちは",
-      target: "您好",
+      target: "你好",
       category: "setting_term",
       evidenceLine: 1,
       rationale: "Stable project-specific greeting label."
@@ -1395,7 +1405,7 @@ await test("proofread children report missing proper nouns as structured parent-
 
 await test("proofread child guidance names only the native Pi child artifact tools", async () => {
   const guidance = await readFile(
-    path.resolve("skills/proofread-translation/references/proofread-workflow.md"),
+    path.resolve("translation-protocol/proofread-child.md"),
     "utf8"
   );
   assert.match(guidance, /readAssignedProofreadContext/);

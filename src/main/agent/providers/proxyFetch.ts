@@ -23,8 +23,7 @@ export async function resolveProviderProxyUrl(options: ProviderProxyOptions = {}
   if (projectUrl !== undefined) {
     return projectUrl;
   }
-  const env = options.env ?? process.env;
-  return String(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || "").trim();
+  return "";
 }
 
 async function readProjectProxyUrl(workspaceDir?: string): Promise<string | undefined> {

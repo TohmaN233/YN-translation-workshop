@@ -49,12 +49,7 @@ models.setProvider(parent.provider);
 providers.set(parent.provider.id, parent);
 parent.setResponses([
   fauxAssistantMessage(fauxToolCall("inspectTranslationContext", {}, { id: "inspect-context" }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {
-    tasks: [
-      { fromLine: 1, toLine: 1, providerId: "child-a", label: "shard-1" },
-      { fromLine: 2, toLine: 2, providerId: "child-b", label: "shard-2" }
-    ]
-  }, { id: "spawn-children" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("runTranslationSubagents", {}, { id: "spawn-children" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxText("The two native Pi children are running in the background; I remain available.")),
   fauxAssistantMessage(fauxToolCall("readTranslationDiscoveries", {}, {
     id: "read-discoveries"
@@ -121,14 +116,17 @@ for (const [index, providerId] of ["child-a", "child-b"].entries()) {
   ]);
 }
 
+let translationSelectionCount = 0;
 const service = new PiNativeSessionService({
   createModelSelection: async ({ providerId }) => {
-    const provider = providers.get(providerId || "parent");
+    const provider = providerId === "translation-test-lane"
+      ? providers.get(["child-a", "child-b"][translationSelectionCount++] ?? "review")
+      : providers.get(providerId || "parent");
     assert.ok(provider, `unknown test provider ${providerId}`);
     return {
       models,
       model: provider.getModel(),
-      providerId: provider.provider.id,
+      providerId: providerId === "translation-test-lane" ? providerId : provider.provider.id,
       modelId: provider.getModel().id
     };
   },
@@ -174,8 +172,10 @@ try {
     prompt: "Workflow: yn-translation-v1.\nTranslate the bound two-line source with exactly two parallel native Pi children.",
     workflowIntent: "translation",
     languagePair: "en->zh-CN",
-    subagentProviderId: "review",
-    subagentModelId: reviewer.getModel().id,
+    subagentProviderId: "translation-test-lane",
+    subagentModelId: providers.get("child-a").getModel().id,
+    subagentCount: 2,
+    translationSplitSize: 1,
     reviewSubagentCount: 1,
     providerId: "parent",
     modelId: parent.getModel().id,
@@ -183,10 +183,16 @@ try {
   });
 
   await waitForSettled(1);
-  await waitUntil(async () => {
+  try {
+    await waitUntil(async () => {
+      const state = await service.getRunState(workspaceDir, session.id);
+      return state.subagentMessages.filter((message) => message.details?.status === "running").length === 2;
+    }, "two running native child cards");
+  } catch (error) {
     const state = await service.getRunState(workspaceDir, session.id);
-    return state.subagentMessages.filter((message) => message.details?.status === "running").length === 2;
-  }, "two running native child cards");
+    const messages = await service.loadMessages(workspaceDir, session.id);
+    throw new Error(`${error.message}\n${JSON.stringify({ state, messages }, null, 2)}`);
+  }
 
   let messages = await service.loadMessages(workspaceDir, session.id);
   assert.equal(toolCalls(messages, "validateTranslationArtifact").length, 0);
@@ -206,11 +212,15 @@ try {
   assert.equal(toolCalls(messages, "readTranslationDiscoveries").length, 1);
   assert.equal(toolCalls(messages, "resolveTranslationDiscoveries").length, 1);
   assert.equal(toolCalls(messages, "validateTranslationArtifact").length, 1);
+  const settledState = await service.getRunState(workspaceDir, session.id);
   assert.ok(messages.some((message) => (
     message.role === "toolResult"
     && message.toolCallId === "validate-final-artifact"
     && message.isError === false
-  )), JSON.stringify(messages.filter((message) => message.role === "toolResult"), null, 2));
+  )), JSON.stringify({
+    settledState,
+    messages: messages.filter((message) => message.role === "toolResult" || message.role === "custom")
+  }, null, 2));
   const completionNoticeIndex = messages.findIndex((message) => (
     message.role === "custom"
     && message.customType === "subagent-completion"

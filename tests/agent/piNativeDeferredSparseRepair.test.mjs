@@ -7,7 +7,6 @@ import {
   createModels,
   fauxAssistantMessage,
   fauxProvider,
-  fauxText,
   fauxToolCall
 } from "@earendil-works/pi-ai";
 
@@ -51,30 +50,39 @@ const provider = fauxProvider({
 });
 models.setProvider(provider.provider);
 provider.setResponses([
-  fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "chunk-1-source" }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
-    blocks: translationBlocks(firstChunk)
-  }, { id: "chunk-1-write" }), { stopReason: "toolUse" }),
+  ...Array.from({ length: 4 }, (_, page) => {
+    const from = page * 256;
+    const to = Math.min(firstChunk.length, from + 256);
+    return [
+      fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: `chunk-1-page-${page + 1}-source` }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
+        blocks: translationBlocks(firstChunk.slice(from, to))
+      }, { id: `chunk-1-page-${page + 1}-write` }), { stopReason: "toolUse" })
+    ];
+  }).flat(),
+  fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "chunk-1-validate" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "chunk-1-repair-source" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
     entries: [{ line: 10, translation: "第10条英雄术语内容已完整翻译。" }]
   }, { id: "chunk-1-repair" }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "chunk-1-validate" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "chunk-2-source" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
     blocks: translationBlocks(secondChunk)
   }, { id: "chunk-2-write" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "chunk-2-validate" }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "chunk-2-repair-source" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
     entries: [{
       line: sourceLines.length,
       translation: `第${sourceLines.length}条英雄术语内容已完整翻译。`
     }]
-  }, { id: "chunk-2-repair" }), { stopReason: "toolUse" }),
-  fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "chunk-2-validate" }), { stopReason: "toolUse" })
+  }, { id: "chunk-2-repair" }), { stopReason: "toolUse" })
 ]);
 
 const persistedCards = [];
 const liveCards = [];
 const reviewedRanges = [];
+const reviewAttempts = new Map();
 const supervisor = new YnSubagentSupervisor({
   publishCustomMessage: async (message) => persistedCards.push(message),
   publishLiveCustomMessage: async (message) => liveCards.push(message),
@@ -101,6 +109,17 @@ try {
     maxWorkers: 1,
     onChunkReadyForReview: async (review) => {
       reviewedRanges.push([review.fromLine, review.toLine]);
+      const attempts = (reviewAttempts.get(review.fromLine) ?? 0) + 1;
+      reviewAttempts.set(review.fromLine, attempts);
+      if (attempts === 1) {
+        const warning = review.validation.warnings.find((finding) => finding.code === "glossary_missing");
+        assert.ok(warning, "the structural validator must preserve the glossary signal for semantic review");
+        const line = review.fromLine === 1 ? 10 : sourceLines.length;
+        return {
+          accepted: false,
+          feedback: [{ line, reason: "HeroTerm must use the project glossary target 英雄术语." }]
+        };
+      }
       return { accepted: true };
     }
   });
@@ -121,20 +140,24 @@ try {
   assert.equal(translated.at(-1), `第${sourceLines.length}条英雄术语内容已完整翻译。`);
   assert.deepEqual(reviewedRanges, [
     [1, MAX_ASSIGNED_TRANSLATION_CHUNK_LINES],
+    [1, MAX_ASSIGNED_TRANSLATION_CHUNK_LINES],
+    [sourceLines.length, sourceLines.length],
     [sourceLines.length, sourceLines.length]
   ]);
   assert.equal(Object.hasOwn(persistedCards.at(-1).details, "reply"), false);
   assert.equal(
     transcript.at(-1)?.role,
     "toolResult",
-    "successful validation must terminate at the Host tool result without another full-context model request"
+    "successful focused repair must terminate at the Host tool result without another model request"
   );
-  assert.equal(transcript.at(-1)?.toolName, "validateAssignedTranslation");
+  assert.equal(transcript.at(-1)?.toolName, "repairAssignedTranslation");
   assert.deepEqual(
     liveCards.map((message) => message.details.activity),
     [
       "translating source.txt",
       `awaiting review worker for L1-L${MAX_ASSIGNED_TRANSLATION_CHUNK_LINES}`,
+      `awaiting review worker for L1-L${MAX_ASSIGNED_TRANSLATION_CHUNK_LINES}`,
+      `awaiting review worker for L${sourceLines.length}-L${sourceLines.length}`,
       `awaiting review worker for L${sourceLines.length}-L${sourceLines.length}`,
       "validated 2/2 chunks"
     ],

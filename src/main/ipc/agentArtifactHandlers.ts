@@ -23,11 +23,7 @@ import {
   type SourceEntry
 } from "../agent/artifactDiscovery.ts";
 import { buildCandidateImportPlan, buildRepairPrompt } from "../agent/importCandidate.ts";
-import {
-  readProjectCharacterEntries,
-  readProjectGlossaryEntries,
-  readProjectStyleForbiddenTerms
-} from "../agent/projectAssets.ts";
+import { readWorkflowTranslationValidationAssets } from "../agent/projectAssets.ts";
 import { resolveProjectPath } from "../agent/projectPathGuard.ts";
 import { rememberTranslationSegments } from "../agent/translationMemory.ts";
 import { validateTranslationCandidate, type TranslationValidationResult } from "../../shared/validation/translationValidator.ts";
@@ -44,6 +40,7 @@ export interface ValidateArtifactArgs {
   candidatePath: string;
   locale?: "zh-CN" | "en-US";
   languagePair?: string;
+  glossaryPath?: string;
 }
 
 export interface RepairPromptArgs {
@@ -118,9 +115,10 @@ export function registerAgentArtifactIpc(): void {
       readFile(sourcePath, "utf8"),
       readFile(candidatePath, "utf8")
     ]);
-    const glossaryEntries = await readProjectGlossaryEntries(args.projectDir);
-    const characterEntries = await readProjectCharacterEntries(args.projectDir);
-    const styleForbiddenTerms = await readProjectStyleForbiddenTerms(args.projectDir);
+    const { glossaryEntries, characterEntries, styleForbiddenTerms } = await readWorkflowTranslationValidationAssets({
+      outputDir: args.projectDir,
+      glossaryPath: args.glossaryPath
+    });
     const validation = validateTranslationCandidate(sourceText, candidateText, {
       locale: args.locale === "en-US" ? "en-US" : "zh-CN",
       languagePair: args.languagePair,
@@ -143,14 +141,18 @@ export function registerAgentArtifactIpc(): void {
     ]);
     // buildCandidateImportPlan refuses to emit edits when validation blocks;
     // the caller must show the repair entry point instead of importing.
+    const { glossaryEntries, characterEntries, styleForbiddenTerms } = await readWorkflowTranslationValidationAssets({
+      outputDir: args.projectDir,
+      glossaryPath: args.glossaryPath
+    });
     const plan = buildCandidateImportPlan(
       sourceText,
       candidateText,
       args.locale === "en-US" ? "en-US" : "zh-CN",
       args.languagePair,
-      await readProjectGlossaryEntries(args.projectDir),
-      await readProjectCharacterEntries(args.projectDir),
-      await readProjectStyleForbiddenTerms(args.projectDir)
+      glossaryEntries,
+      characterEntries,
+      styleForbiddenTerms
     );
     if (plan.ok) {
       await rememberTranslationSegments({

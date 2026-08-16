@@ -53,6 +53,7 @@ export function xhtmlToLines(xhtml: string): string[] {
       .replace(/<script\b[\s\S]*?<\/script>/gi, "")
       .replace(/<style\b[\s\S]*?<\/style>/gi, "")
       .replace(/<head\b[\s\S]*?<\/head>/gi, "")
+      .replace(/<(rt|rp)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/<\/(h[1-6]|p|div|li|tr|section|article|blockquote)>/gi, "\n")
       .replace(/<[^>]+>/g, "")

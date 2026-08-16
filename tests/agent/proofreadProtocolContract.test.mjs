@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-const skillRoot = path.resolve("skills/proofread-translation");
+const protocolRoot = path.resolve("translation-protocol");
 
 async function filesBelow(root) {
   const entries = await readdir(root, { withFileTypes: true });
@@ -12,13 +12,13 @@ async function filesBelow(root) {
   }))).flat();
 }
 
-const files = await filesBelow(skillRoot);
+const files = await filesBelow(protocolRoot);
 const obsolete = [];
 for (const file of files) {
   const content = await readFile(file, "utf8");
-  const relative = path.relative(skillRoot, file).replace(/\\/g, "/");
+  const relative = path.relative(protocolRoot, file).replace(/\\/g, "/");
   if (/\bcompleteTask\b/.test(content) || (
-    relative.endsWith("subagent-task-template.md") && /\bwriteProofreadFindings\b/.test(content)
+    relative === "proofread-child.md" && /\bwriteProofreadFindings\b/.test(content)
   )) {
     obsolete.push(relative);
   }
@@ -29,4 +29,4 @@ assert.deepEqual(
   [],
   "Packaged proofreading guidance must name only the restricted Pi child tools that actually exist"
 );
-console.log("ok packaged proofreading guidance contains no obsolete child tool protocol");
+console.log("ok packaged proofreading protocol contains no obsolete child tool names");

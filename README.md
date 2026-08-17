@@ -4,7 +4,19 @@
 
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
-[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0.1](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.1)
+[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0.3](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.3)
+
+## 2.0.3
+
+- 校对收尾改成 Host 契约：按行号回填原文/译文；子代理写完后母代理直接 finalize，空写入不能清空已有 findings；母代理只读 Pi session JSONL 以便从子代理对话恢复产物。
+- Grok OAuth 过期只换该工人、`resumeYnWorkflow` 不再二次要同意，Host 等用户时停 loop，避免同一 gated tool 连撞。
+- 术语长名覆盖短名、角色 `requiredTerms` 只查可归属台词、对齐页最多 24 行、非阻塞警告先问再审。
+
+## 2.0.2
+
+- 修复完整翻译里子 Agent 三次复审不过后，已接受的 staging 要等到整批结束才提升进主文件的问题。正式 takeover 会立刻把 hash-current staging 写入主文件并放开该段写锁，父级读主文件就能看到稿、只改被拒行。
+- 校对/接管时按审计自己的候选路径读对齐行，不再拿空的主文件去对哈希。
+- 用项目文件工具浏览 `translation-staging` 会得到明确的 Host 改道错误，而不是空命中。
 
 ## 2.0.1
 
@@ -23,8 +35,8 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.0.1-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.0.1-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.0.3-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.0.3-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。

@@ -390,7 +390,11 @@ assert.ok(partialFolderSettlement.recoveryPauseId, "an exhausted assignment must
 assert.equal(partialFolderSettlement.nextRepairPrompt(), undefined, "the hidden completion loop must not auto-restart a failed queue");
 assert.throws(
   () => partialFolderSettlement.assertCanStartSubagentBatch("translation"),
-  /explicit user continuation/i
+  /Call resumeYnWorkflow before starting another Host-owned child batch/i
+);
+assert.doesNotThrow(
+  () => partialFolderSettlement.recordTranslationArtifactMutation("failed.txt", { fromLine: 1, toLine: 1 }),
+  "an exhausted assignment must not block parent-owned takeover writes"
 );
 const pauseId = partialFolderSettlement.recoveryPauseId;
 partialFolderSettlement.resumeAfterExplicitContinuation(pauseId);
@@ -942,5 +946,49 @@ assert.throws(
 disabled.recordTranslationWrite("translation");
 disabled.recordFinalValidation("translation");
 assert.deepEqual(disabled.incompleteReasons(), []);
+
+const resumeClearsPause = createYnDomainRunContract({ workflowIntent: "translation" });
+resumeClearsPause.recordInspection({
+  sourceLineCount: 2,
+  glossaryCandidateExists: true,
+  characterBibleExists: true
+});
+resumeClearsPause.recordSubagentBatchStarted("translation", "auth-paused", { taskCount: 1, workerCount: 1 });
+resumeClearsPause.recordSubagentBatchFailure("translation", "auth-paused");
+assert.ok(resumeClearsPause.recoveryPauseId);
+resumeClearsPause.suspend();
+resumeClearsPause.resume();
+assert.equal(resumeClearsPause.recoveryPauseId, undefined, "resume() must drop the exhausted-assignment pause before later Host mutations");
+assert.doesNotThrow(
+  () => resumeClearsPause.recordTranslationReuseAuditReady([]),
+  "resuming a parked failed batch must not stay blocked on explicit user continuation"
+);
+
+const warningReviewGate = createYnDomainRunContract({
+  workflowIntent: "translation",
+  fullWorkflow: true,
+  subagentEnabled: true,
+  subagentCount: 3
+});
+warningReviewGate.registerSourceManifest([{ id: "source.txt", sourceLineCount: 2 }]);
+warningReviewGate.recordInspection({
+  sourceLineCount: 2,
+  documents: [{ id: "source.txt", sourceLineCount: 2 }],
+  glossaryCandidateExists: true,
+  characterBibleExists: true
+});
+warningReviewGate.recordTranslationWrite("translation");
+warningReviewGate.recordTranslationValidation("translation", 12);
+assert.equal(warningReviewGate.awaitingUserInput, false, "validation debt alone must not stop the completion loop");
+warningReviewGate.notePendingTranslationWarningReview();
+assert.equal(warningReviewGate.awaitingUserInput, true);
+assert.equal(warningReviewGate.nextRepairPrompt(), undefined, "the parent must wait for the user before warning review");
+warningReviewGate.recordTranslationWarningReviewDecision("review");
+assert.equal(warningReviewGate.awaitingUserInput, false);
+assert.equal(warningReviewGate.translationWarningReviewDecision, "review");
+warningReviewGate.recordTranslationWarningReviewDecision("skip");
+assert.equal(warningReviewGate.awaitingUserInput, false);
+assert.equal(warningReviewGate.snapshot().documents[0].validatedArtifactRevision, warningReviewGate.snapshot().documents[0].artifactRevision);
+assert.ok(!warningReviewGate.incompleteReasons().some((reason) => /warning review/i.test(reason)));
 
 console.log("ok YN completion repair follows host progress rather than a fixed global turn cap");

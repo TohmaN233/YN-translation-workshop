@@ -19,17 +19,90 @@ function runtimeHistoryRoot(outputDir: string): string {
   return path.resolve(outputDir, ".translation-workshop", "agent");
 }
 
+function translationStagingRoot(outputDir: string): string {
+  return path.resolve(runtimeHistoryRoot(outputDir), "translation-staging");
+}
+
 function isRuntimeHistoryPath(outputDir: string, target: string): boolean {
   return isSameOrInside(runtimeHistoryRoot(outputDir), target);
 }
 
-const RUNTIME_HISTORY_READ_ERROR = "Pi runtime session data is not readable through project tools.";
+function isTranslationStagingPath(outputDir: string, target: string): boolean {
+  return isSameOrInside(translationStagingRoot(outputDir), target);
+}
+
+function runtimeSessionRoots(outputDir: string): string[] {
+  const root = runtimeHistoryRoot(outputDir);
+  return [path.join(root, "pi-sessions"), path.join(root, "pi-child-sessions")];
+}
+
+function isRuntimeSessionPath(outputDir: string, target: string): boolean {
+  return runtimeSessionRoots(outputDir).some((root) => isSameOrInside(root, target));
+}
+
+function isRuntimeSecretPath(outputDir: string, target: string): boolean {
+  const secrets = path.resolve(runtimeHistoryRoot(outputDir), "oauth-secrets.json");
+  const compareTarget = process.platform === "win32" ? path.resolve(target).toLowerCase() : path.resolve(target);
+  const compareSecrets = process.platform === "win32" ? secrets.toLowerCase() : secrets;
+  return compareTarget === compareSecrets;
+}
+
+export type ProjectToolReadAccess = {
+  allowRuntimeSessionRead?: boolean;
+};
+
+export const RUNTIME_HISTORY_READ_ERROR = "Pi runtime session data is not readable through project tools.";
+export const RUNTIME_SECRET_READ_ERROR = "Agent OAuth secrets are not readable through project tools.";
+export const TRANSLATION_STAGING_PROJECT_TOOL_ERROR = [
+  "Unpromoted translation staging is Host-owned and cannot be browsed with project file tools.",
+  "Empty canonical translation lines mean the accepted draft is still in staging, not that the range is missing.",
+  "Call inspectTranslationAlignment, then readTranslationAlignmentRows.",
+  "Repair only Host-listed rejected lines with writeTranslationChunk. Do not retranslate the whole assignment."
+].join(" ");
+
+function runtimeProjectToolError(
+  outputDir: string,
+  target: string,
+  access: ProjectToolReadAccess = {}
+): string | undefined {
+  if (!isRuntimeHistoryPath(outputDir, target)) return undefined;
+  if (isTranslationStagingPath(outputDir, target)) return TRANSLATION_STAGING_PROJECT_TOOL_ERROR;
+  if (isRuntimeSecretPath(outputDir, target)) return RUNTIME_SECRET_READ_ERROR;
+  const resolvedTarget = path.resolve(target);
+  const historyRoot = runtimeHistoryRoot(outputDir);
+  const sameHistoryRoot = process.platform === "win32"
+    ? resolvedTarget.toLowerCase() === historyRoot.toLowerCase()
+    : resolvedTarget === historyRoot;
+  if (access.allowRuntimeSessionRead && (isRuntimeSessionPath(outputDir, target) || sameHistoryRoot)) {
+    return undefined;
+  }
+  return RUNTIME_HISTORY_READ_ERROR;
+}
+
+function shouldHideRuntimeHistoryEntry(
+  outputDir: string,
+  entryPath: string,
+  access: ProjectToolReadAccess = {}
+): boolean {
+  if (!isRuntimeHistoryPath(outputDir, entryPath)) return false;
+  if (isTranslationStagingPath(outputDir, entryPath) || isRuntimeSecretPath(outputDir, entryPath)) return true;
+  const resolvedEntry = path.resolve(entryPath);
+  const historyRoot = runtimeHistoryRoot(outputDir);
+  const sameHistoryRoot = process.platform === "win32"
+    ? resolvedEntry.toLowerCase() === historyRoot.toLowerCase()
+    : resolvedEntry === historyRoot;
+  if (access.allowRuntimeSessionRead && (isRuntimeSessionPath(outputDir, entryPath) || sameHistoryRoot)) {
+    return false;
+  }
+  return true;
+}
 
 export async function readProjectFile(args: {
   outputDir: string;
   relativePath: string;
   offsetChars?: number;
   maxChars?: number;
+  allowRuntimeSessionRead?: boolean;
 }): Promise<{
   ok: true;
   path: string;
@@ -44,8 +117,11 @@ export async function readProjectFile(args: {
   try {
     const resolved = resolveReadablePath(args.outputDir, args.relativePath);
     const filePath = resolved.path;
-    if (!resolved.outsideProject && isRuntimeHistoryPath(args.outputDir, filePath)) {
-      return { ok: false, error: RUNTIME_HISTORY_READ_ERROR };
+    const runtimeError = !resolved.outsideProject
+      ? runtimeProjectToolError(args.outputDir, filePath, args)
+      : undefined;
+    if (runtimeError) {
+      return { ok: false, error: runtimeError };
     }
     const info = await stat(filePath);
     if (!info.isFile()) {
@@ -92,6 +168,9 @@ export async function writeProjectFile(args: {
 }): Promise<{ ok: true; path: string; relativePath: string; bytesWritten: number; appended: boolean } | { ok: false; error: string }> {
   try {
     const filePath = resolveProjectPath(args.outputDir, args.relativePath);
+    if (isRuntimeHistoryPath(args.outputDir, filePath)) {
+      return { ok: false, error: "Pi runtime session data cannot be written through project tools." };
+    }
     await mkdir(path.dirname(filePath), { recursive: true });
     const content = String(args.content ?? "");
     if (args.append) {
@@ -115,12 +194,16 @@ export async function listProjectDir(args: {
   outputDir: string;
   relativePath?: string;
   maxEntries?: number;
+  allowRuntimeSessionRead?: boolean;
 }): Promise<{ ok: true; path: string; relativePath: string; outsideProject: boolean; entries: Array<{ name: string; kind: "file" | "dir"; size?: number }> } | { ok: false; error: string }> {
   try {
     const resolved = resolveReadablePath(args.outputDir, optionalProjectRoot(args.relativePath));
     const dirPath = resolved.path;
-    if (!resolved.outsideProject && isRuntimeHistoryPath(args.outputDir, dirPath)) {
-      return { ok: false, error: RUNTIME_HISTORY_READ_ERROR };
+    const runtimeError = !resolved.outsideProject
+      ? runtimeProjectToolError(args.outputDir, dirPath, args)
+      : undefined;
+    if (runtimeError) {
+      return { ok: false, error: runtimeError };
     }
     const info = await stat(dirPath);
     if (!info.isDirectory()) {
@@ -131,7 +214,7 @@ export async function listProjectDir(args: {
     const entries = [];
     for (const entry of names.slice(0, maxEntries)) {
       const entryPath = path.join(dirPath, entry.name);
-      if (!resolved.outsideProject && isRuntimeHistoryPath(args.outputDir, entryPath)) continue;
+      if (!resolved.outsideProject && shouldHideRuntimeHistoryEntry(args.outputDir, entryPath, args)) continue;
       let size: number | undefined;
       if (entry.isFile()) {
         try {
@@ -179,6 +262,7 @@ export async function searchProjectText(args: {
   query: string;
   relativePath?: string;
   maxResults?: number;
+  allowRuntimeSessionRead?: boolean;
 }): Promise<{ ok: true; path: string; relativePath: string; outsideProject: boolean; query: string; matches: Array<{ path: string; line: number; text: string }> } | { ok: false; error: string }> {
   const query = String(args.query ?? "").trim();
   if (!query) {
@@ -187,6 +271,10 @@ export async function searchProjectText(args: {
   try {
     const resolved = resolveReadablePath(args.outputDir, optionalProjectRoot(args.relativePath));
     const root = resolved.path;
+    if (!resolved.outsideProject) {
+      const runtimeError = runtimeProjectToolError(args.outputDir, root, args);
+      if (runtimeError) return { ok: false, error: runtimeError };
+    }
     const excludedRuntimeHistoryRoot = runtimeHistoryRoot(args.outputDir);
     const generatedHtmlRoot = path.resolve(args.outputDir, ".translation-workshop", "html");
     const excludeGeneratedHtml = !resolved.outsideProject
@@ -196,7 +284,11 @@ export async function searchProjectText(args: {
     const matches: Array<{ path: string; line: number; text: string }> = [];
     const visit = async (entryPath: string) => {
       if (matches.length >= maxResults) return;
-      if (!resolved.outsideProject && isSameOrInside(excludedRuntimeHistoryRoot, entryPath)) return;
+      if (
+        !resolved.outsideProject
+        && isSameOrInside(excludedRuntimeHistoryRoot, entryPath)
+        && shouldHideRuntimeHistoryEntry(args.outputDir, entryPath, args)
+      ) return;
       if (excludeGeneratedHtml && isSameOrInside(generatedHtmlRoot, entryPath)) return;
       const info = await stat(entryPath);
       if (info.isDirectory()) {

@@ -37,6 +37,8 @@ async function runSupervisorScenario({
   responses,
   review,
   parentCompletionContext,
+  onParentTakeover,
+  onSettled,
   sourceText = "first line\n",
   tasks = [{ documentId: "source.txt", fromLine: 1, toLine: 1 }],
   languagePair = "en->zh-CN"
@@ -78,6 +80,12 @@ async function runSupervisorScenario({
       onStagingCandidateCheckpoint: async (checkpoint) => {
         checkpointPaths.push(checkpoint.candidatePath);
       },
+      onParentTakeover: onParentTakeover
+        ? async (details) => onParentTakeover(details, supervisor)
+        : undefined,
+      onSettled: onSettled
+        ? async (outcome) => onSettled(outcome, supervisor)
+        : undefined,
       parentCompletionContext
     });
     await supervisor.waitForAll();
@@ -324,5 +332,42 @@ assert.deepEqual(
   "the hidden parent completion must report only the failed assignment owned by that worker"
 );
 assert.equal(accumulatedParentMessages[0].details?.triggerTurn, true);
+
+{
+  const events = [];
+  let conflictDuringTakeover;
+  const takeoverRun = await runSupervisorScenario({
+    name: "review-takeover-before-settle",
+    responses: [
+      ...translationTurn("initial", "第一句"),
+      ...translationTurn("unchanged-repair", "第一句", true)
+    ],
+    review: async () => ({
+      accepted: false,
+      feedback: [{
+        line: 1,
+        reason: "semantic_incomplete: translate the omitted meaning from source line 1"
+      }]
+    }),
+    onParentTakeover: async () => {
+      events.push("takeover");
+    },
+    onSettled: async (_outcome, supervisor) => {
+      events.push("settled");
+      conflictDuringTakeover = supervisor.hasWriteConflict({
+        documentId: "source.txt",
+        fromLine: 1,
+        toLine: 1
+      });
+    }
+  });
+  assert.deepEqual(events, ["takeover", "settled"]);
+  assert.equal(
+    conflictDuringTakeover,
+    false,
+    "the taken-over range must leave the live child write lock before the batch settles"
+  );
+  assert.equal(takeoverRun.batch.subagents[0].failureDisposition, "parent_takeover_required");
+}
 
 console.log("ok translation review no-progress and changed-candidate limits terminate through the supervisor");

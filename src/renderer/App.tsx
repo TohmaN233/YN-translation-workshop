@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 
 import { buildPrompt } from "../shared/core/prompts.ts";
 import { YN_DEFAULT_SPLIT_SIZE } from "../shared/agent/piSessionContract.ts";
+import { normalizeHandwrittenCharacterRequiredTerms } from "../shared/validation/translationValidator.ts";
 import { getWorkflowTemplate, workflowTemplates, type WorkflowTemplateId } from "../shared/agent/workflowTemplates.ts";
 import {
   normalizeCustomPreserveRules,
@@ -74,7 +75,8 @@ interface AssetEditorState {
   characterPronouns: string;
   characterGenderConfidence: "confirmed" | "inferred" | "unknown";
   characterTermsOfAddress: string;
-  characterRequiredTerms: string;
+  characterRequiredSource: string;
+  characterRequiredTarget: string;
   characterForbiddenTerms: string;
   styleGuide: string;
 }
@@ -249,7 +251,8 @@ function App() {
     characterPronouns: "",
     characterGenderConfidence: "unknown",
     characterTermsOfAddress: "",
-    characterRequiredTerms: "",
+    characterRequiredSource: "",
+    characterRequiredTarget: "",
     characterForbiddenTerms: "",
     styleGuide: ""
   });
@@ -908,6 +911,14 @@ function App() {
       setStatus(t.requiredSourceOutput);
       return;
     }
+    if (
+      Boolean(assetEditor.characterRequiredSource.trim())
+      !== Boolean(assetEditor.characterRequiredTarget.trim())
+    ) {
+      setStatus(t.assetRequiredTermsIncomplete ?? "Required terms need both the spoken source word and its rendering.");
+      return;
+    }
+    try {
     const assets = await window.workshop.saveProjectAssets({
       outputDir: form.outputDir,
       characterEntry: {
@@ -918,7 +929,16 @@ function App() {
         ...(assetEditor.characterPronouns.trim() ? { pronouns: assetEditor.characterPronouns.trim() } : {}),
         genderConfidence: assetEditor.characterGenderConfidence,
         termsOfAddress: assetEditor.characterTermsOfAddress.trim() || "unknown",
-        requiredTerms: splitAssetList(assetEditor.characterRequiredTerms),
+        requiredTerms: normalizeHandwrittenCharacterRequiredTerms(
+          assetEditor.characterRequiredSource.trim() || assetEditor.characterRequiredTarget.trim()
+            ? [`${assetEditor.characterRequiredSource.trim()} -> ${assetEditor.characterRequiredTarget.trim()}`]
+            : [],
+          {
+            name: assetEditor.characterName.trim(),
+            target: assetEditor.characterTarget.trim(),
+            aliases: splitAssetList(assetEditor.characterAliases)
+          }
+        ),
         forbiddenTerms: splitAssetList(assetEditor.characterForbiddenTerms)
       }
     });
@@ -931,10 +951,14 @@ function App() {
       characterPronouns: "",
       characterGenderConfidence: "unknown",
       characterTermsOfAddress: "",
-      characterRequiredTerms: "",
+      characterRequiredSource: "",
+      characterRequiredTarget: "",
       characterForbiddenTerms: ""
     });
     setStatus(t.projectAssetsSaved ?? "Project assets saved.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function saveStyleGuide() {
@@ -1440,9 +1464,22 @@ function App() {
                     <input value={assetEditor.characterTermsOfAddress} onChange={(event) => patchAssetEditor({ characterTermsOfAddress: event.target.value })} />
                   </label>
                   <label>
-                    <span>required terms</span>
-                    <input value={assetEditor.characterRequiredTerms} onChange={(event) => patchAssetEditor({ characterRequiredTerms: event.target.value })} />
+                    <span>{t.assetRequiredSource ?? "Spoken source"}</span>
+                    <input
+                      value={assetEditor.characterRequiredSource}
+                      placeholder={t.assetRequiredSourcePlaceholder ?? "俺"}
+                      onChange={(event) => patchAssetEditor({ characterRequiredSource: event.target.value })}
+                    />
                   </label>
+                  <label>
+                    <span>{t.assetRequiredTarget ?? "Spoken rendering"}</span>
+                    <input
+                      value={assetEditor.characterRequiredTarget}
+                      placeholder={t.assetRequiredTargetPlaceholder ?? "吾"}
+                      onChange={(event) => patchAssetEditor({ characterRequiredTarget: event.target.value })}
+                    />
+                  </label>
+                  <p className="assetFieldHint">{t.assetRequiredTermsHint ?? "Use source -> target only for this character's quoted speech. Do not enter a character name."}</p>
                   <label>
                     <span>forbidden terms</span>
                     <input value={assetEditor.characterForbiddenTerms} onChange={(event) => patchAssetEditor({ characterForbiddenTerms: event.target.value })} />

@@ -131,6 +131,42 @@ function appliedReuseBaselineHash(record: TranslationReuseAuditRecord, candidate
   return sha256(`${maskedLines.join("\n")}${/\r?\n$/u.test(candidateText) ? "\n" : ""}`);
 }
 
+export async function refreshAppliedReuseBaseline(input: {
+  outputDir: string;
+  documentId: string;
+  candidatePath: string;
+}): Promise<boolean> {
+  const documentId = input.documentId.trim();
+  if (!documentId) return false;
+  const candidatePath = path.resolve(input.candidatePath);
+  return withAuditLock(input.outputDir, async () => {
+    const store = await readStore(input.outputDir);
+    const record = store.audits
+      .filter((audit) => (
+        audit.document.documentId === documentId
+        && audit.status === "applied"
+        && audit.resultCandidateHash
+        && audit.appliedDecision
+      ))
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    if (!record) return false;
+    let auditCandidatePath: string;
+    try {
+      auditCandidatePath = (await validatedAuditPaths(input.outputDir, record)).candidatePath;
+    } catch {
+      return false;
+    }
+    if (path.resolve(auditCandidatePath) !== candidatePath) return false;
+    const candidateText = await readFile(candidatePath, "utf8");
+    const nextHash = appliedReuseBaselineHash(record, candidateText);
+    if (nextHash === record.resultCandidateHash) return false;
+    record.resultCandidateHash = nextHash;
+    record.updatedAt = Date.now();
+    await writeStore(input.outputDir, store);
+    return true;
+  });
+}
+
 function auditStorePath(outputDir: string): string {
   return path.join(path.resolve(outputDir), AUDIT_STORE);
 }
@@ -597,10 +633,11 @@ async function prepareTranslationReuseAuditInStore(
       if (splitTextLines(sourceText).length !== splitTextLines(candidateText).length) {
         throw new Error(`The candidate lost line alignment after the translation reuse decision for ${input.documentId}.`);
       }
-      if (appliedReuseBaselineHash(applied, candidateText) !== applied.resultCandidateHash) {
-        throw new Error(
-          `A retained translation row changed after the applied reuse decision for ${input.documentId}. Restore it or start a clean retranslation before continuing.`
-        );
+      const currentBaseline = appliedReuseBaselineHash(applied, candidateText);
+      if (currentBaseline !== applied.resultCandidateHash) {
+        applied.resultCandidateHash = currentBaseline;
+        applied.updatedAt = Date.now();
+        return { value: summary(applied), changed: true };
       }
       return { value: summary(applied), changed: false };
     }
@@ -1024,10 +1061,14 @@ export async function listAppliedTranslationReuseAudits(
       throw new Error(`The candidate lost line alignment after the translation reuse decision for ${record.document.documentId}.`);
     }
     if (!record.resultCandidateHash || !record.appliedDecision) continue;
-    if (appliedReuseBaselineHash(record, candidateText) !== record.resultCandidateHash) {
-      throw new Error(
-        `A retained translation row changed after the applied reuse decision for ${record.document.documentId}. Run the reuse audit again before continuing.`
-      );
+    const listedBaseline = appliedReuseBaselineHash(record, candidateText);
+    if (listedBaseline !== record.resultCandidateHash) {
+      await refreshAppliedReuseBaseline({
+        outputDir,
+        documentId: record.document.documentId,
+        candidatePath
+      });
+      record.resultCandidateHash = listedBaseline;
     }
     const retainedLines = record.document.lines
       .filter((line) => retainsLine(line, record.appliedDecision!))
@@ -1110,10 +1151,17 @@ export async function planAppliedTranslationReuseTasks(input: {
       `Applied translation reuse candidate lost line alignment: source has ${sourceLines.length} lines and candidate has ${candidateLines.length}.`
     );
   }
-  if (!record.resultCandidateHash || appliedReuseBaselineHash(record, candidateText) !== record.resultCandidateHash) {
-    throw new Error(
-      `A retained translation row changed after the applied reuse decision for ${record.document.documentId}. Run the reuse audit again before planning workers.`
-    );
+  if (!record.resultCandidateHash) {
+    throw new Error(`Applied translation reuse evidence is incomplete for ${record.document.documentId}.`);
+  }
+  const plannedBaseline = appliedReuseBaselineHash(record, candidateText);
+  if (plannedBaseline !== record.resultCandidateHash) {
+    await refreshAppliedReuseBaseline({
+      outputDir: input.outputDir,
+      documentId: record.document.documentId,
+      candidatePath
+    });
+    record.resultCandidateHash = plannedBaseline;
   }
 
   const excluded = new Set((input.excludedLines ?? []).map((line) => {

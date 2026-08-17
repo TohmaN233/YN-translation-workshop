@@ -304,7 +304,7 @@ await test("legacy JSON character bible migrates once to the canonical Markdown 
         gender: "female",
         pronouns: "she/her",
         genderConfidence: "confirmed",
-        requiredTerms: ["咱家"]
+        requiredTerms: ["私 -> 咱家"]
       }]
     }), "utf8");
     const migratedReads = await Promise.all(
@@ -469,7 +469,7 @@ await test("character bible exposes explicit voice validator terms", async () =>
       characterEntry: {
         name: "遥娜",
         target: "遥娜",
-        requiredTerms: ["咱家"],
+        requiredTerms: ["私 -> 咱家"],
         forbiddenTerms: ["机器翻译腔"]
       }
     });
@@ -479,9 +479,31 @@ await test("character bible exposes explicit voice validator terms", async () =>
       target: "遥娜",
       aliases: undefined,
       genderConfidence: "unknown",
-      requiredTerms: ["咱家"],
+      requiredTerms: ["私 -> 咱家"],
       forbiddenTerms: ["机器翻译腔"]
     }]);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+await test("handwritten character required terms reject names and bare words", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "tw-assets-"));
+  try {
+    await assert.rejects(
+      saveProjectAssets({
+        outputDir,
+        characterEntry: { name: "遥娜", target: "遥娜", requiredTerms: ["咱家"] }
+      }),
+      /source -> target/i
+    );
+    await assert.rejects(
+      saveProjectAssets({
+        outputDir,
+        characterEntry: { name: "遥娜", target: "遥娜", requiredTerms: ["遥娜 -> 咱家"] }
+      }),
+      /cannot use a character name/i
+    );
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
@@ -568,7 +590,7 @@ await test("formal project assets can be edited through the schema-lite save API
         name: "遥娜",
         target: "遥娜",
         aliases: ["HARUNA"],
-        requiredTerms: ["咱家"],
+        requiredTerms: ["私 -> 咱家"],
         forbiddenTerms: ["机器翻译腔"]
       },
       styleGuide: "禁止：硬直译\n"
@@ -718,6 +740,8 @@ await test("asset approval is exposed through IPC and the React approval panel",
   assert.match(app, /window\.workshop\.openPath\(asset\.path\)/);
   assert.match(app, /function saveGlossaryEntry\(\)/);
   assert.match(app, /function saveCharacterEntry\(\)/);
+  assert.match(app, /assetRequiredSource/);
+  assert.match(app, /normalizeHandwrittenCharacterRequiredTerms/);
   assert.match(app, /function saveStyleGuide\(\)/);
   assert.match(app, /projectAssetEditor/);
   assert.match(app, /function glossaryAssetProposals\(\)/);

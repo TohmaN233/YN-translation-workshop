@@ -9,6 +9,7 @@ import {
   applyTranslationReuseAudit,
   applyTranslationReuseAudits,
   getTranslationReuseAuditSummary,
+  listAppliedTranslationReuseAudits,
   listCurrentTranslationReuseAudits,
   planTranslationReuseAuditTasks,
   prepareTranslationReuseAudit,
@@ -17,6 +18,7 @@ import {
   readTranslationReuseAuditSelection,
   recordTranslationReuseAuditBatch
 } from "../../src/main/agent/piNative/translationReuseAudit.ts";
+import { writeTranslationChunk } from "../../src/main/agent/writeTranslationChunk.ts";
 import { createYnDomainRunContract } from "../../src/main/agent/piNative/domainRunContract.ts";
 
 async function fixture(sourceLines, candidateLines) {
@@ -920,7 +922,7 @@ test("an already-applied all-reuse decision is recoverable after process restart
   }
 });
 
-test("a partially applied audit resumes after rejected rows are written but rejects retained-row mutation", async () => {
+test("a partially applied audit resumes after rejected rows are written and absorbs later retained-row edits", async () => {
   const work = await fixture(["Open.", "Save."], ["Open.", "保存。"]);
   try {
     const prepared = await prepareTranslationReuseAudit({
@@ -951,14 +953,56 @@ test("a partially applied audit resumes after rejected rows are written but reje
     assert.equal(restored.appliedFullyReused, false);
 
     await writeFile(work.candidatePath, "打开。\n另一个有效但未经审计的译文。", "utf8");
-    await assert.rejects(
-      prepareTranslationReuseAudit({
-        ...work,
-        documentId: "source.txt",
-        languagePair: "en->zh-CN"
-      }),
-      /retained translation row changed after the applied reuse decision/i
-    );
+    const afterEdit = await prepareTranslationReuseAudit({
+      ...work,
+      documentId: "source.txt",
+      languagePair: "en->zh-CN"
+    });
+    assert.equal(afterEdit.auditId, prepared.auditId);
+    assert.equal(afterEdit.status, "applied");
+  } finally {
+    await rm(work.outputDir, { recursive: true, force: true });
+  }
+});
+
+test("a Host write to a retained row updates the applied baseline instead of demanding another reuse audit", async () => {
+  const work = await fixture(["Open.", "Save."], ["Open.", "保存。"]);
+  try {
+    const prepared = await prepareTranslationReuseAudit({
+      ...work,
+      documentId: "source.txt",
+      languagePair: "en->zh-CN",
+      ownerSessionId: "pi-host-write"
+    });
+    await recordTranslationReuseAuditBatch({
+      outputDir: work.outputDir,
+      auditId: prepared.auditId,
+      documentId: "source.txt",
+      entries: [{ line: 1, verdict: "retranslate", reason: "Source remains untranslated." }]
+    });
+    await applyTranslationReuseAudit({
+      outputDir: work.outputDir,
+      auditId: prepared.auditId,
+      decision: "reuse_accepted"
+    });
+    const written = await writeTranslationChunk({
+      outputDir: work.outputDir,
+      sourcePaths: [work.sourcePath],
+      documentId: "source.txt",
+      fromLine: 2,
+      toLine: 2,
+      lines: ["现在保存。"]
+    });
+    assert.equal(written.ok, true, written.error);
+    const applied = await listAppliedTranslationReuseAudits(work.outputDir, "pi-host-write");
+    assert.equal(applied.length, 1);
+    assert.deepEqual(applied[0].retainedLines, [2]);
+    const again = await prepareTranslationReuseAudit({
+      ...work,
+      documentId: "source.txt",
+      languagePair: "en->zh-CN"
+    });
+    assert.equal(again.status, "applied");
   } finally {
     await rm(work.outputDir, { recursive: true, force: true });
   }

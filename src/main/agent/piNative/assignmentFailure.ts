@@ -47,6 +47,29 @@ export function isParentTakeoverAssignmentError(error: unknown): error is Parent
   return error instanceof ParentTakeoverAssignmentError;
 }
 
+export class ProviderAuthExpiredError extends NonRetryableAssignmentError {
+  readonly failureDisposition = "provider_auth_expired" as const;
+  readonly replaceWorker = true;
+  readonly requeueAssignment = true;
+
+  constructor(message: string, cause?: unknown) {
+    super(message, cause);
+    this.name = "ProviderAuthExpiredError";
+  }
+}
+
+const EXPIRED_PROVIDER_AUTH_ERROR = /OAuth2 access token could not be validated|access token is expired|token is expired and cannot be refreshed/i;
+
+export function isExpiredProviderAuthError(error: unknown): boolean {
+  if (error instanceof ProviderAuthExpiredError) return true;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return EXPIRED_PROVIDER_AUTH_ERROR.test(message);
+}
+
+export function isProviderAuthExpiredError(error: unknown): error is ProviderAuthExpiredError {
+  return error instanceof ProviderAuthExpiredError || isExpiredProviderAuthError(error);
+}
+
 export function isSubagentTransportExhaustedError(
   error: unknown
 ): error is SubagentTransportExhaustedError {

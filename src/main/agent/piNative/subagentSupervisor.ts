@@ -6,6 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core/node";
 import type { PiSessionPromptRequest } from "../../../shared/agent/piSessionContract.ts";
 import type { createPiModelSelection } from "./providerRegistry.ts";
 import {
+  isExpiredProviderAuthError,
   isNonRetryableAssignmentError,
   isParentTakeoverAssignmentError,
   isSubagentTransportExhaustedError,
@@ -238,6 +239,7 @@ interface StartBatchOptions<TTask, TResult> {
     onQuiescent: () => Promise<void> | void;
   };
   onSettled?: (outcome: YnSubagentBatchOutcome<TResult>) => Promise<void> | void;
+  onParentTakeover?: (details: ParentTakeoverAssignmentDetails) => Promise<void> | void;
   parentCompletionContext?: (outcome: YnSubagentBatchOutcome<TResult>) => {
     content?: string;
     details?: Record<string, unknown>;
@@ -414,6 +416,7 @@ export class YnSubagentSupervisor {
     reviewWorkerCount?: number;
     prepareChunkReview?: (review: PiTranslationChunkReviewRequest) => Promise<PreparedTranslationReview>;
     onSettled?: (outcome: YnSubagentBatchOutcome<PiTranslationSubagentResult>) => Promise<void> | void;
+    onParentTakeover?: (details: ParentTakeoverAssignmentDetails) => Promise<void> | void;
     parentCompletionContext?: (outcome: YnSubagentBatchOutcome<PiTranslationSubagentResult>) => {
       content?: string;
       details?: Record<string, unknown>;
@@ -724,6 +727,24 @@ export class YnSubagentSupervisor {
       if (activeScopes.some((active) => writeScopesOverlap(active, scope))) return true;
     }
     return false;
+  }
+
+  private releaseWriteScope(batchId: string, scope: YnSubagentWriteScope): boolean {
+    const scopes = this.activeWriteScopes.get(batchId);
+    if (!scopes) return false;
+    const remaining = scopes.filter((active) => !writeScopesOverlap(active, scope));
+    if (remaining.length === scopes.length) return false;
+    if (remaining.length > 0) this.activeWriteScopes.set(batchId, remaining);
+    else this.activeWriteScopes.delete(batchId);
+    console.info(JSON.stringify({
+      event: "yn.translation.takeover.write_scope_released",
+      batchId,
+      documentId: scope.documentId,
+      fromLine: scope.fromLine,
+      toLine: scope.toLine,
+      remainingScopes: remaining.length
+    }));
+    return true;
   }
 
   async notifyParent(message: AgentMessage): Promise<void> {
@@ -1192,6 +1213,23 @@ export class YnSubagentSupervisor {
       stageWaiters.clear();
     };
     const taskAttempts = new Map<TTask, number>();
+    const authReplacementAttempts = new Map<TTask, number>();
+    const requeueTask = (task: TTask): void => {
+      if (priorityTaskIdentities.has(task)) {
+        priorityTasks.unshift(task);
+        return;
+      }
+      if (options.taskStage) {
+        const stage = options.taskStage(task);
+        const queue = stagedQueues.get(stage);
+        if (!queue) {
+          throw new Error(`Cannot requeue an assignment for unknown stage ${stage}.`);
+        }
+        queue.unshift(task);
+        return;
+      }
+      queuedTasks.unshift(task);
+    };
     const claimNextTask = async (workerIndex: number): Promise<TTask | undefined> => {
       await waitForClaimGate();
       while (priorityTasks.length === 0 && activePriorityTasks > 0 && !fatalPriorityFailure) {
@@ -1406,6 +1444,7 @@ export class YnSubagentSupervisor {
               record.assignmentCount = (record.assignmentCount ?? 0) + 1;
               let retryCurrentTask = false;
               let stopWorkerAfterFailure = false;
+              let replacedExpiredAuth = false;
               activeAssignments += 1;
               try {
                 const taskRequest = options.requestForTask?.(task) ?? options.request;
@@ -1438,10 +1477,59 @@ export class YnSubagentSupervisor {
                     record.failureDisposition = error.failureDisposition;
                     record.parentTakeovers = [...(record.parentTakeovers ?? []), error.details];
                     replaceWorkerAfterFailure = true;
+                    if (options.onParentTakeover) {
+                      try {
+                        await options.onParentTakeover(error.details);
+                        const takeoverDocumentId = error.details.documentId?.trim();
+                        if (takeoverDocumentId) {
+                          this.releaseWriteScope(batchId, {
+                            documentId: takeoverDocumentId,
+                            fromLine: error.details.fromLine,
+                            toLine: error.details.toLine
+                          });
+                        }
+                      } catch (handoffError) {
+                        const handoffMessage = handoffError instanceof Error
+                          ? handoffError.message
+                          : String(handoffError);
+                        console.error(JSON.stringify({
+                          event: "yn.translation.takeover.handoff_failed",
+                          batchId,
+                          documentId: error.details.documentId,
+                          fromLine: error.details.fromLine,
+                          toLine: error.details.toLine,
+                          rejectedLines: error.details.rejectedLines,
+                          error: handoffMessage
+                        }));
+                        rememberFailure(handoffError);
+                      }
+                    }
                   }
                   if (isSubagentTransportExhaustedError(error)) {
                     record.failureDisposition = error.failureDisposition;
                   }
+                                    if (isExpiredProviderAuthError(error) && task) {
+                    const attempts = (authReplacementAttempts.get(task) ?? 0) + 1;
+                    authReplacementAttempts.set(task, attempts);
+                    if (attempts <= 1) {
+                      console.warn(JSON.stringify({
+                        event: "yn.translation.auth_expired_replace_worker",
+                        batchId,
+                        documentId: options.documentId?.(task),
+                        fromLine: options.range(task).fromLine,
+                        toLine: options.range(task).toLine,
+                        attempt: attempts,
+                        error: error instanceof Error ? error.message : String(error)
+                      }));
+                      requeueTask(task);
+                      replaceWorkerAfterFailure = true;
+                      stopWorkerAfterFailure = true;
+                      replacedExpiredAuth = true;
+                    }
+                  }
+                  if (replacedExpiredAuth) {
+                    // Keep the assignment in queue for a fresh runtime; do not fail the batch.
+                  } else {
                   stopWorkerAfterFailure = true;
                   const failedRange = options.range(task);
                   record.assignmentFailures = [
@@ -1462,12 +1550,13 @@ export class YnSubagentSupervisor {
                     fatalStagedFailure = { error, stage: options.taskStage(task) };
                     wakeStageWaiters();
                   }
+                  }
                 }
               }
               activeAssignments = Math.max(0, activeAssignments - 1);
               await notifyBlockedGateWhenQuiescent();
               if (!retryCurrentTask) {
-                completeTask(task, stopWorkerAfterFailure);
+                completeTask(task, stopWorkerAfterFailure && !replacedExpiredAuth);
                 task = stopWorkerAfterFailure ? undefined : await claimNextTask(workerIndex);
               }
             }

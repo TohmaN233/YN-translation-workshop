@@ -229,6 +229,17 @@ export async function countSourceLines(sourcePaths: string[]): Promise<number> {
   return splitTextLines(await readFile(sourcePath, "utf8")).length;
 }
 
+async function refreshCanonicalReuseBaseline(args: {
+  outputDir: string;
+  sourcePaths: string[];
+  documentId: string;
+  candidatePath: string;
+}): Promise<void> {
+  if (path.resolve(args.candidatePath) !== path.resolve(resolveTranslationCandidatePath(args))) return;
+  const { refreshAppliedReuseBaseline } = await import("./piNative/translationReuseAudit.ts");
+  await refreshAppliedReuseBaseline(args);
+}
+
 export async function writeTranslationChunk(args: WriteTranslationChunkArgs): Promise<WriteTranslationChunkResult> {
   const fromLine = Math.max(1, Math.floor(args.fromLine));
   const toLine = Math.max(fromLine, Math.floor(args.toLine));
@@ -291,6 +302,12 @@ export async function writeTranslationChunk(args: WriteTranslationChunkArgs): Pr
     }
 
     await writeTextFileAtomically(candidatePath, `${merged.join("\n")}\n`);
+    await refreshCanonicalReuseBaseline({
+      outputDir: args.outputDir,
+      sourcePaths: args.sourcePaths,
+      documentId: args.documentId,
+      candidatePath
+    });
 
     return {
       ok: true,
@@ -362,6 +379,12 @@ export async function writeTranslationLines(args: WriteTranslationLinesArgs): Pr
     while (merged.length < sourceLineCount) merged.push("");
     for (const entry of entries) merged[entry.line - 1] = entry.text;
     await writeTextFileAtomically(candidatePath, `${merged.join("\n")}\n`);
+    await refreshCanonicalReuseBaseline({
+      outputDir: args.outputDir,
+      sourcePaths: args.sourcePaths,
+      documentId: args.documentId,
+      candidatePath
+    });
     return {
       ok: true,
       path: candidatePath,

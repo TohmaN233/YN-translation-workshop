@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   validateTranslationCandidate,
+  normalizeHandwrittenCharacterRequiredTerms,
   splitTextLines,
   looksLikeCodePayload,
   parseSourceLanguageFromPair,
@@ -502,17 +503,88 @@ await test("character aliases satisfy character name warnings", () => {
   assert.equal(result.warnings.filter((f) => f.code === "character_name_missing").length, 0);
 });
 
-await test("character voice required and forbidden terms warn when explicit rules are violated", () => {
-  const result = validateTranslationCandidate("遥娜は笑った。", "遥娜露出了机器翻译腔的笑容。", {
+await test("character voice required terms warn only when that character speaks the mapped source word", () => {
+  const violated = validateTranslationCandidate("遥娜は「私が笑った」と言った。", "遥娜露出了机器翻译腔的笑容。", {
     characterEntries: [{
       name: "遥娜",
-      requiredTerms: ["咱家"],
+      requiredTerms: ["私 -> 咱家"],
       forbiddenTerms: ["机器翻译腔"]
     }]
   });
-  assert.equal(result.ok, true);
-  assert.ok(result.warnings.some((f) => f.code === "character_voice_required_missing"));
-  assert.ok(result.warnings.some((f) => f.code === "character_voice_forbidden_term"));
+  assert.equal(violated.ok, true);
+  assert.ok(violated.warnings.some((f) => f.code === "character_voice_required_missing"));
+  assert.ok(violated.warnings.some((f) => f.code === "character_voice_forbidden_term"));
+
+  const narration = validateTranslationCandidate("遥娜は私が笑った。", "遥娜笑了。", {
+    characterEntries: [{ name: "遥娜", requiredTerms: ["私 -> 咱家"] }]
+  });
+  assert.equal(narration.warnings.some((f) => f.code === "character_voice_required_missing"), false);
+
+  const unattributedQuote = validateTranslationCandidate("「私が笑った」。", "我笑了。", {
+    characterEntries: [{ name: "遥娜", requiredTerms: ["私 -> 咱家"] }]
+  });
+  assert.equal(unattributedQuote.warnings.some((f) => f.code === "character_voice_required_missing"), false);
+
+  const nameAsSource = validateTranslationCandidate("遥娜は「遥娜が行きます」と言った。", "遥娜说她会去。", {
+    characterEntries: [{ name: "遥娜", requiredTerms: ["遥娜 -> 咱家"] }]
+  });
+  assert.equal(nameAsSource.warnings.some((f) => f.code === "character_voice_required_missing"), false);
+
+  const bareName = validateTranslationCandidate("遥娜は笑った。", "遥娜笑了。", {
+    characterEntries: [{ name: "遥娜", requiredTerms: ["咱家"] }]
+  });
+  assert.equal(bareName.warnings.some((f) => f.code === "character_voice_required_missing"), false);
+});
+
+await test("a registered short target satisfies a longer glossary target", () => {
+  const result = validateTranslationCandidate("冴木はモニタを見た。", "冴木盯着监视器。", {
+    languagePair: "ja->zh-CN",
+    glossaryEntries: [
+      { source: "冴木タツヤ", target: "冴木达也", aliases: ["冴木", "冴木博士"] },
+      { source: "冴木", target: "冴木达也", aliases: ["冴木"] }
+    ]
+  });
+  assert.equal(result.warnings.some((finding) => finding.code === "glossary_missing"), false, result.summary);
+});
+
+await test("a long glossary target covers its registered short form", () => {
+  const result = validateTranslationCandidate("冴木タツヤはモニタを見た。", "冴木达也盯着监视器。", {
+    languagePair: "ja->zh-CN",
+    glossaryEntries: [
+      { source: "冴木タツヤ", target: "冴木达也", aliases: ["冴木"] },
+      { source: "冴木", target: "冴木" }
+    ]
+  });
+  assert.equal(result.warnings.some((finding) => finding.code === "glossary_missing"), false, result.summary);
+});
+
+await test("character required official names are not voice misses when a short alias is present", () => {
+  const result = validateTranslationCandidate("冴木はモニタを見た。", "冴木盯着监视器。", {
+    languagePair: "ja->zh-CN",
+    characterEntries: [{
+      name: "冴木タツヤ",
+      target: "冴木达也",
+      aliases: ["冴木", "冴木博士"],
+      requiredTerms: ["冴木达也"]
+    }]
+  });
+  assert.equal(result.warnings.some((finding) => finding.code === "character_voice_required_missing"), false, result.summary);
+  assert.equal(result.warnings.some((finding) => finding.code === "character_name_missing"), false, result.summary);
+});
+
+await test("handwritten required terms must be speech mappings and cannot be names", () => {
+  assert.deepEqual(
+    normalizeHandwrittenCharacterRequiredTerms(["俺 -> 吾"], { name: "冴木", target: "冴木达也", aliases: ["冴木博士"] }),
+    ["俺 -> 吾"]
+  );
+  assert.throws(
+    () => normalizeHandwrittenCharacterRequiredTerms(["冴木达也"], { name: "冴木", target: "冴木达也" }),
+    /source -> target/i
+  );
+  assert.throws(
+    () => normalizeHandwrittenCharacterRequiredTerms(["冴木 -> 吾"], { name: "冴木タツヤ", target: "冴木达也", aliases: ["冴木"] }),
+    /cannot use a character name/i
+  );
 });
 
 await test("style guide forbidden terms warn when candidate contains a forbidden term", () => {
@@ -527,7 +599,7 @@ await test("style and voice rule scores summarize explicit asset compliance", ()
   const result = validateTranslationCandidate("遥娜は笑った。\n彼は去った。", "遥娜露出了机器翻译腔的笑容。\n他走了。", {
     characterEntries: [{
       name: "遥娜",
-      requiredTerms: ["咱家"],
+      requiredTerms: ["私 -> 咱家"],
       forbiddenTerms: ["机器翻译腔"]
     }],
     styleForbiddenTerms: ["机器翻译腔"]

@@ -75,25 +75,58 @@ async function fixture() {
   };
 }
 
-await test("rejects sourceText that does not exactly match the bound source line", async () => {
+await test("Host overwrites provided sourceText with the bound source line", async () => {
   const fx = await fixture();
   try {
     const result = await fx.write(fx.finding({ sourceText: "source TWO" }));
-    assert.equal(result.ok, false);
-    assert.match(result.error ?? "", /M1-001.*sourceText.*line 2/i);
-    await assert.rejects(access(fx.reportPath), { code: "ENOENT" });
+    assert.equal(result.ok, true);
+    const report = JSON.parse(await readFile(fx.reportPath, "utf8"));
+    assert.equal(report.findings[0].sourceText, "source two");
   } finally {
     await fx.close();
   }
 });
 
-await test("rejects currentTranslation that does not exactly match the bound translation line", async () => {
+await test("Host overwrites provided currentTranslation with the bound translation line", async () => {
   const fx = await fixture();
   try {
     const result = await fx.write(fx.finding({ currentTranslation: "错误译文" }));
-    assert.equal(result.ok, false);
-    assert.match(result.error ?? "", /M1-001.*currentTranslation.*line 2/i);
-    await assert.rejects(access(fx.reportPath), { code: "ENOENT" });
+    assert.equal(result.ok, true);
+    const report = JSON.parse(await readFile(fx.reportPath, "utf8"));
+    assert.equal(report.findings[0].currentTranslation, "译文二");
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("Host fills omitted sourceText and currentTranslation from the bound line", async () => {
+  const fx = await fixture();
+  try {
+    const { sourceText, currentTranslation, ...lineOnly } = fx.finding();
+    const result = await fx.write(lineOnly);
+    assert.equal(result.ok, true, result.error);
+    const report = JSON.parse(await readFile(fx.reportPath, "utf8"));
+    assert.equal(report.findings[0].sourceText, "source two");
+    assert.equal(report.findings[0].currentTranslation, "译文二");
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("refuses to replace existing findings with an empty list", async () => {
+  const fx = await fixture();
+  try {
+    const seeded = await fx.write(fx.finding());
+    assert.equal(seeded.ok, true, seeded.error);
+    const wiped = await writeProofreadFindings({
+      ...fx.baseArgs,
+      replaceDocument: true,
+      content: "[]"
+    });
+    assert.equal(wiped.ok, false);
+    assert.match(wiped.error ?? "", /Refusing to replace 1 existing proofread finding/i);
+    const report = JSON.parse(await readFile(fx.reportPath, "utf8"));
+    assert.equal(report.findings.length, 1);
   } finally {
     await fx.close();
   }
@@ -199,7 +232,14 @@ await test("rejects out-of-bounds and cross-line source/translation bindings", a
       currentTranslation: "out of bounds"
     }));
     assert.equal(translationResult.ok, false);
-    assert.match(translationResult.error ?? "", /M1-001.*same aligned line/i);
+    assert.match(translationResult.error ?? "", /M1-001.*translationLine 4.*3 translation lines/i);
+
+    const crossResult = await fx.write(fx.finding({
+      sourceLine: 1,
+      translationLine: 2
+    }));
+    assert.equal(crossResult.ok, false);
+    assert.match(crossResult.error ?? "", /M1-001.*same aligned line/i);
     await assert.rejects(access(fx.reportPath), { code: "ENOENT" });
   } finally {
     await fx.close();
@@ -391,7 +431,7 @@ await test("rejects the whole batch instead of silently dropping a malformed fin
   const fx = await fixture();
   try {
     const malformed = fx.finding({ id: "M1-002" });
-    delete malformed.currentTranslation;
+    delete malformed.suggestedFix;
     const result = await writeProofreadFindings({
       ...fx.baseArgs,
       content: JSON.stringify([fx.finding(), malformed])
@@ -723,8 +763,8 @@ await test("document replacement validates before atomically replacing only its 
         id: "H1-002",
         severity: "H1",
         type: "accuracy",
-        sourceLine: 1,
-        translationLine: 1,
+        sourceLine: 9,
+        translationLine: 9,
         sourceText: "source a",
         currentTranslation: "错误绑定",
         suggestedFix: "新修订甲",

@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import path from "node:path";
 
 import { parseGlossaryText } from "../../shared/core/glossary.ts";
+import { normalizeHandwrittenCharacterRequiredTerms } from "../../shared/validation/translationValidator.ts";
 import { writeTextFileAtomically } from "../atomicFile.ts";
 import { patchProjectStateIfUnchanged, readProjectState } from "../projectState.ts";
 import { readTranslationMemoryStats, type TranslationMemoryStats, translationMemoryPath } from "./translationMemory.ts";
@@ -1099,6 +1100,18 @@ async function saveProjectAssetsUnlocked(args: {
   let nextCharacters: Record<string, unknown>[] | undefined;
   if (args.characterEntry !== undefined) {
     assertFormalAssetEntry("character_bible", args.characterEntry, paths.characterBible);
+    const requiredTerms = Array.isArray(args.characterEntry.requiredTerms)
+      ? args.characterEntry.requiredTerms.map((value) => String(value))
+      : [];
+    if (requiredTerms.length > 0) {
+      args.characterEntry.requiredTerms = normalizeHandwrittenCharacterRequiredTerms(requiredTerms, {
+        name: typeof args.characterEntry.name === "string" ? args.characterEntry.name : undefined,
+        target: typeof args.characterEntry.target === "string" ? args.characterEntry.target : undefined,
+        aliases: Array.isArray(args.characterEntry.aliases)
+          ? args.characterEntry.aliases.map((value) => String(value))
+          : undefined
+      });
+    }
     nextCharacters = mergeEntry("character_bible", currentCharacters, args.characterEntry);
     assertFormalAssetEntries("character_bible", nextCharacters, paths.characterBible);
   }

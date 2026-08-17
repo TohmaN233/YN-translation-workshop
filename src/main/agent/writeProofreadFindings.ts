@@ -35,6 +35,8 @@ export interface WriteProofreadFindingsArgs {
    * Only the Host may derive this from a current hash-bound proofread scope.
    */
   replaceRange?: { fromLine: number; toLine: number };
+  /** Host-owned ids to remove from the current artifact before merging incoming findings. */
+  dropFindingIds?: string[];
   /** Host-owned deterministic risks for the exact lines covered by this write. */
   mechanicalScan?: {
     scopeLines: number[];
@@ -350,14 +352,15 @@ function parseFindingsContent(content: string, chunkLabel?: string): ProofreadFi
         "targetText"
       ]);
       const exactSourceText = exactRecordString(record, ["sourceText", "source", "src", "original"]);
+      const sourceLine = finding.sourceLine ?? 0;
       const normalized: ProofreadFinding = {
         id: finding.id,
         severity: finding.severity,
         type: finding.type,
-        sourceLine: finding.sourceLine ?? 0,
-        translationLine: finding.translationLine ?? finding.sourceLine ?? 0,
-        sourceText: exactSourceText ?? finding.sourceText,
-        currentTranslation: exactCurrentTranslation ?? finding.currentTranslation,
+        sourceLine,
+        translationLine: finding.translationLine ?? sourceLine,
+        sourceText: exactSourceText ?? finding.sourceText ?? "",
+        currentTranslation: exactCurrentTranslation ?? finding.currentTranslation ?? "",
         suggestedFix: finding.suggestedFix,
         rationale: finding.rationale
       };
@@ -365,8 +368,6 @@ function parseFindingsContent(content: string, chunkLabel?: string): ProofreadFi
       if (finding.needsVerification === true) normalized.needsVerification = true;
       if (!(
         normalized.id && normalized.severity && normalized.type
-        && exactSourceText !== undefined
-        && exactCurrentTranslation !== undefined
         && normalized.suggestedFix && normalized.rationale
         && normalized.sourceLine > 0 && normalized.translationLine > 0
       )) {
@@ -591,6 +592,35 @@ async function readBoundTranslationLines(args: WriteProofreadFindingsArgs): Prom
   }
 }
 
+function bindFindingAlignedTexts(
+  findings: ProofreadFinding[],
+  sourceLines: string[],
+  translationLines: string[]
+): ProofreadFinding[] {
+  return findings.map((finding) => {
+    if (finding.sourceLine > sourceLines.length) {
+      throw new Error(
+        `Finding ${finding.id} sourceLine ${finding.sourceLine} is out of bounds for ${sourceLines.length} source lines.`
+      );
+    }
+    if (finding.translationLine > translationLines.length) {
+      throw new Error(
+        `Finding ${finding.id} translationLine ${finding.translationLine} is out of bounds for ${translationLines.length} translation lines.`
+      );
+    }
+    if (finding.sourceLine !== finding.translationLine) {
+      throw new Error(
+        `Finding ${finding.id} must bind sourceLine and translationLine to the same aligned line.`
+      );
+    }
+    return {
+      ...finding,
+      sourceText: sourceLines[finding.sourceLine - 1] ?? "",
+      currentTranslation: translationLines[finding.translationLine - 1] ?? ""
+    };
+  });
+}
+
 function assertSourceBindings(findings: ProofreadFinding[], sourceLines: string[]): void {
   for (const finding of findings) {
     if (finding.sourceLine > sourceLines.length) {
@@ -772,10 +802,15 @@ async function writeFindingsJson(filePath: string, args: WriteProofreadFindingsA
   replacedFindingCount: number;
   totalFindingCount: number;
 }> {
-  const incoming = parseFindingsContent(String(args.content ?? ""), args.chunkLabel);
+  const incoming = parseFindingsContent(String(args.content ?? "[]"), args.chunkLabel);
   if (incoming.some(isHostMechanicalFinding)) {
     throw new Error("Incoming model findings cannot define Host-owned mechanical scan entries.");
   }
+  const dropFindingIds = [...new Set((args.dropFindingIds ?? []).map((id, index) => {
+    const value = id.trim();
+    if (!value) throw new Error(`dropFindingIds[${index}] must be a non-empty finding id.`);
+    return value;
+  }))];
   const replaceRange = normalizeReplacementRange(args.replaceRange);
   if (args.replaceDocument && replaceRange) {
     throw new Error("replaceDocument and replaceRange cannot be used together.");
@@ -841,6 +876,7 @@ async function writeFindingsJson(filePath: string, args: WriteProofreadFindingsA
         );
       }
     }
+    incoming.splice(0, incoming.length, ...bindFindingAlignedTexts(incoming, sourceLines, translationLines));
     assertSourceBindings(incoming, sourceLines);
     assertTranslationBindings(incoming, translationLines);
     const mechanicalScan = normalizeMechanicalScan(args.mechanicalScan, sourceLines, translationLines);
@@ -853,11 +889,27 @@ async function writeFindingsJson(filePath: string, args: WriteProofreadFindingsA
       : existing?.schemaVersion === "1.0"
         ? existing.findings
         : [];
-    const rangeRetainedExisting = args.replaceDocument
+    if (dropFindingIds.length > 0) {
+      const knownIds = new Set(existingFindings.map((finding) => finding.id));
+      for (const id of dropFindingIds) {
+        if (!knownIds.has(id)) {
+          throw new Error(`dropFindingIds names unknown finding ${id}.`);
+        }
+      }
+    }
+    if (args.replaceDocument && incoming.length === 0 && dropFindingIds.length === 0 && existingFindings.length > 0) {
+      throw new Error(
+        `Refusing to replace ${existingFindings.length} existing proofread finding(s) with an empty list. `
+          + "After Host-planned children write findings, call finalizeProofreadReport. "
+          + "Use dropFindingIds to remove specific false positives."
+      );
+    }
+    const rangeRetainedExisting = (args.replaceDocument
       ? []
       : replaceRange
         ? existingFindings.filter((finding) => !findingTouchesRange(finding, replaceRange))
-        : existingFindings;
+        : existingFindings
+    ).filter((finding) => !dropFindingIds.includes(finding.id));
     const retainedExisting = mechanicalScan
       ? rangeRetainedExisting.filter((finding) => (
           !isHostMechanicalFinding(finding) || !mechanicalScan.scopeLines.has(finding.sourceLine)
@@ -919,9 +971,27 @@ async function writeFindingsJson(filePath: string, args: WriteProofreadFindingsA
   });
 }
 
+export async function summarizeProofreadFindingsArtifact(args: {
+  outputDir: string;
+  sourcePaths: string[];
+  documentId: string;
+  proofreadOutputDir?: string;
+  reportScope?: ProofreadReportScope;
+}): Promise<{ path: string; exists: boolean; findingCount: number }> {
+  const filePath = resolveProofreadReportPath({ ...args, kind: "findings_json" });
+  resolveProjectPath(args.outputDir, filePath);
+  const existing = await readExistingFindings(filePath);
+  if (!existing) return { path: filePath, exists: false, findingCount: 0 };
+  const findings = args.reportScope?.kind === "folder" && existing.schemaVersion === "2.0"
+    ? existing.findings.filter((finding) => finding.documentId === args.documentId)
+    : existing.findings;
+  return { path: filePath, exists: true, findingCount: findings.length };
+}
+
 export async function writeProofreadFindings(args: WriteProofreadFindingsArgs): Promise<WriteProofreadFindingsResult> {
   const content = String(args.content ?? "").trim();
-  if (!content) {
+  const dropFindingIds = args.dropFindingIds ?? [];
+  if (!content && dropFindingIds.length === 0) {
     return {
       ok: false,
       kind: args.kind,

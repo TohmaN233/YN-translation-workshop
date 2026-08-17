@@ -2842,15 +2842,15 @@ await test("the first full proofread write validates before replacing the existi
           id: "H1-new",
           severity: "H1",
           type: "accuracy",
-          sourceLine: 2,
-          translationLine: 2,
+          sourceLine: 9,
+          translationLine: 9,
           sourceText: "two",
           currentTranslation: "错误绑定",
           suggestedFix: "新建议",
           rationale: "invalid incoming replacement"
         }]
       }),
-      /currentTranslation.*line 2/i
+      /sourceLine 9.*out of bounds/i
     );
     assert.equal(await readFile(seeded.path, "utf8"), reportBefore);
     assert.equal(proofreadDocumentHostState(proofreadState, "source.txt").reportInitialized, false);
@@ -3776,7 +3776,15 @@ await test("final warning review is non-blocking validation work and covers char
     assert.equal(firstValidation.details.validation.warningReviewComplete, false);
     assert.equal(firstValidation.details.validation.warningReviewDebtCount, 1);
     assert.match(domainRun.incompleteReasons().join("\n"), /final warning review/i);
+    assert.match(String(firstValidation.details.nextAction || ""), /Ask the user whether to judge/i);
+    assert.equal(domainRun.awaitingUserInput, true);
+    assert.equal(domainRun.nextRepairPrompt(), undefined);
+    await assert.rejects(
+      execute(fx.tool("inspectTranslationWarnings")),
+      /Ask the user whether to judge/i
+    );
 
+    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
     const warningAudit = await execute(fx.tool("inspectTranslationWarnings"));
     assert.equal(warningAudit.details.candidatePath, candidatePath);
     assert.equal(warningAudit.details.selectedWarningCount, 1);
@@ -3836,6 +3844,7 @@ await test("final warning verdicts roll back when Host persistence fails", async
     alignmentState.ranges["source.txt"] = [coverage];
 
     await execute(fx.tool("validateTranslationArtifact"));
+    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
     const warningAudit = await execute(fx.tool("inspectTranslationWarnings"));
     const before = structuredClone(alignmentState);
     rejectPersistence = true;
@@ -3965,6 +3974,7 @@ await test("a true-positive final warning becomes exact repair debt instead of r
     alignmentState.ranges["source.txt"] = [acceptedCoverage];
 
     await execute(fx.tool("validateTranslationArtifact"));
+    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
     const warningAudit = await execute(fx.tool("inspectTranslationWarnings"));
     const recorded = await execute(fx.tool("recordTranslationWarningChecks"), {
       auditId: warningAudit.details.auditId,
@@ -5240,6 +5250,134 @@ await test("exhausted review repair transfers hash-current staging to an immedia
     assert.equal(reviewed.details.decision, "accepted");
     const validation = await execute(tool("validateTranslationArtifact"));
     assert.equal(validation.details.validation.accepted, true);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+await test("parent takeover promotes staging before the translation batch settles", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-parent-takeover-live-"));
+  const sourcePath = path.join(outputDir, "source.txt");
+  await writeFile(sourcePath, "こんにちは\n中間\nさようなら\n", "utf8");
+  let started;
+  const subagents = {
+    hasRunning: () => true,
+    hasWriteConflict: () => false,
+    startTranslationBatch(options) {
+      started = options;
+      return {
+        id: options.batchId,
+        kind: "translation",
+        status: "running",
+        startedAt: 1,
+        subagents: []
+      };
+    }
+  };
+  const request = {
+    outputDir,
+    sourcePath,
+    sessionId: "pi_parent_takeover_live",
+    prompt: "Workflow: yn-translation-v1.",
+    workflowIntent: "translation",
+    providerId: "test",
+    modelId: "test",
+    languagePair: "ja->zh-CN",
+    subagentEnabled: true,
+    subagentCount: 2,
+    reviewSubagentCount: 1,
+    splitSize: 500
+  };
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: true,
+    folderSource: false,
+    subagentEnabled: true,
+    subagentCount: 2
+  });
+  const translationAlignmentState = createTranslationAlignmentHostState();
+  const tools = createYnDomainTools({
+    request,
+    publishCustomMessage: async () => {},
+    subagents,
+    domainRun,
+    translationAlignmentState
+  });
+  const tool = (name) => tools.find((entry) => entry.name === name);
+  try {
+    await execute(tool("inspectTranslationContext"));
+    const run = await execute(tool("runTranslationSubagents"));
+    const stagingPath = await prepareTranslationStagingCandidate({
+      outputDir,
+      sourcePaths: [sourcePath],
+      documentId: "source.txt",
+      sessionId: request.sessionId,
+      subagentId: "failed-worker",
+      assignmentId: "source.txt:L1-L3"
+    });
+    await writeFile(stagingPath, "错误问候\n中间\n错误告别\n", "utf8");
+    await started.onStagingCandidateCheckpoint({
+      documentId: "source.txt",
+      fromLine: 1,
+      toLine: 3,
+      candidatePath: stagingPath,
+      terminologyRepairLines: [],
+      accepted: true,
+      requiredLines: [1, 3],
+      repairIssues: [
+        { absoluteLine: 1, code: "semantic_mistranslation", detail: "translate the greeting" },
+        { absoluteLine: 3, code: "semantic_mistranslation", detail: "translate the farewell" }
+      ]
+    });
+    for (const check of translationAlignmentState.ranges["source.txt"][0].checks) {
+      if (check.line === 2) check.verdict = "aligned";
+    }
+    const candidateHash = createHash("sha256")
+      .update(JSON.stringify({ fromLine: 1, toLine: 3, candidate: ["错误问候", "中间", "错误告别"] }))
+      .digest("hex");
+    const takeover = {
+      documentId: "source.txt",
+      fromLine: 1,
+      toLine: 3,
+      rejectedLines: [1, 3],
+      feedback: "L1/L3 semantic_mistranslation: translate the greeting and farewell",
+      stagingCandidatePath: stagingPath,
+      candidateHash
+    };
+    await started.onParentTakeover(takeover);
+
+    const canonicalPath = resolveTranslationCandidatePath({
+      outputDir,
+      sourcePaths: [sourcePath],
+      documentId: "source.txt"
+    });
+    assert.equal(await readFile(canonicalPath, "utf8"), "错误问候\n中间\n错误告别\n");
+    assert.match(translationAlignmentState.ranges["source.txt"][0].auditId, /^alignment-mutation-/);
+    assert.equal(translationAlignmentState.ranges["source.txt"][0].candidatePath, canonicalPath);
+    const liveRead = await execute(tool("readTranslationLines"), { fromLine: 1, toLine: 3 });
+    assert.deepEqual(liveRead.details.lines, ["错误问候", "中间", "错误告别"]);
+
+    await started.onSettled({
+      batch: {
+        id: run.details.batchId,
+        status: "failed",
+        subagents: [{ id: "failed-worker", failureDisposition: "parent_takeover_required", parentTakeovers: [takeover] }]
+      },
+      results: [],
+      failures: [{
+        documentId: "source.txt",
+        fromLine: 1,
+        toLine: 3,
+        error: "review repair exhausted",
+        failureDisposition: "parent_takeover_required"
+      }],
+      error: new Error("review repair exhausted")
+    });
+    assert.equal(await readFile(canonicalPath, "utf8"), "错误问候\n中间\n错误告别\n");
+    assert.match(translationAlignmentState.ranges["source.txt"][0].auditId, /^alignment-mutation-/);
+    const completion = started.parentCompletionContext();
+    assert.equal(completion.details.parentTakeoverReady, true);
+    assert.deepEqual(completion.details.parentTakeovers[0].rejectedLines, [1, 3]);
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
@@ -7398,9 +7536,10 @@ await test("proofread system prompt orders Host prescan before semantic child re
     assert.match(prompt, /useful worker count up to 5/i);
     assert.match(prompt, /Host owns sampling or split assignments, coverage, and replacement batches/i);
     assert.match(prompt, /Children review only/i);
-    assert.match(prompt, /writeProofreadFindings.*finalizeProofreadReport/i);
-    assert.match(prompt, /inspector and finalizer typed results are authoritative/i);
-    assert.match(prompt, /do not reread the Host-owned report JSON, glossary, or candidate files/i);
+    assert.match(prompt, /proofreadWrapUp is authoritative/i);
+    assert.match(prompt, /writeProofreadFindings only accepts line numbers/i);
+    assert.match(prompt, /finalizeProofreadReport/i);
+    assert.match(prompt, /empty findings list cannot wipe existing findings/i);
     assert.doesNotMatch(prompt, /full deterministic H3\/H4\/H7\/H8\/H9|assignments of at most proofreadSplitSize/i);
   } finally {
     await fx.close();
@@ -7547,7 +7686,7 @@ await test("resumeYnWorkflow is idempotent when the workflow is already active",
   }
 });
 
-await test("an exhausted assignment cannot auto-resume through stale tools but a fresh user turn can resume it", async () => {
+await test("resumeYnWorkflow clears an exhausted-assignment pause without a second permission gate", async () => {
   const domainRun = createYnDomainRunContract({
     workflowIntent: "translation",
     fullWorkflow: true,
@@ -7573,22 +7712,9 @@ await test("an exhausted assignment cannot auto-resume through stale tools but a
     });
     domainRun.recordSubagentBatchFailure("translation", "failed-batch", ["source.txt"]);
 
-    await assert.rejects(
-      execute(fx.tool("resumeYnWorkflow")),
-      /fresh explicit user prompt|Hidden completion follow-ups/i
-    );
     const pauseId = domainRun.recoveryPauseId;
     assert.ok(pauseId);
-
-    const freshTools = createYnDomainTools({
-      request: { ...fx.request, prompt: "继续失败后保留的任务。" },
-      publishCustomMessage: async () => {},
-      subagents: fx.subagents,
-      domainRun
-    });
-    const freshResume = freshTools.find((tool) => tool.name === "resumeYnWorkflow");
-    assert.ok(freshResume);
-    const result = await execute(freshResume);
+    const result = await execute(fx.tool("resumeYnWorkflow"));
     assert.equal(result.details.status, "recovery_resumed");
     assert.equal(result.details.pauseId, pauseId);
     assert.equal(domainRun.recoveryPauseId, undefined);
@@ -8022,6 +8148,7 @@ await test("final warning review preserves unrelated verdicts and exposes the ca
     alignmentState.ranges["source.txt"] = [coverage];
 
     await execute(fx.tool("validateTranslationArtifact"));
+    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
     const firstPage = await execute(fx.tool("inspectTranslationWarnings"));
     const firstRow = firstPage.details.windows.flatMap((window) => window.rows)
       .find((row) => row.line === 1 && row.selected);
@@ -8195,6 +8322,7 @@ await test("final warning review cannot rewrite a canonical character target out
     for (const check of coverage.checks) check.verdict = "aligned";
     alignmentState.ranges["source.txt"] = [coverage];
     await execute(fx.tool("validateTranslationArtifact"));
+    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
     await execute(fx.tool("inspectTranslationWarnings"));
     await assert.rejects(
       execute(fx.tool("writeProjectFile"), {
@@ -8204,6 +8332,192 @@ await test("final warning review cannot rewrite a canonical character target out
       /cannot be hand-authored.*typed Host discovery\/resolution tools/i
     );
     assert.equal(await readFile(characterPath, "utf8"), canonical);
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("exhausted assignment pause does not block parent-owned exact writes", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: true,
+    subagentEnabled: true,
+    subagentCount: 2
+  });
+  const fx = await fixture({
+    domainRun,
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      languagePair: "ja->zh-CN",
+      subagentEnabled: true,
+      subagentCount: 2
+    }
+  }, "一行目です。\n二行目です。\n");
+  try {
+    await execute(fx.tool("inspectTranslationContext"));
+    await execute(fx.tool("writeTranslationChunk"), {
+      fromLine: 1,
+      toLine: 2,
+      lines: ["这是第一行。", "这是第二行。"]
+    });
+    domainRun.recordSubagentBatchStarted("translation", "batch_exhausted_pause", {
+      taskCount: 1,
+      workerCount: 1,
+      documentIds: ["source.txt"],
+      assignmentCounts: { "source.txt": 1 }
+    });
+    domainRun.recordSubagentBatchFailure("translation", "batch_exhausted_pause", ["source.txt"]);
+    assert.ok(domainRun.recoveryPauseId);
+    const repaired = await execute(fx.tool("writeTranslationChunk"), {
+      fromLine: 1,
+      toLine: 1,
+      lines: ["这是第一行修订。"]
+    });
+    assert.equal(repaired.details.result.ok, true, JSON.stringify(repaired.details));
+    await assert.rejects(
+      () => execute(fx.tool("runTranslationSubagents"), { workerCount: 1 }),
+      /Call resumeYnWorkflow before starting another Host-owned child batch/i
+    );
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("parent mutation alignment remains available while children own other write ranges", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: true,
+    subagentEnabled: true,
+    subagentCount: 3
+  });
+  const translationAlignmentState = createTranslationAlignmentHostState();
+  const sourceLines = ["一行目です。", "二行目です。", "三行目です。"];
+  const fx = await fixture({
+    domainRun,
+    translationAlignmentState,
+    subagents: {
+      hasRunning: () => true,
+      hasWriteConflict: ({ fromLine, toLine }) => fromLine <= 2 && toLine >= 2
+    },
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      languagePair: "ja->zh-CN",
+      subagentEnabled: true,
+      subagentCount: 3
+    }
+  }, `${sourceLines.join("\n")}\n`);
+  try {
+    await execute(fx.tool("inspectTranslationContext"));
+    await execute(fx.tool("writeTranslationChunk"), {
+      fromLine: 1,
+      toLine: 1,
+      lines: ["这是第一行。"]
+    });
+    const audit = await execute(fx.tool("inspectTranslationAlignment"));
+    assert.match(String(audit.details.auditId || ""), /alignment-mutation/);
+    assert.ok(audit.details.pendingLines.includes(1), JSON.stringify(audit.details.pendingLines));
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("inspectTranslationAlignment does not poll live workers without a listed takeover", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: true,
+    subagentEnabled: true,
+    subagentCount: 2
+  });
+  const translationAlignmentState = createTranslationAlignmentHostState();
+  const fx = await fixture({
+    domainRun,
+    translationAlignmentState,
+    subagents: {
+      hasRunning: () => true,
+      hasWriteConflict: () => true
+    },
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      languagePair: "ja->zh-CN",
+      subagentEnabled: true,
+      subagentCount: 2
+    }
+  });
+  try {
+    await execute(fx.tool("inspectTranslationContext"));
+    // Force the writer-owns branch: pending mutation with no unchecked lines.
+    const candidate = resolveTranslationCandidatePath({
+      outputDir: fx.outputDir,
+      sourcePaths: [fx.sourcePath],
+      documentId: "source.txt"
+    });
+    const settled = createTranslationChunkReviewAudit({
+      documentId: "source.txt",
+      sourceText: "こんにちは {name}\n\nさようなら\n",
+      candidateText: "你好 {name}\n\n再见\n",
+      candidatePath: candidate,
+      languagePair: "ja->zh-CN",
+      fromLine: 1,
+      sourceLineCount: 3
+    });
+    settled.auditId = "alignment-mutation-settled-test";
+    settled.checks.forEach((check) => { check.verdict = "misaligned"; check.reason = "listed takeover already recorded"; });
+    translationAlignmentState.ranges["source.txt"] = [settled];
+    await assert.rejects(
+      () => execute(fx.tool("inspectTranslationAlignment")),
+      /Wait for those children to settle|Do not call inspectTranslationAlignment again/i
+    );
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("parent mutation alignment pages batch non-contiguous pending lines", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: true,
+    subagentEnabled: true,
+    subagentCount: 3
+  });
+  const translationAlignmentState = createTranslationAlignmentHostState();
+  const sourceLines = ["一行目です。", "二行目です。", "三行目です。"];
+  const fx = await fixture({
+    domainRun,
+    translationAlignmentState,
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      languagePair: "ja->zh-CN",
+      subagentEnabled: true,
+      subagentCount: 3
+    }
+  }, `${sourceLines.join("\n")}\n`);
+  try {
+    await execute(fx.tool("inspectTranslationContext"));
+    await execute(fx.tool("writeTranslationChunk"), {
+      fromLine: 1,
+      toLine: 1,
+      lines: ["这是第一行。"]
+    });
+    await execute(fx.tool("writeTranslationChunk"), {
+      fromLine: 3,
+      toLine: 3,
+      lines: ["这是第三行。"]
+    });
+    const audit = await execute(fx.tool("inspectTranslationAlignment"));
+    assert.ok(audit.details.pendingCount >= 2, `expected batched pending lines, got ${audit.details.pendingCount}`);
+    assert.ok(audit.details.pendingLines.includes(1), JSON.stringify(audit.details.pendingLines));
+    assert.ok(audit.details.pendingLines.includes(3), JSON.stringify(audit.details.pendingLines));
+    await execute(fx.tool("readTranslationAlignmentRows"));
+    const recorded = await execute(fx.tool("recordTranslationAlignmentChecks"), {
+      auditId: audit.details.auditId,
+      failures: []
+    });
+    assert.equal(recorded.details.pendingCount, 0);
+    assert.equal(recorded.details.decision, "accepted");
   } finally {
     await fx.close();
   }

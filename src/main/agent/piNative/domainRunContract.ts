@@ -106,6 +106,7 @@ export interface YnDomainRunContract {
   readonly configuredSubagents: number;
   readonly activeDocumentId: string | undefined;
   readonly awaitingUserInput: boolean;
+  readonly translationWarningReviewDecision: "pending" | "review" | "skip" | undefined;
   readonly recoveryPauseId: string | undefined;
   readonly proofreadMode: "split" | "montecarlo";
   readonly proofreadMontecarloRoundMaximum: number;
@@ -134,6 +135,8 @@ export interface YnDomainRunContract {
   resolveProofreadMontecarloLimit(action: "continue_sampling" | "switch_to_split" | "stop_and_finalize"): void;
   recordTranslationReuseAuditReady(auditIds: string[]): void;
   recordTranslationReuseDecision(auditId: string, documentId: string, fullyReused: boolean): void;
+  notePendingTranslationWarningReview(): void;
+  recordTranslationWarningReviewDecision(decision: "review" | "skip"): void;
   restoreAppliedTranslationReuseDecision(documentId: string, fullyReused: boolean): void;
   recordWorkflowWrite(relativePath: string): (() => void) | undefined;
   recordTranslationWrite(kind: "translation"): () => void;
@@ -288,6 +291,7 @@ export interface YnDomainRunSnapshot {
   translationDiscoveryConflicts: YnTranslationDiscoveryConflict[];
   resolvedTranslationTerms: YnResolvedTranslationTerm[];
   translationTerminologyDebt: YnTranslationTerminologyDebt[];
+  translationWarningReviewDecision?: "pending" | "review" | "skip";
 }
 
 /**
@@ -455,6 +459,11 @@ export function createYnDomainRunContract({
   let translationTerminologyDebt = restored?.schemaVersion === 4 || restored?.schemaVersion === 5 || restored?.schemaVersion === 6
     ? structuredClone(restored.translationTerminologyDebt ?? [])
     : [];
+  let translationWarningReviewDecision = restored?.translationWarningReviewDecision === "pending"
+    || restored?.translationWarningReviewDecision === "review"
+    || restored?.translationWarningReviewDecision === "skip"
+    ? restored.translationWarningReviewDecision
+    : undefined;
   const terminologyGateWaiters = new Set<() => void>();
   const terminologyGateClosed = () => translationDiscoveryConflicts.length > 0;
   const wakeTerminologyGateWaiters = () => {
@@ -544,12 +553,6 @@ export function createYnDomainRunContract({
         "The previous YN workflow is suspended. Call resumeYnWorkflow before continuing that Host-owned workflow."
       );
     }
-    if (recoveryPause) {
-      throw new Error(
-        `YN child batch ${recoveryPause.batchId} is paused after an exhausted assignment. `
-        + "Wait for an explicit user continuation before resuming retained Host debt."
-      );
-    }
     progressRevision += 1;
   };
 
@@ -557,12 +560,6 @@ export function createYnDomainRunContract({
     if (suspended) {
       throw new Error(
         "The previous YN workflow is suspended. Call resumeYnWorkflow before continuing that Host-owned workflow."
-      );
-    }
-    if (recoveryPause) {
-      throw new Error(
-        `YN child batch ${recoveryPause.batchId} is paused after an exhausted assignment. `
-        + "Wait for an explicit user continuation before starting or mutating the workflow."
       );
     }
     if (!activeKind) {
@@ -605,6 +602,12 @@ export function createYnDomainRunContract({
     if (!fullWorkflowActive && !projectDelegationEnabled) {
       throw new Error(
         "This bounded operation has no configured specialized worker pool; use parent-owned repair or prompt-defined runSubagents."
+      );
+    }
+    if (recoveryPause) {
+      throw new Error(
+        `YN child batch ${recoveryPause.batchId} is paused after an exhausted assignment. `
+        + "Call resumeYnWorkflow before starting another Host-owned child batch; parent-owned reads, writes, and listed takeovers may continue."
       );
     }
     activate(kind);
@@ -854,6 +857,7 @@ export function createYnDomainRunContract({
       if (document.validatedArtifactRevision !== document.artifactRevision) markProgress();
       document.validatedArtifactRevision = document.artifactRevision;
       document.bestTranslationValidationDebt = 0;
+      if (translationWarningReviewDecision !== "skip") translationWarningReviewDecision = undefined;
       return;
     }
     document.validatedArtifactRevision = undefined;
@@ -883,7 +887,13 @@ export function createYnDomainRunContract({
       return selectedDocumentId;
     },
     get awaitingUserInput() {
-      return pendingTranslationReuseAuditIds.size > 0 || montecarloDecisionRequired() || recoveryPause !== undefined;
+      return pendingTranslationReuseAuditIds.size > 0
+        || montecarloDecisionRequired()
+        || recoveryPause !== undefined
+        || translationWarningReviewDecision === "pending";
+    },
+    get translationWarningReviewDecision() {
+      return translationWarningReviewDecision;
     },
     get recoveryPauseId() {
       return recoveryPause?.id;
@@ -915,14 +925,13 @@ export function createYnDomainRunContract({
     },
     resume() {
       suspended = false;
-    },
-    resumeAfterExplicitContinuation(pauseId) {
-      if (!recoveryPause) return;
-      if (!pauseId || pauseId !== recoveryPause.id) {
-        throw new Error(
-          `Recovery pause ${recoveryPause.id} can only be resumed by a fresh explicit user turn that observed this pause.`
-        );
+      if (recoveryPause) {
+        recoveryPause = undefined;
+        progressRevision += 1;
       }
+    },
+    resumeAfterExplicitContinuation(_pauseId) {
+      if (!recoveryPause) return;
       recoveryPause = undefined;
       progressRevision += 1;
     },
@@ -1151,6 +1160,7 @@ export function createYnDomainRunContract({
       document.artifactRevision += 1;
       document.validatedArtifactRevision = undefined;
       if (wasValidated) document.bestTranslationValidationDebt = undefined;
+      if (translationWarningReviewDecision === "skip") translationWarningReviewDecision = undefined;
       return () => {
         activeKind = previousActiveKind;
         progressRevision = previousProgressRevision;
@@ -1184,6 +1194,7 @@ export function createYnDomainRunContract({
       document.artifactRevision += 1;
       document.validatedArtifactRevision = undefined;
       if (wasValidated) document.bestTranslationValidationDebt = undefined;
+      if (translationWarningReviewDecision === "skip") translationWarningReviewDecision = undefined;
       if (activeKind === "proofread") {
         const dirtyRange = range ?? { fromLine: 1, toLine: document.sourceLineCount };
         if (
@@ -1844,6 +1855,22 @@ export function createYnDomainRunContract({
     pendingTranslationTerminologyDebt() {
       return structuredClone(translationTerminologyDebt);
     },
+    notePendingTranslationWarningReview() {
+      if (translationWarningReviewDecision !== "review") {
+        translationWarningReviewDecision = "pending";
+      }
+    },
+    recordTranslationWarningReviewDecision(decision) {
+      if (decision !== "review" && decision !== "skip") {
+        throw new Error(`Invalid translation warning-review decision: ${decision}.`);
+      }
+      translationWarningReviewDecision = decision;
+      if (decision === "skip") {
+        for (const document of documents.values()) {
+          if (document.artifactRevision > 0) recordTranslationValidation("translation", 0, document.id);
+        }
+      }
+    },
     recordFinalValidation(kind, documentId?: string) {
       recordTranslationValidation(kind, 0, documentId);
     },
@@ -1895,7 +1922,8 @@ export function createYnDomainRunContract({
         translationDiscoveryObservations: structuredClone(translationDiscoveryObservations),
         translationDiscoveryConflicts: structuredClone(translationDiscoveryConflicts),
         resolvedTranslationTerms: structuredClone(resolvedTranslationTerms),
-        translationTerminologyDebt: structuredClone(translationTerminologyDebt)
+        translationTerminologyDebt: structuredClone(translationTerminologyDebt),
+        ...(translationWarningReviewDecision ? { translationWarningReviewDecision } : {})
       };
     },
     incompleteReasons,

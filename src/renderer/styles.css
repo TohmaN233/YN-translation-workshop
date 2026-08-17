@@ -482,6 +482,13 @@ code {
   align-items: end;
 }
 
+.assetFieldHint {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .assetEditorGrid label,
 .assetStyleEditor {
   display: grid;

@@ -124,8 +124,90 @@ try {
   });
   assert.equal(write.ok, false, "external write protection must remain intact");
   assert.match(write.error, /inside the project directory/);
+
+  const stagingDir = path.join(projectDir, ".translation-workshop", "agent", "translation-staging", "batch");
+  const stagingPath = path.join(stagingDir, "chunk_translated.txt");
+  await mkdir(stagingDir, { recursive: true });
+  await writeFile(stagingPath, "已有暂存译文 冲木达也\n", "utf8");
+  const { TRANSLATION_STAGING_PROJECT_TOOL_ERROR } = await import("../../src/main/agent/projectFileTools.ts");
+  const stagingRead = await readProjectFile({
+    outputDir: projectDir,
+    relativePath: stagingPath
+  });
+  assert.equal(stagingRead.ok, false);
+  assert.equal(stagingRead.error, TRANSLATION_STAGING_PROJECT_TOOL_ERROR);
+  const stagingSearch = await searchProjectText({
+    outputDir: projectDir,
+    relativePath: stagingDir,
+    query: "冲木"
+  });
+  assert.equal(stagingSearch.ok, false, "searching staging must fail closed with a redirect, not return zero matches");
+  assert.equal(stagingSearch.error, TRANSLATION_STAGING_PROJECT_TOOL_ERROR);
 } finally {
   await rm(root, { recursive: true, force: true });
 }
 
 console.log("ok external references are readable while external writes remain blocked");
+
+const sessionRoot = await mkdtemp(path.join(os.tmpdir(), "yn-session-read-"));
+const sessionProject = path.join(sessionRoot, "project");
+try {
+  const childSessionDir = path.join(sessionProject, ".translation-workshop", "agent", "pi-child-sessions", "workspace");
+  const childSessionPath = path.join(childSessionDir, "history.jsonl");
+  const secretPath = path.join(sessionProject, ".translation-workshop", "agent", "oauth-secrets.json");
+  await mkdir(childSessionDir, { recursive: true });
+  await writeFile(childSessionPath, '{"type":"message","finding":"L3-042 recovered"}\n', "utf8");
+  await writeFile(secretPath, '{"token":"secret"}\n', "utf8");
+
+  const blocked = await readProjectFile({
+    outputDir: sessionProject,
+    relativePath: ".translation-workshop/agent/pi-child-sessions/workspace/history.jsonl"
+  });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /Pi runtime session data is not readable/);
+
+  const allowed = await readProjectFile({
+    outputDir: sessionProject,
+    relativePath: ".translation-workshop/agent/pi-child-sessions/workspace/history.jsonl",
+    allowRuntimeSessionRead: true
+  });
+  assert.equal(allowed.ok, true, allowed.error);
+  assert.match(allowed.content, /L3-042 recovered/);
+
+  const listed = await listProjectDir({
+    outputDir: sessionProject,
+    relativePath: ".translation-workshop/agent",
+    allowRuntimeSessionRead: true
+  });
+  assert.equal(listed.ok, true, listed.error);
+  assert.equal(listed.entries.some((entry) => entry.name === "pi-child-sessions"), true);
+  assert.equal(listed.entries.some((entry) => entry.name === "oauth-secrets.json"), false);
+
+  const secret = await readProjectFile({
+    outputDir: sessionProject,
+    relativePath: ".translation-workshop/agent/oauth-secrets.json",
+    allowRuntimeSessionRead: true
+  });
+  assert.equal(secret.ok, false);
+  assert.match(secret.error, /OAuth secrets/);
+
+  const searched = await searchProjectText({
+    outputDir: sessionProject,
+    query: "L3-042 recovered",
+    allowRuntimeSessionRead: true
+  });
+  assert.equal(searched.ok, true, searched.error);
+  assert.equal(searched.matches.some((match) => match.text.includes("L3-042 recovered")), true);
+
+  const writeBlocked = await writeProjectFile({
+    outputDir: sessionProject,
+    relativePath: ".translation-workshop/agent/pi-child-sessions/workspace/history.jsonl",
+    content: "nope"
+  });
+  assert.equal(writeBlocked.ok, false);
+  assert.match(writeBlocked.error, /cannot be written/);
+} finally {
+  await rm(sessionRoot, { recursive: true, force: true });
+}
+
+console.log("ok parent can read Pi session history while children and secrets stay blocked");

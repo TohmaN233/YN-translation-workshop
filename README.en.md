@@ -4,7 +4,19 @@ A local workbench that brings human line editing, project assets, full AI transl
 
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
-[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0.1](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.1)
+[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0.3](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.3)
+
+## 2.0.3
+
+- Proofread wrap-up is now Host-owned: bound line numbers fill source/current text, an empty write cannot wipe child findings, and the parent can read Pi session JSONL to recover child artifacts before finalize.
+- An expired Grok OAuth token replaces only that worker; `resumeYnWorkflow` no longer needs a second consent gate; Host user-gates stop the parent loop instead of retrying the same tool.
+- Long glossary names cover short ones, character `requiredTerms` apply only to attributed quoted speech, mutation alignment pages batch up to 24 lines, and leftover warnings ask before review.
+
+## 2.0.2
+
+- Fixed complete-translation takeover: accepted staging no longer waits for the whole batch to settle before entering the canonical file. A formal parent takeover now promotes the hash-current staging range immediately and releases that write lock, so the parent can read the draft and repair only rejected lines.
+- Alignment row reads now use the audit's own candidate path instead of hashing against an empty canonical file.
+- Browsing `translation-staging` with project file tools returns an explicit Host-owned redirect error instead of empty hits.
 
 ## 2.0.1
 
@@ -23,8 +35,8 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.0.1-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.0.1-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.0.3-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.0.3-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.

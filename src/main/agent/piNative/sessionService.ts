@@ -29,6 +29,7 @@ import type {
 import { resolveWorkflowSubagentCount } from "../../../shared/agent/piSessionContract.ts";
 import { resolveThinkingLevelForModel } from "../../../shared/agent/thinkingLevels.ts";
 import { createPiModelSelection } from "./providerRegistry.ts";
+import { isHostUserWaitGateToolResult, sessionHasOpenHostUserGate } from "./userGate.ts";
 import {
   createYnDomainRunContract,
   type YnDomainRunContract,
@@ -1142,6 +1143,8 @@ export class PiNativeSessionService {
       workflowSuspended: hostState.workflowSuspended || hasParkedWorkflow(),
       domainRun
     }) ?? GENERIC_SYSTEM_PROMPT;
+    let userGateAssistantKey = "";
+    let terminateUserGateBatch = false;
     runtime = new PiSessionAgentRuntime({
       session,
       sessionId: request.sessionId,
@@ -1150,7 +1153,28 @@ export class PiNativeSessionService {
       thinkingLevel: normalizeThinkingLevel(selection.model, request.thinkingLevel),
       systemPrompt,
       tools,
-      deferThresholdCompaction: () => subagents.hasRunning()
+      deferThresholdCompaction: () => subagents.hasRunning(),
+      afterToolCall: async (context) => {
+        const assistantKey = JSON.stringify([
+          context.assistantMessage.timestamp,
+          context.assistantMessage.content.map((block) => (
+            block.type === "toolCall" ? block.id : block.type
+          ))
+        ]);
+        if (assistantKey !== userGateAssistantKey) {
+          userGateAssistantKey = assistantKey;
+          terminateUserGateBatch = false;
+        }
+        if (isHostUserWaitGateToolResult({
+          isError: context.isError,
+          content: context.result.content,
+          details: context.result.details
+        })) {
+          terminateUserGateBatch = true;
+          return { terminate: true };
+        }
+        return terminateUserGateBatch ? { terminate: true } : undefined;
+      }
     });
     const active: ActiveSession = {
       workspaceDir: path.resolve(request.outputDir),
@@ -1316,6 +1340,14 @@ export class PiNativeSessionService {
       return;
     }
     if (active.domainRun.awaitingUserInput) return;
+    if (sessionHasOpenHostUserGate(active.runtime.getMessages())) {
+      console.info(JSON.stringify({
+        type: "yn.host.user_gate",
+        action: "suppress_domain_repair",
+        sessionId: active.sessionId
+      }));
+      return;
+    }
 
     const repairPrompt = active.domainRun.nextRepairPrompt();
     if (repairPrompt) {
@@ -1524,7 +1556,12 @@ export class PiNativeSessionService {
       const incomplete = active.hostState.workflowSuspended || active.subagents.hasRunning()
         ? []
         : active.domainRun?.incompleteReasons() ?? [];
-      if (!active.error && incomplete.length > 0 && active.domainRun?.awaitingUserInput !== true) {
+      if (
+        !active.error
+        && incomplete.length > 0
+        && active.domainRun?.awaitingUserInput !== true
+        && !sessionHasOpenHostUserGate(active.runtime.getMessages())
+      ) {
         active.error = `YN workflow completion contract failed: ${incomplete.join("; ")}`;
       }
     } catch (error) {

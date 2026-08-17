@@ -3093,6 +3093,145 @@ await test("YN host completion contract keeps the native Pi loop running until v
   }
 });
 
+await test("a Host wait-for-user tool result stops the native loop instead of retrying through domain-repair", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-user-wait-gate-"));
+  let toolCalls = 0;
+  const faux = fauxProvider({ tokensPerSecond: 1000, tokenSize: { min: 10, max: 20 } });
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("needUser", {}, { id: "need_user_wait" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("needUser", {}, { id: "need_user_retry" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxText("I retried the same gated tool."))
+  ]);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const service = new PiNativeSessionService({
+    createModelSelection: async () => ({
+      models,
+      model: faux.getModel(),
+      providerId: faux.provider.id,
+      modelId: faux.getModel().id
+    }),
+    enforceDomainCompletion: true,
+    createTools: () => [{
+      name: "needUser",
+      label: "need user",
+      description: "Request an explicit user continuation.",
+      parameters: Type.Object({}),
+      async execute() {
+        toolCalls += 1;
+        return {
+          content: [{
+            type: "text",
+            text: "YN child batch batch_wait is paused after an exhausted assignment. Wait for an explicit user continuation before starting or mutating the workflow."
+          }],
+          isError: true
+        };
+      }
+    }]
+  });
+  const terminal = deferred();
+  const unsubscribe = service.subscribeEvents((entry) => {
+    if (entry.event.type === "settled") terminal.resolve();
+  });
+  try {
+    const session = await service.createSession(workspaceDir);
+    await service.prompt({
+      outputDir: workspaceDir,
+      sessionId: session.id,
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      languagePair: "ja->zh-CN",
+      providerId: "faux",
+      modelId: faux.getModel().id,
+      thinkingLevel: "medium"
+    });
+    await Promise.race([
+      terminal.promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Timed out waiting for wait-gate settlement")), 5000))
+    ]);
+    const messages = await service.loadMessages(workspaceDir, session.id);
+    assert.equal(toolCalls, 1, "the wait-gate must terminate the current tool batch");
+    assert.equal(messages.some((message) => message.role === "custom" && message.customType === "yn-domain-repair"), false);
+    assert.equal(messages.filter((message) => message.role === "toolResult").length, 1);
+    assert.equal((await service.getRunState(workspaceDir, session.id)).running, false);
+    assert.equal((await service.getRunState(workspaceDir, session.id)).error, undefined);
+  } finally {
+    unsubscribe();
+    await service.disposeWorkspace(workspaceDir);
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+await test("a Host ask-the-user tool result can speak once but must not be kicked by domain-repair", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-user-ask-gate-"));
+  const faux = fauxProvider({ tokensPerSecond: 1000, tokenSize: { min: 10, max: 20 } });
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("needUser", {}, { id: "need_user_ask" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxText("请告诉我是否保留已通过的旧译。")),
+    fauxAssistantMessage(fauxToolCall("needUser", {}, { id: "need_user_ask_retry" }), { stopReason: "toolUse" })
+  ]);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const service = new PiNativeSessionService({
+    createModelSelection: async () => ({
+      models,
+      model: faux.getModel(),
+      providerId: faux.provider.id,
+      modelId: faux.getModel().id
+    }),
+    enforceDomainCompletion: true,
+    createTools: () => [{
+      name: "needUser",
+      label: "need user",
+      description: "Ask the user for a workflow decision.",
+      parameters: Type.Object({}),
+      async execute() {
+        return {
+          content: [{ type: "text", text: "Ask the user for the reuse decision." }],
+          details: { nextAction: "Ask the user for the reuse decision." }
+        };
+      }
+    }]
+  });
+  const terminal = deferred();
+  const unsubscribe = service.subscribeEvents((entry) => {
+    if (entry.event.type === "settled") terminal.resolve();
+  });
+  try {
+    const session = await service.createSession(workspaceDir);
+    await service.prompt({
+      outputDir: workspaceDir,
+      sessionId: session.id,
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      languagePair: "ja->zh-CN",
+      providerId: "faux",
+      modelId: faux.getModel().id,
+      thinkingLevel: "medium"
+    });
+    await Promise.race([
+      terminal.promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Timed out waiting for ask-gate settlement")), 5000))
+    ]);
+    const messages = await service.loadMessages(workspaceDir, session.id);
+    assert.ok(messages.some((message) => (
+      message.role === "assistant"
+      && String(message.content?.[0]?.text || "").includes("是否保留")
+    )));
+    assert.equal(messages.some((message) => message.role === "custom" && message.customType === "yn-domain-repair"), false);
+    assert.equal(
+      messages.filter((message) => message.role === "toolResult").length,
+      1,
+      "domain-repair must not force another gated tool call after the model asked the user"
+    );
+    assert.equal((await service.getRunState(workspaceDir, session.id)).error, undefined);
+  } finally {
+    unsubscribe();
+    await service.disposeWorkspace(workspaceDir);
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 await test("child completion delivered at the parent final queue boundary reaches a native Pi continuation", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-parent-completion-boundary-"));
   const releaseInitialProvider = deferred();

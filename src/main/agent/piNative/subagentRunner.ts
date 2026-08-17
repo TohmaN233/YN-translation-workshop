@@ -43,7 +43,9 @@ import { createPiModelSelection, type PiModelSelection } from "./providerRegistr
 import {
   NonRetryableAssignmentError,
   ParentTakeoverAssignmentError,
-  SubagentTransportExhaustedError
+  ProviderAuthExpiredError,
+  SubagentTransportExhaustedError,
+  isExpiredProviderAuthError
 } from "./assignmentFailure.ts";
 import {
   PiSessionAgentRuntime,
@@ -970,6 +972,11 @@ export async function promptSubagentTurn(args: {
       const response = await latestAssistantMessage(args.session);
       throwIfAborted(args.signal);
       if (response.stopReason !== "error" && response.stopReason !== "aborted") return response;
+      if (response.stopReason === "error" && isExpiredProviderAuthError(response.errorMessage)) {
+        throw new ProviderAuthExpiredError(
+          response.errorMessage || "Provider OAuth access token is no longer valid."
+        );
+      }
       if (response.stopReason === "error" && isRetryableAssistantError(response)) {
         throw new SubagentTransportExhaustedError(
           response.errorMessage || "Pi child provider transport retry budget was exhausted."

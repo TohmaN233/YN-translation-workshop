@@ -589,6 +589,123 @@ function textContainsTerm(text: string, term: string): boolean {
   return Boolean(normalizedTerm && normalizedText.includes(normalizedTerm));
 }
 
+function uniqueComparableTerms(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const value of values) {
+    const term = value?.trim() ?? "";
+    const key = comparableTerm(term);
+    if (!term || !key || seen.has(key)) continue;
+    seen.add(key);
+    terms.push(term);
+  }
+  return terms;
+}
+
+function glossaryCatalogTerms(
+  entries: Array<{ source?: string; target?: string; aliases?: string[] }>
+): string[] {
+  return uniqueComparableTerms(entries.flatMap((entry) => [
+    entry.source,
+    entry.target,
+    ...(entry.aliases ?? [])
+  ]));
+}
+
+function shorterRegisteredNameForms(longTarget: string, catalog: string[]): string[] {
+  const normalizedLong = comparableTerm(longTarget);
+  if (!normalizedLong) return [];
+  return catalog.filter((term) => {
+    const normalized = comparableTerm(term);
+    return Boolean(normalized && normalized !== normalizedLong && normalizedLong.includes(normalized));
+  });
+}
+
+function glossaryAcceptableTargets(
+  entry: { source?: string; target?: string; aliases?: string[] },
+  catalog: string[]
+): string[] {
+  const target = entry.target?.trim() ?? "";
+  return uniqueComparableTerms([
+    target,
+    ...(entry.aliases ?? []),
+    ...shorterRegisteredNameForms(target, catalog),
+    ...(entry.source && target && comparableTerm(target).includes(comparableTerm(entry.source))
+      ? [entry.source]
+      : [])
+  ]);
+}
+
+function characterNameVariants(entry: {
+  name?: string;
+  target?: string;
+  aliases?: string[];
+}): string[] {
+  return uniqueComparableTerms([entry.target, entry.name, ...(entry.aliases ?? [])]);
+}
+
+export function parseCharacterVoiceRequiredTerm(term: string): { source: string; target: string } | undefined {
+  const match = term.trim().match(/^(.+?)\s*(?:->|=>|→)\s*(.+)$/);
+  if (!match) return undefined;
+  const source = match[1].trim();
+  const target = match[2].trim();
+  if (!source || !target) return undefined;
+  return { source, target };
+}
+
+export function normalizeHandwrittenCharacterRequiredTerms(
+  terms: string[],
+  character: { name?: string; target?: string; aliases?: string[] }
+): string[] {
+  return terms.map((term) => {
+    const mapping = parseCharacterVoiceRequiredTerm(term);
+    if (!mapping) {
+      throw new Error(`Character required terms must use "source -> target". Invalid value: ${term}`);
+    }
+    if (
+      isExactCharacterNameVariant(character, mapping.source)
+      || isExactCharacterNameVariant(character, mapping.target)
+    ) {
+      throw new Error(
+        `Character required terms cannot use a character name as the source or target: ${mapping.source} -> ${mapping.target}`
+      );
+    }
+    return `${mapping.source} -> ${mapping.target}`;
+  });
+}
+
+function isExactCharacterNameVariant(
+  entry: { name?: string; target?: string; aliases?: string[] },
+  term: string
+): boolean {
+  const normalized = comparableTerm(term);
+  if (!normalized) return false;
+  return characterNameVariants(entry).some((variant) => comparableTerm(variant) === normalized);
+}
+
+function quotedDialogueSpans(text: string): string[] {
+  const spans: string[] = [];
+  const pattern = /「([^」]*)」|『([^』]*)』|“([^”]*)”|"([^"]*)"/g;
+  for (const match of text.matchAll(pattern)) {
+    spans.push(match[1] ?? match[2] ?? match[3] ?? match[4] ?? "");
+  }
+  return spans;
+}
+
+function textOutsideQuotedDialogue(text: string): string {
+  return text.replace(/「[^」]*」|『[^』]*』|“[^”]*”|"[^"]*"/g, " ");
+}
+
+function characterSpeaksOnLine(
+  line: string,
+  entry: { name?: string; aliases?: string[] }
+): boolean {
+  const outside = textOutsideQuotedDialogue(line);
+  return [entry.name, ...(entry.aliases ?? [])]
+    .filter((term): term is string => Boolean(term?.trim()))
+    .some((term) => textContainsTerm(outside, term));
+}
+
 function longestUncoveredGlossaryEntries(
   sourceText: string,
   entries: Array<{ source?: string; target?: string; aliases?: string[] }>
@@ -701,11 +818,17 @@ function characterPronounMismatchDetail(
   return `Line ${lineNo} uses pronoun "${pronoun}" for character "${name}", conflicting with confirmed ${gender} gender/pronoun metadata.`;
 }
 
-function characterVoiceRequiredMissingDetail(lineNo: number, name: string, term: string, locale: ValidatorLocale): string {
+function characterVoiceRequiredMissingDetail(
+  lineNo: number,
+  name: string,
+  sourceTerm: string,
+  targetTerm: string,
+  locale: ValidatorLocale
+): string {
   if (locale === "zh-CN") {
-    return `第 ${lineNo} 行角色语气疑似不一致：角色「${name}」出场时，候选未出现要求用语「${term}」。`;
+    return `第 ${lineNo} 行角色语气疑似不一致：角色「${name}」的台词使用了「${sourceTerm}」，候选未按角色圣经译为「${targetTerm}」。`;
   }
-  return `Line ${lineNo} may violate character voice: "${name}" appears but required voice term "${term}" is missing.`;
+  return `Line ${lineNo} may violate character voice: "${name}" speaks "${sourceTerm}" but the candidate lacks required rendering "${targetTerm}".`;
 }
 
 function characterVoiceForbiddenTermDetail(lineNo: number, name: string, term: string, locale: ValidatorLocale): string {
@@ -983,10 +1106,11 @@ export function validateTranslationCandidate(
       (copiedSource ? blocking : warnings).push(finding);
     }
 
+    const glossaryCatalog = glossaryCatalogTerms(glossaryEntries);
     for (const entry of longestUncoveredGlossaryEntries(src, glossaryEntries)) {
       const sourceTerm = entry.source?.trim() ?? "";
       const targetTerm = entry.target?.trim() ?? "";
-      const targetCandidates = [targetTerm, ...(entry.aliases ?? [])].filter((term) => term.trim());
+      const targetCandidates = glossaryAcceptableTargets(entry, glossaryCatalog);
       if (
         sourceTerm
         && targetTerm
@@ -1032,18 +1156,30 @@ export function validateTranslationCandidate(
             });
           }
         }
-        const hasVoiceRules = (entry.requiredTerms?.some((term) => term.trim()) ?? false)
+        const voiceRequiredMappings = (entry.requiredTerms ?? []).flatMap((term) => {
+          const mapping = parseCharacterVoiceRequiredTerm(term);
+          if (!mapping) return [];
+          if (isExactCharacterNameVariant(entry, mapping.source) || isExactCharacterNameVariant(entry, mapping.target)) {
+            return [];
+          }
+          return [mapping];
+        });
+        const spokenDialogue = characterSpeaksOnLine(src, entry) ? quotedDialogueSpans(src).join("\n") : "";
+        const triggeredVoiceMappings = voiceRequiredMappings.filter((mapping) => (
+          spokenDialogue.length > 0 && textContainsTerm(spokenDialogue, mapping.source)
+        ));
+        const hasVoiceRules = triggeredVoiceMappings.length > 0
           || (entry.forbiddenTerms?.some((term) => term.trim()) ?? false);
         if (hasVoiceRules) {
           voiceCheckedLines.add(lineNo);
         }
-        for (const term of entry.requiredTerms ?? []) {
-          if (term.trim() && !textContainsTerm(cand, term)) {
+        for (const mapping of triggeredVoiceMappings) {
+          if (!textContainsTerm(cand, mapping.target)) {
             warnings.push({
               code: "character_voice_required_missing",
               severity: "warning",
               line: lineNo,
-              detail: characterVoiceRequiredMissingDetail(lineNo, sourceName, term, locale)
+              detail: characterVoiceRequiredMissingDetail(lineNo, sourceName, mapping.source, mapping.target, locale)
             });
             voiceViolationLines.add(lineNo);
           }

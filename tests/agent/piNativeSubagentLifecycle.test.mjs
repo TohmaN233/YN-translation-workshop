@@ -470,7 +470,7 @@ await test("translation child preserves project-rule warnings for the read-only 
   const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-child-project-rules-"));
   const sourcePath = path.join(outputDir, "source.txt");
   const workspace = path.join(outputDir, ".translation-workshop");
-  await writeFile(sourcePath, "勇者\n", "utf8");
+  await writeFile(sourcePath, "勇者は「俺だ」と言った。\n", "utf8");
   await mkdir(workspace, { recursive: true });
   await writeFile(path.join(workspace, "glossary.json"), JSON.stringify({
     entries: [{ source: "勇者", target: "勇者大人" }]
@@ -479,7 +479,7 @@ await test("translation child preserves project-rule warnings for the read-only 
     characters: [{
       name: "勇者",
       target: "勇者大人",
-      requiredTerms: ["吾"],
+      requiredTerms: ["俺 -> 吾"],
       forbiddenTerms: ["机器翻译腔"]
     }]
   }), "utf8");

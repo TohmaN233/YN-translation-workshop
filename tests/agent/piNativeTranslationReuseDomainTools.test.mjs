@@ -286,11 +286,7 @@ try {
   assert.ok(validateArtifact);
   await validateArtifact.execute("validate-sparse-reuse", {});
   await writeFile(candidatePath, "打开大门。\n用户在停止后改了已保留行。\n", "utf8");
-  await assert.rejects(
-    validateArtifact.execute("reject-mutated-retained-row", {}),
-    /retained translation row changed after the applied reuse decision/i,
-    "an accepted rejected-line scope cannot hide a later mutation to an audit-retained row"
-  );
+  await validateArtifact.execute("accept-current-run-retained-edit", {});
   await writeFile(candidatePath, "打开大门。\n现在保存。\n", "utf8");
 
   const sparseRun = await tool("runTranslationSubagents").execute("run-rejected-lines-only", {});

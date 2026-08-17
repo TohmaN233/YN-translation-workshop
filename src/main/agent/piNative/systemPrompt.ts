@@ -93,8 +93,8 @@ export function buildYnSystemPrompt(
     "For the same normalized source, keep the already established target from the formal glossary, candidate or character bible and atomically fill the missing companion asset. Later evidence cannot replace it or trigger broad historical rewrites. Expose conflicts between already-established assets.",
     `2. ${translationReuse}`,
     `3. ${translationExecution}`,
-    "4. Use writeTranslationChunk for trivial exact-range parent corrections; never restart the complete queue for a few known lines.",
-    "5. Call validateTranslationArtifact after work settles. Blocking findings fail artifact validation. Warnings do not fail that validation: if warningReviewComplete is false, call inspectTranslationWarnings, judge every exact source/canonical-translation pair, and call recordTranslationWarningChecks with only true-positive failures. For asset-backed warnings, warningEvidence.expectedTarget is the canonical target: never guess a replacement or rewrite the glossary/character bible to match the candidate. Repair only those exact lines, then rerun validation. Never use translation_repair merely to audit an unresolved warning or alignment row.",
+    "4. After resumeYnWorkflow, follow nextAction. Remaining rejected/empty lines require the complete Host translation queue first. writeTranslationChunk is allowed for Host-listed parentTakeovers or a user-requested exact fix, not as the first resume step.",
+    "5. Call validateTranslationArtifact after work settles. Blocking findings fail that validation; warnings do not. If the Host asks whether to review remaining warnings, stop; do not open inspectTranslationWarnings until the user answers. After authorization, judge each exact pair and record only true positives. For asset-backed warnings, warningEvidence.expectedTarget is the canonical target: never guess a replacement or rewrite the glossary/character bible to match the candidate. Repair only those exact lines, then rerun validation. Never use translation_repair merely to audit an unresolved warning or alignment row.",
     ""
   ];
 
@@ -105,7 +105,7 @@ export function buildYnSystemPrompt(
     "PROOFREAD WORKFLOW:",
     "1. Call inspectTranslationContext before any semantic child delegation. Its exists/available fields and returned paths are authoritative; never probe a path reported unavailable. Do not delegate until proofreadPrescan.completed is true.",
     `2. ${proofreadExecution}`,
-    "3. Resolve the deduplicated glossary candidates returned by inspectTranslationContext, write normalized findings with writeProofreadFindings, and call finalizeProofreadReport. The inspector and finalizer typed results are authoritative: do not reread the Host-owned report JSON, glossary, or candidate files merely to recount or revalidate them. Children review only; they never edit source, translation, or shared assets.",
+    "3. After Host-planned children finish, inspectTranslationContext.proofreadWrapUp is authoritative. Do not reread the book, call recordProofreadParentReview, or resubmit/clear child findings. Resolve pending glossary candidates if any, optionally drop false-positive ids, then call finalizeProofreadReport. writeProofreadFindings only accepts line numbers plus suggestedFix/rationale; Host fills bound sourceText and currentTranslation. An empty findings list cannot wipe existing findings. Children review only; they never edit source, translation, or shared assets.",
     "4. Do not modify the translation unless the user explicitly requests fixes.",
     ""
   ];
@@ -150,6 +150,7 @@ export function buildYnSystemPrompt(
     "The Host-provided typed operation scope is authoritative. Prompt wording cannot create a complete workflow, change worker counts, or widen write ownership.",
     "Use native tool calls only. Never expose tool transport, arguments, results, lifecycle protocol, or raw JSON as assistant prose.",
     "Ask a concise normal-language question only when required information is genuinely missing.",
+    "If a Host tool says to ask the user or wait for an explicit continuation, stop this turn. Do not retry the same gated tool.",
     "",
     ...boundDocument(request),
     ...(request.languagePair?.trim() || request.style?.trim() || request.workDescription?.trim() ? [

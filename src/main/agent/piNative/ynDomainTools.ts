@@ -12,8 +12,11 @@ import {
 } from "../../../shared/agent/piSessionContract.ts";
 import {
   parseCharacterVoiceRequiredTerm,
+  scanResolvedTerminologyConflicts,
   splitTextLines,
+  terminologyInconsistencyFinding,
   validateTranslationCandidate,
+  withAdditionalTranslationWarnings,
   type ValidationOptions
 } from "../../../shared/validation/translationValidator.ts";
 import {
@@ -175,7 +178,8 @@ export interface YnDomainToolContext {
   translationAlignmentState?: TranslationAlignmentHostState;
   persistHostState?: () => Promise<void>;
   isWorkflowSuspended?: () => boolean;
-  resumeWorkflow?: () => Promise<void>;
+  resumeWorkflow?: (kind?: "translation" | "proofread") => Promise<void>;
+  parkedWorkflows?: () => Array<"translation" | "proofread">;
   readInterfaceContext?: () => YnInterfaceContextSnapshot;
 }
 
@@ -720,40 +724,104 @@ function currentTranslationAlignmentRangeHash(
     : translationAlignmentInputHash(sourceSlice.join("\n"), candidateSlice.join("\n"), languagePair);
 }
 
+function terminologyCoveringEntries(
+  validationOptions: ValidationOptions,
+  workspaceEntries: NonNullable<ValidationOptions["glossaryEntries"]> = []
+): NonNullable<ValidationOptions["glossaryEntries"]> {
+  return [
+    ...(validationOptions.glossaryEntries ?? []),
+    ...workspaceEntries,
+    ...(validationOptions.characterEntries ?? []).map((entry) => ({
+      source: entry.name,
+      target: entry.target,
+      aliases: entry.aliases
+    }))
+  ];
+}
+
+function withHostTerminologyWarnings(
+  validation: ReturnType<typeof validateTranslationCandidate>,
+  debt: YnTranslationTerminologyDebt[]
+) {
+  return withAdditionalTranslationWarnings(
+    validation,
+    debt.map((entry) => terminologyInconsistencyFinding({
+      line: entry.line,
+      source: entry.source,
+      expectedTarget: entry.expectedTarget,
+      observedTargets: entry.observedTargets
+    }))
+  );
+}
+
+async function hostTranslationValidation(args: {
+  bound: Parameters<typeof createYnTranslationValidationOptions>[0];
+  documentId: string;
+  sourceText: string;
+  candidateText: string;
+  resolvedTerms: YnResolvedTranslationTerm[];
+  includeGlossaryCandidates: boolean;
+}) {
+  const baseOptions = await createYnTranslationValidationOptions(args.bound);
+  const workspaceEntries = args.includeGlossaryCandidates
+    ? (await readWorkspaceAgentContext(args.bound.outputDir)).glossaryCandidates ?? []
+    : [];
+  const validationOptions = {
+    ...baseOptions,
+    glossaryEntries: [...(baseOptions.glossaryEntries ?? []), ...workspaceEntries]
+  };
+  const validation = validateTranslationCandidate(args.sourceText, args.candidateText, validationOptions);
+  if (!args.includeGlossaryCandidates) {
+    return { validation, validationOptions, terminologyDebt: [] as YnTranslationTerminologyDebt[] };
+  }
+  const terminologyDebt = scanResolvedTerminologyDebt({
+    documentId: args.documentId,
+    sourceLines: splitTextLines(args.sourceText),
+    candidateLines: splitTextLines(args.candidateText),
+    terms: args.resolvedTerms,
+    coveringEntries: terminologyCoveringEntries(baseOptions, workspaceEntries)
+  });
+  return {
+    validation: withHostTerminologyWarnings(validation, terminologyDebt),
+    validationOptions,
+    terminologyDebt
+  };
+}
+
 function scanResolvedTerminologyDebt(args: {
   documentId: string;
   sourceLines: string[];
   candidateLines: string[];
   terms: YnResolvedTranslationTerm[];
+  coveringEntries?: ValidationOptions["glossaryEntries"];
 }): YnTranslationTerminologyDebt[] {
-  const debt: YnTranslationTerminologyDebt[] = [];
-  for (const term of args.terms) {
-    const variants = [...new Set(term.observedTargets.map((value) => value.trim()).filter(Boolean))];
-    if (variants.length < 2) continue;
-    const competing = variants.filter((target) => target !== term.target);
-    if (competing.length === 0) continue;
-    for (const [index, sourceLine] of args.sourceLines.entries()) {
-      if (!sourceLine.includes(term.source)) continue;
-      const candidateLine = args.candidateLines[index] ?? "";
-      const observedTargets = competing.filter((target) => candidateLine.includes(target));
-      if (observedTargets.length === 0) continue;
-      debt.push({
-        documentId: args.documentId,
-        line: index + 1,
-        source: term.source,
-        expectedTarget: term.target,
-        observedTargets,
-        sourceLineHash: createHash("sha256").update(sourceLine).digest("hex"),
-        candidateLineHash: createHash("sha256").update(candidateLine).digest("hex"),
-        referenceHash: createHash("sha256").update(JSON.stringify({
-          source: term.source,
-          expectedTarget: term.target,
-          observedTargets: [...competing].sort()
-        })).digest("hex")
-      });
-    }
-  }
-  return debt;
+  return scanResolvedTerminologyConflicts({
+    sourceLines: args.sourceLines,
+    candidateLines: args.candidateLines,
+    terms: args.terms,
+    coveringEntries: args.coveringEntries
+  }).map((conflict) => {
+    const sourceLine = args.sourceLines[conflict.line - 1] ?? "";
+    const candidateLine = args.candidateLines[conflict.line - 1] ?? "";
+    const term = args.terms.find((entry) => entry.source === conflict.source && entry.target === conflict.expectedTarget);
+    const competing = [...new Set((term?.observedTargets ?? [])
+      .map((value) => value.trim())
+      .filter((value) => value && value !== conflict.expectedTarget))];
+    return {
+      documentId: args.documentId,
+      line: conflict.line,
+      source: conflict.source,
+      expectedTarget: conflict.expectedTarget,
+      observedTargets: conflict.observedTargets,
+      sourceLineHash: createHash("sha256").update(sourceLine).digest("hex"),
+      candidateLineHash: createHash("sha256").update(candidateLine).digest("hex"),
+      referenceHash: createHash("sha256").update(JSON.stringify({
+        source: conflict.source,
+        expectedTarget: conflict.expectedTarget,
+        observedTargets: competing.sort()
+      })).digest("hex")
+    };
+  });
 }
 
 interface ConfiguredModelCatalogQuery {
@@ -905,7 +973,7 @@ function translationWarningEvidence(args: {
     let expectedTarget: string | undefined;
     let aliases: string[] | undefined;
 
-    if (warning.code === "glossary_missing") {
+    if (warning.code === "glossary_missing" || warning.code === "terminology_inconsistency") {
       const match = (args.validationOptions.glossaryEntries ?? []).find((entry) => {
         const source = entry.source?.trim() ?? "";
         const target = entry.target?.trim() ?? "";
@@ -923,6 +991,14 @@ function translationWarningEvidence(args: {
         sourceTerm = match.source?.trim();
         expectedTarget = match.target?.trim();
         aliases = match.aliases?.map((value) => value.trim()).filter(Boolean);
+      } else if (warning.code === "terminology_inconsistency") {
+        const resolved = args.resolvedTerms?.find((term) => (
+          warning.detail.includes(term.source) && warning.detail.includes(term.target)
+        ));
+        if (resolved) {
+          sourceTerm = resolved.source;
+          expectedTarget = resolved.target;
+        }
       }
     } else if (warning.code.startsWith("character_")) {
       const match = (args.validationOptions.characterEntries ?? []).find((entry) => {
@@ -3901,12 +3977,16 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       name: "resumeYnWorkflow",
 
       label: "Resume YN workflow",
-      description: "Idempotently resume the Host-owned translation or proofreading workflow in this Pi session. If it is already active or this session has no suspended workflow, this succeeds without changing state.",
-      parameters: Type.Object({}, { additionalProperties: false }),
+      description: "Idempotently resume one Host-owned workflow in this Pi session. Pass workflow=translation or workflow=proofread when a parked sibling exists. A bare call never switches from an active proofread/translation run to a parked sibling.",
+      parameters: Type.Object({
+        workflow: Type.Optional(Type.Union([Type.Literal("translation"), Type.Literal("proofread")]))
+      }, { additionalProperties: false }),
       executionMode: "sequential",
-      async execute() {
+      async execute(_toolCallId, params) {
+        const requested = (params as { workflow?: "translation" | "proofread" }).workflow;
+        const parked = context.parkedWorkflows?.() ?? [];
         const currentRecoveryPauseId = context.domainRun?.recoveryPauseId;
-        if (currentRecoveryPauseId) {
+        if (currentRecoveryPauseId && (!requested || requested === context.domainRun?.kind)) {
           context.domainRun?.resumeAfterExplicitContinuation(currentRecoveryPauseId);
           const parentTakeovers = await recoverPausedTranslationTakeovers();
           await context.persistHostState?.();
@@ -3919,21 +3999,32 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           });
         }
         const workflowSuspended = context.isWorkflowSuspended?.() === true;
-        if (!workflowSuspended) {
+        if (!requested && !workflowSuspended) {
           return context.domainRun?.fullWorkflow
             ? translationResumeReport({
                 resumed: false,
                 status: "already_active",
                 workflow: context.domainRun.kind
               })
-            : textResult({ resumed: false, status: "not_suspended" });
+            : textResult({
+                resumed: false,
+                status: parked.length > 0 ? "workflow_required" : "not_suspended",
+                parkedWorkflows: parked
+              });
+        }
+        if (requested && requested === context.domainRun?.kind && !workflowSuspended && !currentRecoveryPauseId) {
+          return translationResumeReport({
+            resumed: false,
+            status: "already_active",
+            workflow: requested
+          });
         }
         if (!context.resumeWorkflow) {
           throw new Error("The Pi session reported a suspended YN workflow without a Host resume capability.");
         }
-        await context.resumeWorkflow();
+        await context.resumeWorkflow(requested ?? context.domainRun?.kind);
         if (!context.domainRun) {
-          return textResult({ resumed: false, status: "not_suspended" });
+          return textResult({ resumed: false, status: "not_suspended", parkedWorkflows: parked });
         }
         const restoredRecoveryPauseId = context.domainRun.recoveryPauseId;
         if (restoredRecoveryPauseId) {
@@ -4557,6 +4648,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         })) ?? [];
         let proofreadWrapUp: {
           childrenCompleted: boolean;
+          childrenRunning: boolean;
           findingsWritten: boolean;
           findingCount: number;
           pendingGlossaryCandidateCount: number;
@@ -4564,6 +4656,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         } | undefined;
         if (workflow === "proofread") {
           const wrapDocuments = context.domainRun?.snapshot?.().documents ?? [];
+          const childrenRunning = wrapDocuments.some((document) => document.activeSubagentBatch?.kind === "proofread");
           const childrenCompleted = wrapDocuments.length > 0 && wrapDocuments.every((document) => (
             document.completedSubagentBatch?.kind === "proofread"
             && document.findingsWritten
@@ -4571,9 +4664,11 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           const wrapIds = manifest?.kind === "folder"
             ? manifest.documents.map((document) => document.id)
             : [documentId(request)];
-          const pendingGlossaryCandidateCount = wrapIds.reduce((count, id) => (
-            count + proofreadDocumentHostState(proofreadState, id).glossaryCandidates.length
-          ), 0);
+          const pendingGlossaryCandidateCount = glossaryCandidateCollectionEnabled
+            ? wrapIds.reduce((count, id) => (
+              count + proofreadDocumentHostState(proofreadState, id).glossaryCandidates.length
+            ), 0)
+            : 0;
           const findingSummaries = await Promise.all(wrapIds.map((id) => {
             const document = manifest?.kind === "folder" ? resolvePiSourceDocument(manifest, id) : undefined;
             const bound = document ? bindPiSourceDocument(baseRequest, document) : request;
@@ -4588,13 +4683,16 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           const findingsWritten = wrapDocuments.some((document) => document.findingsWritten) || findingCount > 0;
           proofreadWrapUp = {
             childrenCompleted,
+            childrenRunning,
             findingsWritten,
             findingCount,
             pendingGlossaryCandidateCount,
-            nextAction: childrenCompleted || findingsWritten
-              ? pendingGlossaryCandidateCount > 0
+            nextAction: childrenCompleted
+              ? glossaryCandidateCollectionEnabled && pendingGlossaryCandidateCount > 0
                 ? "Resolve proofreadGlossaryCandidates, then call finalizeProofreadReport. Do not reread the book or resubmit child findings."
                 : "Call finalizeProofreadReport. Host-planned children already wrote the findings artifact. Do not reread the book, call recordProofreadParentReview, or writeProofreadFindings([])."
+              : childrenRunning
+                ? "Wait for Host-planned proofread children to settle. Do not call finalizeProofreadReport or writeProofreadFindings([])."
               : proofreadPrescan && proofreadPrescan.recommendedWorkerCount > 0
                 ? "Choose one to the configured maximum useful semantic workers, then call runProofreadSubagents."
                 : "Subagents are disabled or unnecessary; complete semantic review in the parent session."
@@ -4625,7 +4723,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             }
           } : {}),
           ...(proofreadWrapUp ? { proofreadWrapUp } : {}),
-          ...(workflow === "proofread" ? {
+          ...(workflow === "proofread" && glossaryCandidateCollectionEnabled ? {
             proofreadGlossaryCandidates: summarizeProofreadGlossaryCandidates(
               manifest?.kind === "folder"
                 ? manifest.documents.flatMap((document) => (
@@ -4927,7 +5025,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           if (!context.resumeWorkflow) {
             throw new Error("The pending translation reuse decision cannot restore its suspended Host workflow.");
           }
-          await context.resumeWorkflow();
+          await context.resumeWorkflow("translation");
         }
         assertTranslationReuseAuditEnabled();
         if (context.domainRun?.fullWorkflow !== true || context.domainRun.kind !== "translation") {
@@ -5616,8 +5714,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           const candidate = candidatePath(bound);
           const candidateText = await readOptional(candidate);
           if (!candidateText) continue;
-          const validationOptions = await createYnTranslationValidationOptions(bound);
-          const validation = validateTranslationCandidate(sourceText, candidateText, validationOptions);
+          const { validation, validationOptions } = await hostTranslationValidation({
+            bound,
+            documentId: currentDocumentId,
+            sourceText,
+            candidateText,
+            resolvedTerms: context.domainRun?.resolvedTranslationTerms() ?? [],
+            includeGlossaryCandidates: glossaryCandidateCollectionEnabled
+          });
           if (!validation.ok) {
             throw new Error(
               `Translation warnings are a post-translation step. Resolve ${validation.blocking.length} blocking validation finding(s) in ${currentDocumentId} first.`
@@ -5812,8 +5916,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const sourceText = await readFile(sourcePath(active.bound), "utf8");
         const candidate = candidatePath(active.bound);
         const candidateText = await readFile(candidate, "utf8");
-        const validationOptions = await createYnTranslationValidationOptions(active.bound);
-        const validation = validateTranslationCandidate(sourceText, candidateText, validationOptions);
+        const { validation, validationOptions } = await hostTranslationValidation({
+          bound: active.bound,
+          documentId: active.documentId,
+          sourceText,
+          candidateText,
+          resolvedTerms: context.domainRun?.resolvedTranslationTerms() ?? [],
+          includeGlossaryCandidates: glossaryCandidateCollectionEnabled
+        });
         const sourceLines = splitTextLines(sourceText);
         const candidateLines = splitTextLines(candidateText);
         const inputHash = translationAlignmentInputHash(sourceText, candidateText, active.bound.languagePair);
@@ -6431,7 +6541,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         }> = [];
         const failures: string[] = [];
         const validationHashes: Array<{ documentId: string; hash: string }> = [];
-        const terminologyDebt: YnTranslationTerminologyDebt[] = [];
         const warningByCode: Record<string, number> = {};
         let totalSourceLineCount = 0;
         let totalWarningCount = 0;
@@ -6448,8 +6557,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             failures.push(`${document.id}: candidate does not exist at ${candidate}`);
             continue;
           }
-          const validationOptions = await createYnTranslationValidationOptions(bound);
-          const validation = validateTranslationCandidate(sourceText, candidateText, validationOptions);
+          const { validation, validationOptions } = await hostTranslationValidation({
+            bound,
+            documentId: document.id,
+            sourceText,
+            candidateText,
+            resolvedTerms: context.domainRun?.resolvedTranslationTerms() ?? [],
+            includeGlossaryCandidates: glossaryCandidateCollectionEnabled && !boundedArtifactValidation
+          });
           const validationHash = createHash("sha256")
             .update(sourceText)
             .update("\0")
@@ -6517,25 +6632,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               omittedWarningSampleCount: Math.max(0, compactValidation.warningSamples.length - 4)
             });
           }
-          if (glossaryCandidateCollectionEnabled) {
-            terminologyDebt.push(...scanResolvedTerminologyDebt({
-              documentId: document.id,
-              sourceLines: splitTextLines(sourceText),
-              candidateLines: splitTextLines(candidateText),
-              terms: context.domainRun?.resolvedTranslationTerms() ?? []
-            }));
-          }
         }
-        context.domainRun?.recordTranslationTerminologyDebt(terminologyDebt);
-        if (terminologyDebt.length > 0) {
-          const sample = terminologyDebt.slice(0, 32).map((entry) => (
-            `${entry.documentId} L${entry.line}: ${entry.source} must use ${entry.expectedTarget}; `
-            + `found ${entry.observedTargets.join(", ")}`
-          ));
-          failures.push(
-            `Cross-file terminology consistency failed on ${terminologyDebt.length} line(s):\n${sample.join("\n")}`
-            + (terminologyDebt.length > sample.length ? `\n${terminologyDebt.length - sample.length} additional lines omitted.` : "")
-          );
+        if (!boundedArtifactValidation) {
+          context.domainRun?.recordTranslationTerminologyDebt([]);
         }
         if (failures.length > 0) throw new Error(`Final translation validation failed:\n${failures.join("\n")}`);
         if (boundedArtifactValidation) {
@@ -6831,14 +6930,16 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           bound: bindPiSourceDocument(baseRequest, document)
         }));
         await Promise.all(boundDocuments.map(({ bound }) => requireProofreadPrescanForBound(bound)));
-        const pendingCandidates = summarizeProofreadGlossaryCandidates(
-          boundDocuments.flatMap(({ document }) => (
-            proofreadDocumentHostState(proofreadState, document.id).glossaryCandidates.map((candidate) => ({
-              ...candidate,
-              documentId: document.id
-            }))
-          ))
-        ).filter((candidate) => candidate.status === "pending");
+        const pendingCandidates = glossaryCandidateCollectionEnabled
+          ? summarizeProofreadGlossaryCandidates(
+            boundDocuments.flatMap(({ document }) => (
+              proofreadDocumentHostState(proofreadState, document.id).glossaryCandidates.map((candidate) => ({
+                ...candidate,
+                documentId: document.id
+              }))
+            ))
+          ).filter((candidate) => candidate.status === "pending")
+          : [];
         if (pendingCandidates.length > 0) {
           throw new Error(
             `Resolve ${pendingCandidates.length} pending proofreading glossary candidate(s) with resolveProofreadGlossaryCandidates before finalizing.`
@@ -7302,14 +7403,16 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               }
             } : {})
           } : {}),
-          pendingGlossaryCandidatesForTask: () => pendingProofreadGlossaryCandidateEvidence(
-            resolvedManifest.documents.flatMap((document) => (
-              proofreadDocumentHostState(proofreadState, document.id).glossaryCandidates.map((candidate) => ({
-                ...candidate,
-                documentId: document.id
-              }))
-            ))
-          ),
+          pendingGlossaryCandidatesForTask: () => glossaryCandidateCollectionEnabled
+            ? pendingProofreadGlossaryCandidateEvidence(
+              resolvedManifest.documents.flatMap((document) => (
+                proofreadDocumentHostState(proofreadState, document.id).glossaryCandidates.map((candidate) => ({
+                  ...candidate,
+                  documentId: document.id
+                }))
+              ))
+            )
+            : [],
           signal,
           onArtifactMutation: dynamicSplitQueue
             ? (changedDocumentId) => {
@@ -8164,7 +8267,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           if (!context.resumeWorkflow) {
             throw new Error("The pending translation reuse decision cannot restore its suspended Host workflow.");
           }
-          await context.resumeWorkflow();
+          await context.resumeWorkflow("translation");
         }
         await ensureManifest();
         return execute(...args);

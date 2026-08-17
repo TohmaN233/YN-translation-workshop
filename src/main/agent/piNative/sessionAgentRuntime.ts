@@ -28,6 +28,7 @@ import {
   type Models,
   type SimpleStreamOptions
 } from "@earendil-works/pi-ai";
+import { isExpiredProviderAuthError } from "./assignmentFailure.ts";
 import { runWithProviderFetchDiagnostics } from "../providers/proxyFetch.ts";
 
 import type {
@@ -68,6 +69,7 @@ export interface PiSessionAgentRuntimeOptions {
     context: AfterToolCallContext,
     signal?: AbortSignal
   ) => Promise<AfterToolCallResult | undefined>;
+  refreshExpiredProviderAuth?: (model: Model<any>) => Promise<Model<any> | undefined>;
 }
 
 export interface PiProviderStreamTimeouts {
@@ -423,6 +425,7 @@ export class PiSessionAgentRuntime {
   private retryAttempt = 0;
   private retryAbortController?: AbortController;
   private readonly deferThresholdCompaction: () => boolean;
+  private readonly refreshExpiredProviderAuth?: PiSessionAgentRuntimeOptions["refreshExpiredProviderAuth"];
   private resetContextActive = false;
   private resetContextStartEntryId?: string;
 
@@ -432,6 +435,7 @@ export class PiSessionAgentRuntime {
     this.models = options.models;
     this.retrySettings = { ...DEFAULT_PI_AUTO_RETRY_SETTINGS, ...options.retry };
     this.deferThresholdCompaction = options.deferThresholdCompaction ?? (() => false);
+    this.refreshExpiredProviderAuth = options.refreshExpiredProviderAuth;
     this.agent = new Agent({
       initialState: {
         systemPrompt: options.systemPrompt,
@@ -739,6 +743,18 @@ export class PiSessionAgentRuntime {
     if (!assistant) return false;
     const model = this.agent.state.model;
     const sameModel = assistant.provider === model.provider && assistant.model === model.id;
+
+    if (
+      sameModel
+      && !isContextOverflow(assistant, model.contextWindow)
+      && isExpiredProviderAuthError(assistant.errorMessage)
+    ) {
+      const refreshed = await this.refreshExpiredProviderAuth?.(this.agent.state.model);
+      if (refreshed) {
+        this.agent.state.model = refreshed;
+        if (await this.prepareRetry(assistant)) return true;
+      }
+    }
 
     if (
       sameModel

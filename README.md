@@ -4,30 +4,15 @@
 
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
-[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0.4](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.4)
+[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0.5](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.5)
 
-## 2.0.4
+## 2.0.1 – 2.0.5
 
-- 校对工人整批发 findings 时，过校验的先收下，只打回空操作等失败项。
-- 后台同步术语不再刷掉「TXT 已写入」等顶部状态。
-
-## 2.0.3
-
-- 校对收尾改成 Host 契约：按行号回填原文/译文；子代理写完后母代理直接 finalize，空写入不能清空已有 findings；母代理只读 Pi session JSONL 以便从子代理对话恢复产物。
-- Grok OAuth 过期只换该工人、`resumeYnWorkflow` 不再二次要同意，Host 等用户时停 loop，避免同一 gated tool 连撞。
-- 术语长名覆盖短名、角色 `requiredTerms` 只查可归属台词、对齐页最多 24 行、非阻塞警告先问再审。
-
-## 2.0.2
-
-- 修复完整翻译里子 Agent 三次复审不过后，已接受的 staging 要等到整批结束才提升进主文件的问题。正式 takeover 会立刻把 hash-current staging 写入主文件并放开该段写锁，父级读主文件就能看到稿、只改被拒行。
-- 校对/接管时按审计自己的候选路径读对齐行，不再拿空的主文件去对哈希。
-- 用项目文件工具浏览 `translation-staging` 会得到明确的 Host 改道错误，而不是空命中。
-
-## 2.0.1
-
-- 修复 EPUB 校对模式下译文路径选错的问题：页面手选的译文文件优先；如果翻译结束后 HTML 已绑定 `translated`、而前端一开始没手选，则自动跟上，避免读到临时快照后卡死。
-- 模型选择新增 **Grok (OAuth)**。可用 SuperGrok / X Premium+ 官方登录，或导入本机 `~/.grok/auth.json`；与原来的 xAI API key 入口分开，失败时不会静默回退到 API key。
-- 将 Provider 流空闲等待上限提高到 3000 秒。测试 Grok 时发现它和 GPT 不同，会彻底思考完再写入，原先等待时间太短。
+- 校对/EPUB 以页面手选的译文为准；翻译结束后若 HTML 已绑定 `translated` 且前端未手选，则自动跟上，不再读临时快照。
+- 新增 **Grok (OAuth)**，思考等级按模型适配，流空闲等待 3000 秒。OAuth 403 时母代理刷新后重试，工人换人续跑，不中断工作流。
+- 翻译三次复审不过会立刻提升已接受 staging。校对 findings 由 Host 按绑定行回填；过校验的先收下；空写入视为通过且不能清空已有发现；关闭术语时不再查候选。
+- 一键应用保留「人工修改」；后台术语同步不再刷掉「TXT 已写入」等状态。`resumeYnWorkflow` 必须指定翻译或校对。
+- 术语长名覆盖短名，跨文件不一致改为警告；角色 `requiredTerms` 只查可归属台词。
 
 ## 2.0 是什么
 
@@ -40,8 +25,8 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.0.4-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.0.4-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.0.5-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.0.5-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。

@@ -3038,6 +3038,7 @@ export function createPiProofreadSubagentTools(
   progress: PiProofreadProgress,
   assignmentReferences?: ProofreadAssignmentReferenceContext
 ): AgentTool[] {
+  const glossaryCandidatesEnabled = context.request.glossaryCandidates !== false;
   const emptySchema = Type.Object({});
   const inlineReferenceLimit = 8_000;
   const hasPagedReference = assignmentReferences === undefined
@@ -3179,17 +3180,19 @@ export function createPiProofreadSubagentTools(
           context.request,
           assignedLines.map((entry) => entry.source).join("\n")
         );
-        const pendingProofreadGlossaryCandidates = (context.pendingProofreadGlossaryCandidates ?? [])
-          .filter((candidate) => referenceLookupTerms(
-            candidate as unknown as Record<string, unknown>,
-            ["source", "aliases"]
-          ).flatMap(referenceMentionForms).some((term) => assignedText.includes(term)))
-          .slice(0, 16)
-          .map((candidate) => ({
-            ...candidate,
-            status: "pending_unresolved" as const,
-            canonical: false as const
-          }));
+        const pendingProofreadGlossaryCandidates = glossaryCandidatesEnabled
+          ? (context.pendingProofreadGlossaryCandidates ?? [])
+            .filter((candidate) => referenceLookupTerms(
+              candidate as unknown as Record<string, unknown>,
+              ["source", "aliases"]
+            ).flatMap(referenceMentionForms).some((term) => assignedText.includes(term)))
+            .slice(0, 16)
+            .map((candidate) => ({
+              ...candidate,
+              status: "pending_unresolved" as const,
+              canonical: false as const
+            }))
+          : [];
         const checkpointFrom = ownedLines[0];
         const checkpointTo = ownedLines.at(-1)!;
         if (context.task.sampledLines) {
@@ -3309,10 +3312,14 @@ export function createPiProofreadSubagentTools(
     {
       name: "writeAssignedFindings",
       label: "writeAssignedFindings",
-      description: "Write zero or more strictly bound findings for the assigned range through the YN findings host contract. Every suggestedFix must be a changed, complete replacement line and must preserve the exact leading bracket control prefix from the bound source/current row. When both bound rows have no prefix, do not invent or diagnose one. Valid findings are kept even if other items fail; only rejected items are returned for rewrite. Identical no-op fixes are rejected without discarding the rest of the batch.",
+      description: glossaryCandidatesEnabled
+        ? "Write zero or more strictly bound findings for the assigned range through the YN findings host contract. Every suggestedFix must be a changed, complete replacement line and must preserve the exact leading bracket control prefix from the bound source/current row. When both bound rows have no prefix, do not invent or diagnose one. Valid findings are kept even if other items fail; only rejected items are returned for rewrite. Identical no-op fixes are rejected without discarding the rest of the batch."
+        : "Write zero or more strictly bound findings for the assigned range through the YN findings host contract. Glossary-candidate collection is disabled, so do not submit terminology candidates. Every suggestedFix must be a changed, complete replacement line and must preserve the exact leading bracket control prefix from the bound source/current row. Valid findings are kept even if other items fail.",
       parameters: Type.Object({
         findings: Type.Array(findingSchema),
-        glossaryCandidates: Type.Optional(Type.Array(glossaryCandidateSchema, { maxItems: 64 }))
+        ...(glossaryCandidatesEnabled ? {
+          glossaryCandidates: Type.Optional(Type.Array(glossaryCandidateSchema, { maxItems: 64 }))
+        } : {})
       }, { additionalProperties: false }),
       executionMode: "sequential",
       async execute(_toolCallId, params, signal) {
@@ -3344,27 +3351,24 @@ export function createPiProofreadSubagentTools(
             `Proofreading findings cannot be written because source has ${sourceLines.length} lines and translation has ${translationLines.length}.`
           );
         }
-        for (const candidate of input.glossaryCandidates ?? []) {
-          assertFindingInAssignedRange({
-            id: `glossary:${candidate.source}`,
-            type: "glossary_candidate",
-            sourceLine: candidate.evidenceLine,
-            suggestedFix: candidate.target,
-            rationale: candidate.rationale
-          }, context.task);
+        if (glossaryCandidatesEnabled) {
+          for (const candidate of input.glossaryCandidates ?? []) {
+            assertFindingInAssignedRange({
+              id: `glossary:${candidate.source}`,
+              type: "glossary_candidate",
+              sourceLine: candidate.evidenceLine,
+              suggestedFix: candidate.target,
+              rationale: candidate.rationale
+            }, context.task);
+          }
         }
         const discoveryReport = normalizeTranslationDiscoveries({
-          glossaryCandidates: input.glossaryCandidates ?? [],
+          glossaryCandidates: glossaryCandidatesEnabled ? input.glossaryCandidates ?? [] : [],
           characterFacts: []
         }, context.task, sourceLines, translationLines);
-        if (discoveryReport.rejectedDiscoveries.length > 0) {
-          throw new Error(
-            `Proofreading glossary candidates failed Host validation: ${discoveryReport.rejectedDiscoveries
-              .map((rejected) => rejected.reason)
-              .join(" | ")}`
-          );
-        }
-        progress.glossaryCandidates = discoveryReport.discoveries.glossaryCandidates;
+        progress.glossaryCandidates = glossaryCandidatesEnabled
+          ? discoveryReport.discoveries.glossaryCandidates
+          : [];
         const excludedLines = new Set(context.request.auditWhitelistLines ?? []);
         const acceptedByIdentity = new Map<string, Record<string, unknown>>();
         for (const finding of progress.acceptedFindings ?? []) {
@@ -3391,6 +3395,15 @@ export function createPiProofreadSubagentTools(
         }
         const findings = [...acceptedByIdentity.values()];
         throwIfAborted(context.signal, signal);
+        if (
+          findings.length === 0
+          && (progress.acceptedFindings?.length ?? 0) > 0
+          && rejected.length === 0
+        ) {
+          throw new Error(
+            `Refusing to replace ${progress.acceptedFindings?.length ?? 0} already-accepted finding(s) with an empty list. Rewrite only rejected items.`
+          );
+        }
         if (findings.length > 0 || rejected.length === 0) {
           const writeArgs: Parameters<typeof writeProofreadFindings>[0] = {
             outputDir: context.request.outputDir,
@@ -3435,9 +3448,13 @@ export function createPiProofreadSubagentTools(
                 toLine: context.task.toLine,
                 findingsWritten: findings.length,
                 rejectedFindings: [],
-                glossaryCandidates: progress.glossaryCandidates
+                rejectedGlossaryCandidates: discoveryReport.rejectedDiscoveries,
+                glossaryCandidates: progress.glossaryCandidates,
+                ...(discoveryReport.rejectedDiscoveries.length > 0 ? {
+                  nextAction: "Valid findings were kept. Do not resubmit an empty findings list. Rewrite only rejected glossary candidates if they still matter."
+                } : {})
               }),
-              terminate: true
+              terminate: discoveryReport.rejectedDiscoveries.length === 0
             };
           }
           return textResult({
@@ -3449,6 +3466,7 @@ export function createPiProofreadSubagentTools(
             rejectedCount: rejected.length,
             rejectedFindings: rejected,
             nextAction: "Valid findings were kept. Rewrite only the rejected items and call writeAssignedFindings again.",
+            rejectedGlossaryCandidates: discoveryReport.rejectedDiscoveries,
             glossaryCandidates: progress.glossaryCandidates
           });
         }
@@ -5562,6 +5580,7 @@ function createPiProofreadRuntimeSpec(
   glossaryCandidates: PiTranslationGlossaryDiscovery[];
   reportPath?: string;
 }> {
+  const glossaryCandidatesEnabled = context.request.glossaryCandidates !== false;
   return {
     kind: "proofread",
     label: context.task.label?.trim() || (context.task.documentId
@@ -5578,7 +5597,9 @@ function createPiProofreadRuntimeSpec(
       "FIRST TOOL: call readAssignedProofreadContext. It returns complete structured glossary/character records, unresolved non-canonical candidates, and prior exact-search evidence directly matched to this assignment. Reuse those results. Use one exact searchProjectText lookup only for a still-missing ambiguous term. Reference manifest entries with complete=true are already fully read; call readProofreadReference only for complete=false, starting at offset 0 and continuing exactly from nextOffset. Optional web references are only for relevant ambiguity.",
       "readAssignedProofreadContext already contains the complete owned rows for source/current translation and the exact boundary rows. Do not call listProjectDir to rediscover them, do not reread the bound source/current translation through general file reads, and do not browse raw assets or preceding files for context already supplied by Host.",
       "Confirm or reject Host signals and semantically review every assigned row. Signals are evidence, not automatic findings.",
-      "Call writeAssignedFindings with exact one-based lines, complete replacement-ready fixes, rationales, and evidence-backed proper-term candidates. Every suggestedFix must change the current translation and preserve the exact leading control prefix from the bound source/current row. If both the source and current translation contain no leading prefix, do not invent one or diagnose its absence. Host keeps valid findings and returns only rejected items; rewrite those items instead of resubmitting the whole batch. glossaryCandidates.category must be one of proper_noun, character, organization, place, title, or setting_term; aliases contains alternate target-language renderings only, never source-language nicknames. [] is valid when clean.",
+      glossaryCandidatesEnabled
+        ? "Call writeAssignedFindings with exact one-based lines, complete replacement-ready fixes, rationales, and evidence-backed proper-term candidates. Every suggestedFix must change the current translation and preserve the exact leading control prefix from the bound source/current row. If both the source and current translation contain no leading prefix, do not invent one or diagnose its absence. Host keeps valid findings and returns only rejected items; rewrite those items instead of resubmitting the whole batch. glossaryCandidates.category must be one of proper_noun, character, organization, place, title, or setting_term; aliases contains alternate target-language renderings only, never source-language nicknames. [] is valid when clean."
+        : "Call writeAssignedFindings with exact one-based lines, complete replacement-ready fixes, and rationales. Glossary-candidate collection is disabled; do not submit terminology candidates. Every suggestedFix must change the current translation and preserve the exact leading control prefix from the bound source/current row. Host keeps valid findings and returns only rejected items. [] is valid when clean.",
       "Never edit source, translation, or shared assets. A successful writeAssignedFindings call is terminal; do not spend another model turn summarizing it."
     ].join("\n"),
     tools: (subagentId) => createPiProofreadSubagentTools(

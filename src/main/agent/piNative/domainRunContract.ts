@@ -1517,6 +1517,8 @@ export function createYnDomainRunContract({
         };
         document.recoveryReason = undefined;
         if (kind === "proofread" && candidateRevisionIsCurrent) {
+          if (!document.findingsWritten) markProgress();
+          document.findingsWritten = true;
           document.validatedProofreadArtifactRevision = document.proofreadArtifactRevision;
           document.proofreadDirtyRanges = [];
         }
@@ -1579,6 +1581,8 @@ export function createYnDomainRunContract({
           };
           document.recoveryReason = undefined;
           if (kind === "proofread" && candidateRevisionIsCurrent) {
+            if (!document.findingsWritten) markProgress();
+            document.findingsWritten = true;
             document.validatedProofreadArtifactRevision = document.proofreadArtifactRevision;
             document.proofreadDirtyRanges = [];
           }

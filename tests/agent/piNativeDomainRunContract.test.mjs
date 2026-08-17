@@ -700,6 +700,26 @@ proofreadRevision.recordProofreadArtifactMutation();
 proofreadRevision.recordSubagentBatch("proofread", "proofread-revision", 2);
 proofreadRevision.recordProofreadReportFinalized();
 assert.deepEqual(proofreadRevision.incompleteReasons(), []);
+
+const proofreadSettlementCompletesWrite = createYnDomainRunContract({ workflowIntent: "proofread" });
+proofreadSettlementCompletesWrite.recordInspection({
+  sourceLineCount: 2,
+  glossaryCandidateExists: true,
+  characterBibleExists: true
+});
+proofreadSettlementCompletesWrite.recordProofreadPrescan();
+proofreadSettlementCompletesWrite.recordSourceRead();
+proofreadSettlementCompletesWrite.recordTranslationRead();
+proofreadSettlementCompletesWrite.recordSubagentBatchStarted("proofread", "proofread-settle-complete", {
+  taskCount: 2,
+  workerCount: 2
+});
+assert.equal(proofreadSettlementCompletesWrite.snapshot().documents[0].findingsWritten, false);
+proofreadSettlementCompletesWrite.recordSubagentBatch("proofread", "proofread-settle-complete", 2);
+assert.equal(proofreadSettlementCompletesWrite.snapshot().documents[0].findingsWritten, true,
+  "a settled proofread batch is the complete marker, including clean empty writes");
+proofreadSettlementCompletesWrite.recordProofreadReportFinalized();
+assert.deepEqual(proofreadSettlementCompletesWrite.incompleteReasons(), []);
 const legacyProofreadSnapshot = structuredClone(proofreadRevision.snapshot());
 legacyProofreadSnapshot.schemaVersion = 4;
 for (const document of legacyProofreadSnapshot.documents) {

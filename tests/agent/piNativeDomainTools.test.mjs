@@ -3723,6 +3723,93 @@ await test("final validation does not reopen a hash-current quality warning acce
   }
 });
 
+await test("final terminology consistency does not treat ベス inside エリザベス as a nickname debt", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: true,
+    subagentEnabled: false
+  });
+  const fx = await fixture({
+    domainRun,
+    requestPatch: {
+      prompt: "Workflow: yn-translation-v1.",
+      workflowIntent: "translation",
+      subagentEnabled: false,
+      languagePair: "ja->zh-CN"
+    }
+  }, "エリザベスが来た。\nベスが来た。\n");
+  const candidatePath = path.join(fx.outputDir, "AI_translation", "source_translated.txt");
+  try {
+    const workspace = path.join(fx.outputDir, ".translation-workshop");
+    await mkdir(path.dirname(candidatePath), { recursive: true });
+    await mkdir(workspace, { recursive: true });
+    await writeFile(path.join(workspace, "glossary.json"), JSON.stringify({
+      entries: [
+        { source: "ベス", target: "贝丝" }
+      ]
+    }), "utf8");
+    await mkdir(path.join(fx.outputDir, "AI_translation", "_workspace"), { recursive: true });
+    await writeFile(path.join(fx.outputDir, "AI_translation", "_workspace", "glossary_candidates.json"), JSON.stringify({
+      entries: [
+        { source: "エリザベス", target: "艾莉莎白", status: "confirmed" }
+      ]
+    }), "utf8");
+    await writeFile(candidatePath, "艾莉莎白来了。\n艾莉莎白来了。\n", "utf8");
+    domainRun.recordTranslationDiscoveries([{
+      id: "beth-nickname",
+      kind: "glossary",
+      documentId: "source.txt",
+      fromLine: 2,
+      toLine: 2,
+      sourceHash: "audit",
+      candidateHash: "audit",
+      source: "ベス",
+      target: "贝丝",
+      category: "character",
+      evidenceLine: 2,
+      rationale: "nickname"
+    }]);
+    domainRun.resolveTranslationDiscoveries(["beth-nickname"], [{
+      source: "ベス",
+      target: "贝丝",
+      observedTargets: ["贝丝", "艾莉莎白"]
+    }]);
+
+    const audit = await execute(fx.tool("inspectTranslationAlignment"));
+    await execute(fx.tool("readSourceLines"), { fromLine: 1, toLine: 2 });
+    await execute(fx.tool("readTranslationLines"), { fromLine: 1, toLine: 2 });
+    await execute(fx.tool("recordTranslationAlignmentChecks"), {
+      auditId: audit.details.auditId,
+      failures: []
+    });
+
+    const validated = await execute(fx.tool("validateTranslationArtifact"));
+    assert.equal(validated.details.validation.accepted, true,
+      "terminology correspondence is a warning, not a blocking final-validation throw");
+    assert.equal(validated.details.validation.warningByCode.terminology_inconsistency, 1);
+    assert.equal(domainRun.pendingTranslationTerminologyDebt().length, 0,
+      "final validation must not keep terminology correspondence as Host repair debt");
+    assert.match(String(validated.details.nextAction || ""), /Ask the user whether to judge/i);
+
+    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
+    const warningAudit = await execute(fx.tool("inspectTranslationWarnings"));
+    const selectedLines = warningAudit.details.windows.flatMap((window) => (
+      window.rows.filter((row) => row.selected).map((row) => row.line)
+    ));
+    assert.deepEqual(selectedLines, [2]);
+    assert.ok(selectedLines.every((line) => line !== 1), "伊丽莎白 must not become a ベス warning");
+    await execute(fx.tool("recordTranslationWarningChecks"), {
+      auditId: warningAudit.details.auditId,
+      failures: []
+    });
+    const accepted = await execute(fx.tool("validateTranslationArtifact"));
+    assert.equal(accepted.details.validation.accepted, true);
+    assert.equal(accepted.details.validation.warningReviewDebtCount, 0);
+  } finally {
+    await fx.close();
+  }
+});
+
 await test("final warning review is non-blocking validation work and covers character pronoun warnings", async () => {
   const domainRun = createYnDomainRunContract({
     workflowIntent: "translation",
@@ -7648,6 +7735,38 @@ await test("a suspended full workflow blocks only full continuation while indepe
     assert.doesNotMatch(domainRun.incompleteReasons().join("\n"), /prompt-defined|explicitly requested native Pi/i);
     await execute(fx.tool("inspectTranslationContext"), {});
     assert.equal(domainRun.snapshot().inspected, true);
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("resumeYnWorkflow does not steal a parked sibling when the current workflow is active", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "proofread",
+    fullWorkflow: true,
+    subagentEnabled: false
+  });
+  const resumed = [];
+  const fx = await fixture({
+    domainRun,
+    isWorkflowSuspended: () => false,
+    parkedWorkflows: () => ["translation"],
+    async resumeWorkflow(kind) {
+      resumed.push(kind);
+    },
+    requestPatch: {
+      prompt: "Workflow: yn-proofread-v1.",
+      workflowIntent: "proofread"
+    }
+  });
+  try {
+    const bare = await execute(fx.tool("resumeYnWorkflow"));
+    assert.equal(bare.details.status, "already_active");
+    assert.equal(bare.details.workflow, "proofread");
+    assert.deepEqual(resumed, []);
+    const switched = await execute(fx.tool("resumeYnWorkflow"), { workflow: "translation" });
+    assert.deepEqual(resumed, ["translation"]);
+    assert.equal(switched.details.resumed, true);
   } finally {
     await fx.close();
   }

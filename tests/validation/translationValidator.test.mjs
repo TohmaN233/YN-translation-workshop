@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 import {
   validateTranslationCandidate,
   normalizeHandwrittenCharacterRequiredTerms,
+  scanResolvedTerminologyConflicts,
+  sourceHasIndependentTermOccurrence,
+  terminologyInconsistencyFinding,
   splitTextLines,
   looksLikeCodePayload,
   parseSourceLanguageFromPair,
@@ -570,6 +573,49 @@ await test("character required official names are not voice misses when a short 
   });
   assert.equal(result.warnings.some((finding) => finding.code === "character_voice_required_missing"), false, result.summary);
   assert.equal(result.warnings.some((finding) => finding.code === "character_name_missing"), false, result.summary);
+});
+
+await test("a longer registered source covers an embedded nickname in terminology consistency", () => {
+  const catalog = ["エリザベス", "ベス"];
+  assert.equal(sourceHasIndependentTermOccurrence("エリザベスが来た。", "ベス", catalog), false);
+  assert.equal(sourceHasIndependentTermOccurrence("ベスが来た。", "ベス", catalog), true);
+  assert.equal(sourceHasIndependentTermOccurrence("エリザベスとベスが来た。", "ベス", catalog), true);
+});
+
+await test("terminology correspondence findings are warnings, not blockers", () => {
+  const finding = terminologyInconsistencyFinding({
+    line: 2,
+    source: "ベス",
+    expectedTarget: "贝丝",
+    observedTargets: ["艾莉莎白"]
+  });
+  assert.equal(finding.severity, "warning");
+  assert.equal(finding.code, "terminology_inconsistency");
+});
+
+await test("cross-file terminology debt ignores エリザベス when ベス is only a covered substring", () => {
+  const terms = [{ source: "ベス", target: "贝丝", observedTargets: ["贝丝", "艾莉莎白"] }];
+  const coveringEntries = [{ source: "エリザベス", target: "艾莉莎白" }];
+  const conflicts = scanResolvedTerminologyConflicts({
+    sourceLines: [
+      "エリザベスが来た。",
+      "ベスが来た。",
+      "エリザベスとベスが来た。"
+    ],
+    candidateLines: [
+      "艾莉莎白来了。",
+      "艾莉莎白来了。",
+      "艾莉莎白和贝丝来了。"
+    ],
+    terms,
+    coveringEntries
+  });
+  assert.deepEqual(conflicts, [{
+    line: 2,
+    source: "ベス",
+    expectedTarget: "贝丝",
+    observedTargets: ["艾莉莎白"]
+  }]);
 });
 
 await test("handwritten required terms must be speech mappings and cannot be names", () => {

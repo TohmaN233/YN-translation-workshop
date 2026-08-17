@@ -85,6 +85,22 @@ await test("proofread prompt names the native workflow and keeps findings contra
   assert.doesNotMatch(prompt, /^\/proofread-translation/m);
 });
 
+await test("proofread prompt does not send the parent to inspect glossary candidates when they are off", () => {
+  const prompt = buildYnSystemPrompt({
+    outputDir: "project",
+    sourcePath: "source.txt",
+    sessionId: "pi_test",
+    prompt: "proofread",
+    providerId: "test",
+    modelId: "test",
+    workflowIntent: "proofread",
+    languagePair: "ja->zh-CN",
+    glossaryCandidates: false
+  }, { fullWorkflow: true });
+  assert.match(prompt, /Glossary-candidate collection is disabled/);
+  assert.doesNotMatch(prompt, /Resolve pending glossary candidates/);
+});
+
 await test("existing translation reuse audit is explicit and defaults to direct retranslation", () => {
   const defaults = promptParameterDefaults("project");
   assert.equal(defaults.reuseExistingTranslation, false);

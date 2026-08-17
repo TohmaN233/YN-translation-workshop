@@ -621,6 +621,19 @@ function bindFindingAlignedTexts(
   });
 }
 
+function refreshMergedFindings(
+  findings: ProofreadFinding[],
+  incoming: ProofreadFinding[],
+  sourceLines: string[],
+  translationLines: string[]
+): ProofreadFinding[] {
+  const incomingIdentities = new Set(incoming.map(findingIdentity));
+  return bindFindingAlignedTexts(findings, sourceLines, translationLines).filter((finding) => (
+    incomingIdentities.has(findingIdentity(finding))
+    || proofreadSuggestedFixChangesTranslation(finding)
+  ));
+}
+
 function assertSourceBindings(findings: ProofreadFinding[], sourceLines: string[]): void {
   for (const finding of findings) {
     if (finding.sourceLine > sourceLines.length) {
@@ -921,14 +934,15 @@ async function writeFindingsJson(filePath: string, args: WriteProofreadFindingsA
       incoming,
       excludedLines
     });
-    const findings = merged.findings;
+    const findings = refreshMergedFindings(merged.findings, incoming, sourceLines, translationLines);
     assertSourceBindings(findings, sourceLines);
     assertTranslationBindings(findings, translationLines);
     const appended = Boolean(args.replaceDocument)
       || !existing
       || merged.newFindingCount > 0
       || merged.existingChanged
-      || replacedFindingCount > 0;
+      || replacedFindingCount > 0
+      || JSON.stringify(findings) !== JSON.stringify(merged.findings);
     if (appended) {
       const document: PersistedProofreadFindingsDocument = folderScope
         ? {

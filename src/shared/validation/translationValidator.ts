@@ -28,6 +28,7 @@ export type ValidationCode =
   | "empty_line_displaced"
   | "likely_untranslated"
   | "glossary_missing"
+  | "terminology_inconsistency"
   | "character_name_missing"
   | "character_pronoun_mismatch"
   | "character_voice_required_missing"
@@ -732,6 +733,109 @@ function longestUncoveredGlossaryEntries(
       covered.push(...occurrences);
       return true;
     });
+}
+
+export function sourceHasIndependentTermOccurrence(
+  sourceText: string,
+  term: string,
+  catalogSources: Array<string | undefined>
+): boolean {
+  const normalizedTerm = comparableTerm(term);
+  if (!normalizedTerm) return false;
+  const catalog = uniqueComparableTerms([term, ...catalogSources]);
+  return longestUncoveredGlossaryEntries(
+    sourceText,
+    catalog.map((source) => ({ source }))
+  ).some((entry) => comparableTerm(entry.source ?? "") === normalizedTerm);
+}
+
+export interface ResolvedTerminologyConflict {
+  line: number;
+  source: string;
+  expectedTarget: string;
+  observedTargets: string[];
+}
+
+export function scanResolvedTerminologyConflicts(args: {
+  sourceLines: string[];
+  candidateLines: string[];
+  terms: Array<{ source: string; target: string; observedTargets: string[] }>;
+  coveringEntries?: Array<{ source?: string; target?: string; aliases?: string[] }>;
+}): ResolvedTerminologyConflict[] {
+  const coveringEntries = [
+    ...args.terms.map((term) => ({ source: term.source, target: term.target })),
+    ...(args.coveringEntries ?? [])
+  ].filter((entry) => comparableTerm(entry.source ?? ""));
+  const conflicts: ResolvedTerminologyConflict[] = [];
+  for (const term of args.terms) {
+    const variants = [...new Set(term.observedTargets.map((value) => value.trim()).filter(Boolean))];
+    if (variants.length < 2) continue;
+    const competing = variants.filter((target) => target !== term.target);
+    if (competing.length === 0) continue;
+    for (const [index, sourceLine] of args.sourceLines.entries()) {
+      if (!sourceHasIndependentTermOccurrence(
+        sourceLine,
+        term.source,
+        coveringEntries.map((entry) => entry.source)
+      )) continue;
+      const candidateLine = args.candidateLines[index] ?? "";
+      if (textContainsTerm(candidateLine, term.target)) continue;
+      const independentEntries = longestUncoveredGlossaryEntries(sourceLine, coveringEntries);
+      const explainedTargets = new Set(
+        independentEntries
+          .filter((entry) => comparableTerm(entry.source ?? "") !== comparableTerm(term.source))
+          .flatMap((entry) => uniqueComparableTerms([entry.target, ...(entry.aliases ?? [])]))
+          .map(comparableTerm)
+      );
+      const observedTargets = competing.filter((target) => (
+        textContainsTerm(candidateLine, target)
+        && !explainedTargets.has(comparableTerm(target))
+      ));
+      if (observedTargets.length === 0) continue;
+      conflicts.push({
+        line: index + 1,
+        source: term.source,
+        expectedTarget: term.target,
+        observedTargets
+      });
+    }
+  }
+  return conflicts;
+}
+
+export function terminologyInconsistencyFinding(
+  conflict: ResolvedTerminologyConflict,
+  locale: ValidatorLocale = "zh-CN"
+): ValidationFinding {
+  return {
+    code: "terminology_inconsistency",
+    severity: "warning",
+    line: conflict.line,
+    detail: locale === "zh-CN"
+      ? `第 ${conflict.line} 行术语不一致：原文独立出现「${conflict.source}」，候选使用了「${conflict.observedTargets.join("、")}」，规范译名是「${conflict.expectedTarget}」。`
+      : `Line ${conflict.line} terminology inconsistency: source independently has "${conflict.source}", candidate uses ${conflict.observedTargets.join(", ")}, expected "${conflict.expectedTarget}".`
+  };
+}
+
+export function withAdditionalTranslationWarnings(
+  validation: TranslationValidationResult,
+  extra: ValidationFinding[],
+  locale: ValidatorLocale = "zh-CN"
+): TranslationValidationResult {
+  if (extra.length === 0) return validation;
+  const warnings = [...validation.warnings, ...extra];
+  return {
+    ...validation,
+    warnings,
+    summary: validationSummary(
+      validation.ok,
+      validation.sourceLineCount,
+      validation.blocking.length,
+      warnings.length,
+      locale,
+      { styleScore: validation.styleScore, voiceScore: validation.voiceScore }
+    )
+  };
 }
 
 function glossaryMissingDetail(lineNo: number, source: string, target: string, locale: ValidatorLocale): string {

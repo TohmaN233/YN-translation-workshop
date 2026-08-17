@@ -285,12 +285,11 @@ await test("rejects an existing document with malformed finding records", async 
   }
 });
 
-await test("revalidates every existing finding against the current bound files", async () => {
+await test("Host rebinds stale existing currentTranslation instead of blocking a later write", async () => {
   const fx = await fixture();
   try {
     const initial = await fx.write(fx.finding());
     assert.equal(initial.ok, true, initial.error);
-    const unchangedReport = await readFile(fx.reportPath, "utf8");
     await writeFile(fx.translationPath, "译文一\n已变化的译文二\n译文三\n", "utf8");
 
     const result = await fx.write(fx.finding({
@@ -300,9 +299,34 @@ await test("revalidates every existing finding against the current bound files",
       sourceText: "source one",
       currentTranslation: "译文一"
     }));
-    assert.equal(result.ok, false);
-    assert.match(result.error ?? "", /M1-001.*currentTranslation.*line 2/i);
-    assert.equal(await readFile(fx.reportPath, "utf8"), unchangedReport);
+    assert.equal(result.ok, true, result.error);
+    const report = JSON.parse(await readFile(fx.reportPath, "utf8"));
+    const stale = report.findings.find((finding) => finding.id === "M1-001");
+    assert.equal(stale.currentTranslation, "已变化的译文二");
+    assert.ok(report.findings.some((finding) => finding.id === "M1-002"));
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("Host drops an existing finding whose suggestedFix was already applied", async () => {
+  const fx = await fixture();
+  try {
+    const initial = await fx.write(fx.finding());
+    assert.equal(initial.ok, true, initial.error);
+    await writeFile(fx.translationPath, "译文一\n修订译文二\n译文三\n", "utf8");
+    const result = await fx.write(fx.finding({
+      id: "M1-002",
+      sourceLine: 1,
+      translationLine: 1,
+      sourceText: "source one",
+      currentTranslation: "译文一",
+      suggestedFix: "修订译文一"
+    }));
+    assert.equal(result.ok, true, result.error);
+    const report = JSON.parse(await readFile(fx.reportPath, "utf8"));
+    assert.equal(report.findings.some((finding) => finding.id === "M1-001"), false);
+    assert.ok(report.findings.some((finding) => finding.id === "M1-002"));
   } finally {
     await fx.close();
   }

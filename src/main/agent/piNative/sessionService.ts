@@ -271,7 +271,8 @@ export interface PiNativeSessionServiceOptions {
     translationAlignmentState?: TranslationAlignmentHostState;
     persistHostState?: () => Promise<void>;
     isWorkflowSuspended?: () => boolean;
-    resumeWorkflow?: () => Promise<void>;
+    resumeWorkflow?: (kind?: "translation" | "proofread") => Promise<void>;
+    parkedWorkflows?: () => Array<"translation" | "proofread">;
     readInterfaceContext?: () => ReturnType<typeof ynInterfaceContextStore.read>;
   }) => Promise<AgentTool[]> | AgentTool[];
   buildSystemPrompt?: (
@@ -1047,26 +1048,53 @@ export class PiNativeSessionService {
       proofreadState,
       translationAlignmentState,
       persistHostState,
-      isWorkflowSuspended: () => hostState.workflowSuspended || hasParkedWorkflow(),
-      resumeWorkflow: async () => {
+      isWorkflowSuspended: () => hostState.workflowSuspended,
+      parkedWorkflows: () => (["translation", "proofread"] as const).filter((kind) => (
+        hostState.parkedDomainRuns[kind]?.fullWorkflowActive === true
+      )),
+      resumeWorkflow: async (kind) => {
         const previousDomainRun = domainRun;
         const previousHostDomainRun = hostState.domainRun;
         const previousToolDomainRun = toolContext.domainRun;
         const previousWorkflowSuspended = hostState.workflowSuspended;
+        const parkedKinds = (["translation", "proofread"] as const).filter((entry) => (
+          hostState.parkedDomainRuns[entry]?.fullWorkflowActive === true
+        ));
+        const requestedKind = kind && (kind === "translation" || kind === "proofread") ? kind : undefined;
         let suspendedRun = hostState.workflowSuspended ? hostState.domainRun : undefined;
         let parkedKind: YnWorkflowKind | undefined;
         let parkedSnapshot: YnDomainRunSnapshot | undefined;
-        if (!suspendedRun) {
-          const parked = Object.entries(hostState.parkedDomainRuns)
-            .filter((entry): entry is [YnWorkflowKind, YnDomainRunSnapshot] => (
-              (entry[0] === "translation" || entry[0] === "proofread")
-              && entry[1]?.fullWorkflowActive === true
-            ));
-          const latest = parked.at(-1);
-          if (!latest) return;
-          parkedKind = latest[0];
-          parkedSnapshot = latest[1];
-          suspendedRun = restoreDomainRun(parkedSnapshot);
+        let displacedKind: YnWorkflowKind | undefined;
+        let displacedSnapshot: YnDomainRunSnapshot | undefined;
+        if (requestedKind && hostState.domainRun?.kind === requestedKind && hostState.workflowSuspended) {
+          suspendedRun = hostState.domainRun;
+        } else if (requestedKind && hostState.parkedDomainRuns[requestedKind]?.fullWorkflowActive === true) {
+          if (
+            hostState.domainRun?.fullWorkflow
+            && hostState.domainRun.kind
+            && hostState.domainRun.kind !== requestedKind
+          ) {
+            hostState.domainRun.suspend();
+            displacedKind = hostState.domainRun.kind;
+            displacedSnapshot = hostState.domainRun.snapshot();
+            hostState.parkedDomainRuns[displacedKind] = displacedSnapshot;
+          }
+          parkedKind = requestedKind;
+          parkedSnapshot = hostState.parkedDomainRuns[requestedKind];
+          suspendedRun = restoreDomainRun(parkedSnapshot!);
+        } else if (!suspendedRun && !requestedKind && parkedKinds.length === 1 && !hostState.domainRun?.fullWorkflow) {
+          parkedKind = parkedKinds[0];
+          parkedSnapshot = hostState.parkedDomainRuns[parkedKind];
+          suspendedRun = restoreDomainRun(parkedSnapshot!);
+        } else if (!suspendedRun) {
+          if (requestedKind) {
+            throw new Error(`No parked ${requestedKind} workflow exists to resume.`);
+          }
+          throw new Error(
+            parkedKinds.length > 0
+              ? `resumeYnWorkflow requires workflow: ${parkedKinds.join(" | ")}.`
+              : "This Pi session has no suspended Host workflow to resume."
+          );
         }
         const suspendedSnapshot = suspendedRun.snapshot();
         const previousDeferredTranslationReuseAuditIds = [...deferredTranslationReuseAuditIds];
@@ -1108,6 +1136,10 @@ export class PiNativeSessionService {
           hostState.workflowSuspended = previousWorkflowSuspended;
           deferredTranslationReuseAuditIds = previousDeferredTranslationReuseAuditIds;
           if (parkedKind && parkedSnapshot) hostState.parkedDomainRuns[parkedKind] = parkedSnapshot;
+          if (displacedKind) {
+            if (displacedSnapshot) hostState.parkedDomainRuns[displacedKind] = displacedSnapshot;
+            else delete hostState.parkedDomainRuns[displacedKind];
+          }
           throw error;
         }
       }
@@ -1116,7 +1148,10 @@ export class PiNativeSessionService {
       // A new typed workflow prompt is explicit continuation authorization.
       // Reuse the transactional Host resume path before the model can falsely
       // report a stopped batch as active. Recovery pauses remain tool-gated.
-      await toolContext.resumeWorkflow?.();
+      const autoKind = runtimeRequest.workflowIntent;
+      await toolContext.resumeWorkflow?.(
+        autoKind === "translation" || autoKind === "proofread" ? autoKind : undefined
+      );
     }
     const rawTools = purpose === "prompt" ? await this.options.createTools?.(toolContext) ?? [] : [];
     const tools = rawTools.map((tool) => {
@@ -1154,6 +1189,14 @@ export class PiNativeSessionService {
       systemPrompt,
       tools,
       deferThresholdCompaction: () => subagents.hasRunning(),
+      refreshExpiredProviderAuth: async (model) => {
+        const refreshed = await (this.options.createModelSelection ?? createPiModelSelection)({
+          workspaceDir: request.outputDir,
+          providerId: model.provider,
+          modelId: model.id
+        });
+        return refreshed.model;
+      },
       afterToolCall: async (context) => {
         const assistantKey = JSON.stringify([
           context.assistantMessage.timestamp,

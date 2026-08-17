@@ -4,7 +4,13 @@ A local workbench that brings human line editing, project assets, full AI transl
 
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
-[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0.3](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.3)
+[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0.4](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.4)
+
+## 2.0.4
+
+- Proofread workers keep valid findings from a batch write and return only rejected no-ops for rewrite.
+- Applying proposals no longer resets a card from 人工修改 back to accepted or clears the handwritten suggestion.
+- Background glossary sync no longer overwrites statuses such as TXT written.
 
 ## 2.0.3
 
@@ -35,8 +41,8 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.0.3-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.0.3-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.0.4-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.0.4-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.

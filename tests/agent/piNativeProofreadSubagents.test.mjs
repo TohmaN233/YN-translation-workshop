@@ -1280,6 +1280,66 @@ await test("assigned findings hydrate exact source and translation rows on the h
   }
 });
 
+await test("assigned findings keep valid items and return only rejected no-ops for rewrite", async () => {
+  const fx = await fixture();
+  const progress = {
+    referenceRead: false,
+    findingsWritten: false,
+    findingsCount: 0
+  };
+  const tools = createPiProofreadSubagentTools({
+    request: fx.request,
+    task: { fromLine: 1, toLine: 2, mode: "split" },
+    publishCustomMessage: async () => {}
+  }, "proofread_partial_accept", progress);
+  const readContext = tools.find((tool) => tool.name === "readAssignedProofreadContext");
+  const writeFindings = tools.find((tool) => tool.name === "writeAssignedFindings");
+  try {
+    await readContext.execute("read_context", {});
+    const mixed = await writeFindings.execute("write_mixed", {
+      findings: [
+        {
+          id: "M1-001",
+          type: "accuracy",
+          sourceLine: 1,
+          suggestedFix: "您好",
+          rationale: "Valid replacement must be kept."
+        },
+        {
+          id: "L1-002",
+          type: "wording",
+          sourceLine: 2,
+          suggestedFix: "再见",
+          rationale: "This no-op must not discard the valid sibling."
+        }
+      ]
+    });
+    assert.equal(progress.findingsWritten, false);
+    assert.equal(mixed.details.acceptedCount, 1);
+    assert.equal(mixed.details.rejectedCount, 1);
+    assert.equal(mixed.details.rejectedFindings[0].id, "L1-002");
+    assert.match(mixed.details.rejectedFindings[0].reason, /no-op/i);
+    const partial = JSON.parse(await readFile(path.join(fx.outputDir, "report", "source.proofread.json"), "utf8"));
+    assert.deepEqual(partial.findings.map((finding) => finding.id), ["M1-001"]);
+
+    const retried = await writeFindings.execute("rewrite_rejected", {
+      findings: [{
+        id: "L1-002",
+        type: "wording",
+        sourceLine: 2,
+        suggestedFix: "再会",
+        rationale: "Only the previously rejected line is rewritten."
+      }]
+    });
+    assert.equal(progress.findingsWritten, true);
+    assert.equal(retried.details.findingsWritten, 2);
+    const report = JSON.parse(await readFile(path.join(fx.outputDir, "report", "source.proofread.json"), "utf8"));
+    assert.deepEqual(report.findings.map((finding) => finding.id).sort(), ["L1-002", "M1-001"]);
+  } finally {
+    await fx.close();
+  }
+});
+
 await test("a repeated split assignment replaces only its own report range", async () => {
   const fx = await fixture();
   const reportPath = path.join(fx.outputDir, "report", "source.proofread.json");

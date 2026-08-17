@@ -190,6 +190,10 @@ await test("proposal review exposes conflict resolution actions without bypassin
   assert.match(source, /data-conflict-preview=/);
   assert.match(source, /function currentProposalLineText\(item, lineState, rows\)/);
   assert.match(source, /function proposalSafetyCheck\(item, lineState, rows, options = \{\}\)/);
+  assert.match(source, /reason: "manual-edit"/);
+  assert.match(source, /intendedText: text/);
+  assert.match(source, /decision\.status === "manual"/);
+
   assert.match(source, /if \(sourceScore < 0\.8\) return \{ ok: false, reason: "source-mismatch" \};[\s\S]*if \(options\.allowStaleTarget === true\) return \{ ok: true, reason: "" \};/);
   assert.match(source, /allowStaleTarget: decision\.status === "manual" \|\| decision\.overrideConflict === true/);
   assert.match(source, /conflictCurrentText: currentProposalLineText\(item, target\.lineState, lineRows\)/);
@@ -493,6 +497,48 @@ await test("proposal review initializes conflict cards in a minimal DOM", async 
     { ok: alreadyApplied.ok, alreadyApplied: alreadyApplied.alreadyApplied },
     { ok: true, alreadyApplied: true },
     "reopening an already-applied suggestion must resolve idempotently instead of becoming patch-conflict"
+  );
+  const customManual = context.proposalSafetyCheck(
+    {
+      id: "H3-777",
+      line: 1,
+      src: "岡部は言った。",
+      current: "新译文",
+      oldText: "旧译文",
+      suggestion: "新译文"
+    },
+    {
+      edits: { 1: "新译文" },
+      status: { 1: "manual" },
+      revisions: { 1: 2 },
+      revisionHistory: {}
+    },
+    [{ line: 1, source: "岡部は言った。", translation: "旧译文" }],
+    { allowStaleTarget: true, intendedText: "我手改后的译文" }
+  );
+  assert.equal(customManual.alreadyApplied, undefined);
+  assert.equal(customManual.ok, true, "a later manual replacement must not be treated as already-applied official suggestion");
+  const manualProtected = context.proposalSafetyCheck(
+    {
+      id: "H3-888",
+      line: 1,
+      src: "岡部は言った。",
+      current: "旧译文",
+      oldText: "旧译文",
+      suggestion: "新译文"
+    },
+    {
+      edits: { 1: "我手改后的译文" },
+      status: { 1: "manual" },
+      revisions: { 1: 3 },
+      revisionHistory: { 1: [{ revision: 3, text: "我手改后的译文", status: "manual", source: "desktop-edit" }] }
+    },
+    [{ line: 1, source: "岡部は言った。", translation: "旧译文" }]
+  );
+  assert.deepEqual(
+    { ok: manualProtected.ok, reason: manualProtected.reason },
+    { ok: false, reason: "manual-edit" },
+    "re-applying accepted suggestions must not overwrite a later line-review manual edit"
   );
   const cardsHtml = element("cards").innerHTML;
   const conflictSummaryHtml = element("conflictSummary").innerHTML;

@@ -1071,9 +1071,9 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 32;
+export const LINE_REVIEW_PROTOCOL_VERSION = 33;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
-export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 8;
+export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 9;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
 export const PROMPT_SETTINGS_VERSION = 40;
 
@@ -3325,7 +3325,7 @@ const unsubscribeProjectState = writeBridge()?.onProjectStateUpdate?.((payload) 
   const nextProjectState = payload?.state || payload?.patch;
   const hasGlossaryPath = applyProjectPromptSettings(nextProjectState);
   if (hasGlossaryPath) {
-    if (boundGlossaryPath()) void syncGlossaryFromBoundFile();
+    if (boundGlossaryPath()) void syncGlossaryFromBoundFile(false);
     else void hydrateProjectPromptSettings();
   }
 });
@@ -3473,10 +3473,10 @@ const unsubscribeProjectAssets = writeBridge()?.onProjectAssetsUpdate?.((payload
   const canonicalGlossaryIsBound = !boundPath
     || normalizedWorkspacePath(boundPath) === normalizedWorkspacePath(glossaryPath);
   if (canonicalGlossaryIsBound && glossaryPath && glossary
-    && syncGlossaryFromText(JSON.stringify(glossary), glossaryPath, true)) {
+    && syncGlossaryFromText(JSON.stringify(glossary), glossaryPath, true, false)) {
     setBoundGlossaryPath(glossaryPath);
   } else if (!payload?.assets && boundPath) {
-    void syncGlossaryFromBoundFile();
+    void syncGlossaryFromBoundFile(false);
   }
 });
 window.addEventListener("beforeunload", () => unsubscribeProjectAssets?.(), { once: true });
@@ -3942,7 +3942,7 @@ function parseGlossaryTextLocal(text) {
     return true;
   });
 }
-function syncGlossaryFromText(text, label, allowEmpty = false) {
+function syncGlossaryFromText(text, label, allowEmpty = false, announce = true) {
   const parsed = parseGlossaryTextLocal(text);
   if (parsed.length === 0) {
     if (allowEmpty) {
@@ -3950,39 +3950,39 @@ function syncGlossaryFromText(text, label, allowEmpty = false) {
       glossaryTargets = {};
       glossaryAliasesByIndex = {};
       renderGlossaryEntries();
-      setAiStatus((data.labels.glossarySynced || "Glossary synced") + ": " + label + " (0)");
+      if (announce) setAiStatus((data.labels.glossarySynced || "Glossary synced") + ": " + label + " (0)");
       return true;
     }
     if (glossaryHelpEl) glossaryHelpEl.textContent = data.labels.glossaryEmpty || "No glossary loaded";
-    setAiStatus((data.labels.glossaryNoEntries || "No glossary entries parsed") + ": " + label);
+    if (announce) setAiStatus((data.labels.glossaryNoEntries || "No glossary entries parsed") + ": " + label);
     return false;
   }
   glossaryEntries = parsed;
   glossaryTargets = {};
   glossaryAliasesByIndex = {};
   renderGlossaryEntries();
-  setAiStatus((data.labels.glossarySynced || "Glossary synced") + ": " + label + " (" + parsed.length + ")");
+  if (announce) setAiStatus((data.labels.glossarySynced || "Glossary synced") + ": " + label + " (" + parsed.length + ")");
   return true;
 }
-async function syncGlossaryFromBoundFile() {
+async function syncGlossaryFromBoundFile(announce = true) {
   const glossaryPath = boundGlossaryPath();
   const bridge = writeBridge();
   if (!glossaryPath) {
-    setAiStatus(data.labels.glossarySyncMissingTarget || "This HTML has no bound glossary file. Import a glossary first.");
+    if (announce) setAiStatus(data.labels.glossarySyncMissingTarget || "This HTML has no bound glossary file. Import a glossary first.");
     return;
   }
   if (!bridge?.readTextFile) {
-    setAiStatus((data.labels.glossaryWriteNeedsApp || "Open this HTML in translation-workshop to write glossary.") + ": " + glossaryPath);
+    if (announce) setAiStatus((data.labels.glossaryWriteNeedsApp || "Open this HTML in translation-workshop to write glossary.") + ": " + glossaryPath);
     return;
   }
   try {
     const result = await bridge.readTextFile({ path: glossaryPath });
     const nextPath = result?.path || glossaryPath;
-    if (syncGlossaryFromText(result?.text || "", nextPath, true)) {
+    if (syncGlossaryFromText(result?.text || "", nextPath, true, announce)) {
       setBoundGlossaryPath(nextPath);
     }
   } catch (error) {
-    setAiStatus((data.labels.glossaryReadFailed || "Glossary sync failed") + ": " + (error?.message || String(error)));
+    if (announce) setAiStatus((data.labels.glossaryReadFailed || "Glossary sync failed") + ": " + (error?.message || String(error)));
   }
 }
 async function importGlossaryFromFile() {
@@ -4712,9 +4712,13 @@ function proposalSafetyCheck(item, lineState, rows, options = {}) {
   const sourceScore = item.src ? textSimilarity(item.src, row.source) : 1;
   if (sourceScore < 0.8) return { ok: false, reason: "source-mismatch" };
   const currentText = currentLineReviewText(row, lineState, line);
-  const suggestionText = proposalSuggestionText(item);
-  if (suggestionText && textSimilarity(suggestionText, currentText) >= 0.98) {
+  const intendedText = String(options.intendedText ?? proposalSuggestionText(item) ?? "").trim();
+  if (intendedText && textSimilarity(intendedText, currentText) >= 0.98) {
     return { ok: true, reason: "", alreadyApplied: true };
+  }
+  const lastRevision = lineReviewRevisionHistory(lineState, line).at(-1);
+  if (lastRevision?.source === "desktop-edit" && options.allowStaleTarget !== true) {
+    return { ok: false, reason: "manual-edit" };
   }
   if (options.allowStaleTarget === true) return { ok: true, reason: "" };
   const oldText = String(item.oldText || item.current || "");
@@ -5316,7 +5320,8 @@ async function applyProposalChangesOnce() {
           continue;
         }
         const safety = proposalSafetyCheck(item, target.lineState, lineRows, {
-          allowStaleTarget: decision.status === "manual" || decision.overrideConflict === true
+          allowStaleTarget: decision.status === "manual" || decision.overrideConflict === true,
+          intendedText: text
         });
         if (!safety.ok) {
           skipped += 1;
@@ -5339,7 +5344,15 @@ async function applyProposalChangesOnce() {
           expectedLineRevisions[line] ??= lineReviewRevision(baseTarget.lineState, line);
           removeReviewIssues(target.lineState, line, item.id);
           affectedLines.add(line);
-          setProposalDecisionForApply(decisionChanges, item.id, { ...decision, status: "accepted", manualText: "" });
+          if (decision.status === "manual") {
+            setProposalDecisionForApply(decisionChanges, item.id, {
+              ...decision,
+              status: "manual",
+              manualText: decision.manualText || text
+            });
+          } else {
+            setProposalDecisionForApply(decisionChanges, item.id, { ...decision, status: "accepted", manualText: "" });
+          }
           applied += 1;
           continue;
         }

@@ -29,7 +29,11 @@ import { readProjectAssets, readWorkflowProjectAssets } from "../projectAssets.t
 import { listProjectDir, readProjectFile, searchProjectText } from "../projectFileTools.ts";
 import { resolveReadablePath } from "../projectPathGuard.ts";
 import { readWorkspaceAgentContext } from "../workspaceAssets.ts";
-import { writeProofreadFindings } from "../writeProofreadFindings.ts";
+import {
+  proofreadSuggestedFixChangesTranslation,
+  proofreadSuggestedFixPreservesControlPrefix,
+  writeProofreadFindings
+} from "../writeProofreadFindings.ts";
 import {
   discardTranslationStagingCandidate,
   prepareTranslationStagingCandidate,
@@ -347,6 +351,7 @@ export interface PiProofreadProgress {
   findingsCount: number;
   reportPath?: string;
   glossaryCandidates?: PiTranslationGlossaryDiscovery[];
+  acceptedFindings?: Array<Record<string, unknown>>;
 }
 
 export interface PiTranslationProgress {
@@ -2967,6 +2972,66 @@ function proofreadSeverityCode(id: string): string {
   return code;
 }
 
+function proofreadFindingIdentity(finding: { id: string; sourceLine: number }): string {
+  const code = finding.id.match(/^([HML]\d)-/i)?.[1]?.toUpperCase() ?? "M1";
+  return `${finding.sourceLine}:${code}`;
+}
+
+function inspectAssignedFinding(
+  finding: PiProofreadFindingInput,
+  task: PiProofreadSubagentTask,
+  sourceLines: string[],
+  translationLines: string[]
+): { ok: true; prepared: Record<string, unknown> } | { ok: false; id: string; sourceLine: number; reason: string } {
+  const sourceLine = Number(finding.sourceLine);
+  const id = finding.id || "(missing id)";
+  const explicitlyOwned = task.sampledLines ?? task.reviewLines;
+  const owned = explicitlyOwned ? new Set(explicitlyOwned) : undefined;
+  if (!Number.isInteger(sourceLine) || sourceLine < task.fromLine || sourceLine > task.toLine || (owned !== undefined && !owned.has(sourceLine))) {
+    return { ok: false, id, sourceLine, reason: `Finding ${id} must reference one host-assigned aligned line.` };
+  }
+  let severity: string;
+  try {
+    severity = proofreadSeverityCode(finding.id);
+  } catch (error) {
+    return { ok: false, id, sourceLine, reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (!finding.suggestedFix?.trim() || !finding.rationale?.trim()) {
+    return { ok: false, id, sourceLine, reason: `Finding ${id} needs a replacement line and rationale.` };
+  }
+  const sourceText = sourceLines[sourceLine - 1] ?? "";
+  const currentTranslation = translationLines[sourceLine - 1] ?? "";
+  const prepared = {
+    ...finding,
+    sourceLine,
+    severity,
+    translationLine: sourceLine,
+    sourceText,
+    currentTranslation,
+  };
+  if (!proofreadSuggestedFixChangesTranslation({ currentTranslation, suggestedFix: finding.suggestedFix })) {
+    return {
+      ok: false,
+      id,
+      sourceLine,
+      reason: `Finding ${id} suggestedFix must change the currentTranslation; identical text is a no-op on aligned line ${sourceLine}.`
+    };
+  }
+  if (!proofreadSuggestedFixPreservesControlPrefix({
+    sourceText,
+    currentTranslation,
+    suggestedFix: finding.suggestedFix
+  })) {
+    return {
+      ok: false,
+      id,
+      sourceLine,
+      reason: `Finding ${id} suggestedFix must preserve the exact leading control prefix on aligned line ${sourceLine}.`
+    };
+  }
+  return { ok: true, prepared };
+}
+
 export function createPiProofreadSubagentTools(
   context: PiProofreadSubagentContext,
   subagentId: string,
@@ -3244,7 +3309,7 @@ export function createPiProofreadSubagentTools(
     {
       name: "writeAssignedFindings",
       label: "writeAssignedFindings",
-      description: "Write zero or more strictly bound findings for the assigned range through the YN findings host contract. Every suggestedFix must be a changed, complete replacement line and must preserve the exact leading bracket control prefix from the bound source/current row. When both bound rows have no prefix, do not invent or diagnose one. Identical no-op fixes are rejected.",
+      description: "Write zero or more strictly bound findings for the assigned range through the YN findings host contract. Every suggestedFix must be a changed, complete replacement line and must preserve the exact leading bracket control prefix from the bound source/current row. When both bound rows have no prefix, do not invent or diagnose one. Valid findings are kept even if other items fail; only rejected items are returned for rewrite. Identical no-op fixes are rejected without discarding the rest of the batch.",
       parameters: Type.Object({
         findings: Type.Array(findingSchema),
         glossaryCandidates: Type.Optional(Type.Array(glossaryCandidateSchema, { maxItems: 64 }))
@@ -3268,7 +3333,6 @@ export function createPiProofreadSubagentTools(
           findings: PiProofreadFindingInput[];
           glossaryCandidates?: PiTranslationGlossaryDiscovery[];
         };
-        for (const finding of input.findings) assertFindingInAssignedRange(finding, context.task);
         const [sourceContent, translationContent] = await Promise.all([
           readFile(sourcePath(context.request), "utf8"),
           readFile(proofreadTranslationPath(context.request), "utf8")
@@ -3302,61 +3366,102 @@ export function createPiProofreadSubagentTools(
         }
         progress.glossaryCandidates = discoveryReport.discoveries.glossaryCandidates;
         const excludedLines = new Set(context.request.auditWhitelistLines ?? []);
-        const findings = input.findings
-          .filter((finding) => !excludedLines.has(finding.sourceLine))
-          .map((finding) => ({
-            ...finding,
-            severity: proofreadSeverityCode(finding.id),
-            translationLine: finding.sourceLine,
-            sourceText: sourceLines[finding.sourceLine - 1] ?? "",
-            currentTranslation: translationLines[finding.sourceLine - 1] ?? "",
-            agentId: subagentId
-          }));
-        throwIfAborted(context.signal, signal);
-        const writeArgs: Parameters<typeof writeProofreadFindings>[0] = {
-          outputDir: context.request.outputDir,
-          sourcePaths: [sourcePath(context.request)],
-          documentId: documentId(context.request),
-          reportScope: proofreadReportScope(context.request),
-          translationPath: proofreadTranslationPath(context.request),
-          kind: "findings_json",
-          content: JSON.stringify(findings),
-          chunkLabel: context.task.label || `L${context.task.fromLine}-L${context.task.toLine}`,
-          mode: context.task.mode ?? "split",
-          ...((context.task.mode ?? "split") === "split" ? {
-            replaceRange: {
-              fromLine: context.task.fromLine,
-              toLine: context.task.toLine
-            }
-          } : {}),
-          excludedLines: context.request.auditWhitelistLines,
-          mechanicalScan: {
-            scopeLines: context.task.reviewLines
-              ?? context.task.sampledLines
-              ?? Array.from(
-                { length: context.task.toLine - context.task.fromLine + 1 },
-                (_entry, index) => context.task.fromLine + index
-              ),
-            signals: context.task.deterministicSignals ?? []
+        const acceptedByIdentity = new Map<string, Record<string, unknown>>();
+        for (const finding of progress.acceptedFindings ?? []) {
+          const sourceLine = Number(finding.sourceLine);
+          const id = String(finding.id ?? "");
+          if (!Number.isInteger(sourceLine) || !id) continue;
+          acceptedByIdentity.set(proofreadFindingIdentity({ id, sourceLine }), finding);
+        }
+        const rejected: Array<{ id: string; sourceLine: number; reason: string }> = [];
+        for (const finding of input.findings) {
+          if (excludedLines.has(Number(finding.sourceLine))) continue;
+          const inspected = inspectAssignedFinding(finding, context.task, sourceLines, translationLines);
+          if (!inspected.ok) {
+            rejected.push({ id: inspected.id, sourceLine: inspected.sourceLine, reason: inspected.reason });
+            continue;
           }
-        };
-        const result = await writeProofreadFindings(writeArgs);
-        if (result.ok) await context.onArtifactMutation?.(context.task.documentId);
+          acceptedByIdentity.set(
+            proofreadFindingIdentity({
+              id: String(inspected.prepared.id),
+              sourceLine: Number(inspected.prepared.sourceLine)
+            }),
+            { ...inspected.prepared, agentId: subagentId }
+          );
+        }
+        const findings = [...acceptedByIdentity.values()];
         throwIfAborted(context.signal, signal);
-        if (!result.ok) throw new Error(result.error || "Assigned proofreading findings write failed.");
-        progress.findingsWritten = true;
-        progress.findingsCount += result.newFindingCount ?? findings.length;
-        progress.reportPath = result.path;
-        return {
-          ...textResult({
+        if (findings.length > 0 || rejected.length === 0) {
+          const writeArgs: Parameters<typeof writeProofreadFindings>[0] = {
+            outputDir: context.request.outputDir,
+            sourcePaths: [sourcePath(context.request)],
+            documentId: documentId(context.request),
+            reportScope: proofreadReportScope(context.request),
+            translationPath: proofreadTranslationPath(context.request),
+            kind: "findings_json",
+            content: JSON.stringify(findings),
+            chunkLabel: context.task.label || `L${context.task.fromLine}-L${context.task.toLine}`,
+            mode: context.task.mode ?? "split",
+            ...((context.task.mode ?? "split") === "split" ? {
+              replaceRange: {
+                fromLine: context.task.fromLine,
+                toLine: context.task.toLine
+              }
+            } : {}),
+            excludedLines: context.request.auditWhitelistLines,
+            mechanicalScan: {
+              scopeLines: context.task.reviewLines
+                ?? context.task.sampledLines
+                ?? Array.from(
+                  { length: context.task.toLine - context.task.fromLine + 1 },
+                  (_entry, index) => context.task.fromLine + index
+                ),
+              signals: context.task.deterministicSignals ?? []
+            }
+          };
+          const result = await writeProofreadFindings(writeArgs);
+          if (result.ok) await context.onArtifactMutation?.(context.task.documentId);
+          throwIfAborted(context.signal, signal);
+          if (!result.ok) throw new Error(result.error || "Assigned proofreading findings write failed.");
+          progress.acceptedFindings = findings;
+          progress.findingsCount = findings.length;
+          progress.reportPath = result.path;
+          if (rejected.length === 0) {
+            progress.findingsWritten = true;
+            return {
+              ...textResult({
+                ...result,
+                fromLine: context.task.fromLine,
+                toLine: context.task.toLine,
+                findingsWritten: findings.length,
+                rejectedFindings: [],
+                glossaryCandidates: progress.glossaryCandidates
+              }),
+              terminate: true
+            };
+          }
+          return textResult({
             ...result,
             fromLine: context.task.fromLine,
             toLine: context.task.toLine,
-            findingsWritten: result.newFindingCount ?? findings.length,
+            findingsWritten: findings.length,
+            acceptedCount: findings.length,
+            rejectedCount: rejected.length,
+            rejectedFindings: rejected,
+            nextAction: "Valid findings were kept. Rewrite only the rejected items and call writeAssignedFindings again.",
             glossaryCandidates: progress.glossaryCandidates
-          }),
-          terminate: true
-        };
+          });
+        }
+        return textResult({
+          ok: false,
+          fromLine: context.task.fromLine,
+          toLine: context.task.toLine,
+          findingsWritten: 0,
+          acceptedCount: 0,
+          rejectedCount: rejected.length,
+          rejectedFindings: rejected,
+          nextAction: "No findings were written. Fix the rejected items and call writeAssignedFindings again."
+        });
       }
     }
   ];
@@ -5473,7 +5578,7 @@ function createPiProofreadRuntimeSpec(
       "FIRST TOOL: call readAssignedProofreadContext. It returns complete structured glossary/character records, unresolved non-canonical candidates, and prior exact-search evidence directly matched to this assignment. Reuse those results. Use one exact searchProjectText lookup only for a still-missing ambiguous term. Reference manifest entries with complete=true are already fully read; call readProofreadReference only for complete=false, starting at offset 0 and continuing exactly from nextOffset. Optional web references are only for relevant ambiguity.",
       "readAssignedProofreadContext already contains the complete owned rows for source/current translation and the exact boundary rows. Do not call listProjectDir to rediscover them, do not reread the bound source/current translation through general file reads, and do not browse raw assets or preceding files for context already supplied by Host.",
       "Confirm or reject Host signals and semantically review every assigned row. Signals are evidence, not automatic findings.",
-      "Call writeAssignedFindings once with exact one-based lines, complete replacement-ready fixes, rationales, and evidence-backed proper-term candidates. Every suggestedFix must change the current translation and preserve the exact leading control prefix from the bound source/current row. If both the source and current translation contain no leading prefix, do not invent one or diagnose its absence. glossaryCandidates.category must be one of proper_noun, character, organization, place, title, or setting_term; aliases contains alternate target-language renderings only, never source-language nicknames. [] is valid when clean.",
+      "Call writeAssignedFindings with exact one-based lines, complete replacement-ready fixes, rationales, and evidence-backed proper-term candidates. Every suggestedFix must change the current translation and preserve the exact leading control prefix from the bound source/current row. If both the source and current translation contain no leading prefix, do not invent one or diagnose its absence. Host keeps valid findings and returns only rejected items; rewrite those items instead of resubmitting the whole batch. glossaryCandidates.category must be one of proper_noun, character, organization, place, title, or setting_term; aliases contains alternate target-language renderings only, never source-language nicknames. [] is valid when clean.",
       "Never edit source, translation, or shared assets. A successful writeAssignedFindings call is terminal; do not spend another model turn summarizing it."
     ].join("\n"),
     tools: (subagentId) => createPiProofreadSubagentTools(

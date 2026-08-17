@@ -546,7 +546,7 @@ await test("renderLineReviewHtml inline script is valid JavaScript", async () =>
   assert.match(html, /const workDescription = String\(value\.workDescription \|\| ""\)\.trim\(\)/);
   assert.match(html, /\.\.\.\(style \? \{ style \} : \{\}\)/);
   assert.match(html, /\.\.\.\(workDescription \? \{ workDescription \} : \{\}\)/);
-  assert.match(html, /function syncGlossaryFromText\(text, label, allowEmpty = false\)/);
+  assert.match(html, /function syncGlossaryFromText\(text, label, allowEmpty = false, announce = true\)/);
   assert.match(html, /input\.value = previousTarget;[\s\S]*glossaryWriteFailed/);
   assert.doesNotMatch(html, /writeGlossaryFile/);
   assert.doesNotMatch(html, /files:writeGlossaryFile/);

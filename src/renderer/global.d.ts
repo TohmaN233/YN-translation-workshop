@@ -229,7 +229,7 @@ declare global {
         paths?: { glossary?: string };
         glossary?: { entries?: unknown[] };
       }>;
-      updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown> }) => Promise<{
+      updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown>; boundGlossaryPath?: string }) => Promise<{
         paths?: { glossary?: string };
         glossary?: { entries?: unknown[] };
       }>;
@@ -317,7 +317,7 @@ declare global {
         paths?: { glossary?: string };
         glossary?: { entries?: unknown[] };
       }>;
-      updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown> }) => Promise<{
+      updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown>; boundGlossaryPath?: string }) => Promise<{
         paths?: { glossary?: string };
         glossary?: { entries?: unknown[] };
       }>;

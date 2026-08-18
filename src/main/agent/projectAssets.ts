@@ -660,6 +660,76 @@ async function selectedGlossaryLayer(outputDir: string, canonicalPath: string): 
   return { inspectedBinding, path: selectedPath, entries };
 }
 
+async function loadGlossaryEntriesFromAbsolutePath(selectedPath: string): Promise<Record<string, unknown>[]> {
+  let source: string;
+  try {
+    source = await readFile(selectedPath, "utf8");
+  } catch (error) {
+    throw new Error(`Failed to read selected glossary: ${selectedPath}`, { cause: error });
+  }
+  const entries = parseGlossaryText(source).map((entry) => ({ ...entry }));
+  if (source.trim() && entries.length === 0) {
+    throw new Error(`Selected glossary contains no parseable source/target entries: ${selectedPath}`);
+  }
+  assertFormalAssetEntries("glossary", entries, selectedPath);
+  return entries;
+}
+
+async function resolveMutableGlossaryBase(args: {
+  outputDir: string;
+  canonicalPath: string;
+  currentEntries: Record<string, unknown>[];
+  boundGlossaryPath?: string;
+}): Promise<{
+  entries: Record<string, unknown>[];
+  inspectedBinding: unknown;
+}> {
+  const selected = await selectedGlossaryLayer(args.outputDir, args.canonicalPath);
+  const explicit = args.boundGlossaryPath?.trim();
+  let boundPath = selected.path;
+  if (explicit) {
+    if (!path.isAbsolute(explicit)) {
+      throw new Error(`Selected glossary path must be absolute: ${explicit}`);
+    }
+    const resolved = path.resolve(explicit);
+    if (
+      selected.path
+      && !sameAssetPath(selected.path, resolved)
+      && !sameAssetPath(selected.path, args.canonicalPath)
+      && !sameAssetPath(resolved, args.canonicalPath)
+    ) {
+      throw new Error(
+        `Current glossary binding ${resolved} does not match the project binding ${selected.path}.`
+      );
+    }
+    boundPath = resolved;
+  }
+  if (boundPath && !sameAssetPath(boundPath, args.canonicalPath)) {
+    const entries = selected.path && sameAssetPath(selected.path, boundPath)
+      ? selected.entries.map((entry) => ({ ...entry }))
+      : await loadGlossaryEntriesFromAbsolutePath(boundPath);
+    return { entries, inspectedBinding: selected.inspectedBinding };
+  }
+  return {
+    entries: args.currentEntries.map((entry) => ({ ...entry })),
+    inspectedBinding: selected.inspectedBinding
+  };
+}
+
+function upsertGlossaryEntry(
+  entries: Record<string, unknown>[],
+  entry: Record<string, unknown>
+): Record<string, unknown>[] {
+  const source = String(entry.source).trim().toLocaleLowerCase();
+  const next = entries.map((item) => ({ ...item }));
+  const index = next.findIndex(
+    (item) => String(item.source ?? "").trim().toLocaleLowerCase() === source
+  );
+  if (index >= 0) next[index] = { ...next[index], ...entry };
+  else next.push({ ...entry });
+  return next;
+}
+
 function assetsWithGlossary(
   assets: ProjectAssets,
   glossaryPath: string,
@@ -883,23 +953,28 @@ export async function replaceProjectGlossaryEntries(args: {
 export async function updateProjectGlossaryEntry(args: {
   outputDir: string;
   entry: Record<string, unknown>;
+  boundGlossaryPath?: string;
 }): Promise<ProjectAssets> {
   return enqueueProjectAssetWrite(args.outputDir, async () => {
     await ensureLegacyCharacterBibleMigratedUnlocked(args.outputDir);
     const paths = assetPaths(args.outputDir);
     assertFormalAssetEntry("glossary", args.entry, paths.glossary);
-    const assets = await readProjectAssetsUnlocked({ outputDir: args.outputDir });
-    const source = String(args.entry.source).trim().toLocaleLowerCase();
-    const index = assets.glossary.entries.findIndex(
-      (entry) => String(entry.source ?? "").trim().toLocaleLowerCase() === source
-    );
-    const entries = assets.glossary.entries.map((entry) => ({ ...entry }));
-    if (index >= 0) entries[index] = { ...entries[index], ...args.entry };
-    else entries.push({ ...args.entry });
+    const currentAssets = await readProjectAssetsUnlocked({ outputDir: args.outputDir });
+    const base = await resolveMutableGlossaryBase({
+      outputDir: args.outputDir,
+      canonicalPath: paths.glossary,
+      currentEntries: currentAssets.glossary.entries,
+      boundGlossaryPath: args.boundGlossaryPath
+    });
+    const entries = upsertGlossaryEntry(base.entries, args.entry);
     assertFormalAssetEntries("glossary", entries, paths.glossary);
-    await mkdir(workspaceDir(args.outputDir), { recursive: true });
-    await writeTextFileAtomically(paths.glossary, JSON.stringify({ entries }, null, 2));
-    return readProjectAssetsUnlocked({ outputDir: args.outputDir });
+    return writeCanonicalGlossaryAndBindUnlocked({
+      outputDir: args.outputDir,
+      paths,
+      currentAssets,
+      entries,
+      inspectedBinding: base.inspectedBinding
+    });
   });
 }
 
@@ -1091,9 +1166,16 @@ async function saveProjectAssetsUnlocked(args: {
   const currentCharacters = currentAssets.characterBible.characters;
 
   let nextGlossary: Record<string, unknown>[] | undefined;
+  let glossaryBinding: unknown;
   if (args.glossaryEntry !== undefined) {
     assertFormalAssetEntry("glossary", args.glossaryEntry, paths.glossary);
-    nextGlossary = mergeEntry("glossary", currentGlossary, args.glossaryEntry);
+    const base = await resolveMutableGlossaryBase({
+      outputDir: args.outputDir,
+      canonicalPath: paths.glossary,
+      currentEntries: currentGlossary
+    });
+    glossaryBinding = base.inspectedBinding;
+    nextGlossary = upsertGlossaryEntry(base.entries, args.glossaryEntry);
     assertFormalAssetEntries("glossary", nextGlossary, paths.glossary);
   }
 
@@ -1124,7 +1206,13 @@ async function saveProjectAssetsUnlocked(args: {
     await mkdir(path.dirname(paths.characterBible), { recursive: true });
   }
   if (nextGlossary) {
-    await writeTextFileAtomically(paths.glossary, JSON.stringify({ entries: nextGlossary }, null, 2));
+    await writeCanonicalGlossaryAndBindUnlocked({
+      outputDir: args.outputDir,
+      paths,
+      currentAssets,
+      entries: nextGlossary,
+      inspectedBinding: glossaryBinding
+    });
   }
   if (nextCharacters) {
     await writeTextFileAtomically(paths.characterBible, serializeCharacterBibleMarkdown(nextCharacters));

@@ -99,7 +99,7 @@ contextBridge.exposeInMainWorld("workshop", {
   readProjectAssets: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:read", args),
   importProjectGlossaryFile: (args: { outputDir: string; path: string }) => ipcRenderer.invoke("agent-assets:importGlossaryFile", args),
   replaceProjectGlossary: (args: { outputDir: string; entries: Record<string, unknown>[] }) => ipcRenderer.invoke("agent-assets:replaceGlossary", args),
-  updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown> }) => ipcRenderer.invoke("agent-assets:updateGlossaryEntry", args),
+  updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown>; boundGlossaryPath?: string }) => ipcRenderer.invoke("agent-assets:updateGlossaryEntry", args),
   readWorkspaceAssetsStatus: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:workspaceStatus", args),
   importGeneratedGlossaryCandidates: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:importGeneratedGlossary", args),
   onWorkspaceAssetsStatus: (callback: (payload: unknown) => void) => {
@@ -135,7 +135,7 @@ contextBridge.exposeInMainWorld("workshopHtml", {
   readProjectAssets: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:read", args),
   importProjectGlossaryFile: (args: { outputDir: string; path: string }) => ipcRenderer.invoke("agent-assets:importGlossaryFile", args),
   replaceProjectGlossary: (args: { outputDir: string; entries: Record<string, unknown>[] }) => ipcRenderer.invoke("agent-assets:replaceGlossary", args),
-  updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown> }) => ipcRenderer.invoke("agent-assets:updateGlossaryEntry", args),
+  updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown>; boundGlossaryPath?: string }) => ipcRenderer.invoke("agent-assets:updateGlossaryEntry", args),
   readWorkspaceAssetsStatus: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:workspaceStatus", args),
   importGeneratedGlossaryCandidates: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:importGeneratedGlossary", args),
   onWorkspaceAssetsStatus: (callback: (payload: unknown) => void) => {

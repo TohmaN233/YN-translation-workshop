@@ -1071,7 +1071,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 33;
+export const LINE_REVIEW_PROTOCOL_VERSION = 34;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 9;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
@@ -3835,6 +3835,7 @@ async function applyEditedGlossaryTerm(input) {
   try {
     const assets = await bridge.updateProjectGlossaryEntry({
       outputDir,
+      boundGlossaryPath: boundGlossaryPath() || undefined,
       entry: {
         source: entry.source,
         target: nextTarget,

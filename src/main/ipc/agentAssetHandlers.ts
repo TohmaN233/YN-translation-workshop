@@ -54,14 +54,16 @@ export function registerAgentAssetIpc(): void {
     return assets;
   });
 
-  ipcMain.handle("agent-assets:updateGlossaryEntry", async (_event, args: { outputDir?: unknown; entry?: unknown }) => {
+  ipcMain.handle("agent-assets:updateGlossaryEntry", async (_event, args: { outputDir?: unknown; entry?: unknown; boundGlossaryPath?: unknown }) => {
     const outputDir = requireOutputDir(args?.outputDir);
     if (!args?.entry || typeof args.entry !== "object" || Array.isArray(args.entry)) {
       throw new Error("A project glossary entry object is required.");
     }
+    const boundGlossaryPath = typeof args?.boundGlossaryPath === "string" ? args.boundGlossaryPath.trim() : "";
     const assets = await updateProjectGlossaryEntry({
       outputDir,
-      entry: args.entry as Record<string, unknown>
+      entry: args.entry as Record<string, unknown>,
+      ...(boundGlossaryPath ? { boundGlossaryPath } : {})
     });
     broadcastProjectAssets(outputDir, assets);
     return assets;

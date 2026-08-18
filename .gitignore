@@ -34,3 +34,5 @@ video-output/
 /docs/archive/
 /yn_translation_agent_workbench_rfc*.md
 /宝宝教程-以汉化一本小说为例/
+
+tmp_*.py

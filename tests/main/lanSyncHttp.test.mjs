@@ -42,8 +42,8 @@ function session(patch = {}) {
 await test("LAN sync labels expose zh and en mobile copy", () => {
   assert.equal(lanSyncLabels("zh-CN").search, "搜索");
   assert.equal(lanSyncLabels("en-US").search, "Search");
-  assert.equal(lanSyncLabels("zh-CN").openDesktopAgent, "打开桌面 Agent");
-  assert.equal(lanSyncLabels("en-US").openDesktopAgent, "Open desktop Agent");
+  assert.equal(lanSyncLabels("zh-CN").openMobileAgent, "打开 Agent");
+  assert.equal(lanSyncLabels("en-US").openMobileAgent, "Open Agent");
   assert.equal("agentStart" in lanSyncLabels("zh-CN"), false);
 });
 
@@ -87,8 +87,13 @@ await test("authenticated mobile workspace mounts the existing Pi-web Agent surf
     readFile("src/main/main.ts", "utf8"),
     readFile("src/main/preload.ts", "utf8")
   ]);
-  assert.match(mainSource, /id="agentTab"/);
+  assert.match(mainSource, /id="openMobileAgent"/);
+  assert.match(mainSource, /id="agentBack"/);
   assert.match(mainSource, /id="remoteAgentRoot"/);
+  assert.match(mainSource, /position:fixed; inset:0/);
+  assert.match(mainSource, /#app { min-height:100dvh; display:flex; flex-direction:column; }/);
+  assert.match(mainSource, /article { display:flex; flex-direction:column;/);
+  assert.doesNotMatch(mainSource, /id="agentTab"/);
   assert.match(mainSource, /\/api\/agent\//);
   assert.match(mainSource, /\/agent-assets\//);
   assert.match(mainSource, /lanAgentBridgeScript/);

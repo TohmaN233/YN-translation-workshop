@@ -1706,15 +1706,42 @@ code {
 }
 
 @media (max-width: 840px) {
+  .ynAgent {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+
   .ynAgentSidebar {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 20;
+    width: min(280px, 86vw);
+    flex-basis: min(280px, 86vw);
     box-shadow: 12px 0 30px rgba(15, 23, 42, 0.16);
   }
 
   .ynAgentSidebarClosed {
-    margin-left: -280px;
+    margin-left: calc(-1 * min(280px, 86vw));
+  }
+
+  .ynAgentMain,
+  .ynAgentChatPane,
+  .ynAgentTranscript {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .ynAgentComposer {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .ynAgentComposer > div {
+    max-width: none;
+  }
+
+  .ynAgentScrollPad {
+    height: 20vh;
   }
 
   .ynAgentTelemetry {

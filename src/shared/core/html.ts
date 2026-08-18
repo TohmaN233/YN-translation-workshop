@@ -604,7 +604,7 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .row.match { background:rgba(185,225,255,.35); outline:1px solid #8bc8f3; border-radius:8px; }
     .row.match .cell { background:#fffbe6; border-color:#f3ca62; box-shadow:inset 0 0 0 1px rgba(243,202,98,.35); }
     .row.jump-target { background:rgba(255,229,138,.34); outline:2px solid #ffc764; border-radius:8px; }
-    @media (max-width: 900px) { header { grid-template-columns:1fr; } .toolbar { justify-content:start; } .row, body.audit-visible .row { grid-template-columns:42px 1fr 42px; } .source,.target { grid-column:2; } .audit-marker { grid-column:3; grid-row:2 / span 2; } }`
+    @media (max-width: 900px) { header { grid-template-columns:1fr; } .toolbar { justify-content:start; } main { max-width:none; padding:12px 10px 40px; } .row, body.audit-visible .row { grid-template-columns:36px minmax(0,1fr); } .source,.target { grid-column:2; width:100%; max-width:none; } .audit-marker { grid-column:1; grid-row:2; } }`
     : `
     .app { display:grid; grid-template-columns:310px minmax(0,1fr); min-height:100vh; }
     aside { position:sticky; top:0; height:100vh; overflow:auto; padding:20px; background:var(--panel-bg); border-right:1px solid var(--line); box-shadow:10px 0 28px rgba(95,111,191,.1); }
@@ -1071,7 +1071,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 34;
+export const LINE_REVIEW_PROTOCOL_VERSION = 35;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 9;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;

@@ -595,21 +595,39 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
     input { width:72px; }
     .search-box { display:flex; gap:8px; align-items:center; min-width:0; }
     .search-box input { width:min(520px,100%); flex:1 1 180px; }
-    main { display:grid; gap:12px; padding:12px; min-width:0; max-width:100vw; overflow-x:hidden; }
-    article { display:grid; gap:8px; min-width:0; max-width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel); box-shadow:0 8px 20px rgba(95,111,191,.08); overflow:hidden; }
+    html, body, #app { width:100%; max-width:100%; min-width:0; }
+    #app { min-height:100dvh; display:flex; flex-direction:column; }
+    main { display:flex; flex-direction:column; flex:1 1 auto; gap:10px; padding:10px; width:100%; max-width:none; min-width:0; overflow-x:hidden; }
+    article { display:flex; flex-direction:column; gap:8px; width:100%; max-width:none; min-width:0; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel); box-shadow:0 8px 20px rgba(95,111,191,.08); overflow:hidden; }
     .meta { display:flex; justify-content:space-between; gap:8px; min-width:0; color:var(--muted); font-size:12px; font-weight:700; }
     .meta span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
-    .source { min-width:0; max-width:100%; padding:10px; border-radius:8px; background:#f8fbff; white-space:pre-wrap; overflow-wrap:anywhere; }
-    .field { display:grid; gap:4px; min-width:0; }
+    .source, .field, .field div, textarea { width:100%; max-width:none; min-width:0; }
+    .source { padding:10px; border-radius:8px; background:#f8fbff; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .field { display:flex; flex-direction:column; gap:4px; }
     .field b { color:var(--muted); font-size:12px; }
-    .field div { min-width:0; max-width:100%; padding:10px; border-radius:8px; background:#f8fbff; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .field div { padding:10px; border-radius:8px; background:#f8fbff; white-space:pre-wrap; overflow-wrap:anywhere; }
     .actions { display:flex; flex-wrap:wrap; gap:8px; }
     .actions button.active { border-color:#77c8ff; background:#eaf8ff; font-weight:700; }
-    textarea { width:100%; min-width:0; max-width:100%; min-height:92px; resize:vertical; line-height:1.5; overflow-wrap:anywhere; }
+    textarea { min-height:28vh; resize:vertical; line-height:1.55; overflow-wrap:anywhere; field-sizing:content; }
     select { font:inherit; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); padding:8px 10px; }
     .status { color:var(--muted); min-height:22px; }
-    #agentPanel { height:calc(100dvh - 60px); min-height:520px; background:#f7f9fd; overflow:hidden; }
-    #remoteAgentRoot { width:100%; height:100%; }
+    #agentPanel {
+      position:fixed; inset:0; z-index:30;
+      display:flex; flex-direction:column;
+      width:100%; height:100dvh; min-height:100dvh;
+      background:#f6f8fb; overflow:hidden;
+    }
+    #agentPanel[hidden] { display:none !important; }
+    .agent-mobile-bar {
+      flex:0 0 auto; display:flex; align-items:center; gap:8px;
+      padding:8px 10px; padding-top:max(8px, env(safe-area-inset-top));
+      border-bottom:1px solid var(--line); background:#fff;
+    }
+    .agent-mobile-bar strong { font-size:15px; }
+    #agentBack { min-height:36px; }
+    #remoteAgentRoot { flex:1 1 auto; min-height:0; width:100%; }
+    #remoteAgentRoot .ynAgent { width:100%; height:100%; min-height:0; }
+    body.agent-open { overflow:hidden; }
     @media (max-width: 640px) {
       header { gap:6px; padding:8px 10px; }
       .header-top h1 { display:none; }
@@ -637,12 +655,11 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
       <div class="tabs">
         <button id="lineTab" type="button">Line review</button>
         <button id="proposalTab" type="button">Proposal review</button>
-        <button id="agentTab" type="button">Agent</button>
       </div>
       <button id="controlsToggle" class="controls-toggle" type="button" aria-expanded="false">⌄</button>
     </div>
     <div id="headerDrawer" class="header-drawer" hidden>
-      <div class="bar"><button id="openDesktopAgent" type="button">Open desktop Agent</button></div>
+      <div class="bar"><button id="openMobileAgent" type="button">Open Agent</button></div>
       <label class="search-box"><span id="searchLabel">Search</span><input id="searchInput" type="search"></label>
       <div class="bar">
         <button id="prev" type="button">Previous</button>
@@ -654,7 +671,13 @@ function mobileWorkspaceHtml(session: LanSyncSession): string {
     </div>
   </header>
   <main id="rows"></main>
-  <section id="agentPanel" hidden><div id="remoteAgentRoot"></div></section>
+  <section id="agentPanel" hidden>
+    <div class="agent-mobile-bar">
+      <button id="agentBack" type="button">Back</button>
+      <strong id="agentTitle">Agent</strong>
+    </div>
+    <div id="remoteAgentRoot"></div>
+  </section>
   </section>
   <script>
 const token = ${lanSyncJson(token)};
@@ -715,10 +738,10 @@ function setTab(kind) {
   const agentActive = kind === "agent";
   rowsEl.hidden = agentActive;
   agentPanel.hidden = !agentActive;
-  searchInput.value = searchByKind[activeKind] || "";
+  document.body.classList.toggle("agent-open", agentActive);
+  searchInput.value = searchByKind[kind === "agent" ? (lineRows.length ? "line" : "proposal") : activeKind] || "";
   document.getElementById("lineTab").classList.toggle("active", kind === "line");
   document.getElementById("proposalTab").classList.toggle("active", kind === "proposal");
-  document.getElementById("agentTab").classList.toggle("active", agentActive);
   if (agentActive) {
     setControlsExpanded(false);
     if (!agentMounted) {
@@ -809,15 +832,6 @@ async function postPatch(patch) {
     body: JSON.stringify({ ...patch, clientId, timestamp: new Date().toISOString() })
   });
   if (!response.ok) throw new Error(await response.text() || t("syncFailed", "Could not sync change."));
-  return response.json();
-}
-async function postCommand(command) {
-  const response = await fetch(authed("/api/command/" + encodeURIComponent(token)), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...command, clientId, timestamp: new Date().toISOString() })
-  });
-  if (!response.ok) throw new Error(await response.text() || t("openDesktopAgentFailed", "Could not open desktop Agent"));
   return response.json();
 }
 let timers = new Map();
@@ -933,8 +947,9 @@ async function boot() {
   document.getElementById("jump").textContent = t("go", "Go");
   document.getElementById("lineTab").textContent = t("lineTab", "Line review");
   document.getElementById("proposalTab").textContent = t("proposalTab", "Proposal review");
-  document.getElementById("agentTab").textContent = t("agentTab", "Agent");
-  document.getElementById("openDesktopAgent").textContent = t("openDesktopAgent", "Open desktop Agent");
+  document.getElementById("openMobileAgent").textContent = t("openMobileAgent", "Open Agent");
+  document.getElementById("agentBack").textContent = t("agentBack", "Back");
+  document.getElementById("agentTitle").textContent = t("agentTab", "Agent");
   setControlsExpanded(false);
   document.getElementById("lineTab").hidden = lineRows.length === 0;
   document.getElementById("proposalTab").hidden = proposalItems.length === 0;
@@ -958,18 +973,10 @@ searchInput.addEventListener("input", () => {
 });
 document.getElementById("lineTab").onclick = () => setTab("line");
 document.getElementById("proposalTab").onclick = () => setTab("proposal");
-document.getElementById("agentTab").onclick = () => setTab("agent");
+document.getElementById("openMobileAgent").onclick = () => setTab("agent");
+document.getElementById("agentBack").onclick = () => setTab(lineRows.length ? "line" : "proposal");
 window.addEventListener("yn-remote-agent-close", () => setTab(lineRows.length ? "line" : "proposal"));
 controlsToggle.onclick = () => setControlsExpanded(headerDrawer.hidden);
-document.getElementById("openDesktopAgent").onclick = async () => {
-  setStatus(t("openingDesktopAgent", "Opening desktop Agent..."));
-  try {
-    await postCommand({ type: "open-agent-os" });
-    setStatus(t("openedDesktopAgent", "Desktop Agent opened"));
-  } catch (error) {
-    setStatus(t("openDesktopAgentFailed", "Could not open desktop Agent") + ": " + String(error?.message || error));
-  }
-};
 document.getElementById("pinForm").addEventListener("submit", async event => {
   event.preventDefault();
   const pin = String(document.getElementById("pinInput").value || "").trim();

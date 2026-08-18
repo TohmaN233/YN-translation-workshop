@@ -143,7 +143,9 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
     applyProviderConfig,
     reloadProviderSettings
   } = useAgentSession({ route, onAgentEnd });
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => (
+    typeof window === "undefined" || !window.matchMedia("(max-width: 840px)").matches
+  ));
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const [providerSettingsOpen, setProviderSettingsOpen] = useState(false);
   const chatInputRef = useRef<ChatInputHandle | null>(null);

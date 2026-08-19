@@ -97,6 +97,55 @@ await test("the popout locks scrolling to the transcript and compaction success 
   assert.match(messageViewSource, /message\.stopReason === "error"/);
 });
 
+await test("Agent transcript scrolling never uses scrollIntoView on the host HTML", async () => {
+  const [chatWindow, styles, embed] = await Promise.all([
+    readFile("src/renderer/agent/piweb/ChatWindow.tsx", "utf8"),
+    readFile("src/renderer/styles.css", "utf8"),
+    readFile("src/shared/core/agentChatEmbed.ts", "utf8")
+  ]);
+  assert.doesNotMatch(chatWindow, /scrollIntoView/);
+  assert.match(chatWindow, /scrollTranscriptToBottom\(scrollContainerRef\.current, behavior\)/);
+  assert.match(chatWindow, /toggleSessionSidebar/);
+  assert.match(chatWindow, /captureHostPageScroll\(\)/);
+  assert.match(chatWindow, /restoreHostPageScroll\(snapshot\)/);
+  assert.match(styles, /\.ynAgentTranscript\s*\{[^}]*overflow-anchor:\s*none/s);
+  assert.match(styles, /\.ynAgentTranscript\s*\{[^}]*overscroll-behavior:\s*contain/s);
+  assert.match(embed, /function readReviewScroll\(\)/);
+  assert.match(embed, /function writeReviewScroll\(top\)/);
+  assert.match(embed, /const top = readReviewScroll\(\);/);
+  assert.match(embed, /requestAnimationFrame\(\(\) => writeReviewScroll\(top\)\)/);
+  assert.match(embed, /overflow-anchor: none/);
+});
+
+await test("transcript and host page scroll helpers stay inside their own containers", async () => {
+  const loaded = await loadChatWindowModule();
+  try {
+    const calls = [];
+    const container = {
+      scrollHeight: 2400,
+      clientHeight: 800,
+      scrollTo(options) { calls.push(options); }
+    };
+    loaded.module.scrollTranscriptToBottom(container, "instant");
+    assert.deepEqual(calls, [{ top: 1600, behavior: "instant" }]);
+
+    const main = { scrollTop: 888, isConnected: true };
+    const doc = {
+      querySelector(selector) { return selector === ".line-review-main" ? main : null; },
+      scrollingElement: { scrollTop: 12 },
+      documentElement: { scrollTop: 12 }
+    };
+    const snapshot = loaded.module.captureHostPageScroll(doc);
+    assert.deepEqual({ top: snapshot.top, same: snapshot.target === main }, { top: 888, same: true });
+    main.scrollTop = 0;
+    loaded.module.restoreHostPageScroll(snapshot, doc);
+    assert.equal(main.scrollTop, 888);
+    assert.equal(doc.scrollingElement.scrollTop, 12);
+  } finally {
+    await loaded.close();
+  }
+});
+
 console.log("");
 console.log(`# tests ${passed + failed}`);
 console.log(`# pass ${passed}`);

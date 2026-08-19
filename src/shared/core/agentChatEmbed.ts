@@ -7,7 +7,7 @@
 
 import { agentChatRouteFromReviewData } from "./agentChatRoute.ts";
 
-export const agentChatFlowVersion = "pi-web-react-embedded-v12";
+export const agentChatFlowVersion = "pi-web-react-embedded-v13";
 
 export function agentChatEmbedCss(): string {
   return `
@@ -32,6 +32,7 @@ export function agentChatEmbedCss(): string {
       min-width: 0;
       min-height: 0;
       overflow: auto;
+      overflow-anchor: none;
     }
     body.line-review.agent-chat-docked #agentChatDock {
       display: flex;
@@ -68,6 +69,7 @@ export function agentChatEmbedCss(): string {
       min-height: 0;
       height: 100vh;
       overflow: hidden;
+      overflow-anchor: none;
     }
     body.proposal-review.agent-chat-docked #agentChatDock {
       display: flex;
@@ -165,8 +167,34 @@ export function agentChatEmbedScript(): string {
   function isDocked() {
     return document.body.classList.contains("agent-chat-docked");
   }
+  function reviewScrollRoot() {
+    return document.querySelector(".line-review-main")
+      || document.querySelector(".proposal-review-shell > .app");
+  }
+  function readReviewScroll() {
+    const root = reviewScrollRoot();
+    if (root && (document.body.classList.contains("agent-chat-docked") || root.scrollHeight > root.clientHeight + 1)) {
+      return root.scrollTop;
+    }
+    return window.scrollY || document.documentElement.scrollTop || 0;
+  }
+  function writeReviewScroll(top) {
+    const root = reviewScrollRoot();
+    if (root && document.body.classList.contains("agent-chat-docked")) {
+      root.scrollTop = top;
+      return;
+    }
+    if (root && root.scrollHeight > root.clientHeight + 1) {
+      root.scrollTop = top;
+      return;
+    }
+    window.scrollTo(0, top);
+  }
   function setDocked(open) {
+    const top = readReviewScroll();
     document.body.classList.toggle("agent-chat-docked", Boolean(open));
+    writeReviewScroll(top);
+    requestAnimationFrame(() => writeReviewScroll(top));
     if (open) void mountAgent().catch((error) => console.error("Agent embed mount failed.", error));
   }
   function closeAgent() {

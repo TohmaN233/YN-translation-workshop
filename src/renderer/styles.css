@@ -1248,6 +1248,8 @@ code {
 .ynAgentTranscript {
   flex: 1 1 auto;
   overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
   padding: 20px 16px;
   scrollbar-width: none;
 }

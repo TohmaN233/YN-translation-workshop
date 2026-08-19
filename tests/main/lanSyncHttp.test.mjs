@@ -88,6 +88,9 @@ await test("authenticated mobile workspace mounts the existing Pi-web Agent surf
     readFile("src/main/preload.ts", "utf8")
   ]);
   assert.match(mainSource, /id="openMobileAgent"/);
+  assert.match(mainSource, /let reviewScrollY = 0;/);
+  assert.match(mainSource, /if \(enteringAgent\) reviewScrollY = window\.scrollY/);
+  assert.match(mainSource, /if \(leavingAgent\) requestAnimationFrame\(\(\) => window\.scrollTo\(0, reviewScrollY\)\)/);
   assert.match(mainSource, /id="agentBack"/);
   assert.match(mainSource, /id="remoteAgentRoot"/);
   assert.match(mainSource, /position:fixed; inset:0/);

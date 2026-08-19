@@ -733,7 +733,11 @@ function applyAuthLabels() {
   document.getElementById("unlockButton").textContent = t("unlock", "Unlock");
 }
 function authed(path) { return path + (path.includes("?") ? "&" : "?") + "auth=" + encodeURIComponent(authToken); }
+let reviewScrollY = 0;
 function setTab(kind) {
+  const leavingAgent = activeKind === "agent" && kind !== "agent";
+  const enteringAgent = kind === "agent" && activeKind !== "agent";
+  if (enteringAgent) reviewScrollY = window.scrollY || document.documentElement.scrollTop || 0;
   activeKind = kind;
   const agentActive = kind === "agent";
   rowsEl.hidden = agentActive;
@@ -754,6 +758,7 @@ function setTab(kind) {
     return;
   }
   render();
+  if (leavingAgent) requestAnimationFrame(() => window.scrollTo(0, reviewScrollY));
 }
 function activeSearch() {
   return String(searchByKind[activeKind] || "").trim().toLowerCase();

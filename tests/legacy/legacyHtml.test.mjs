@@ -494,6 +494,8 @@ await test("renderLineReviewHtml inline script is valid JavaScript", async () =>
   assert.doesNotMatch(html, /id="agentSelect"/);
   assert.match(html, /id="agentChatSettingsGlobal"/);
   assert.match(html, new RegExp(`data-agent-chat-flow="${agentChatFlowVersion}"`));
+  assert.match(html, /function writeReviewScroll\(top\)/);
+  assert.match(html, /const top = readReviewScroll\(\);/);
   assert.match(html, new RegExp(`promptSettingsVersion = ${PROMPT_SETTINGS_VERSION}`));
   assert.match(html, new RegExp(`translation-workshop-prompt-settings.*content="${PROMPT_SETTINGS_VERSION}"`));
   assert.match(html, /id="promptGlossaryCandidates"/);

@@ -100,6 +100,42 @@ export async function closeAgentSurface(options: {
   options.close();
 }
 
+export function scrollTranscriptToBottom(
+  container: HTMLElement | null | undefined,
+  behavior: ScrollBehavior = "smooth"
+): void {
+  if (!container) return;
+  container.scrollTo({
+    top: Math.max(0, container.scrollHeight - container.clientHeight),
+    behavior
+  });
+}
+
+function isElementScrollRoot(value: Element | null | undefined): value is HTMLElement {
+  return Boolean(value && "scrollTop" in value);
+}
+
+export function captureHostPageScroll(doc: Document = document): { top: number; target: Element | "window" } {
+  const target = doc.querySelector(".line-review-main")
+    || doc.querySelector(".proposal-review-shell > .app");
+  if (isElementScrollRoot(target)) return { top: target.scrollTop, target };
+  const scrolling = doc.scrollingElement || doc.documentElement;
+  return { top: scrolling?.scrollTop || 0, target: "window" };
+}
+
+export function restoreHostPageScroll(
+  snapshot: { top: number; target: Element | "window" } | null | undefined,
+  doc: Document = document
+): void {
+  if (!snapshot) return;
+  if (snapshot.target !== "window" && snapshot.target.isConnected !== false && isElementScrollRoot(snapshot.target)) {
+    snapshot.target.scrollTop = snapshot.top;
+    return;
+  }
+  const scrolling = doc.scrollingElement || doc.documentElement;
+  if (scrolling) scrolling.scrollTop = snapshot.top;
+}
+
 export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props) {
   const locale = normalizeAgentUiLocale(route.locale);
   const ui = agentUiStrings[locale];
@@ -379,7 +415,16 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
 
   const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
     ignoreProgrammaticScrollUntilRef.current = Date.now() + PROGRAMMATIC_SCROLL_IGNORE_MS;
-    messagesEndRef.current?.scrollIntoView({ behavior });
+    scrollTranscriptToBottom(scrollContainerRef.current, behavior);
+  };
+
+  const toggleSessionSidebar = () => {
+    const snapshot = captureHostPageScroll();
+    setSidebarOpen((value) => !value);
+    requestAnimationFrame(() => {
+      restoreHostPageScroll(snapshot);
+      requestAnimationFrame(() => restoreHostPageScroll(snapshot));
+    });
   };
 
   const scrollUserMsgToTop = () => {
@@ -570,7 +615,7 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
 
       <section className="ynAgentMain">
         <header className={`ynAgentTopbar${sessionBusy ? " ynAgentTopbarRunning" : ""}`}>
-          <button className="ynAgentIconButton" type="button" aria-label={sidebarOpen ? ui.hideSidebar : ui.showSidebar} title={sidebarOpen ? ui.hideSidebar : ui.showSidebar} onClick={() => setSidebarOpen((value) => !value)}>
+          <button className="ynAgentIconButton" type="button" aria-label={sidebarOpen ? ui.hideSidebar : ui.showSidebar} title={sidebarOpen ? ui.hideSidebar : ui.showSidebar} onClick={toggleSessionSidebar}>
             {sidebarOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
           </button>
           <div className="ynAgentTopbarTitle">

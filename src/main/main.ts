@@ -426,6 +426,47 @@ function configureApplicationMenu(): void {
       label: "Help",
       submenu: [
         {
+          label: "Asset Form Examples... / 资产表单示例",
+          click: () => {
+            const options = {
+              type: "info" as const,
+              title: "Asset Form Examples",
+              message: "术语表与角色表输入示例",
+              detail: [
+                "术语表 / Glossary",
+                "source: シンオウリーグ",
+                "target: 神奥联盟",
+                "aliases: 联盟",
+                "info: 神奥地区的联盟组织",
+                "status: confirmed",
+                "",
+                "角色表 / Character bible",
+                "先从“选择已有角色”下拉框载入角色，或选择“新建角色”。",
+                "name: シロナ",
+                "target: 希罗娜",
+                "aliases: 竹兰",
+                "gender: female",
+                "pronouns: 她",
+                "confidence: confirmed",
+                "terms of address: 冠军",
+                "dialogue mappings（可添加多组）:",
+                "  私 -> 我",
+                "  あなた -> 你",
+                "以后再次选择シロナ，即可继续追加其他台词译法。",
+                "forbidden terms: 本小姐",
+                "",
+                "character_bible.md 会保存为：",
+                "- Required dialogue mappings:",
+                "  - 私 -> 我",
+                "  - あなた -> 你"
+              ].join("\n")
+            };
+            const owner = resolveMainAppWindow();
+            void (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options));
+          }
+        },
+        { type: "separator" },
+        {
           label: "Check for Updates...",
           click: () => {
             void checkForUpdatesManually();
@@ -2548,8 +2589,8 @@ async function createWindow(): Promise<BrowserWindow> {
     show: !portableSmokeMarkerPath && !electronVerificationHeadless,
     width: 1280,
     height: 860,
-    minWidth: 980,
-    minHeight: 680,
+    minWidth: 720,
+    minHeight: 560,
     icon: appIconPath(),
     webPreferences: {
       preload: preloadPath(),

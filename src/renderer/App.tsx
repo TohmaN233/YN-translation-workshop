@@ -62,6 +62,13 @@ interface WorkspaceAssetSummary {
   actions: { importGlossaryCandidates: boolean };
 }
 
+interface CharacterDialogueMappingDraft {
+  source: string;
+  target: string;
+}
+
+type AssetRecord = Record<string, unknown>;
+
 interface AssetEditorState {
   glossarySource: string;
   glossaryTarget: string;
@@ -75,8 +82,7 @@ interface AssetEditorState {
   characterPronouns: string;
   characterGenderConfidence: "confirmed" | "inferred" | "unknown";
   characterTermsOfAddress: string;
-  characterRequiredSource: string;
-  characterRequiredTarget: string;
+  characterDialogueMappings: CharacterDialogueMappingDraft[];
   characterForbiddenTerms: string;
   styleGuide: string;
 }
@@ -238,6 +244,7 @@ function App() {
   const [startupSuggestionIndex, setStartupSuggestionIndex] = useState(0);
   const [projectAssets, setProjectAssets] = useState<ProjectAssetSummary | undefined>();
   const [workspaceAssets, setWorkspaceAssets] = useState<WorkspaceAssetSummary | undefined>();
+  const [selectedCharacterName, setSelectedCharacterName] = useState("");
   const [assetEditor, setAssetEditor] = useState<AssetEditorState>({
     glossarySource: "",
     glossaryTarget: "",
@@ -251,8 +258,7 @@ function App() {
     characterPronouns: "",
     characterGenderConfidence: "unknown",
     characterTermsOfAddress: "",
-    characterRequiredSource: "",
-    characterRequiredTarget: "",
+    characterDialogueMappings: [{ source: "", target: "" }],
     characterForbiddenTerms: "",
     styleGuide: ""
   });
@@ -262,6 +268,20 @@ function App() {
 
   const t = dictionaries[form.locale];
   const bilingualPositionMode = form.inputMode === "bilingual";
+  const characterAssetEntries = useMemo(
+    () => (projectAssets?.characterBible?.characters ?? []).filter(
+      (entry): entry is AssetRecord => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry)
+    ),
+    [projectAssets]
+  );
+  const selectedCharacterAsset = useMemo(
+    () => characterAssetEntries.find((entry) => String(entry.name ?? "").trim() === selectedCharacterName),
+    [characterAssetEntries, selectedCharacterName]
+  );
+  const selectedCharacterDialogueTerms = useMemo(
+    () => assetStringArray(selectedCharacterAsset?.requiredTerms),
+    [selectedCharacterAsset]
+  );
   const lastLineReviewHtml = useRef("");
   const lastProposalReviewHtml = useRef("");
   const hydratingProject = useRef(false);
@@ -886,6 +906,64 @@ function App() {
     return value.split(/[,，;；、\n]/).map((item) => item.trim()).filter(Boolean);
   }
 
+  function assetStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+  }
+
+  function selectCharacterAsset(name: string) {
+    setSelectedCharacterName(name);
+    const entry = characterAssetEntries.find((candidate) => String(candidate.name ?? "").trim() === name);
+    if (!entry) {
+      patchAssetEditor({
+        characterName: "",
+        characterTarget: "",
+        characterAliases: "",
+        characterGender: "",
+        characterPronouns: "",
+        characterGenderConfidence: "unknown",
+        characterTermsOfAddress: "",
+        characterDialogueMappings: [{ source: "", target: "" }],
+        characterForbiddenTerms: ""
+      });
+      return;
+    }
+    const confidence = String(entry.genderConfidence ?? "unknown").trim();
+    patchAssetEditor({
+      characterName: String(entry.name ?? "").trim(),
+      characterTarget: String(entry.target ?? entry.localizedName ?? entry.translation ?? "").trim(),
+      characterAliases: assetStringArray(entry.aliases).join(", "),
+      characterGender: String(entry.gender ?? "").trim(),
+      characterPronouns: String(entry.pronouns ?? "").trim(),
+      characterGenderConfidence: confidence === "confirmed" || confidence === "inferred" ? confidence : "unknown",
+      characterTermsOfAddress: String(entry.termsOfAddress ?? "").trim(),
+      characterDialogueMappings: [{ source: "", target: "" }],
+      characterForbiddenTerms: ""
+    });
+  }
+
+  function patchCharacterDialogueMapping(index: number, patch: Partial<CharacterDialogueMappingDraft>) {
+    patchAssetEditor({
+      characterDialogueMappings: assetEditor.characterDialogueMappings.map((mapping, mappingIndex) => (
+        mappingIndex === index ? { ...mapping, ...patch } : mapping
+      ))
+    });
+  }
+
+  function addCharacterDialogueMapping() {
+    patchAssetEditor({
+      characterDialogueMappings: [...assetEditor.characterDialogueMappings, { source: "", target: "" }]
+    });
+  }
+
+  function removeCharacterDialogueMapping(index: number) {
+    const remaining = assetEditor.characterDialogueMappings.filter((_, mappingIndex) => mappingIndex !== index);
+    patchAssetEditor({
+      characterDialogueMappings: remaining.length > 0 ? remaining : [{ source: "", target: "" }]
+    });
+  }
+
   async function saveGlossaryEntry() {
     if (!form.outputDir || !assetEditor.glossarySource.trim() || !assetEditor.glossaryTarget.trim()) {
       setStatus(t.requiredSourceOutput);
@@ -911,51 +989,43 @@ function App() {
       setStatus(t.requiredSourceOutput);
       return;
     }
-    if (
-      Boolean(assetEditor.characterRequiredSource.trim())
-      !== Boolean(assetEditor.characterRequiredTarget.trim())
-    ) {
+    const dialogueMappings = assetEditor.characterDialogueMappings
+      .map((mapping) => ({ source: mapping.source.trim(), target: mapping.target.trim() }));
+    if (dialogueMappings.some((mapping) => Boolean(mapping.source) !== Boolean(mapping.target))) {
       setStatus(t.assetRequiredTermsIncomplete ?? "Required terms need both the spoken source word and its rendering.");
       return;
     }
     try {
-    const assets = await window.workshop.saveProjectAssets({
-      outputDir: form.outputDir,
-      characterEntry: {
-        name: assetEditor.characterName.trim(),
-        target: assetEditor.characterTarget.trim(),
-        aliases: splitAssetList(assetEditor.characterAliases),
-        ...(assetEditor.characterGender.trim() ? { gender: assetEditor.characterGender.trim() } : {}),
-        ...(assetEditor.characterPronouns.trim() ? { pronouns: assetEditor.characterPronouns.trim() } : {}),
-        genderConfidence: assetEditor.characterGenderConfidence,
-        termsOfAddress: assetEditor.characterTermsOfAddress.trim() || "unknown",
-        requiredTerms: normalizeHandwrittenCharacterRequiredTerms(
-          assetEditor.characterRequiredSource.trim() || assetEditor.characterRequiredTarget.trim()
-            ? [`${assetEditor.characterRequiredSource.trim()} -> ${assetEditor.characterRequiredTarget.trim()}`]
-            : [],
-          {
-            name: assetEditor.characterName.trim(),
-            target: assetEditor.characterTarget.trim(),
-            aliases: splitAssetList(assetEditor.characterAliases)
-          }
-        ),
-        forbiddenTerms: splitAssetList(assetEditor.characterForbiddenTerms)
-      }
-    });
-    setProjectAssets(assets as ProjectAssetSummary);
-    patchAssetEditor({
-      characterName: "",
-      characterTarget: "",
-      characterAliases: "",
-      characterGender: "",
-      characterPronouns: "",
-      characterGenderConfidence: "unknown",
-      characterTermsOfAddress: "",
-      characterRequiredSource: "",
-      characterRequiredTarget: "",
-      characterForbiddenTerms: ""
-    });
-    setStatus(t.projectAssetsSaved ?? "Project assets saved.");
+      const assets = await window.workshop.saveProjectAssets({
+        outputDir: form.outputDir,
+        characterEntry: {
+          name: assetEditor.characterName.trim(),
+          target: assetEditor.characterTarget.trim(),
+          aliases: splitAssetList(assetEditor.characterAliases),
+          ...(assetEditor.characterGender.trim() ? { gender: assetEditor.characterGender.trim() } : {}),
+          ...(assetEditor.characterPronouns.trim() ? { pronouns: assetEditor.characterPronouns.trim() } : {}),
+          genderConfidence: assetEditor.characterGenderConfidence,
+          termsOfAddress: assetEditor.characterTermsOfAddress.trim() || "unknown",
+          requiredTerms: normalizeHandwrittenCharacterRequiredTerms(
+            dialogueMappings
+              .filter((mapping) => mapping.source && mapping.target)
+              .map((mapping) => `${mapping.source} -> ${mapping.target}`),
+            {
+              name: assetEditor.characterName.trim(),
+              target: assetEditor.characterTarget.trim(),
+              aliases: splitAssetList(assetEditor.characterAliases)
+            }
+          ),
+          forbiddenTerms: splitAssetList(assetEditor.characterForbiddenTerms)
+        }
+      });
+      setProjectAssets(assets as ProjectAssetSummary);
+      setSelectedCharacterName(assetEditor.characterName.trim());
+      patchAssetEditor({
+        characterDialogueMappings: [{ source: "", target: "" }],
+        characterForbiddenTerms: ""
+      });
+      setStatus(t.projectAssetsSaved ?? "Project assets saved.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -1403,89 +1473,147 @@ function App() {
             {projectAssets ? (
               <div className="assetEditorPanel">
                 <strong>{t.projectAssetEditor ?? "Asset editor"}</strong>
-                <div className="assetEditorGrid">
-                  <label>
-                    <span>{t.assetGlossary ?? "Glossary"} source</span>
-                    <input value={assetEditor.glossarySource} onChange={(event) => patchAssetEditor({ glossarySource: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>{t.assetGlossary ?? "Glossary"} target</span>
-                    <input value={assetEditor.glossaryTarget} onChange={(event) => patchAssetEditor({ glossaryTarget: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>aliases</span>
-                    <input value={assetEditor.glossaryAliases} onChange={(event) => patchAssetEditor({ glossaryAliases: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>{t.assetInfo ?? "Info"}</span>
-                    <input value={assetEditor.glossaryInfo} onChange={(event) => patchAssetEditor({ glossaryInfo: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>{t.assetConfidence ?? "Status"}</span>
-                    <select value={assetEditor.glossaryStatus} onChange={(event) => patchAssetEditor({ glossaryStatus: event.target.value as AssetEditorState["glossaryStatus"] })}>
-                      <option value="confirmed">confirmed</option>
-                      <option value="auto">auto</option>
-                      <option value="pending">pending</option>
+                <section className="assetEditorSection">
+                  <strong>{t.assetGlossary ?? "Glossary"}</strong>
+                  <div className="assetEditorGrid">
+                    <label>
+                      <span>{t.assetGlossary ?? "Glossary"} source</span>
+                      <input value={assetEditor.glossarySource} onChange={(event) => patchAssetEditor({ glossarySource: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>{t.assetGlossary ?? "Glossary"} target</span>
+                      <input value={assetEditor.glossaryTarget} onChange={(event) => patchAssetEditor({ glossaryTarget: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>aliases</span>
+                      <input value={assetEditor.glossaryAliases} onChange={(event) => patchAssetEditor({ glossaryAliases: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>{t.assetInfo ?? "Info"}</span>
+                      <input value={assetEditor.glossaryInfo} onChange={(event) => patchAssetEditor({ glossaryInfo: event.target.value })} />
+                    </label>
+                    <label className="assetConfidenceField">
+                      <span>{t.assetConfidence ?? "Status"}</span>
+                      <select value={assetEditor.glossaryStatus} onChange={(event) => patchAssetEditor({ glossaryStatus: event.target.value as AssetEditorState["glossaryStatus"] })}>
+                        <option value="confirmed">confirmed</option>
+                        <option value="auto">auto</option>
+                        <option value="pending">pending</option>
+                      </select>
+                    </label>
+                  </div>
+                  <button className="assetEditorAction" type="button" onClick={() => void saveGlossaryEntry()}>{t.saveAssetEntry ?? "Save entry"}</button>
+                </section>
+                <section className="assetEditorSection">
+                  <strong>{t.assetCharacterBible ?? "Character bible"}</strong>
+                  <label className="assetCharacterPicker">
+                    <span>{t.assetCharacterSelect ?? "Select a character"}</span>
+                    <select value={selectedCharacterName} onChange={(event) => selectCharacterAsset(event.target.value)}>
+                      <option value="">{t.assetNewCharacter ?? "Create a new character"}</option>
+                      {characterAssetEntries.map((entry) => {
+                        const name = String(entry.name ?? "").trim();
+                        const target = String(entry.target ?? entry.localizedName ?? entry.translation ?? "").trim();
+                        return <option key={name} value={name}>{target && target !== name ? `${name} -> ${target}` : name}</option>;
+                      })}
                     </select>
                   </label>
-                  <button type="button" onClick={() => void saveGlossaryEntry()}>{t.saveAssetEntry ?? "Save entry"}</button>
-                </div>
-                <div className="assetEditorGrid">
-                  <label>
-                    <span>{t.assetCharacterBible ?? "Character bible"} name</span>
-                    <input value={assetEditor.characterName} onChange={(event) => patchAssetEditor({ characterName: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>target</span>
-                    <input value={assetEditor.characterTarget} onChange={(event) => patchAssetEditor({ characterTarget: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>aliases</span>
-                    <input value={assetEditor.characterAliases} onChange={(event) => patchAssetEditor({ characterAliases: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>{t.assetGender ?? "Gender"}</span>
-                    <input value={assetEditor.characterGender} onChange={(event) => patchAssetEditor({ characterGender: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>{t.assetPronouns ?? "Pronouns"}</span>
-                    <input value={assetEditor.characterPronouns} onChange={(event) => patchAssetEditor({ characterPronouns: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>{t.assetConfidence ?? "Confidence"}</span>
-                    <select value={assetEditor.characterGenderConfidence} onChange={(event) => patchAssetEditor({ characterGenderConfidence: event.target.value as AssetEditorState["characterGenderConfidence"] })}>
-                      <option value="confirmed">confirmed</option>
-                      <option value="inferred">inferred</option>
-                      <option value="unknown">unknown</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t.assetTermsOfAddress ?? "Terms of address"}</span>
-                    <input value={assetEditor.characterTermsOfAddress} onChange={(event) => patchAssetEditor({ characterTermsOfAddress: event.target.value })} />
-                  </label>
-                  <label>
-                    <span>{t.assetRequiredSource ?? "Spoken source"}</span>
-                    <input
-                      value={assetEditor.characterRequiredSource}
-                      placeholder={t.assetRequiredSourcePlaceholder ?? "俺"}
-                      onChange={(event) => patchAssetEditor({ characterRequiredSource: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    <span>{t.assetRequiredTarget ?? "Spoken rendering"}</span>
-                    <input
-                      value={assetEditor.characterRequiredTarget}
-                      placeholder={t.assetRequiredTargetPlaceholder ?? "吾"}
-                      onChange={(event) => patchAssetEditor({ characterRequiredTarget: event.target.value })}
-                    />
-                  </label>
-                  <p className="assetFieldHint">{t.assetRequiredTermsHint ?? "Use source -> target only for this character's quoted speech. Do not enter a character name."}</p>
-                  <label>
-                    <span>forbidden terms</span>
-                    <input value={assetEditor.characterForbiddenTerms} onChange={(event) => patchAssetEditor({ characterForbiddenTerms: event.target.value })} />
-                  </label>
-                  <button type="button" onClick={() => void saveCharacterEntry()}>{t.saveAssetEntry ?? "Save entry"}</button>
-                </div>
+                  <div className="assetEditorGrid">
+                    <label>
+                      <span>{t.assetCharacterBible ?? "Character bible"} name</span>
+                      <input readOnly={Boolean(selectedCharacterName)} value={assetEditor.characterName} onChange={(event) => patchAssetEditor({ characterName: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>target</span>
+                      <input readOnly={Boolean(selectedCharacterName)} value={assetEditor.characterTarget} onChange={(event) => patchAssetEditor({ characterTarget: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>aliases</span>
+                      <input readOnly={Boolean(selectedCharacterName)} value={assetEditor.characterAliases} onChange={(event) => patchAssetEditor({ characterAliases: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>{t.assetGender ?? "Gender"}</span>
+                      <input readOnly={Boolean(selectedCharacterName)} value={assetEditor.characterGender} onChange={(event) => patchAssetEditor({ characterGender: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>{t.assetPronouns ?? "Pronouns"}</span>
+                      <input readOnly={Boolean(selectedCharacterName)} value={assetEditor.characterPronouns} onChange={(event) => patchAssetEditor({ characterPronouns: event.target.value })} />
+                    </label>
+                    <label className="assetConfidenceField">
+                      <span>{t.assetConfidence ?? "Confidence"}</span>
+                      <select disabled={Boolean(selectedCharacterName)} value={assetEditor.characterGenderConfidence} onChange={(event) => patchAssetEditor({ characterGenderConfidence: event.target.value as AssetEditorState["characterGenderConfidence"] })}>
+                        <option value="confirmed">confirmed</option>
+                        <option value="inferred">inferred</option>
+                        <option value="unknown">unknown</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t.assetTermsOfAddress ?? "Terms of address"}</span>
+                      <input readOnly={Boolean(selectedCharacterName)} value={assetEditor.characterTermsOfAddress} onChange={(event) => patchAssetEditor({ characterTermsOfAddress: event.target.value })} />
+                    </label>
+                    <label>
+                      <span>forbidden terms</span>
+                      <input value={assetEditor.characterForbiddenTerms} onChange={(event) => patchAssetEditor({ characterForbiddenTerms: event.target.value })} />
+                    </label>
+                  </div>
+                  <section className="assetDialogueEditor">
+                    {selectedCharacterName && selectedCharacterDialogueTerms.length > 0 ? (
+                      <div className="assetDialogueExisting">
+                        <strong>{t.assetExistingDialogueMappings ?? "Existing dialogue mappings"}</strong>
+                        <ul>
+                          {selectedCharacterDialogueTerms.map((term) => <li key={term}>{term}</li>)}
+                        </ul>
+                      </div>
+                    ) : null}
+                    <div className="assetDialogueHeader">
+                      <div>
+                        <strong>{selectedCharacterName
+                          ? (t.assetAddDialogueMappings ?? "Add dialogue mappings")
+                          : (t.assetDialogueMappings ?? "Dialogue source and rendering")}</strong>
+                        <p>{t.assetRequiredTermsHint ?? "Use source -> target only for this character's quoted speech. Do not enter a character name."}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="iconButton"
+                        onClick={addCharacterDialogueMapping}
+                        title={t.addAssetDialogueMapping ?? "Add dialogue mapping"}
+                        aria-label={t.addAssetDialogueMapping ?? "Add dialogue mapping"}
+                      >
+                        <Plus size={18} aria-hidden="true" />
+                      </button>
+                    </div>
+                    <div className="assetDialogueList">
+                      {assetEditor.characterDialogueMappings.map((mapping, index) => (
+                        <div className="assetDialogueRow" key={index}>
+                          <label>
+                            <span>{t.assetRequiredSource ?? "Spoken source"}</span>
+                            <input
+                              value={mapping.source}
+                              placeholder={t.assetRequiredSourcePlaceholder ?? "俺"}
+                              onChange={(event) => patchCharacterDialogueMapping(index, { source: event.target.value })}
+                            />
+                          </label>
+                          <label>
+                            <span>{t.assetRequiredTarget ?? "Spoken rendering"}</span>
+                            <input
+                              value={mapping.target}
+                              placeholder={t.assetRequiredTargetPlaceholder ?? "吾"}
+                              onChange={(event) => patchCharacterDialogueMapping(index, { target: event.target.value })}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="iconButton danger"
+                            onClick={() => removeCharacterDialogueMapping(index)}
+                            title={t.removeAssetDialogueMapping ?? "Remove dialogue mapping"}
+                            aria-label={t.removeAssetDialogueMapping ?? "Remove dialogue mapping"}
+                          >
+                            <Trash2 size={17} aria-hidden="true" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                  <button className="assetEditorAction" type="button" onClick={() => void saveCharacterEntry()}>{t.saveAssetEntry ?? "Save entry"}</button>
+                </section>
                 <label className="assetStyleEditor">
                   <span>{t.assetStyleGuide ?? "Style guide"}</span>
                   <textarea value={assetEditor.styleGuide} onChange={(event) => patchAssetEditor({ styleGuide: event.target.value })} />

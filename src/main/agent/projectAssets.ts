@@ -220,6 +220,7 @@ export function serializeCharacterBibleMarkdown(characters: Record<string, unkno
   const sections = characters.map((entry) => {
     const name = markdownValue(entry.name, "Unnamed character");
     const confidence = markdownValue(entry.genderConfidence, "unknown");
+    const requiredTerms = stringArray(entry.requiredTerms ?? entry.mustIncludeTerms ?? entry.voiceRequiredTerms);
     const lines = [
       `## ${name}`,
       `- Localized name: ${markdownValue(entry.target ?? entry.localizedName ?? entry.translation)}`,
@@ -227,8 +228,11 @@ export function serializeCharacterBibleMarkdown(characters: Record<string, unkno
       `- Gender/pronouns: ${markdownValue(entry.gender)}; ${markdownValue(entry.pronouns)}; ${confidence}`,
       `- Terms of address: ${markdownValue(entry.termsOfAddress)}`
     ];
+    if (requiredTerms.length > 0) {
+      lines.push("- Required dialogue mappings:");
+      lines.push(...requiredTerms.map((term) => `  - ${markdownValue(term)}`));
+    }
     const optionalFields: Array<[string, unknown]> = [
-      ["Required terms", entry.requiredTerms ?? entry.mustIncludeTerms ?? entry.voiceRequiredTerms],
       ["Forbidden terms", entry.forbiddenTerms ?? entry.avoidTerms ?? entry.voiceForbiddenTerms],
       ["Voice", entry.voice],
       ["Identity", entry.identity],
@@ -262,7 +266,21 @@ export function parseCharacterBibleMarkdown(source: string, filePath: string): R
     const name = heading.trim();
     if (!name) throw new Error(`Invalid character bible at ${filePath}: section ${index + 1} has no name.`);
     const entry: Record<string, unknown> = { name };
+    const requiredTerms: string[] = [];
+    let readingRequiredMappings = false;
     for (const line of bodyLines) {
+      if (/^\s*[-*]\s*(?:\*\*)?Required dialogue mappings(?:\*\*)?\s*:\s*$/i.test(line)) {
+        readingRequiredMappings = true;
+        continue;
+      }
+      if (readingRequiredMappings) {
+        const nestedMapping = line.match(/^\s{2,}[-*]\s+(.+?)\s*$/);
+        if (nestedMapping) {
+          requiredTerms.push(nestedMapping[1].trim());
+          continue;
+        }
+        readingRequiredMappings = false;
+      }
       const match = line.match(/^\s*[-*]\s*(?:\*\*)?([^:*]+)(?:\*\*)?\s*:\s*(?:\*\*)?(.+?)\s*$/);
       if (!match) continue;
       const label = match[1].trim().toLocaleLowerCase();
@@ -281,9 +299,9 @@ export function parseCharacterBibleMarkdown(source: string, filePath: string): R
         if (confidence) entry.genderConfidence = confidence.toLocaleLowerCase();
       } else if (label === "terms of address") {
         if (!/^(?:unknown|none)$/i.test(value)) entry.termsOfAddress = value;
-      } else if (label === "required terms") {
+      } else if (label === "required terms" || label === "required dialogue mappings") {
         const terms = splitMarkdownList(value);
-        if (terms.length > 0) entry.requiredTerms = terms;
+        requiredTerms.push(...terms);
       } else if (label === "forbidden terms") {
         const terms = splitMarkdownList(value);
         if (terms.length > 0) entry.forbiddenTerms = terms;
@@ -291,6 +309,7 @@ export function parseCharacterBibleMarkdown(source: string, filePath: string): R
         entry[label] = value;
       }
     }
+    if (requiredTerms.length > 0) entry.requiredTerms = uniqueStrings(requiredTerms);
     return entry;
   });
 }
@@ -418,6 +437,13 @@ function mergeAssetEntry(
   const aliases = uniqueStrings([...stringArray(existing.aliases), ...stringArray(incoming.aliases)]);
   if (aliases.length > 0) {
     next.aliases = aliases;
+  }
+
+  if (kind === "character_bible") {
+    for (const field of ["requiredTerms", "forbiddenTerms"] as const) {
+      const values = uniqueStrings([...stringArray(existing[field]), ...stringArray(incoming[field])]);
+      if (values.length > 0) next[field] = values;
+    }
   }
 
   const keys = targetKeys(kind);

@@ -469,19 +469,46 @@ await test("character bible exposes explicit voice validator terms", async () =>
       characterEntry: {
         name: "遥娜",
         target: "遥娜",
-        requiredTerms: ["私 -> 咱家"],
+        requiredTerms: ["私 -> 咱家", "あなた -> そなた"],
         forbiddenTerms: ["机器翻译腔"]
       }
     });
+    const markdown = await readFile(path.join(outputDir, "AI_translation", "_workspace", "character_bible.md"), "utf8");
+    assert.match(markdown, /- Required dialogue mappings:\n  - 私 -> 咱家\n  - あなた -> そなた/);
     const entries = await readProjectCharacterEntries(outputDir);
     assert.deepEqual(entries, [{
       name: "遥娜",
       target: "遥娜",
       aliases: undefined,
       genderConfidence: "unknown",
-      requiredTerms: ["私 -> 咱家"],
+      requiredTerms: ["私 -> 咱家", "あなた -> そなた"],
       forbiddenTerms: ["机器翻译腔"]
     }]);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+await test("character bible keeps legacy inline dialogue mappings readable", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "tw-assets-"));
+  try {
+    const workspace = path.join(outputDir, "AI_translation", "_workspace");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(
+      path.join(workspace, "character_bible.md"),
+      [
+        "# Character Bible",
+        "",
+        "## 遥娜",
+        "- Localized name: 遥娜",
+        "- Gender/pronouns: female; 她; confirmed",
+        "- Terms of address: unknown",
+        "- Required terms: 私 -> 咱家, あなた -> そなた"
+      ].join("\n"),
+      "utf8"
+    );
+    const entries = await readProjectCharacterEntries(outputDir);
+    assert.deepEqual(entries[0].requiredTerms, ["私 -> 咱家", "あなた -> そなた"]);
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
@@ -599,14 +626,29 @@ await test("formal project assets can be edited through the schema-lite save API
       outputDir,
       glossaryEntry: { source: "鳳凰院", target: "凤凰院凶真", aliases: ["凶真"] }
     });
+    await saveProjectAssets({
+      outputDir,
+      characterEntry: {
+        name: "遥娜",
+        target: "遥娜",
+        requiredTerms: ["あなた -> そなた"],
+        forbiddenTerms: ["过度敬语"]
+      }
+    });
     const assets = await readProjectAssets({ outputDir });
     assert.deepEqual(assets.glossary.entries, [{
       source: "鳳凰院",
-      target: "凤凰院",
-      aliases: ["凤院", "凶真"],
-      alternatives: ["凤凰院凶真"]
+      target: "凤凰院凶真",
+      aliases: ["凶真"]
     }]);
-    assert.equal(assets.characterBible.characters[0].name, "遥娜");
+    assert.deepEqual(assets.characterBible.characters[0], {
+      name: "遥娜",
+      target: "遥娜",
+      aliases: ["HARUNA"],
+      genderConfidence: "unknown",
+      requiredTerms: ["私 -> 咱家", "あなた -> そなた"],
+      forbiddenTerms: ["机器翻译腔", "过度敬语"]
+    });
     assert.equal(assets.styleGuide, "禁止：硬直译\n");
   } finally {
     await rm(outputDir, { recursive: true, force: true });
@@ -733,6 +775,9 @@ await test("asset approval is exposed through IPC and the React approval panel",
   assert.doesNotMatch(workspaceAssets, /\.translation-workshop["'],\s*["']glossary\.json/);
   assert.match(app, /readProjectAssets/);
   assert.match(app, /saveProjectAssets/);
+  assert.match(app, /selectedCharacterName/);
+  assert.match(app, /selectCharacterAsset/);
+  assert.match(app, /assetExistingDialogueMappings/);
   assert.match(app, /assetRows\(\)\.map/);
   assert.match(app, /row\.path && row\.exists !== false/);
   assert.match(app, /translationMemory\?\.segmentCount/);

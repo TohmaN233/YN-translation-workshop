@@ -27,7 +27,7 @@
 
 body {
   margin: 0;
-  min-width: 960px;
+  min-width: 0;
   color: var(--ink);
   background: var(--bg);
   font-family: "Aptos", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
@@ -53,8 +53,9 @@ textarea {
 }
 
 .shell {
+  width: 100%;
   min-height: 100vh;
-  padding: 18px;
+  padding: clamp(12px, 1.5vw, 24px);
 }
 
 .topbar {
@@ -64,7 +65,7 @@ textarea {
   align-items: center;
   gap: 16px;
   margin: 0 auto 16px;
-  max-width: 1440px;
+  width: 100%;
 }
 
 .brandBlock {
@@ -117,13 +118,14 @@ textarea {
 
 .workspace {
   display: grid;
-  grid-template-columns: 420px minmax(0, 1fr);
+  grid-template-columns: clamp(340px, 28vw, 480px) minmax(0, 1fr);
   gap: 16px;
-  max-width: 1440px;
+  width: 100%;
   margin: 0 auto;
 }
 
 .panel {
+  min-width: 0;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -151,6 +153,11 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 8px 10px;
+  background: #fff;
+  color: var(--ink);
+}
+
+select option {
   background: #fff;
   color: var(--ink);
 }
@@ -475,11 +482,54 @@ code {
   background: #fff;
 }
 
+.assetEditorSection {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.assetEditorSection > strong {
+  font-size: 13px;
+}
+
+.assetCharacterPicker {
+  display: grid;
+  gap: 4px;
+  width: min(100%, 460px);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.assetCharacterPicker select {
+  width: 100%;
+  min-width: 0;
+}
+
 .assetEditorGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
   align-items: end;
+}
+
+.assetEditorAction {
+  justify-self: start;
+  min-height: 36px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  padding: 7px 12px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.assetEditorAction:hover {
+  background: var(--accent-dark);
+}
+
+.assetConfidenceField {
+  min-width: 0;
 }
 
 .assetFieldHint {
@@ -498,6 +548,7 @@ code {
 }
 
 .assetEditorGrid input,
+.assetEditorGrid select,
 .assetStyleEditor textarea {
   width: 100%;
   min-width: 0;
@@ -505,6 +556,85 @@ code {
   border-radius: 7px;
   padding: 7px 9px;
   color: var(--ink);
+}
+
+.assetEditorGrid input[readonly],
+.assetEditorGrid select:disabled {
+  background: #f3f5f7;
+  color: #566474;
+  cursor: default;
+  opacity: 1;
+}
+
+.assetDialogueEditor {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fbfcfd;
+}
+
+.assetDialogueHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.assetDialogueHeader strong {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.assetDialogueHeader p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.assetDialogueList {
+  display: grid;
+  gap: 8px;
+}
+
+.assetDialogueExisting {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.assetDialogueExisting strong {
+  font-size: 12px;
+}
+
+.assetDialogueExisting ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.assetDialogueRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr)) 36px;
+  gap: 8px;
+  align-items: end;
+}
+
+.assetDialogueRow label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.assetDialogueRow input {
+  min-width: 0;
 }
 
 .assetStyleEditor textarea {
@@ -573,17 +703,6 @@ code {
 
 .iconButton.danger {
   color: #b53f49;
-}
-
-@media (max-width: 960px) {
-  .assetEditorGrid,
-  .customPreserveRuleRow {
-    grid-template-columns: 1fr;
-  }
-
-  .customPreserveRuleRow .iconButton {
-    justify-self: end;
-  }
 }
 
 .command {
@@ -689,6 +808,96 @@ code {
   justify-content: flex-start;
   white-space: normal;
   text-align: left;
+}
+
+@media (max-width: 1180px) {
+  .workspace {
+    grid-template-columns: minmax(320px, 38%) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .topbar,
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .topActions {
+    justify-content: flex-start;
+  }
+
+  .companionGuide {
+    grid-template-columns: minmax(130px, 190px) minmax(0, 1fr);
+  }
+
+  .companionPortrait {
+    width: min(190px, 28vw);
+  }
+}
+
+@media (max-width: 620px) {
+  .shell {
+    padding: 10px;
+  }
+
+  .topbar {
+    align-items: start;
+  }
+
+  .topActions,
+  .actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .topActions .segmented {
+    grid-column: 1 / -1;
+  }
+
+  .topActions .command,
+  .actions .command {
+    width: 100%;
+    white-space: normal;
+  }
+
+  .pathInput,
+  .pathInput.splitPickers,
+  .grid2,
+  .workflowTemplateParamGrid,
+  .assetEditorGrid,
+  .assetDialogueRow,
+  .customPreserveRuleRow,
+  .statusBar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pathInput button {
+    width: 100%;
+  }
+
+  .assetDialogueRow .iconButton,
+  .customPreserveRuleRow .iconButton {
+    justify-self: end;
+  }
+
+  .companionGuide {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+    padding: 12px 4px 0;
+  }
+
+  .companionStage {
+    min-height: 220px;
+  }
+
+  .companionPortrait {
+    width: min(210px, 70vw);
+    max-height: 230px;
+  }
+
+  .companionBubble::before {
+    display: none;
+  }
 }
 
 .ynAgent {

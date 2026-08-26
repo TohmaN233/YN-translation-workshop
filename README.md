@@ -4,7 +4,13 @@
 
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
-[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0.7](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.7)
+[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0.8](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.8)
+
+## 2.0.8
+
+- 主窗口布局自适应，资产控件更易读。
+- 角色资产可选择已有角色，并追加多条台词原文到呈现的规则；兼容旧版 character_bible.md。
+- Help 增加资产表单示例。
 
 ## 2.0.7
 
@@ -33,8 +39,8 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.0.7-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.0.7-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.0.8-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.0.8-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。

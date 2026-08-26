@@ -4,7 +4,13 @@ A local workbench that brings human line editing, project assets, full AI transl
 
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
-[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0.7](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.7)
+[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0.8](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.8)
+
+## 2.0.8
+
+- Responsive main-window layout and more readable asset controls.
+- Character assets can select an existing character and append multiple dialogue source-to-rendering rules, with backward-compatible character_bible.md parsing.
+- Help now includes asset-form examples.
 
 ## 2.0.7
 
@@ -33,8 +39,8 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.0.7-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.0.7-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.0.8-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.0.8-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.

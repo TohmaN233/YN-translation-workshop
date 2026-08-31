@@ -1,6 +1,6 @@
 {
   "name": "translation-workshop",
-  "version": "2.0.8",
+  "version": "2.0.9",
   "description": "Local translation and proofreading workflow workbench.",
   "type": "module",
   "engines": {
@@ -22,7 +22,8 @@
     "toy:agent-artifacts": "npm run setup:toy-agent-artifacts && npm run verify:toy-agent-artifacts && npm run dev",
     "typecheck": "tsc --noEmit",
     "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=esm --outfile=dist/main/main.js --external:electron --external:electron-updater --external:electron-updater/* --external:extract-zip --external:cheerio --external:cheerio/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* && npm run build:preload",
-    "build:preload": "esbuild src/main/preload.ts --bundle --platform=node --format=cjs --outfile=dist/main/preload.cjs --external:electron",
+    "build:preload": "esbuild src/main/preload.ts --bundle --platform=node --format=cjs --outfile=dist/main/preload.cjs --external:electron && npm run build:prescan-worker",
+    "build:prescan-worker": "esbuild src/main/agent/piNative/proofreadPrescanWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/proofreadPrescanWorker.js",
     "dev": "concurrently -k -n renderer,electron \"npm run dev:renderer\" \"npm run dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1",
     "dev:electron": "npm run build:main && wait-on http://127.0.0.1:5173 && cross-env TRANSLATION_WORKSHOP_DEV=1 electron .",

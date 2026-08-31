@@ -115,6 +115,8 @@ try {
   assert.equal(marker.version, packageJson.version, "Packaged smoke marker reported the wrong version");
   assert.equal(marker.rendererLoaded, true, "Packaged renderer was not loaded before the smoke marker");
   assert.equal(marker.windowVisible, false, "Packaged smoke verification displayed a product window");
+  assert.equal(marker.proofreadWorkerVerified, true, "Packaged proofreading worker did not finish its background scan");
+  assert.ok(marker.proofreadHeartbeatTicks > 0, "Packaged proofreading blocked the main event loop");
   assert.match(String(marker.rendererUrl), /dist\/renderer\/index\.html/i, "Packaged smoke marker did not report the packaged renderer");
 
   const exitDeadline = Date.now() + 15_000;
@@ -134,6 +136,8 @@ try {
     rendererReadyMs: Date.now() - startedAt,
     rendererUrl: marker.rendererUrl,
     windowVisible: marker.windowVisible,
+    proofreadWorkerVerified: marker.proofreadWorkerVerified,
+    proofreadHeartbeatTicks: marker.proofreadHeartbeatTicks,
     cleanExit: true
   }, null, 2));
 } catch (error) {

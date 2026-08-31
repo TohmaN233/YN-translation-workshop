@@ -13,6 +13,12 @@ export interface ProofreadDeterministicSignal {
   evidence: string;
 }
 
+export interface ProofreadPrescanProgress {
+  phase: "validation" | "signals" | "alignment" | "complete";
+  completedLines: number;
+  totalLines: number;
+}
+
 export interface ProofreadPrescanSummary {
   completed: true;
   totalLines: number;
@@ -86,6 +92,7 @@ export function buildProofreadDeterministicSignals(args: {
   translationText: string;
   validationOptions: ValidationOptions;
   validationResult?: TranslationValidationResult;
+  onProgress?: (progress: ProofreadPrescanProgress) => void;
 }): ProofreadDeterministicSignal[] {
   const sourceLines = splitTextLines(args.sourceText);
   const translationLines = splitTextLines(args.translationText);
@@ -95,10 +102,12 @@ export function buildProofreadDeterministicSignals(args: {
     );
   }
 
+  args.onProgress?.({ phase: "validation", completedLines: 0, totalLines: sourceLines.length });
   const validation = args.validationResult ?? validateTranslationCandidate(
     args.sourceText,
     args.translationText,
-    args.validationOptions
+    args.validationOptions,
+    (completedLines, totalLines) => args.onProgress?.({ phase: "validation", completedLines, totalLines })
   );
   const signals: ProofreadDeterministicSignal[] = [];
   for (const finding of [...validation.blocking, ...validation.warnings]) {
@@ -108,6 +117,7 @@ export function buildProofreadDeterministicSignals(args: {
   }
 
   for (let index = 0; index < translationLines.length; index += 1) {
+    if (index % 1000 === 0) args.onProgress?.({ phase: "signals", completedLines: index, totalLines: sourceLines.length });
     const translation = translationLines[index] ?? "";
     const contamination = AI_CONTAMINATION_PATTERNS.find((pattern) => pattern.test(translation));
     if (contamination) {
@@ -126,6 +136,7 @@ export function buildProofreadDeterministicSignals(args: {
     }
   }
 
+  args.onProgress?.({ phase: "alignment", completedLines: 0, totalLines: sourceLines.length });
   const alignmentAudit = createTranslationAlignmentAudit({
     documentId: "proofread-prescan",
     sourceText: args.sourceText,
@@ -140,7 +151,7 @@ export function buildProofreadDeterministicSignals(args: {
   }
 
   const seen = new Set<string>();
-  return signals
+  const result = signals
     .sort((left, right) => left.line - right.line || left.code.localeCompare(right.code))
     .filter((signal) => {
       const key = `${signal.code}:${signal.line}:${signal.evidence}`;
@@ -148,6 +159,8 @@ export function buildProofreadDeterministicSignals(args: {
       seen.add(key);
       return true;
     });
+  args.onProgress?.({ phase: "complete", completedLines: sourceLines.length, totalLines: sourceLines.length });
+  return result;
 }
 
 export function summarizeProofreadDeterministicSignals(args: {

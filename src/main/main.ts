@@ -4318,12 +4318,28 @@ app.whenReady().then(async () => {
     windowVisible: win.isVisible()
   });
   if (portableSmokeMarkerPath) {
+    const { runProofreadPrescan } = await import("./agent/piNative/proofreadPrescanService.ts");
+    let heartbeatTicks = 0;
+    const heartbeat = setInterval(() => { heartbeatTicks += 1; }, 10);
+    let prescanSignals;
+    try {
+      prescanSignals = await runProofreadPrescan({
+        sourceText: "魔術師です。\n".repeat(5000),
+        translationText: "这是另一种职业。\n".repeat(5000),
+        validationOptions: { languagePair: "ja->zh-CN", glossaryEntries: [{ source: "魔術師", target: "法师" }] }
+      });
+    } finally { clearInterval(heartbeat); }
+    if (!heartbeatTicks || prescanSignals.filter((signal) => signal.code === "H3").length !== 5000) {
+      throw new Error("Packaged proofreading worker failed responsiveness/signal verification.");
+    }
     await writeFile(portableSmokeMarkerPath, `${JSON.stringify({
       version: app.getVersion(),
       pid: process.pid,
       rendererUrl: win.webContents.getURL(),
       rendererLoaded: !win.webContents.isLoadingMainFrame(),
-      windowVisible: win.isVisible()
+      windowVisible: win.isVisible(),
+      proofreadWorkerVerified: true,
+      proofreadHeartbeatTicks: heartbeatTicks
     }, null, 2)}\n`, "utf8");
     app.quit();
     return;

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { access, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -84,11 +85,11 @@ import {
 } from "./translationArtifactValidation.ts";
 import { createYnTranslationValidationOptions } from "./translationValidationContext.ts";
 import {
-  buildProofreadDeterministicSignals,
   summarizeProofreadDeterministicSignals,
   type ProofreadDeterministicSignal,
   type ProofreadPrescanSummary
 } from "./proofreadPrescan.ts";
+import { runProofreadPrescan } from "./proofreadPrescanService.ts";
 import {
   createHotSplitProofreadTasks,
   createMontecarloProofreadTasks,
@@ -395,6 +396,7 @@ function proofreadInputHash(
       languagePair: validationOptions.languagePair,
       sourceLanguage: validationOptions.sourceLanguage,
       detectUntranslated: validationOptions.detectUntranslated,
+      ...(validationOptions.customPreserveRules?.length ? { customPreserveRules: validationOptions.customPreserveRules } : {}),
       glossaryEntries: validationOptions.glossaryEntries ?? [],
       characterEntries: validationOptions.characterEntries ?? [],
       styleForbiddenTerms: validationOptions.styleForbiddenTerms ?? [],
@@ -671,7 +673,8 @@ function translationTerminologyConflictMessage(
 function textResult(value: unknown, details: unknown = value) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-    details
+    // Persist a small snapshot, not line slices that keep their entire input file alive.
+    details: structuredClone(details)
   };
 }
 
@@ -1465,6 +1468,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
   const alignmentReadKey = (currentDocumentId: string, line: number) => `${currentDocumentId}\0${line}`;
   const proofreadSampledLines = new Map<string, Set<number>>();
   const proofreadPrescans = new Map<string, ProofreadPrescanSnapshot>();
+  const toolExecution = new AsyncLocalStorage<{
+    signal?: AbortSignal;
+    onUpdate?: Parameters<AgentTool["execute"]>[3];
+  }>();
   const sampledLinesFor = (currentDocumentId: string): Set<number> => {
     let sampled = proofreadSampledLines.get(currentDocumentId);
     if (!sampled) {
@@ -1486,36 +1493,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     const currentDocumentId = documentId(bound);
     const persistedDocument = proofreadState.documents[currentDocumentId];
     if (!persistedDocument?.prescan) return;
-    const sourceLines = splitTextLines(await readFile(sourcePath(bound), "utf8"));
-    const translationPath = proofreadTranslationPath(bound, manifest?.kind === "folder");
-    const translationLines = splitTextLines(await readFile(translationPath, "utf8"));
-    if (sourceLines.length !== translationLines.length) {
-      throw new Error(
-        `The bounded repair broke proofreading alignment for ${currentDocumentId}: `
-        + `${sourceLines.length} source lines and ${translationLines.length} translation lines.`
-      );
-    }
-    const validationOptions = await createYnTranslationValidationOptions(bound);
-    const assets = await readWorkflowProjectAssets(bound);
-    const auditWhitelistLines = new Set(bound.auditWhitelistLines ?? []);
-    const signals = buildProofreadDeterministicSignals({
-      sourceText: sourceLines.join("\n"),
-      translationText: translationLines.join("\n"),
-      validationOptions
-    }).filter((signal) => !auditWhitelistLines.has(signal.line));
-    const inputHash = proofreadInputHash(
-      sourceLines.join("\n"),
-      translationLines.join("\n"),
-      validationOptions,
-      bound.auditWhitelistLines ?? [],
-      assets
-    );
-    const summary = summarizeProofreadDeterministicSignals({
-      signals,
-      totalLines: sourceLines.length,
-      maximumWorkers: effectiveSubagentCount(bound, sourceLines.length, context.domainRun)
-    });
-    const refreshed = { inputHash, translationPath, signals, summary };
+    const { prescan: refreshed } = await buildProofreadPrescan(bound);
+    const { inputHash, translationPath, summary } = refreshed;
     proofreadPrescans.set(currentDocumentId, refreshed);
     persistedDocument.prescan = { inputHash, translationPath, summary };
     for (const [scopeId, scope] of Object.entries(proofreadState.localScopes)) {
@@ -3587,7 +3566,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     prepared?: {
       validationOptions: Awaited<ReturnType<typeof createYnTranslationValidationOptions>>;
       assets: Awaited<ReturnType<typeof readProjectAssets>>;
-    }
+    },
+    expected?: { inputHash: string; translationPath: string }
   ): Promise<{
     sourceLines: string[];
     translationLines: string[];
@@ -3611,19 +3591,43 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       ?? await createYnTranslationValidationOptions(bound);
     const assets = prepared?.assets
       ?? await readWorkflowProjectAssets(bound);
+    const normalizedSource = sourceLines.join("\n");
+    const normalizedTranslation = translationLines.join("\n");
     const currentInputHash = proofreadInputHash(
-      sourceLines.join("\n"),
-      translationLines.join("\n"),
+      normalizedSource,
+      normalizedTranslation,
       validationOptions,
       bound.auditWhitelistLines ?? [],
       assets
     );
+    const currentDocumentId = documentId(bound);
+    if (expected && (expected.inputHash !== currentInputHash || expected.translationPath !== translationPath)) {
+      invalidateProofreadState(currentDocumentId);
+      throw new Error(
+        `The aligned source, translation, or proofreading assets changed after the deterministic prescan for ${currentDocumentId}. Run inspectTranslationContext again before semantic review.`
+      );
+    }
+    const execution = toolExecution.getStore();
+    execution?.signal?.throwIfAborted();
+    const cached = proofreadPrescans.get(currentDocumentId);
     const auditWhitelistLines = new Set(bound.auditWhitelistLines ?? []);
-    const signals = buildProofreadDeterministicSignals({
-      sourceText: sourceLines.join("\n"),
-      translationText: translationLines.join("\n"),
-      validationOptions
-    }).filter((signal) => !auditWhitelistLines.has(signal.line));
+    const signals = cached?.inputHash === currentInputHash && cached.translationPath === translationPath
+      ? cached.signals
+      : (await runProofreadPrescan({
+        sourceText: normalizedSource,
+        translationText: normalizedTranslation,
+        validationOptions,
+        cache: {
+          directory: path.join(bound.outputDir, ".translation-workshop", "agent", "proofread-prescans"),
+          documentId: currentDocumentId,
+          inputHash: currentInputHash
+        },
+        signal: execution?.signal,
+        onProgress: (progress) => execution?.onUpdate?.({
+          content: [{ type: "text", text: `校对预扫描 ${progress.completedLines}/${progress.totalLines}` }],
+          details: { documentId: currentDocumentId, ...progress }
+        })
+      })).filter((signal) => !auditWhitelistLines.has(signal.line));
     const summary = summarizeProofreadDeterministicSignals({
       signals,
       totalLines: sourceLines.length,
@@ -3678,16 +3682,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         `Complete the full deterministic prescan for ${currentDocumentId} with inspectTranslationContext before semantic proofreading.`
       );
     }
-    const current = await buildProofreadPrescan(bound);
-    if (
-      persistedDocument.prescan.inputHash !== current.prescan.inputHash
-      || persistedDocument.prescan.translationPath !== current.translationPath
-    ) {
-      invalidateProofreadState(currentDocumentId);
-      throw new Error(
-        `The aligned source, translation, or proofreading assets changed after the deterministic prescan for ${currentDocumentId}. Run inspectTranslationContext again before semantic review.`
-      );
-    }
+    const current = await buildProofreadPrescan(bound, undefined, persistedDocument.prescan);
     proofreadPrescans.set(currentDocumentId, current.prescan);
     context.domainRun?.assertProofreadPrescanReady(currentDocumentId);
     return current;
@@ -4554,15 +4549,16 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           translationPath,
           ...range
         };
-        proofreadState.localScopes[scopeId] = scope;
         const auditWhitelist = new Set(request.auditWhitelistLines ?? []);
-        const signals = buildProofreadDeterministicSignals({
+        const signals = (await runProofreadPrescan({
           sourceText: scopedSource,
           translationText: scopedTranslation,
-          validationOptions
-        })
+          validationOptions,
+          signal: toolExecution.getStore()?.signal
+        }))
           .map((signal) => ({ ...signal, line: signal.line + range.fromLine - 1 }))
           .filter((signal) => !auditWhitelist.has(signal.line));
+        proofreadState.localScopes[scopeId] = scope;
         return textResult({ scopeId, ...scope, deterministicSignals: signals });
       }
     },
@@ -6744,11 +6740,12 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               { length: localScope.toLine - localScope.fromLine + 1 },
               (_entry, index) => localScope.fromLine + index
             ),
-            signals: buildProofreadDeterministicSignals({
+            signals: (await runProofreadPrescan({
               sourceText: sourceLines.slice(localScope.fromLine - 1, localScope.toLine).join("\n"),
               translationText: translationLines.slice(localScope.fromLine - 1, localScope.toLine).join("\n"),
-              validationOptions
-            }).map((signal) => ({ ...signal, line: signal.line + localScope.fromLine - 1 }))
+              validationOptions,
+              signal: toolExecution.getStore()?.signal
+            })).map((signal) => ({ ...signal, line: signal.line + localScope.fromLine - 1 }))
           };
         }
         const currentDocumentState = proofreadDocumentHostState(proofreadState, documentId(request));
@@ -6820,9 +6817,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       executionMode: "sequential",
       async execute(_toolCallId, params) {
         const resolvedManifest = await ensureManifest();
-        await Promise.all(resolvedManifest.documents.map((document) => (
-          requireProofreadPrescanForBound(bindPiSourceDocument(baseRequest, document))
-        )));
+        for (const document of resolvedManifest.documents) {
+          await requireProofreadPrescanForBound(bindPiSourceDocument(baseRequest, document));
+        }
         const input = params as {
           decisions: Array<{ candidateId: string; action: "accept" | "reject"; rationale: string }>;
         };
@@ -6929,7 +6926,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           document,
           bound: bindPiSourceDocument(baseRequest, document)
         }));
-        await Promise.all(boundDocuments.map(({ bound }) => requireProofreadPrescanForBound(bound)));
+        for (const { bound } of boundDocuments) await requireProofreadPrescanForBound(bound);
         const pendingCandidates = glossaryCandidateCollectionEnabled
           ? summarizeProofreadGlossaryCandidates(
             boundDocuments.flatMap(({ document }) => (
@@ -8256,7 +8253,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     const guarded = {
       ...tool,
       async execute(...args: Parameters<typeof execute>) {
-        return execute(...args);
+        return toolExecution.run({ signal: args[2], onUpdate: args[3] }, () => execute(...args));
       }
     };
     if (!requiresSourceManifest) return guarded;
@@ -8270,7 +8267,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           await context.resumeWorkflow("translation");
         }
         await ensureManifest();
-        return execute(...args);
+        return guarded.execute(...args);
       }
     };
   });

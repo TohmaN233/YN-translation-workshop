@@ -22,7 +22,7 @@ const signals = buildProofreadDeterministicSignals({
   ].join("\n"),
   validationOptions: {
     languagePair: "ja->zh-CN",
-    glossaryEntries: [{ source: "魔王", target: "魔王大人" }],
+    glossaryEntries: [{ source: "魔王", target: "大魔导师" }],
     characterEntries: [{
       name: "Alice",
       gender: "male",

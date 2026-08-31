@@ -4,7 +4,12 @@
 
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
-[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0.8](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.8)
+[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.0.9](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.9)
+
+## 2.0.9
+
+- 优化大文件翻译与校对的内存占用，修复连续分块处理时全文字符串被历史记录和搜索缓存持续保留的问题。
+- 优化校对预扫描性能，减少大文件任务的卡顿，提高长时间运行的稳定性。
 
 ## 2.0.8
 
@@ -39,8 +44,8 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.0.8-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.0.8-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.0.9-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.0.9-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。

@@ -47,6 +47,7 @@ assert.match(appUpdate, /^repo:\s*YN-translation-workshop$/m, "Packaged update r
 const archiveEntries = new Set(listPackage(asarPath).map((entry) => entry.replaceAll("\\", "/")));
 for (const requiredEntry of [
   "/dist/main/main.js",
+  "/dist/main/proofreadPrescanWorker.js",
   "/node_modules/cheerio/package.json",
   "/node_modules/electron-updater/package.json",
   "/node_modules/js-yaml/package.json",
@@ -73,6 +74,13 @@ const packedYaml = JSON.parse(
   extractFile(asarPath, path.join("node_modules", "js-yaml", "package.json")).toString("utf8"),
 );
 const packedMain = extractFile(asarPath, path.join("dist", "main", "main.js")).toString("utf8");
+for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js"]) {
+  assert.equal(
+    createHash("sha256").update(extractFile(asarPath, path.normalize(entry))).digest("hex"),
+    createHash("sha256").update(readFileSync(path.join(rootDir, entry))).digest("hex"),
+    `Packaged executable code differs from the current build: ${entry}`,
+  );
+}
 assert.equal(packedPackage.version, packageJson.version, "Packaged app version is stale");
 assert.equal(packedUpdater.version, "6.8.9", "Packaged electron-updater version is unexpected");
 assert.equal(packedCheerio.version, "1.2.0", "Packaged web-reference HTML parser version is unexpected");

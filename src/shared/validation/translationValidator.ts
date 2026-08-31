@@ -613,24 +613,17 @@ function glossaryCatalogTerms(
   ]));
 }
 
-function shorterRegisteredNameForms(longTarget: string, catalog: string[]): string[] {
-  const normalizedLong = comparableTerm(longTarget);
-  if (!normalizedLong) return [];
-  return catalog.filter((term) => {
-    const normalized = comparableTerm(term);
-    return Boolean(normalized && normalized !== normalizedLong && normalizedLong.includes(normalized));
-  });
-}
-
 function glossaryAcceptableTargets(
   entry: { source?: string; target?: string; aliases?: string[] },
-  catalog: string[]
+  catalog: Array<{ term: string; normalized: string }>
 ): string[] {
   const target = entry.target?.trim() ?? "";
+  const normalizedTarget = comparableTerm(target);
   return uniqueComparableTerms([
     target,
     ...(entry.aliases ?? []),
-    ...shorterRegisteredNameForms(target, catalog),
+    ...catalog.filter(({ normalized }) => normalized && normalized !== normalizedTarget && normalizedTarget.includes(normalized))
+      .map(({ term }) => term),
     ...(entry.source && target && comparableTerm(target).includes(comparableTerm(entry.source))
       ? [entry.source]
       : [])
@@ -711,28 +704,61 @@ function longestUncoveredGlossaryEntries(
   sourceText: string,
   entries: Array<{ source?: string; target?: string; aliases?: string[] }>
 ): Array<{ source?: string; target?: string; aliases?: string[] }> {
-  const normalizedSource = comparableTerm(sourceText);
-  const covered: Array<{ from: number; to: number }> = [];
-  return [...entries]
-    .sort((left, right) => comparableTerm(right.source ?? "").length - comparableTerm(left.source ?? "").length)
-    .filter((entry) => {
-      const term = comparableTerm(entry.source ?? "");
-      if (!term) return false;
-      const occurrences: Array<{ from: number; to: number }> = [];
-      let from = 0;
-      while (from <= normalizedSource.length - term.length) {
-        const index = normalizedSource.indexOf(term, from);
-        if (index < 0) break;
-        occurrences.push({ from: index, to: index + term.length });
-        from = index + 1;
+  return compileGlossarySourceMatcher(entries)(sourceText);
+}
+
+function compileGlossarySourceMatcher<T extends { source?: string }>(entries: T[]): (text: string) => T[] {
+  type Match = { entry: T; term: string; order: number };
+  type Node = { children: Map<string, Node>; matches: Match[] };
+  const root: Node = { children: new Map(), matches: [] };
+  entries.forEach((entry, order) => {
+    const term = comparableTerm(entry.source ?? "");
+    if (!term) return;
+    let node = root;
+    // Use UTF-16 positions, matching the existing indexOf/coverage semantics.
+    for (let index = 0; index < term.length; index += 1) {
+      const character = term[index];
+      let next = node.children.get(character);
+      if (!next) {
+        next = { children: new Map(), matches: [] };
+        node.children.set(character, next);
       }
-      const hasIndependentOccurrence = occurrences.some((occurrence) => !covered.some(
-        (span) => span.from <= occurrence.from && span.to >= occurrence.to
-      ));
-      if (!hasIndependentOccurrence) return false;
-      covered.push(...occurrences);
-      return true;
-    });
+      node = next;
+    }
+    node.matches.push({ entry, term, order });
+  });
+  return (text) => {
+    const normalized = comparableTerm(text);
+    const occurrencesByMatch = new Map<Match, Array<{ from: number; to: number }>>();
+    for (let from = 0; from < normalized.length; from += 1) {
+      let node = root;
+      for (let to = from; to < normalized.length; to += 1) {
+        const next = node.children.get(normalized[to]);
+        if (!next) break;
+        node = next;
+        for (const match of node.matches) {
+          let occurrences = occurrencesByMatch.get(match);
+          if (!occurrences) {
+            occurrences = [];
+            occurrencesByMatch.set(match, occurrences);
+          }
+          occurrences.push({ from, to: to + 1 });
+        }
+      }
+    }
+    const covered: Array<{ from: number; to: number }> = [];
+    return [...occurrencesByMatch.keys()]
+      .sort((left, right) => right.term.length - left.term.length || left.order - right.order)
+      .filter((match) => {
+        const occurrences = occurrencesByMatch.get(match)!;
+        const hasIndependentOccurrence = occurrences.some((occurrence) => !covered.some(
+          (span) => span.from <= occurrence.from && span.to >= occurrence.to
+        ));
+        if (!hasIndependentOccurrence) return false;
+        covered.push(...occurrences);
+        return true;
+      }).map((match) => match.entry);
+  };
 }
 
 export function sourceHasIndependentTermOccurrence(
@@ -981,7 +1007,8 @@ function complianceScore(total: number, violated: number): number {
 export function validateTranslationCandidate(
   sourceText: string,
   candidateText: string,
-  options: ValidationOptions = {}
+  options: ValidationOptions = {},
+  onProgress?: (completedLines: number, totalLines: number) => void
 ): TranslationValidationResult {
   const locale = validatorLocale(options);
   const comparePlaceholders = options.extractPlaceholders ?? defaultExtractPlaceholders;
@@ -1005,6 +1032,9 @@ export function validateTranslationCandidate(
   const glossaryEntries = (options.glossaryEntries ?? []).filter((entry) =>
     Boolean(entry.source?.trim() && entry.target?.trim())
   );
+  const matchGlossarySources = compileGlossarySourceMatcher(glossaryEntries);
+  const glossaryCatalog = glossaryCatalogTerms(glossaryEntries).map((term) => ({ term, normalized: comparableTerm(term) }));
+  const glossaryTargets = new Map<typeof glossaryEntries[number], string[]>();
   const characterEntries = (options.characterEntries ?? []).filter((entry) =>
     Boolean(entry.name?.trim())
   );
@@ -1074,6 +1104,7 @@ export function validateTranslationCandidate(
   const lineCount = Math.min(sourceLines.length, candidateLines.length);
 
   for (let i = 0; i < lineCount; i += 1) {
+    if (i % 1000 === 0) onProgress?.(i, lineCount);
     const lineNo = i + 1;
     const src = sourceLines[i];
     const cand = candidateLines[i];
@@ -1210,16 +1241,19 @@ export function validateTranslationCandidate(
       (copiedSource ? blocking : warnings).push(finding);
     }
 
-    const glossaryCatalog = glossaryCatalogTerms(glossaryEntries);
-    for (const entry of longestUncoveredGlossaryEntries(src, glossaryEntries)) {
+    const normalizedCandidate = glossaryEntries.length > 0 ? comparableTerm(cand) : "";
+    for (const entry of matchGlossarySources(src)) {
       const sourceTerm = entry.source?.trim() ?? "";
       const targetTerm = entry.target?.trim() ?? "";
-      const targetCandidates = glossaryAcceptableTargets(entry, glossaryCatalog);
+      let targetCandidates = glossaryTargets.get(entry);
+      if (!targetCandidates) {
+        targetCandidates = glossaryAcceptableTargets(entry, glossaryCatalog).map(comparableTerm);
+        glossaryTargets.set(entry, targetCandidates);
+      }
       if (
         sourceTerm
         && targetTerm
-        && textContainsTerm(src, sourceTerm)
-        && !targetCandidates.some((term) => textContainsTerm(cand, term))
+        && !targetCandidates.some((term) => term && normalizedCandidate.includes(term))
       ) {
         warnings.push({
           code: "glossary_missing",
@@ -1315,6 +1349,7 @@ export function validateTranslationCandidate(
     }
   }
 
+  onProgress?.(lineCount, lineCount);
   const ok = blocking.length === 0;
   const styleScore = styleForbiddenTerms.length > 0 ? complianceScore(lineCount, styleViolationLines.size) : undefined;
   const voiceScore = voiceCheckedLines.size > 0 ? complianceScore(voiceCheckedLines.size, voiceViolationLines.size) : undefined;

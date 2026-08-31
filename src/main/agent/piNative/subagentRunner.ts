@@ -584,7 +584,8 @@ function proofreadReportScope(
 function textResult(value: unknown, details: unknown = value) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-    details
+    // Pi retains history after context reset; detach line slices from full-file backing strings.
+    details: structuredClone(details)
   };
 }
 
@@ -748,7 +749,8 @@ function createPiSubagentReadOnlyProjectTools(
         const entry: PiProofreadExactSearchCacheEntry = {
           query: input.query.trim(),
           relativePath,
-          pending: performSearch()
+          // Cache only the matches, without retaining the searched file behind their string slices.
+          pending: performSearch().then((result) => structuredClone(result))
         };
         cache.set(key, entry);
         try {

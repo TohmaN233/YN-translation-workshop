@@ -300,7 +300,9 @@ npm run package:win
 npm run verify:release
 ```
 
-运行时翻译协议和 JSON schema 位于 `translation-protocol/`；产品通过内置系统提示、Host Functions、validator 和 completion gate 执行它们。
+开发入口见 [Host 工作流边界审计](docs/agent-workflow-boundary-audit.md)和[运行时代码地图](docs/agent-runtime-codegraph.md)。审计记录对应其标注日期，当前实现以代码和测试为准。
+
+运行时加载的 child 协议是 [`translation-child.md`](translation-protocol/translation-child.md) 和 [`proofread-child.md`](translation-protocol/proofread-child.md)，JSON schema 同在 `translation-protocol/`。完整工作流由内置系统提示、Host Functions、validator 和 completion gate 执行；旧 `translate.md` 仅保留文档导航，不是运行时入口。
 
 ## 隐私与安全
 

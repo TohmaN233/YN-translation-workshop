@@ -300,7 +300,9 @@ npm run package:win
 npm run verify:release
 ```
 
-Runtime translation protocols and JSON schemas live in `translation-protocol/`. The product executes them through built-in system prompts, Host Functions, validators, and completion gates.
+Start with the [Host workflow boundary audit](docs/agent-workflow-boundary-audit.md) and [runtime code map](docs/agent-runtime-codegraph.md). Audits describe their stated date; current code and tests remain authoritative.
+
+The runtime loads [`translation-child.md`](translation-protocol/translation-child.md) and [`proofread-child.md`](translation-protocol/proofread-child.md); JSON schemas also live in `translation-protocol/`. Full workflows run through built-in system prompts, Host Functions, validators, and completion gates. The legacy `translate.md` is only a documentation pointer, not a runtime entry point.
 
 ## Privacy and security
 

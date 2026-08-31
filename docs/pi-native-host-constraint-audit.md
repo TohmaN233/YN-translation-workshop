@@ -2,6 +2,11 @@
 
 Date: 2026-07-30
 
+> Historical audit: "current behavior" and open redesign items below describe the
+> audit date, not the latest release or an active TODO list. For the later Host
+> contract audit, see [workflow boundaries](agent-workflow-boundary-audit.md).
+> Current code and tests take precedence over either dated snapshot.
+
 The Host must distinguish a safety invariant from a planning preference. A safety invariant may reject a tool call. A planning preference belongs in the Pi system prompt and remains under parent Agent judgment.
 
 ## Child Count Contract

@@ -57,7 +57,6 @@ import {
 } from "./sessionAgentRuntime.ts";
 import { PiSessionRepository } from "./sessionRepository.ts";
 import {
-  assertYnTranslationChunkWritable,
   compactYnTranslationValidation,
   isYnTranslationArtifactAccepted,
   isYnTranslationChunkWritable,
@@ -1139,13 +1138,6 @@ async function readTranslationSubagentGuidance(): Promise<string> {
   );
 }
 
-async function readProofreadSubagentGuidance(): Promise<string> {
-  return readPackagedProtocolReference(
-    path.join("translation-protocol", "proofread-child.md"),
-    "Proofreading child task contract"
-  );
-}
-
 async function readProofreadSubagentGuidanceDocument(): Promise<{ path: string; content: string }> {
   return readPackagedProtocolReferenceDocument(
     path.join("translation-protocol", "proofread-child.md"),
@@ -1356,10 +1348,6 @@ async function translationProjectReferences(request: PiSessionPromptRequest, sou
     ),
     ...(hasDirectMatches ? { directMatches } : {})
   };
-}
-
-async function proofreadReferenceContext(request: PiSessionPromptRequest): Promise<string> {
-  return `## Built-in proofread-translation child workflow\n${await readProofreadSubagentGuidance()}`;
 }
 
 interface ProofreadReferenceDocument {
@@ -2072,14 +2060,6 @@ function assignedRange(
     throw new Error(`${operation} accepts at most ${maxLines} lines per call.`);
   }
   return { fromLine, toLine };
-}
-
-function assignedChunkRange(
-  task: PiSubagentRangeTask,
-  input: AssignedChunkInput,
-  operation: string
-): { fromLine: number; toLine: number } {
-  return assignedRange(task, input, operation, MAX_ASSIGNED_TRANSLATION_CHUNK_LINES);
 }
 
 function assignedRepairRange(
@@ -4535,7 +4515,7 @@ export function createPiTranslationRuntimeSpec(
           resumeRepairPlan.prompt
         ].filter(Boolean).join("\n\n")
         : taskPrompt;
-      let response = await promptSubagentTurn({
+      await promptSubagentTurn({
         runtime,
         session,
         prompt: initialPrompt,
@@ -4577,7 +4557,7 @@ export function createPiTranslationRuntimeSpec(
         let noProgressTurns = 0;
         while (missingPreparation.length > 0) {
           const latestToolError = await latestFailedToolFeedback(session);
-          response = await promptSubagentTurn({
+          await promptSubagentTurn({
             runtime,
             session,
             prompt: [
@@ -4659,7 +4639,7 @@ export function createPiTranslationRuntimeSpec(
             "This child is still write-capable only for the exact Host-required lines; correct the tool arguments without widening the task."
           ] : [])
         ].join("\n");
-        response = await promptSubagentTurn({
+        await promptSubagentTurn({
           runtime,
           session,
           prompt: repairPrompt,
@@ -4695,7 +4675,7 @@ export function createPiTranslationRuntimeSpec(
         let noProgressTurns = 0;
         while (missingPreparation.length > 0) {
           const latestToolError = await latestFailedToolFeedback(session);
-          response = await promptSubagentTurn({
+          await promptSubagentTurn({
             runtime,
             session,
             prompt: [
@@ -4754,7 +4734,7 @@ export function createPiTranslationRuntimeSpec(
       progress.requiredBatchLines = undefined;
       progress.requiredBatchIssues = undefined;
       if (!progress.translationValidated) {
-        response = await promptSubagentTurn({
+        await promptSubagentTurn({
           runtime,
           session,
           prompt: [

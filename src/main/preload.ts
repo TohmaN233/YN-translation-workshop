@@ -68,15 +68,9 @@ const agentSessionApi = {
 };
 
 const uiBridgeApi = {
-  openAgentChat: () => ipcRenderer.invoke("ui:openAgentChat"),
   openAgentChatWindow: (args: { outputDir?: string; locale?: "zh-CN" | "en-US"; languagePair?: string; lineReviewPath?: string; sourcePath?: string; sourceKind?: "file" | "folder"; translationPath?: string; initialPrompt?: string; initialWorkflowIntent?: "translation" | "proofread"; initialLanguagePair?: string }) =>
     ipcRenderer.invoke("ui:openAgentChatWindow", args),
-  agentChatEmbeddedEntryUrl: () => ipcRenderer.invoke("ui:agentChatEmbeddedEntryUrl"),
-  onOpenAgentChat: (callback: () => void) => {
-    const listener = () => callback();
-    ipcRenderer.on("ui:open-agent-chat", listener);
-    return () => ipcRenderer.removeListener("ui:open-agent-chat", listener);
-  }
+  agentChatEmbeddedEntryUrl: () => ipcRenderer.invoke("ui:agentChatEmbeddedEntryUrl")
 };
 
 const interfaceContextApi = {
@@ -85,7 +79,6 @@ const interfaceContextApi = {
 
 contextBridge.exposeInMainWorld("workshop", {
   openFile: (filters?: Electron.FileFilter[]) => ipcRenderer.invoke("dialog:openFile", filters),
-  openFileOrFolder: (filters?: Electron.FileFilter[]) => ipcRenderer.invoke("dialog:openFileOrFolder", filters),
   openFolder: () => ipcRenderer.invoke("dialog:openFolder"),
   openProjectFolder: () => ipcRenderer.invoke("dialog:openProjectFolder"),
   loadProject: (outputDir?: string) => ipcRenderer.invoke("project:load", outputDir),
@@ -166,7 +159,7 @@ contextBridge.exposeInMainWorld("workshopHtml", {
   applyLineReviewState: (args: { lineReviewPath?: string; lineState?: unknown; line?: number; lines?: number[]; activate?: boolean }) => ipcRenderer.invoke("html:applyLineReviewState", args),
   prepareProposalLineReviewBatch: (args: { outputDir?: string; reportPath?: string; lineReviewPath?: string; locale?: "zh-CN" | "en-US"; documents?: Array<{ documentId?: string; sourcePath?: string; translationPath?: string }> }) =>
     ipcRenderer.invoke("html:prepareProposalLineReviewBatch", args),
-  resolveProposalLineReviewDocument: (args: { outputDir?: string; reportPath?: string; lineReviewPath?: string; documentId?: string; sourcePath?: string; translationPath?: string; locale?: "zh-CN" | "en-US" }) =>
+  resolveProposalLineReviewDocument: (args: { outputDir?: string; reportPath?: string; lineReviewPath?: string; documentId?: string; sourcePath?: string; translationPath?: string; locale?: "zh-CN" | "en-US"; includeRows?: boolean }) =>
     ipcRenderer.invoke("html:resolveProposalLineReviewDocument", args),
   applyProposalLineReviewStates: (args: { documents: Array<{ reportPath?: string; documentId?: string; sourcePath?: string; translationPath?: string; lineReviewPath?: string; lineState?: unknown; changedLines?: number[]; changedStateKeys?: string[]; expectedLineRevisions?: Record<string, number> }> }) =>
     ipcRenderer.invoke("html:applyProposalLineReviewStates", args),

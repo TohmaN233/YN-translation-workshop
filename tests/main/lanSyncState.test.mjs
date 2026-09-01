@@ -1,9 +1,13 @@
 import { strict as assert } from "node:assert";
+import { mkdtemp, open, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import {
   assertLanSyncStartOwnership,
   normalizeLanSyncLineDocument,
   normalizeLanSyncProposalDocument,
+  readLinkedLineReviewDocument,
   recordLineStateRevision
 } from "../../src/main/lanSyncState.ts";
 
@@ -92,6 +96,25 @@ await test("records only recent revision history entries", () => {
   assert.equal(state.revisionHistory["7"].length, 12);
   assert.equal(state.revisionHistory["7"][0].revision, 3);
   assert.equal(state.revisionHistory["7"][11].text, "text 14");
+});
+
+await test("reads a valid line-review document larger than the legacy 80 MiB limit", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "yn-large-line-review-"));
+  const filePath = path.join(directory, "line-review.html");
+  const file = await open(filePath, "w");
+  try {
+    await file.write('<script id="reviewData" type="application/json">{"rows":[{"line":1,"source":"source","translation":"target"}]}</script>');
+    await file.truncate(81 * 1024 * 1024);
+  } finally {
+    await file.close();
+  }
+  try {
+    const document = await readLinkedLineReviewDocument(filePath);
+    assert.equal(document?.rows.length, 1);
+    assert.equal(document?.rows[0].translation, "target");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 console.log("");

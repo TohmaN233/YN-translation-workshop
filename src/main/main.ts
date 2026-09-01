@@ -1,5 +1,5 @@
 import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, Menu, session, shell, webContents, type MenuItemConstructorOptions } from "electron";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -11,13 +11,22 @@ import { buildTimestampedBackupPath } from "../shared/core/backups.ts";
 import { parseBilingualPairs } from "../shared/core/bilingualPairs.ts";
 import { matchFolderFiles, type FolderLineFile } from "../shared/core/folderMatch.ts";
 import { parseGlossaryText, type GlossaryEntry } from "../shared/core/glossary.ts";
-import { renderBatchLineReviewIndexHtml, renderLineReviewHtml, renderProposalReviewHtml, type BatchLineReviewIndexFile, type UiLocale } from "../shared/core/html.ts";
+import {
+  BATCH_LINE_REVIEW_PROTOCOL_MARKER,
+  LINE_REVIEW_PROTOCOL_MARKER,
+  PROPOSAL_REVIEW_PROTOCOL_MARKER,
+  renderBatchLineReviewIndexHtml,
+  renderLineReviewHtml,
+  renderProposalReviewHtml,
+  type BatchLineReviewIndexFile,
+  type UiLocale
+} from "../shared/core/html.ts";
 import {
   embeddedProposalLinks,
   rewriteProposalReviewLineReviewPathContent
 } from "../shared/core/legacyHtml.ts";
 import { rankProofreadReportCandidates, type ProofreadReportCandidate } from "../shared/core/reportDiscovery.ts";
-import { parseProofreadReport } from "../shared/core/reviewReport.ts";
+import { parseProofreadReport, type ReviewProposal } from "../shared/core/reviewReport.ts";
 import { buildPrompt, type PromptAdvancedOptions, type PromptBuildOptions } from "../shared/core/prompts.ts";
 import { splitTextLines } from "../shared/validation/translationValidator.ts";
 import { formatFolderTranslationOrder } from "./agent/piNative/folderTranslationPlan.ts";
@@ -51,7 +60,7 @@ import {
   normalizeChangedStateKeys
 } from "./lineReviewStateSync.ts";
 import { writeTextFileAtomically, writeTextFilesAtomically } from "./atomicFile.ts";
-import { resolveTranslationCandidatePath, withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
+import { withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
 import { readEpubText } from "./epubReader.ts";
 import { createTranslatedEpub } from "./epubWriter.ts";
 import { collectSourceTreeFiles } from "./sourceFileTree.ts";
@@ -87,6 +96,7 @@ import {
 } from "./lanSyncRuntime.ts";
 import {
   assertLanSyncStartOwnership,
+  hasLineReviewDataScript,
   lanSyncLineTranslationCount,
   normalizeLanSyncLineDocument,
   normalizeLanSyncOutputDir,
@@ -196,6 +206,7 @@ interface ResolveProposalLineReviewDocumentArgs {
   sourcePath?: string;
   translationPath?: string;
   locale?: UiLocale;
+  includeRows?: boolean;
 }
 
 interface PrepareProposalLineReviewBatchArgs {
@@ -1421,25 +1432,7 @@ async function withHtmlStateWriteLocks<T>(statePaths: string[], task: () => Prom
 }
 
 async function isLineReviewHtml(targetPath: string | undefined): Promise<boolean> {
-  if (!targetPath) {
-    return false;
-  }
-  try {
-    const html = await readFile(targetPath, "utf8");
-    return /<script\s+id=["']reviewData["']\s+type=["']application\/json["']>/i.test(html);
-  } catch {
-    return false;
-  }
-}
-
-async function isBatchLineReviewHtml(targetPath: string | undefined): Promise<boolean> {
-  if (!targetPath) return false;
-  try {
-    await readBatchLineReviewChildren(path.resolve(targetPath));
-    return true;
-  } catch {
-    return false;
-  }
+  return targetPath ? hasLineReviewDataScript(targetPath) : false;
 }
 
 async function findLinkedLineReviewHtml(outputDir: string, explicitPath?: string): Promise<string | undefined> {
@@ -1476,6 +1469,7 @@ async function proposalRoutingFromReport(args: ResolveProposalLineReviewDocument
   documentId: string;
   sourcePath: string;
   translationPath?: string;
+  proposals: ReviewProposal[];
 }> {
   if (!args.reportPath || !path.isAbsolute(args.reportPath)) {
     throw new Error("An absolute proofread report path is required.");
@@ -1587,7 +1581,26 @@ async function proposalRoutingFromReport(args: ResolveProposalLineReviewDocument
   if (requestedTranslation && translationPath && !sameFilePath(requestedTranslation, translationPath)) {
     throw new Error(`Proofread document translation does not match its aggregate report route: ${documentId}`);
   }
-  return { documentId, sourcePath, ...(translationPath ? { translationPath } : {}) };
+  return { documentId, sourcePath, ...(translationPath ? { translationPath } : {}), proposals: matching };
+}
+
+function proposalLineRows(proposals: ReviewProposal[]): LanSyncLineRow[] {
+  const rows = new Map<number, LanSyncLineRow>();
+  for (const proposal of proposals) {
+    const line = Number(proposal.line);
+    if (!Number.isInteger(line) || line <= 0) continue;
+    const row = {
+      line,
+      source: String(proposal.src ?? ""),
+      translation: String(proposal.current ?? "")
+    };
+    const previous = rows.get(line);
+    if (previous && (previous.source !== row.source || previous.translation !== row.translation)) {
+      throw new Error(`Proofread report has divergent source or translation text at line ${line}.`);
+    }
+    rows.set(line, row);
+  }
+  return [...rows.values()].sort((left, right) => left.line - right.line);
 }
 
 async function proposalLineReviewCandidates(outputDir: string, explicitPath?: string): Promise<string[]> {
@@ -1606,31 +1619,54 @@ async function proposalLineReviewCandidates(outputDir: string, explicitPath?: st
   ].filter((value): value is string => Boolean(value && path.isAbsolute(value))))];
 }
 
+function normalizedLineReviewRouting(paths: Record<string, unknown>): {
+  sourcePaths: string[];
+  translationPaths: string[];
+} {
+  const absolute = (names: string[]) => [...new Set(names
+    .map((name) => paths[name])
+    .filter((value): value is string => typeof value === "string" && path.isAbsolute(value))
+    .map((value) => path.resolve(value)))];
+  return {
+    sourcePaths: absolute(["sourcePath", "validationSourcePath", "sourcePromptPath"]),
+    translationPaths: absolute(["translationPath", "editableTranslationPath", "translationPromptPath"])
+  };
+}
+
 async function lineReviewRouting(lineReviewPath: string): Promise<{ sourcePaths: string[]; translationPaths: string[] }> {
   try {
     const html = await readFile(lineReviewPath, "utf8");
     const match = html.match(/<script id=["']reviewData["'] type=["']application\/json["']>([\s\S]*?)<\/script>/i);
     if (!match) return { sourcePaths: [], translationPaths: [] };
     const parsed = JSON.parse(match[1]) as { workflow?: { paths?: Record<string, unknown> } };
-    const paths = parsed.workflow?.paths ?? {};
-    const absolute = (names: string[]) => [...new Set(names
-      .map((name) => paths[name])
-      .filter((value): value is string => typeof value === "string" && path.isAbsolute(value))
-      .map((value) => path.resolve(value)))];
-    return {
-      sourcePaths: absolute(["sourcePath", "validationSourcePath", "sourcePromptPath"]),
-      translationPaths: absolute(["translationPath", "editableTranslationPath", "translationPromptPath"])
-    };
+    return normalizedLineReviewRouting(parsed.workflow?.paths ?? {});
   } catch {
     return { sourcePaths: [], translationPaths: [] };
   }
 }
 
-async function assertLineReviewMatchesProposalRouting(
-  lineReviewPath: string,
+async function openLineReviewRouting(lineReviewPath: string): Promise<{
+  sourcePaths: string[];
+  translationPaths: string[];
+} | undefined> {
+  const tab = [...htmlViewerTabs.values()].find((item) => (
+    sameFilePath(item.filePath, lineReviewPath) && !item.view.webContents.isDestroyed()
+  ));
+  if (!tab) return undefined;
+  if (tab.loadPromise) await tab.loadPromise;
+  const paths = await tab.view.webContents.executeJavaScript(`(() => {
+    if (typeof workflow !== "object" || !workflow || typeof workflow.paths !== "object" || !workflow.paths) return null;
+    return workflow.paths;
+  })()`);
+  return paths && typeof paths === "object" && !Array.isArray(paths)
+    ? normalizedLineReviewRouting(paths as Record<string, unknown>)
+    : undefined;
+}
+
+function assertLineReviewRoutingBinding(
+  binding: { sourcePaths: string[]; translationPaths: string[] },
   routing: { documentId: string; sourcePath: string; translationPath?: string }
-): Promise<void> {
-  const binding = await lineReviewRouting(lineReviewPath);
+): void {
   if (!binding.sourcePaths.some((candidate) => sameFilePath(candidate, routing.sourcePath))) {
     throw new Error(
       `Line-review HTML is not bound to proofread document ${routing.documentId}: expected ${routing.sourcePath}; got ${binding.sourcePaths.join(", ") || "no source binding"}.`
@@ -1639,6 +1675,14 @@ async function assertLineReviewMatchesProposalRouting(
   if (routing.translationPath && !binding.translationPaths.some((candidate) => sameFilePath(candidate, routing.translationPath))) {
     throw new Error(`Line-review HTML translation is not bound to proofread document ${routing.documentId}.`);
   }
+}
+
+async function assertLineReviewMatchesProposalRouting(
+  lineReviewPath: string,
+  routing: { documentId: string; sourcePath: string; translationPath?: string }
+): Promise<void> {
+  const binding = await lineReviewRouting(lineReviewPath);
+  assertLineReviewRoutingBinding(binding, routing);
 }
 
 interface EmbeddedLineReviewWorkflow {
@@ -2136,9 +2180,13 @@ async function generateProposalLineReview(
   return lineReviewPath;
 }
 
-async function readProposalLineReviewDocument(lineReviewPath: string): Promise<LanSyncLineDocument> {
-  const document = await readLinkedLineReviewDocument(lineReviewPath);
+async function readProposalLineReviewDocument(
+  lineReviewPath: string,
+  rows: LanSyncLineRow[] = []
+): Promise<LanSyncLineDocument> {
+  const document = await readLinkedLineReviewDocument(lineReviewPath, undefined, { includeRows: false });
   if (!document) throw new Error(`Line-review document could not be read: ${lineReviewPath}`);
+  document.rows = rows;
   const statePath = await resolveLineReviewSidecarStatePath(lineReviewPath);
   document.state = statePath ? await readJsonObject(statePath) ?? {} : {};
   document.lineReviewPath = lineReviewPath;
@@ -2230,29 +2278,31 @@ async function findLineReviewForProposalHtml(
   return lineReviewCandidateInWorkspace(links.lineReviewPath, undefined);
 }
 
-async function repairProposalReviewHtmlLineReviewPath(targetPath: string, outputDir?: string): Promise<void> {
+async function repairProposalReviewHtmlLineReviewPath(targetPath: string, outputDir?: string): Promise<boolean> {
   const filePath = filePathFromPathLike(targetPath);
   if (!filePath) {
-    return;
+    return false;
   }
   let html = "";
   try {
     html = await readFile(filePath, "utf8");
   } catch {
-    return;
+    return false;
   }
   const links = embeddedProposalLinks(html);
   if (!links) {
-    return;
+    return false;
   }
   const lineReviewPath = await findLineReviewForProposalHtml(filePath, links, outputDir);
   if (!lineReviewPath || sameFilePath(filePathFromPathLike(links.lineReviewPath), lineReviewPath)) {
-    return;
+    return false;
   }
   const rewritten = rewriteProposalReviewLineReviewPathContent(html, path.basename(filePath), lineReviewPath);
   if (rewritten) {
     await writeFile(filePath, rewritten, "utf8");
+    return true;
   }
+  return false;
 }
 
 async function findProofreadReportCandidates(outputDir: string): Promise<ProofreadReportCandidate[]> {
@@ -2364,11 +2414,6 @@ function splitLines(text: string | undefined): string[] {
 
 function blankAlignedTranslationText(sourceText: string): string {
   return splitLines(sourceText).map(() => "").join("\n");
-}
-
-function safeExtractedTextBaseName(filePath: string): string {
-  const baseName = path.basename(filePath).replace(/\.[^.]+$/, "") || "document";
-  return baseName.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 80) || "document";
 }
 
 async function writeExtractedPromptText(
@@ -2907,17 +2952,41 @@ async function closeHtmlViewerTab(key: string): Promise<boolean> {
   return true;
 }
 
-async function loadHtmlViewerTab(targetPath: string): Promise<{ filePath: string; hash: string; key: string; tab: HtmlViewerTab }> {
+async function loadHtmlViewerTab(targetPath: string, outputDir?: string): Promise<{ key: string; tab: HtmlViewerTab }> {
   const resolvedTargetPath = await resolveHtmlOpenTarget(targetPath);
   const { filePath, hash, key } = splitHtmlOpenTarget(resolvedTargetPath);
   if (!(await fileExists(filePath))) {
     throw new Error(`HTML file not found: ${filePath}`);
   }
+  let tab = htmlViewerTabs.get(key);
+  if (tab?.loadPromise) await tab.loadPromise;
+  if (tab && !tab.view.webContents.isDestroyed()) {
+    const currentFilePath = normalizeLinkedHtmlFilePath(tab.view.webContents.getURL().replace(/#.*$/, ""));
+    const currentProtocol = currentFilePath && sameFilePath(currentFilePath, filePath)
+      ? await tab.view.webContents.executeJavaScript(`(() => {
+          const currentMarkers = ${JSON.stringify([
+            BATCH_LINE_REVIEW_PROTOCOL_MARKER,
+            LINE_REVIEW_PROTOCOL_MARKER,
+            PROPOSAL_REVIEW_PROTOCOL_MARKER
+          ])};
+          return [...document.querySelectorAll('meta[content]')]
+            .some((item) => currentMarkers.includes(item.getAttribute('content')));
+        })()`)
+      : false;
+    if (currentProtocol && !outputDir) {
+      if (hash) {
+        await tab.view.webContents.executeJavaScript(
+          `if (location.hash !== "#${hash.replace(/"/g, "")}") location.hash = "#${hash.replace(/"/g, "")}";`
+        );
+      }
+      tab.hash = hash;
+      return { key, tab };
+    }
+  }
   const upgradedOnDisk = await upgradeLegacyReviewHtmlTree(filePath);
-  await repairProposalReviewHtmlLineReviewPath(filePath);
+  const repairedOnDisk = await repairProposalReviewHtmlLineReviewPath(filePath, outputDir);
   const workspaceDir = await extractLineReviewWorkspaceDir(filePath);
   await ensureHtmlViewerWindow();
-  let tab = htmlViewerTabs.get(key);
   if (!tab) {
     const view = new BrowserView({
       webPreferences: {
@@ -2941,7 +3010,7 @@ async function loadHtmlViewerTab(targetPath: string): Promise<{ filePath: string
   }
   const currentUrl = tab.view.webContents.getURL();
   const currentFilePath = normalizeLinkedHtmlFilePath(currentUrl.replace(/#.*$/, ""));
-  const needsLoad = upgradedOnDisk || !currentFilePath || !sameFilePath(currentFilePath, filePath);
+  const needsLoad = upgradedOnDisk || repairedOnDisk || !currentFilePath || !sameFilePath(currentFilePath, filePath);
   if (needsLoad) {
     if (!tab.loadPromise) {
       const pendingLoad = (async () => {
@@ -2960,14 +3029,14 @@ async function loadHtmlViewerTab(targetPath: string): Promise<{ filePath: string
     await tab.view.webContents.executeJavaScript(`if (location.hash !== "#${hash.replace(/"/g, "")}") location.hash = "#${hash.replace(/"/g, "")}";`);
   }
   tab.hash = hash;
-  return { filePath, hash, key, tab };
+  return { key, tab };
 }
 
 async function injectHtmlSidecarState(filePath: string, contents: Electron.WebContents): Promise<void> {
   const html = await readFile(filePath, "utf8").catch(() => "");
-  const kind = html.includes('id="reviewData"') && html.includes("line-review")
+  const kind = /<script\s+id=["']reviewData["']\s+type=["']application\/json["']>/i.test(html)
     ? "line"
-    : html.includes('id="proposalData"')
+    : /<script\s+id=["']proposalData["']\s+type=["']application\/json["']>/i.test(html)
       ? "proposal"
       : "";
   if (!kind) return;
@@ -3014,8 +3083,8 @@ async function injectHtmlSidecarState(filePath: string, contents: Electron.WebCo
   `);
 }
 
-async function openHtmlWindow(targetPath: string): Promise<void> {
-  const { key, tab } = await loadHtmlViewerTab(targetPath);
+async function openHtmlWindow(targetPath: string, outputDir?: string): Promise<void> {
+  const { key, tab } = await loadHtmlViewerTab(targetPath, outputDir);
   if (activateHtmlViewerTab(key)) {
     await rememberHtmlViewerTabProject(tab);
   }
@@ -3132,23 +3201,6 @@ function normalizePromptBuildArgs(args: unknown): PromptBuildOptions {
   };
 }
 
-ipcMain.handle("ui:openAgentChat", async () => {
-  let target = resolveMainAppWindow();
-  if (!target) {
-    await createWindow();
-    target = resolveMainAppWindow();
-  }
-  if (!target) {
-    return { ok: false, message: "Main window is unavailable." };
-  }
-  if (!electronVerificationHeadless) {
-    target.show();
-    target.focus();
-  }
-  target.webContents.send("ui:open-agent-chat");
-  return { ok: true };
-});
-
 ipcMain.handle("ui:openAgentChatWindow", async (_event, args: { lineReviewPath?: string; outputDir?: string; locale?: "zh-CN" | "en-US"; languagePair?: string; sourcePath?: string; sourceKind?: "file" | "folder"; translationPath?: string; initialPrompt?: string; initialWorkflowIntent?: "translation" | "proofread"; initialLanguagePair?: string }) => {
   const result = await openAgentChatWindow({
     args,
@@ -3169,11 +3221,6 @@ ipcMain.handle("ui:agentChatEmbeddedEntryUrl", async () => {
 
 ipcMain.handle("dialog:openFile", async (_event, filters?: Electron.FileFilter[]) => {
   const result = await dialog.showOpenDialog({ properties: ["openFile"], filters });
-  return result.canceled ? undefined : result.filePaths[0];
-});
-
-ipcMain.handle("dialog:openFileOrFolder", async (_event, filters?: Electron.FileFilter[]) => {
-  const result = await dialog.showOpenDialog({ properties: ["openFile", "openDirectory"], filters });
   return result.canceled ? undefined : result.filePaths[0];
 });
 
@@ -3637,9 +3684,9 @@ ipcMain.handle("html:openReviewHtml", async (_event, args: OpenReviewHtmlArgs) =
     throw new Error("Review HTML path is required.");
   }
   if (args.activate === false) {
-    await loadHtmlViewerTab(args.htmlPath);
+    await loadHtmlViewerTab(args.htmlPath, args.outputDir);
   } else {
-    await openHtmlWindow(args.htmlPath);
+    await openHtmlWindow(args.htmlPath, args.outputDir);
   }
   return { ok: true };
 });
@@ -3776,12 +3823,46 @@ ipcMain.handle("html:resolveProposalLineReviewDocument", async (_event, args: Re
   }
   const routing = await proposalRoutingFromReport(args);
   const locale = args.locale === "en-US" ? "en-US" : "zh-CN";
-  const lineReviewPath = await existingProposalLineReview(outputDir, args.lineReviewPath, routing, locale)
+  const metadataOnly = args.includeRows === false;
+  const requestedLineReviewPath = typeof args.lineReviewPath === "string"
+    ? filePathFromPathLike(args.lineReviewPath)
+    : undefined;
+  const openRouting = metadataOnly && requestedLineReviewPath && isSameOrInside(workspaceDir, requestedLineReviewPath)
+    ? await openLineReviewRouting(requestedLineReviewPath)
+    : undefined;
+  let directLineReviewPath: string | undefined;
+  if (requestedLineReviewPath && openRouting) {
+    assertLineReviewRoutingBinding(openRouting, routing);
+    directLineReviewPath = path.resolve(requestedLineReviewPath);
+  } else if (
+    requestedLineReviewPath
+    && isSameOrInside(workspaceDir, requestedLineReviewPath)
+    && await isLineReviewHtml(requestedLineReviewPath)
+  ) {
+    try {
+      await assertLineReviewMatchesProposalRouting(requestedLineReviewPath, routing);
+      directLineReviewPath = path.resolve(requestedLineReviewPath);
+    } catch {
+      // Let the canonical candidate resolver select or synchronize the matching document.
+    }
+  }
+  const lineReviewPath = directLineReviewPath
+    ?? await existingProposalLineReview(outputDir, args.lineReviewPath, routing, locale)
     ?? await generateProposalLineReview(outputDir, routing, locale);
   if (!isSameOrInside(workspaceDir, lineReviewPath)) {
     throw new Error("The resolved line-review document is outside the current project workspace.");
   }
-  const document = await readProposalLineReviewDocument(lineReviewPath);
+  const document = metadataOnly && openRouting && sameFilePath(lineReviewPath, requestedLineReviewPath)
+    ? {
+        title: path.basename(lineReviewPath),
+        rows: [],
+        state: {},
+        lineReviewPath
+      }
+    : await readProposalLineReviewDocument(
+        lineReviewPath,
+        metadataOnly ? [] : proposalLineRows(routing.proposals)
+      );
   return {
     ...document,
     documentId: routing.documentId,

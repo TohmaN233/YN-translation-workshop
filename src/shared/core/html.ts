@@ -1073,7 +1073,7 @@ applyFile(0);
 
 export const LINE_REVIEW_PROTOCOL_VERSION = 36;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
-export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 10;
+export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 12;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
 export const PROMPT_SETTINGS_VERSION = 40;
 
@@ -4601,9 +4601,10 @@ function parseLineReviewRowsFromHtml(html) {
     return [];
   }
 }
-async function resolveProposalLineReviewDocument(item = data.proposals[0]) {
+async function resolveProposalLineReviewDocument(item = data.proposals[0], { includeRows = true } = {}) {
   const documentKey = proposalDocumentKey(item) || "__single__";
-  if (linkedLineReviewDocumentPromises.has(documentKey)) return linkedLineReviewDocumentPromises.get(documentKey);
+  const cacheKey = documentKey + (includeRows ? ":rows" : ":metadata");
+  if (linkedLineReviewDocumentPromises.has(cacheKey)) return linkedLineReviewDocumentPromises.get(cacheKey);
   const promise = (async () => {
     const bridge = htmlBridge();
     if (bridge?.resolveProposalLineReviewDocument) {
@@ -4614,9 +4615,10 @@ async function resolveProposalLineReviewDocument(item = data.proposals[0]) {
         documentId: item?.documentId || "",
         sourcePath: item?.sourcePath || "",
         translationPath: item?.translationPath || "",
-        locale: data.locale === "en-US" ? "en-US" : "zh-CN"
+        locale: data.locale === "en-US" ? "en-US" : "zh-CN",
+        includeRows
       });
-      if (Array.isArray(resolved?.rows) && resolved.rows.length > 0) {
+      if (resolved?.lineReviewPath && (!includeRows || (Array.isArray(resolved?.rows) && resolved.rows.length > 0))) {
         return { ...resolved, state: resolved.state || {} };
       }
     }
@@ -4636,11 +4638,11 @@ async function resolveProposalLineReviewDocument(item = data.proposals[0]) {
       return { rows: [], state: {} };
     }
   })();
-  linkedLineReviewDocumentPromises.set(documentKey, promise);
+  linkedLineReviewDocumentPromises.set(cacheKey, promise);
   try {
     return await promise;
   } catch (error) {
-    linkedLineReviewDocumentPromises.delete(documentKey);
+    linkedLineReviewDocumentPromises.delete(cacheKey);
     throw error;
   }
 }
@@ -5080,18 +5082,9 @@ async function openLinkedLineReview(line, pathValue = data.lineReviewPath) {
   }
 }
 async function jumpToLineReviewLine(item) {
-  const linkedDocument = await readLinkedLineReviewDocument(item);
+  const linkedDocument = await resolveProposalLineReviewDocument(item, { includeRows: false });
   const pathValue = linkedDocument?.lineReviewPath || data.lineReviewPath;
-  const target = readLineReviewState(linkedDocument?.state, pathValue);
-  let persisted = false;
-  if (target) {
-    target.lineState.auditVisible = true;
-    markProposalIssue(target.lineState, item);
-    persisted = await persistLineReviewState(target, item.line);
-  }
-  if (!persisted) {
-    await openLinkedLineReview(item.line, pathValue);
-  }
+  await openLinkedLineReview(item.line, pathValue);
 }
 function removeMechanicalScanIssue(lineState, line, proposalId) {
   const issues = Array.isArray(lineState.auditIssues[line]) ? lineState.auditIssues[line] : [];
@@ -5594,6 +5587,8 @@ requestAnimationFrame(() => scrollTo(0, state.scrollY || 0));
 const initialDocumentGroup = groupProposalsByDocument().find(group => !activeDocumentFilter() || group.key === activeDocumentFilter());
 void (async () => {
   if (!initialDocumentGroup) return false;
+  const hasStoredConflict = initialDocumentGroup.items.some(item => state.decisions[item.id]?.status === "conflict");
+  if (!hasStoredConflict) return false;
   const linkedDocument = await readLinkedLineReviewDocument(initialDocumentGroup.items[0]);
   const target = readLineReviewState(linkedDocument?.state, linkedDocument?.lineReviewPath || data.lineReviewPath);
   return Boolean(target && reconcileStoredProposalConflicts(

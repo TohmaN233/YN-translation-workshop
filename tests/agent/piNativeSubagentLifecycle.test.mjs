@@ -18,8 +18,10 @@ import { YnSubagentSupervisor } from "../../src/main/agent/piNative/subagentSupe
 
 let passed = 0;
 let failed = 0;
+const testFilter = process.env.YN_TEST_FILTER?.trim();
 
 async function test(name, fn) {
+  if (testFilter && !name.includes(testFilter)) return;
   try {
     await fn();
     passed += 1;
@@ -101,10 +103,13 @@ async function fixture(createSubagentModelSelection, publishCustomMessage = asyn
     subagents
   });
   const tool = tools.find((entry) => entry.name === "runTranslationSubagents");
+  const generalTool = tools.find((entry) => entry.name === "runSubagents");
   assert.ok(tool, "missing runTranslationSubagents tool");
+  assert.ok(generalTool, "missing runSubagents tool");
   return {
     outputDir,
     tool,
+    generalTool,
     subagents,
     async close() {
       await rm(outputDir, { recursive: true, force: true });
@@ -207,10 +212,10 @@ await test("parent AbortSignal cancels every concurrently running background chi
   });
   const controller = new AbortController();
   try {
-    const spawnResult = await fx.tool.execute("call_abort_all", {
+    const spawnResult = await fx.generalTool.execute("call_abort_all", {
       tasks: [
-        { fromLine: 1, toLine: 1, providerId: "child-a" },
-        { fromLine: 2, toLine: 2, providerId: "child-b" }
+        { prompt: "Wait until the parent stops this child.", label: "Child A", providerId: "child-a" },
+        { prompt: "Wait until the parent stops this child.", label: "Child B", providerId: "child-b" }
       ]
     }, controller.signal);
     assert.equal(spawnResult.details.status, "running");
@@ -224,7 +229,7 @@ await test("parent AbortSignal cancels every concurrently running background chi
     await fx.subagents.waitForAll();
     assert.equal(observedSignals.size, 2);
     for (const signal of observedSignals.values()) assert.equal(signal?.aborted, true);
-    const batch = fx.subagents.list().find((entry) => entry.kind === "translation");
+    const batch = fx.subagents.list().find((entry) => entry.kind === "general");
     assert.ok(batch);
     assert.ok(batch.subagents.every((child) => child.status === "stopped" || child.status === "failed"));
   } finally {
@@ -250,8 +255,8 @@ await test("one background child failure does not abort an independent healthy s
       await new Promise((resolve) => setTimeout(resolve, 30));
       return fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: "sibling-read" }), { stopReason: "toolUse" });
     },
-    fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", translationEntries(["二"], 2), { id: "sibling-write" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "sibling-validate" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", translationEntries(["新二"], 2), { id: "sibling-write" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", { misalignedLines: [] }, { id: "sibling-validate" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxText("Healthy sibling completed."))
   ]);
   failing.setResponses([
@@ -280,26 +285,50 @@ await test("one background child failure does not abort an independent healthy s
   });
 
   try {
-    const started = await fx.tool.execute("call_sibling_failure", {
+    const candidatePath = path.join(fx.outputDir, "AI_translation", "source_translated.txt");
+    await mkdir(path.dirname(candidatePath), { recursive: true });
+    await writeFile(candidatePath, "一\n二\n", "utf8");
+    const started = await fx.generalTool.execute("call_sibling_failure", {
       tasks: [
-        { fromLine: 1, toLine: 1, providerId: failing.provider.id, label: "Failure" },
-        { fromLine: 2, toLine: 2, providerId: sibling.provider.id, label: "Sibling" }
+        {
+          prompt: "Repair only source.txt line 1.",
+          mode: "translation_repair",
+          documentId: "source.txt",
+          fromLine: 1,
+          toLine: 1,
+          lines: [1],
+          providerId: failing.provider.id,
+          label: "Failure"
+        },
+        {
+          prompt: "Repair only source.txt line 2.",
+          mode: "translation_repair",
+          documentId: "source.txt",
+          fromLine: 2,
+          toLine: 2,
+          lines: [2],
+          providerId: sibling.provider.id,
+          label: "Sibling"
+        }
       ]
     });
     assert.equal(started.details.status, "running");
     await fx.subagents.waitForAll();
-    assert.equal(siblingSignal?.aborted, false, "an unrelated child failure aborted the healthy sibling harness");
-    const batch = fx.subagents.list().find((entry) => entry.kind === "translation");
+    assert.equal(
+      siblingSignal?.aborted,
+      false,
+      `an unrelated child failure aborted the healthy sibling harness: ${JSON.stringify(fx.subagents.list())}`
+    );
+    const batch = fx.subagents.list().find((entry) => entry.kind === "general");
     assert.ok(batch);
     assert.equal(batch.status, "failed");
     assert.deepEqual(
       batch.subagents.map((child) => child.status).sort(),
       ["completed", "failed"],
-      "the failed batch did not preserve the healthy sibling's completed work"
+      `the failed batch did not preserve the healthy sibling's completed work: ${JSON.stringify(batch)}`
     );
     assert.ok(terminalCards.some((message) => message.details?.label === "Sibling" && message.details?.status === "completed"));
-    const candidatePath = path.join(fx.outputDir, "AI_translation", "source_translated.txt");
-    assert.equal(await readFile(candidatePath, "utf8"), "\n二\n");
+    assert.equal(await readFile(candidatePath, "utf8"), "一\n新二\n");
   } finally {
     await fx.close();
   }

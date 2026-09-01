@@ -990,6 +990,8 @@ await test("proposal review upgrades old embed protocol but not the current loca
   });
   assert.equal(needsLegacyLineReviewUpgrade(current), false, "proposal HTML must never enter the line-review migrator");
   assert.equal(needsLegacyProposalReviewUpgrade(current), false);
+  const previousV11 = current.replace("translation-workshop-proposal-review-v12", "translation-workshop-proposal-review-v11");
+  assert.equal(needsLegacyProposalReviewUpgrade(previousV11), true);
   const previousProposalProtocol = current.replace(/<meta name="translation-workshop-proposal-review"[^>]*>\s*/, "");
   assert.equal(needsLegacyProposalReviewUpgrade(previousProposalProtocol), true);
   const oldV6 = current.replaceAll(agentChatFlowVersion, "pi-web-react-embedded-v6");

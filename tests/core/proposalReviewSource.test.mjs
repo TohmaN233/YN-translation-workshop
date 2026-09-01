@@ -60,6 +60,11 @@ await test("folder proposal review filters by document and routes jump/apply thr
   assert.match(main, /ipcMain\.handle\("html:prepareProposalLineReviewBatch"/);
   assert.match(main, /ipcMain\.handle\("html:applyProposalLineReviewStates"/);
   assert.match(main, /writeTextFilesAtomically/);
+  assert.match(main, /await assertLineReviewMatchesProposalRouting\(requestedLineReviewPath, routing\);/);
+  assert.match(main, /const needsLoad = upgradedOnDisk \|\| repairedOnDisk \|\|/);
+  assert.match(main, /const openRouting = metadataOnly[\s\S]*?await openLineReviewRouting\(requestedLineReviewPath\)/);
+  assert.match(main, /const document = metadataOnly && openRouting[\s\S]*?rows: \[\],[\s\S]*?state: \{\},/);
+  assert.doesNotMatch(main, /html\.includes\('id="reviewData"'\)/, "proposal scripts mention reviewData and must not be misclassified as line-review documents");
 });
 
 await test("folder proposal cards expose their document without changing single-file cards", () => {
@@ -331,6 +336,7 @@ await test("proposal review initializes conflict cards in a minimal DOM", async 
   element("proposalData").textContent = dataMatch[1];
   const resolvedDocuments = [];
   const appliedDocuments = [];
+  const openedPaths = [];
   const context = {
     document: {
       title: "proposal runtime test",
@@ -341,8 +347,9 @@ await test("proposal review initializes conflict cards in a minimal DOM", async 
     },
     window: {},
     workshopHtml: {
+      openPath: async (targetPath) => { openedPaths.push(targetPath); },
       resolveProposalLineReviewDocument: async (args) => {
-        resolvedDocuments.push(args.documentId);
+        resolvedDocuments.push({ documentId: args.documentId, includeRows: args.includeRows !== false });
         const chapterB = args.documentId === "chapter-b.txt";
         const chapterC = args.documentId === "chapter-c.txt";
         return {
@@ -386,21 +393,29 @@ await test("proposal review initializes conflict cards in a minimal DOM", async 
 
   vm.runInNewContext(scriptMatch[1], context);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(resolvedDocuments, ["chapter-a.txt"], "opening an aggregate report must resolve only its first visible document");
+  assert.deepEqual(resolvedDocuments, [], "opening a report without stored conflicts must not preload its complete linked document");
+  await vm.runInContext("jumpToLineReviewLine(data.proposals.find((item) => item.documentId === 'chapter-b.txt'))", context);
+  assert.deepEqual(
+    resolvedDocuments,
+    [{ documentId: "chapter-b.txt", includeRows: false }],
+    "jumping to one source line must request metadata without loading every linked row"
+  );
+  assert.deepEqual(openedPaths, ["C:\\work\\chapter-b.txt.html#line=2"]);
   resolvedDocuments.length = 0;
   await vm.runInContext("applyProposalChanges()", context);
   assert.deepEqual(
-    resolvedDocuments.sort(),
+    resolvedDocuments.map((request) => request.documentId).sort(),
     ["chapter-b.txt", "chapter-c.txt"],
     "one-click apply must resolve every unreviewed suggestion while skipping conflicts and mechanical evidence"
   );
+  assert.ok(resolvedDocuments.every((request) => request.includeRows), "proposal application must still request complete rows for safety checks");
   assert.equal(
-    await vm.runInContext(`(async () => (await linkedLineReviewDocumentPromises.get("chapter-b.txt"))?.state?.edits?.[2])()`, context),
+    await vm.runInContext(`(async () => (await linkedLineReviewDocumentPromises.get("chapter-b.txt:rows"))?.state?.edits?.[2])()`, context),
     "另一条新译文",
     "a successful Host commit must replace the canonical cached line state"
   );
   assert.equal(
-    await vm.runInContext(`(async () => (await linkedLineReviewDocumentPromises.get("chapter-c.txt"))?.state?.edits?.[1])()`, context),
+    await vm.runInContext(`(async () => (await linkedLineReviewDocumentPromises.get("chapter-c.txt:rows"))?.state?.edits?.[1])()`, context),
     "自动应用译文",
     "one-click apply must commit an untouched folder document suggestion"
   );

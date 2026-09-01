@@ -4838,11 +4838,6 @@ await test("folder translation dispatch queues every file including single-line 
   };
   try {
     await execute(tool("inspectTranslationContext"), {});
-    await assert.rejects(
-      () => execute(tool("runTranslationSubagents"), { tasks: [{ documentId: "b.txt" }] }),
-      /host-owned|without tasks/i,
-      "an explicit folder task must not smuggle a single-line file into a child runtime"
-    );
     const result = await execute(tool("runTranslationSubagents"));
     assert.ok(started, "folder dispatch did not start a native child batch");
     assert.deepEqual(started.tasks.map((task) => ({
@@ -6217,53 +6212,6 @@ await test("canonical workspace assets cannot bypass their typed Host initialize
   }
 });
 
-await test("subagent delegation rejects overlapping ownership before any child starts", async () => {
-  const fx = await fixture();
-  try {
-    await assert.rejects(() => execute(fx.tool("runTranslationSubagents"), {
-      tasks: [
-        { fromLine: 1, toLine: 2 },
-        { fromLine: 2, toLine: 3 }
-      ]
-    }), /overlap/i);
-  } finally {
-    await fx.close();
-  }
-});
-
-await test("translation delegation accepts any useful 1..N range count while preserving whole-source coverage", async () => {
-  let capturedTasks = [];
-  const subagents = {
-    hasRunning: () => false,
-    startTranslationBatch(args) {
-      capturedTasks = args.tasks;
-      return { id: "batch_up_to_five", status: "running", subagents: [] };
-    }
-  };
-  const domainRun = createYnDomainRunContract({
-    workflowIntent: "translation",
-    subagentEnabled: true,
-    subagentCount: 5
-  });
-  const fx = await fixture({ subagents, domainRun });
-  try {
-    await assert.rejects(() => execute(fx.tool("runTranslationSubagents"), {
-      tasks: [
-        { fromLine: 1, toLine: 1 },
-        { fromLine: 3, toLine: 3 }
-      ]
-    }), /cover every source line/i);
-    await execute(fx.tool("runTranslationSubagents"), {
-      tasks: [{ fromLine: 1, toLine: 3 }]
-    });
-    assert.deepEqual(capturedTasks.map(({ fromLine, toLine }) => ({ fromLine, toLine })), [
-      { fromLine: 1, toLine: 3 }
-    ]);
-  } finally {
-    await fx.close();
-  }
-});
-
 await test("translation review pool uses the user's review Agent ceiling instead of the translation default", async () => {
   let batchArgs;
   const subagents = {
@@ -6287,17 +6235,12 @@ await test("translation review pool uses the user's review Agent ceiling instead
       workflowIntent: "translation",
       subagentEnabled: true,
       subagentCount: 5,
-      reviewSubagentCount: 2
+      reviewSubagentCount: 2,
+      translationSplitSize: 2
     }
   }, "一\n二\n三\n四\n五\n六\n");
   try {
-    const started = await execute(fx.tool("runTranslationSubagents"), {
-      tasks: [
-        { fromLine: 1, toLine: 2 },
-        { fromLine: 3, toLine: 4 },
-        { fromLine: 5, toLine: 6 }
-      ]
-    });
+    const started = await execute(fx.tool("runTranslationSubagents"));
     assert.equal(batchArgs.maxWorkers, 3, "three useful translation workers may run under the five-worker ceiling");
     assert.equal(batchArgs.reviewWorkerCount, 2, "the distinct user review ceiling must be authoritative");
     assert.equal(started.details.reviewWorkerCount, 0,
@@ -6784,20 +6727,6 @@ await test("folder cold resume reopens malformed legacy rejection evidence in th
   }
 });
 
-await test("subagent model overrides cannot mix a task model with the parent provider", async () => {
-  const fx = await fixture();
-  try {
-    await assert.rejects(() => execute(fx.tool("runTranslationSubagents"), {
-      tasks: [
-        { fromLine: 1, toLine: 1, modelId: "task-model" },
-        { fromLine: 2, toLine: 3 }
-      ]
-    }), /task model override requires a providerId/i);
-  } finally {
-    await fx.close();
-  }
-});
-
 await test("full multi-line workflows reserve chunk alignment verdicts for review Pi workers", async () => {
   const domainRun = createYnDomainRunContract({
     workflowIntent: "translation",
@@ -6909,7 +6838,7 @@ await test("inspect-only tool use does not turn a conceptual question into a wor
   }
 });
 
-await test("two requested ranges launch two native Pi child runtimes and close the same two cards", async () => {
+await test("two Host-planned ranges launch two native Pi child runtimes and close the same two cards", async () => {
   const faux = fauxProvider({ tokensPerSecond: 1000, tokenSize: { min: 20, max: 40 } });
   const models = createModels();
   models.setProvider(faux.provider);
@@ -6966,7 +6895,8 @@ await test("two requested ranges launch two native Pi child runtimes and close t
   const fx = await fixture({
     requestPatch: {
       subagentProviderId: "lighter-provider",
-      subagentModelId: "luna-mini"
+      subagentModelId: "luna-mini",
+      translationSplitSize: 2
     },
     publishCustomMessage: async (message) => cards.push(message),
     createSubagentModelSelection: async (request) => {
@@ -6980,12 +6910,7 @@ await test("two requested ranges launch two native Pi child runtimes and close t
     }
   });
   try {
-    const result = await execute(fx.tool("runTranslationSubagents"), {
-      tasks: [
-        { fromLine: 1, toLine: 1, label: "A", providerId: "task-provider", modelId: "task-model" },
-        { fromLine: 2, toLine: 3, label: "B" }
-      ]
-    });
+    const result = await execute(fx.tool("runTranslationSubagents"));
     assert.equal(result.details.status, "running");
     assert.equal(result.details.subagents.length, 2);
     await fx.subagents.waitForAll();
@@ -6993,12 +6918,10 @@ await test("two requested ranges launch two native Pi child runtimes and close t
     const ids = new Set(cards.map((card) => card.details.subagentId));
     assert.equal(ids.size, 4, "two translation workers and two review workers should be persistent");
     const selections = selectionRequests.map(({ providerId, modelId }) => ({ providerId, modelId }));
-    assert.ok(selections.some(({ providerId, modelId }) => providerId === "task-provider" && modelId === "task-model"));
-    assert.ok(selections.some(({ providerId, modelId }) => providerId === "lighter-provider" && modelId === "luna-mini"));
     assert.equal(
       selections.filter(({ providerId, modelId }) => providerId === "lighter-provider" && modelId === "luna-mini").length,
-      3,
-      "the configured child model must also run the two review workers"
+      4,
+      "the configured child model must run both Host-planned translation workers and both review workers"
     );
     const terminalModelSelections = [];
     for (const id of ids) {
@@ -7030,7 +6953,7 @@ await test("two requested ranges launch two native Pi child runtimes and close t
       terminalModelSelections.sort((left, right) => left.providerId.localeCompare(right.providerId)),
       [
         { providerId: "lighter-provider", modelId: "luna-mini" },
-        { providerId: "task-provider", modelId: "task-model" }
+        { providerId: "lighter-provider", modelId: "luna-mini" }
       ]
     );
     assert.equal(await readFile(path.join(fx.outputDir, "AI_translation", "source_translated.txt"), "utf8"), "你好 {name}\n\n再见\n");

@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { access } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import path from "node:path";
 
@@ -230,15 +230,87 @@ export function parseLineReviewRowsFromHtmlContent(html: string): LanSyncLineRow
   }
 }
 
+async function readLineReviewRowsFromHtmlFile(filePath: string): Promise<LanSyncLineRow[]> {
+  const opening = /<script id="reviewData" type="application\/json">/i;
+  const closing = "</script>";
+  const payloadChunks: string[] = [];
+  let beforePayload = "";
+  let payloadTail = "";
+  let foundOpening = false;
+
+  try {
+    for await (const chunk of createReadStream(filePath, { encoding: "utf8" })) {
+      if (!foundOpening) {
+        beforePayload += chunk;
+        const match = opening.exec(beforePayload);
+        if (!match) {
+          beforePayload = beforePayload.slice(-opening.source.length);
+          continue;
+        }
+        foundOpening = true;
+        payloadTail = beforePayload.slice(match.index + match[0].length);
+        beforePayload = "";
+      } else {
+        payloadTail += chunk;
+      }
+
+      const closingIndex = payloadTail.toLowerCase().indexOf(closing);
+      if (closingIndex >= 0) {
+        payloadChunks.push(payloadTail.slice(0, closingIndex));
+        const parsed = JSON.parse(payloadChunks.join("")) as { rows?: unknown };
+        return normalizeLanSyncRows(parsed.rows);
+      }
+      if (payloadTail.length > closing.length) {
+        payloadChunks.push(payloadTail.slice(0, -closing.length));
+        payloadTail = payloadTail.slice(-closing.length);
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return [];
+}
+
+export async function hasLineReviewDataScript(filePath: string): Promise<boolean> {
+  const opening = /<script\s+id=["']reviewData["']\s+type=["']application\/json["']>/i;
+  let tail = "";
+  try {
+    for await (const chunk of createReadStream(filePath, { encoding: "utf8" })) {
+      tail += chunk;
+      if (opening.test(tail)) return true;
+      tail = tail.slice(-opening.source.length);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  return false;
+}
+
 export async function readLinkedLineReviewDocument(
   lineReviewPath: string,
-  basePath?: string
+  basePath?: string,
+  options: { includeRows?: boolean } = {}
 ): Promise<LanSyncLineDocument | undefined> {
   const filePath = normalizeLinkedHtmlFilePath(lineReviewPath, basePath);
-  if (!filePath || !path.isAbsolute(filePath) || !existsSync(filePath)) return undefined;
-  const info = await stat(filePath);
-  if (info.size > 80 * 1024 * 1024) return undefined;
-  const rows = parseLineReviewRowsFromHtmlContent(await readFile(filePath, "utf8"));
+  if (!filePath || !path.isAbsolute(filePath)) return undefined;
+  if (options.includeRows === false) {
+    try {
+      await access(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    return {
+      title: path.basename(filePath),
+      rows: [],
+      state: {},
+      pageSize: 1000,
+      lineReviewPath: filePath
+    };
+  }
+  const rows = await readLineReviewRowsFromHtmlFile(filePath);
   if (rows.length === 0) return undefined;
   return {
     title: path.basename(filePath),

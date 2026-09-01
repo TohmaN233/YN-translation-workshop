@@ -196,7 +196,6 @@ declare global {
       agentSession: WorkshopAgentSessionApi;
       publishAgentInterfaceContext: (args: import("../shared/agent/ynInterfaceContext.ts").YnInterfaceContext) => Promise<import("../shared/agent/ynInterfaceContext.ts").YnInterfaceContextPublishResult>;
       openFile: (filters?: Array<{ name: string; extensions: string[] }>) => Promise<string | undefined>;
-      openFileOrFolder: (filters?: Array<{ name: string; extensions: string[] }>) => Promise<string | undefined>;
       openFolder: () => Promise<string | undefined>;
       openProjectFolder: () => Promise<string | undefined>;
       loadProject: (outputDir?: string) => Promise<unknown>;
@@ -294,9 +293,7 @@ declare global {
       scanTranslations: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedAt: string }>>;
       copyText: (text: string) => Promise<boolean>;
       openPath: (targetPath: string) => Promise<string>;
-      openAgentChat: () => Promise<{ ok: boolean; message?: string }>;
       openAgentChatWindow: (args: { outputDir?: string; locale?: "zh-CN" | "en-US"; languagePair?: string; lineReviewPath?: string; sourcePath?: string; sourceKind?: "file" | "folder"; translationPath?: string; initialPrompt?: string; initialWorkflowIntent?: "translation" | "proofread"; initialLanguagePair?: string }) => Promise<{ ok: boolean; message?: string }>;
-      onOpenAgentChat: (callback: () => void) => () => void;
       agentChatEmbeddedEntryUrl: () => Promise<{ ok: boolean; url?: string; cssUrl?: string; message?: string }>;
     };
     workshopHtml?: WorkshopAgentArtifactApi & WorkshopAgentProviderApi & {
@@ -369,7 +366,7 @@ declare global {
         migrated: number;
         error?: string;
       }>;
-      resolveProposalLineReviewDocument: (args: { outputDir?: string; reportPath?: string; lineReviewPath?: string; documentId?: string; sourcePath?: string; translationPath?: string; locale?: "zh-CN" | "en-US" }) => Promise<{
+      resolveProposalLineReviewDocument: (args: { outputDir?: string; reportPath?: string; lineReviewPath?: string; documentId?: string; sourcePath?: string; translationPath?: string; locale?: "zh-CN" | "en-US"; includeRows?: boolean }) => Promise<{
         documentId: string;
         sourcePath: string;
         translationPath?: string;

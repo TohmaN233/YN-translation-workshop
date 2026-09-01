@@ -1230,7 +1230,7 @@ export class YnSubagentSupervisor {
       }
       queuedTasks.unshift(task);
     };
-    const claimNextTask = async (workerIndex: number): Promise<TTask | undefined> => {
+    const claimNextTask = async (): Promise<TTask | undefined> => {
       await waitForClaimGate();
       while (priorityTasks.length === 0 && activePriorityTasks > 0 && !fatalPriorityFailure) {
         if (abortController.signal.aborted) return undefined;
@@ -1399,7 +1399,7 @@ export class YnSubagentSupervisor {
             if (options.createWorker) {
               task = taskAlreadyClaimed
                 ? firstTask
-                : firstTasksComeFromQueue ? await claimNextTask(workerIndex) : firstTask;
+                : firstTasksComeFromQueue ? await claimNextTask() : firstTask;
               if (task !== undefined) {
                 if (!firstTasksComeFromQueue && !taskAlreadyClaimed) await waitForClaimGate();
                 bindRecordToTask(task);
@@ -1433,7 +1433,7 @@ export class YnSubagentSupervisor {
                 });
               task = taskAlreadyClaimed
                 ? firstTask
-                : firstTasksComeFromQueue ? await claimNextTask(workerIndex) : firstTask;
+                : firstTasksComeFromQueue ? await claimNextTask() : firstTask;
             }
             while (task !== undefined) {
               if (abortController.signal.aborted) break;
@@ -1557,7 +1557,7 @@ export class YnSubagentSupervisor {
               await notifyBlockedGateWhenQuiescent();
               if (!retryCurrentTask) {
                 completeTask(task, stopWorkerAfterFailure && !replacedExpiredAuth);
-                task = stopWorkerAfterFailure ? undefined : await claimNextTask(workerIndex);
+                task = stopWorkerAfterFailure ? undefined : await claimNextTask();
               }
             }
           } catch (error) {
@@ -1590,7 +1590,7 @@ export class YnSubagentSupervisor {
             record.control = undefined;
           }
           if (replaceWorkerAfterFailure && !abortController.signal.aborted) {
-            const replacementTask = await claimNextTask(workerIndex);
+            const replacementTask = await claimNextTask();
             if (replacementTask !== undefined) {
               const replacement = createBatchWorkerRecord(replacementTask, workerIndex, true);
               records.push(replacement);

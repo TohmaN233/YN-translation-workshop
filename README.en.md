@@ -4,34 +4,34 @@ A local workbench that brings human line editing, project assets, full AI transl
 
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
-[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.0.9](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.0.9)
+[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.1.0](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.0)
 
-## 2.0.9
+## What's new from 2.0 to 2.1.0
 
-- Reduce memory usage for large translation and proofreading tasks by preventing chunk history and search caches from retaining entire input strings.
-- Improve proofreading prescan performance, responsiveness, and stability during long-running tasks.
+### 2.1.0: Very large review files
 
-## 2.0.8
+- Removed the fixed 80 MiB rejection gate for line-review HTML. When complete rows are genuinely required, embedded document data is now extracted as a stream.
+- Proposal-to-source jumps now resolve routing and navigate directly. A jump no longer reads, merges, and rewrites the entire sidecar or copies all rows over IPC. On a loaded 537,000-row page, measured time fell from about 3.6–3.9 seconds to about 0.9–2.2 seconds.
+- Existing proposal HTML upgrades automatically from v11 to v12, with no regeneration required. The first load of a very large monolithic HTML file still depends on file parsing and Chromium rendering; this optimization targets jumps after the page is loaded.
 
-- Responsive main-window layout and more readable asset controls.
-- Character assets can select an existing character and append multiple dialogue source-to-rendering rules, with backward-compatible character_bible.md parsing.
-- Help now includes asset-form examples.
+### 2.0.9: Large-file stability
 
-## 2.0.7
+- Fixed chunked translation, proofreading, and exact-search history retaining whole input strings, reducing memory growth during long jobs.
+- Moved full proofreading prescans to a background Worker and reused validated scan results, so large scans no longer occupy the main window with long synchronous work.
 
-- Opening the Agent session sidebar or sending a short prompt no longer jumps the review page to the top.
+### 2.0.6 – 2.0.8: Main UI and remote access
 
-## 2.0.6
+- Made the main window responsive, improved asset-form readability, and added glossary and character examples to Help.
+- Character assets can select an existing character and append multiple dialogue source-to-rendering rules for that character, while remaining compatible with older `character_bible.md` files.
+- The mobile remote page now uses the full workspace with Agent in the tools drawer. Opening Agent or sending a short prompt no longer scrolls the review page back to the top.
 
-- Updated the remote frontend for phones: the review page fills the screen, and Agent lives in the tools drawer.
+### 2.0.1 – 2.0.5: Workflow reliability and Providers
 
-## 2.0.1 – 2.0.5
-
-- Proofread/EPUB uses the page-selected translation file; if HTML later binds `translated` and the page never chose one, the binding follows so Host does not read a temporary snapshot.
-- Added **Grok (OAuth)** with per-model thinking levels and a 3000s stream idle wait. An OAuth 403 refreshes and retries on the parent, and replaces only that worker instead of stopping the workflow.
-- Exhausted translation review now promotes accepted staging immediately. Proofread findings are Host-filled from bound lines; valid items are kept; empty writes are a clean pass and cannot wipe existing findings; glossary-off no longer inspects candidates.
-- Applying proposals keeps 人工修改. Background glossary sync no longer overwrites statuses such as TXT written. `resumeYnWorkflow` must choose translation or proofread.
-- Longer glossary names cover shorter ones; cross-file term inconsistency is a warning; character `requiredTerms` apply only to attributed speech.
+- Proofreading and EPUB jobs consistently follow the translation explicitly selected on the page. When no file was selected manually, completed translation output becomes the authoritative `translated` binding instead of a temporary snapshot.
+- Added **Grok (OAuth)**, model-specific thinking levels, and long-reasoning waits. Expired authorization refreshes and resumes the current work instead of stopping the entire batch.
+- Exhausted translation review hands exact failed lines back to the parent Agent. The Host refreshes proofreading findings from current bound rows, and accepted results cannot be erased by a later empty write or rejected item.
+- Longer glossary names cover shorter names, cross-file terminology differences move to final warning review, and disabling glossary candidates also disables their construction, updates, and validation.
+- Batch apply preserves human edits and TXT-written status. Workflow recovery explicitly distinguishes translation from proofreading to avoid resuming the wrong job.
 
 ## What 2.0 is
 
@@ -44,8 +44,8 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.0.9-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.0.9-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.1.0-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.1.0-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.

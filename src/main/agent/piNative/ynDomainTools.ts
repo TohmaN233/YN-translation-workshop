@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { access, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core/node";
@@ -166,7 +166,6 @@ import {
   readTranslationReuseAuditBatch,
   recordTranslationReuseAuditBatch
 } from "./translationReuseAudit.ts";
-import type { AppliedTranslationReuseAuditEvidence } from "./translationReuseAudit.ts";
 import type { YnInterfaceContextSnapshot } from "../../../shared/agent/ynInterfaceContext.ts";
 
 export interface YnDomainToolContext {
@@ -1288,35 +1287,6 @@ function assertDomainWritePath(outputDir: string, requestedPath: string): string
   return relative;
 }
 
-function validateSubagentTasks(
-  tasks: PiTranslationSubagentTask[],
-  totalLines: number,
-  request: PiSessionPromptRequest,
-  domainRun?: YnDomainRunContract
-): PiTranslationSubagentTask[] {
-  const maximumCount = effectiveSubagentCount(request, totalLines, domainRun);
-  if (maximumCount === 0) {
-    throw new Error("Subagents are disabled for this workflow; the parent Agent must complete it directly.");
-  }
-  if (tasks.length < 1) throw new Error("A translation worker queue requires at least one assignment.");
-  const normalized = tasks.map((task) => ({
-    ...task,
-    ...normalizeRange(task.fromLine, task.toLine, totalLines)
-  })).sort((a, b) => a.fromLine - b.fromLine);
-  for (let index = 1; index < normalized.length; index += 1) {
-    if (normalized[index].fromLine <= normalized[index - 1].toLine) {
-      throw new Error(`Subagent ranges overlap: ${normalized[index - 1].fromLine}-${normalized[index - 1].toLine} and ${normalized[index].fromLine}-${normalized[index].toLine}.`);
-    }
-  }
-  const coversWholeSource = normalized[0].fromLine === 1
-    && normalized.at(-1)?.toLine === totalLines
-    && normalized.every((task, index) => index === 0 || task.fromLine === normalized[index - 1].toLine + 1);
-  if (!coversWholeSource && domainRun?.fullWorkflow !== false) {
-    throw new Error("The accepted subagent ranges must cover every source line exactly once.");
-  }
-  return normalized;
-}
-
 function applySubagentModelDefaults<T extends { providerId?: string; modelId?: string }>(
   tasks: T[],
   request: PiSessionPromptRequest
@@ -1350,28 +1320,6 @@ function applySubagentModelDefaults<T extends { providerId?: string; modelId?: s
   });
 }
 
-type TranslationSubagentTaskInput = Omit<PiTranslationSubagentTask, "fromLine" | "toLine"> & {
-  fromLine?: number;
-  toLine?: number;
-};
-
-function normalizeTranslationTasks(
-  input: TranslationSubagentTaskInput[] | undefined,
-  manifest: PiSourceManifest,
-  totalLines: number,
-  request: PiBoundSourceRequest,
-  domainRun?: YnDomainRunContract
-): PiTranslationSubagentTask[] {
-  if (manifest.kind !== "folder") {
-    if (!input) throw new Error("Translation subagent ranges are required for a single source file.");
-    return validateSubagentTasks(input as PiTranslationSubagentTask[], totalLines, request, domainRun);
-  }
-
-  throw new Error(
-    "Folder translation assignments are host-owned. Call runTranslationSubagents without tasks so file order, split size, and dynamic worker scheduling cannot be bypassed."
-  );
-}
-
 export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
   const baseRequest = context.request;
   const glossaryCandidateCollectionEnabled = baseRequest.glossaryCandidates !== false;
@@ -1396,7 +1344,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     auditId: string;
     documentId: string;
     bound: PiBoundSourceRequest;
-    reviewLines: number[];
     reviewWarningIds: string[];
   } | undefined;
   const hasPendingParentTranslationMutation = (currentDocumentId?: string): boolean => {
@@ -1512,7 +1459,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     status: "auditing" | "awaiting_user_decision" | "applied";
     readyForUserDecision: boolean;
     appliedFullyReused?: boolean;
-    appliedEvidence?: AppliedTranslationReuseAuditEvidence;
   }>();
   let settledTranslationReuseAuditSummary: ReturnType<typeof compactTranslationReuseAuditSummary> | undefined;
   const refreshTranslationReuseAudits = async (documents: PiSourceManifest["documents"]) => {
@@ -1570,8 +1516,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         auditId: audit.auditId,
         status: "applied",
         readyForUserDecision: false,
-        appliedFullyReused: audit.appliedFullyReused,
-        appliedEvidence: audit
+        appliedFullyReused: audit.appliedFullyReused
       });
     }
     const appliedDocuments = new Map(persistedAppliedAudits.map((audit) => [audit.documentId, audit]));
@@ -3570,7 +3515,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     expected?: { inputHash: string; translationPath: string }
   ): Promise<{
     sourceLines: string[];
-    translationLines: string[];
     translationPath: string;
     prescan: ProofreadPrescanSnapshot;
   }> => {
@@ -3635,7 +3579,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     });
     return {
       sourceLines,
-      translationLines,
       translationPath,
       prescan: { inputHash: currentInputHash, translationPath, signals, summary }
     };
@@ -3833,10 +3776,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     sourceText: string,
     candidateText: string,
     candidate: string
-  ): Promise<{
-    scopes: TranslationAlignmentRangeState[];
-    appliedAudit?: AppliedTranslationReuseAuditEvidence;
-  }> => {
+  ): Promise<void> => {
     const currentDocumentId = documentId(bound);
     const sourceLines = splitTextLines(sourceText);
     const candidateLines = splitTextLines(candidateText);
@@ -3909,7 +3849,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           `Translation reuse review coverage for ${currentDocumentId} is missing ${missing.length} rejected line(s): ${missing.slice(0, 32).join(", ")}${missing.length > 32 ? ", ..." : ""}. Retained rows are covered by the applied reuse audit; only rejected rows require worker-review acceptance.`
         );
       }
-      return { scopes: relevantScopes, appliedAudit };
+      return;
     }
     let cursor = 1;
     for (const scope of relevantScopes) {
@@ -3925,7 +3865,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         `Translation chunk review coverage for ${currentDocumentId} stops at line ${cursor - 1}; source has ${sourceLines.length} lines.`
       );
     }
-    return { scopes };
   };
   const translationResumeReport = async (args: {
     resumed: boolean;
@@ -5843,7 +5782,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             auditId,
             documentId: currentDocumentId,
             bound,
-            reviewLines: selectedChecks.map((check) => check.line),
             reviewWarningIds: [...selectedWarningIds]
           };
           const windows = focusedTranslationReviewWindows(
@@ -5976,7 +5914,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const previousAlignmentState = structuredClone(translationAlignmentState);
         try {
           for (const check of selectedChecks) {
-            const notes = failureNotesByLine.get(check.line);
             for (const warningVerdict of check.warningVerdicts ?? []) {
               if (!selectedWarningIds.has(warningVerdict.identity)) continue;
               const failed = input.failures.find((failure) => (
@@ -7087,7 +7024,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const currentPrescan = await requireCurrentProofreadPrescan();
         const {
           sourceLines,
-          translationLines,
           prescan
         } = currentPrescan;
         const deterministicSignals = prescan.signals;
@@ -7812,7 +7748,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           );
         }
         context.domainRun?.assertCanStartSubagentBatch("translation");
-        const input = params as { workerCount?: number; tasks?: TranslationSubagentTaskInput[] };
+        const input = params as { workerCount?: number };
         const resolvedManifest = await ensureManifest();
         const workflowState = context.domainRun?.snapshot();
         const missingStarterAssets = [
@@ -7833,14 +7769,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         await assertWorkspaceCharacterGlossaryConsistency();
         const currentDiscoveryConflicts = await prepareCurrentTranslationDiscoveryConflicts(resolvedManifest);
         const appliedReuseTasks = await planAppliedReuseAssignments(resolvedManifest);
-        const totalLines = splitTextLines(await readFile(sourcePath(request), "utf8")).length;
-        const outstandingTasks = !appliedReuseTasks
-          && !input.tasks?.length
-          ? await planOutstandingTranslationTasks(resolvedManifest)
-          : undefined;
         const ordinaryTasks = appliedReuseTasks
-          ?? outstandingTasks
-          ?? normalizeTranslationTasks(input.tasks, manifest as PiSourceManifest, totalLines, request, context.domainRun);
+          ?? await planOutstandingTranslationTasks(resolvedManifest);
         const persistedTerminologyTasks = await planPersistedTranslationTerminologyTasks(resolvedManifest);
         let tasks = applySubagentModelDefaults(
           mergePersistedTranslationTerminologyTasks(ordinaryTasks, persistedTerminologyTasks),

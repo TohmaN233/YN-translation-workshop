@@ -6,32 +6,13 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 
 [中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.1.0](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.0)
 
-## What's new from 2.0 to 2.1.0
+## What's new from 2.0.5 to 2.1.0
 
-### 2.1.0: Very large review files
-
-- Removed the fixed 80 MiB rejection gate for line-review HTML. When complete rows are genuinely required, embedded document data is now extracted as a stream.
-- Proposal-to-source jumps now resolve routing and navigate directly. A jump no longer reads, merges, and rewrites the entire sidecar or copies all rows over IPC. On a loaded 537,000-row page, measured time fell from about 3.6–3.9 seconds to about 0.9–2.2 seconds.
-- Existing proposal HTML upgrades automatically from v11 to v12, with no regeneration required. The first load of a very large monolithic HTML file still depends on file parsing and Chromium rendering; this optimization targets jumps after the page is loaded.
-
-### 2.0.9: Large-file stability
-
-- Fixed chunked translation, proofreading, and exact-search history retaining whole input strings, reducing memory growth during long jobs.
-- Moved full proofreading prescans to a background Worker and reused validated scan results, so large scans no longer occupy the main window with long synchronous work.
-
-### 2.0.6 – 2.0.8: Main UI and remote access
-
-- Made the main window responsive, improved asset-form readability, and added glossary and character examples to Help.
-- Character assets can select an existing character and append multiple dialogue source-to-rendering rules for that character, while remaining compatible with older `character_bible.md` files.
-- The mobile remote page now uses the full workspace with Agent in the tools drawer. Opening Agent or sending a short prompt no longer scrolls the review page back to the top.
-
-### 2.0.1 – 2.0.5: Workflow reliability and Providers
-
-- Proofreading and EPUB jobs consistently follow the translation explicitly selected on the page. When no file was selected manually, completed translation output becomes the authoritative `translated` binding instead of a temporary snapshot.
-- Added **Grok (OAuth)**, model-specific thinking levels, and long-reasoning waits. Expired authorization refreshes and resumes the current work instead of stopping the entire batch.
-- Exhausted translation review hands exact failed lines back to the parent Agent. The Host refreshes proofreading findings from current bound rows, and accepted results cannot be erased by a later empty write or rejected item.
-- Longer glossary names cover shorter names, cross-file terminology differences move to final warning review, and disabling glossary candidates also disables their construction, updates, and validation.
-- Batch apply preserves human edits and TXT-written status. Workflow recovery explicitly distinguishes translation from proofreading to avoid resuming the wrong job.
+- Very large review pages open now: the 80 MiB hard reject is gone, and jumping from a suggestion to the source dropped from about 4s to 1–2s in testing.
+- Large-file translation and proofreading are steadier: memory no longer climbs without bound, and prescans no longer freeze the main window.
+- The main window is responsive, and a character can have multiple dialogue lines.
+- Opening Agent or sending a short prompt no longer yanks the review page to the top.
+- Mobile remote is a full-screen workspace, with Agent in the tools drawer.
 
 ## What 2.0 is
 

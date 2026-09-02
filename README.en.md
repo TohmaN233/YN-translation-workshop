@@ -14,6 +14,14 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 - Opening Agent or sending a short prompt no longer yanks the review page to the top.
 - Mobile remote is a full-screen workspace, with Agent in the tools drawer.
 
+### 2.0.1 – 2.0.5: Workflow reliability and Providers
+
+- Proofreading and EPUB jobs consistently follow the translation explicitly selected on the page. When no file was selected manually, completed translation output becomes the authoritative `translated` binding instead of a temporary snapshot.
+- Added **Grok (OAuth)**, model-specific thinking levels, and long-reasoning waits. Expired authorization refreshes and resumes the current work instead of stopping the entire batch.
+- Exhausted translation review hands exact failed lines back to the parent Agent. The Host refreshes proofreading findings from current bound rows, and accepted results cannot be erased by a later empty write or rejected item.
+- Longer glossary names cover shorter names, cross-file terminology differences move to final warning review, and disabling glossary candidates also disables their construction, updates, and validation.
+- Batch apply preserves human edits and TXT-written status. Workflow recovery explicitly distinguishes translation from proofreading to avoid resuming the wrong job.
+
 ## What 2.0 is
 
 In 2.0, a workflow is not a prefilled prompt. It is an executable path backed by the Pi Agent runtime, YN Host, constrained Functions, durable state, artifact validators, and completion gates. The product exposes exactly two complete Workflows:

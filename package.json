@@ -1,6 +1,6 @@
 {
   "name": "translation-workshop",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Local translation and proofreading workflow workbench.",
   "type": "module",
   "engines": {
@@ -107,7 +107,8 @@
       "deleteAppDataOnUninstall": false
     },
     "portable": {
-      "artifactName": "${name}-Portable-${version}-${arch}.${ext}"
+      "artifactName": "${name}-Portable-${version}-${arch}.${ext}",
+      "unpackDirName": "translation-workshop-portable"
     },
     "linux": {
       "icon": "assets/app-icon.png",

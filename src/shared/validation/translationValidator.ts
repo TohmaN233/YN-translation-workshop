@@ -175,6 +175,7 @@ const SOURCE_LANGUAGE_ALIASES: Record<string, SourceLanguageKey> = {
   kr: "ko",
   korean: "ko",
   en: "en",
+  eng: "en",
   english: "en",
   zh: "zh",
   cn: "zh",
@@ -232,6 +233,15 @@ export function stripPreservedPayload(
 /** Translatable prose core: drop whitespace, punctuation/symbols, and digits. */
 export function proseCore(text: string): string {
   return text.replace(/[\p{P}\p{S}\p{Z}\p{N}]/gu, "");
+}
+
+const LATIN_PROSE_WORD_RE = /\p{Script=Latin}+(?:['’]\p{Script=Latin}+)*/gu;
+
+/** Comparable prose units: one Latin word or one non-Latin prose character. */
+function proseUnitLength(text: string): number {
+  const latinWords = text.match(LATIN_PROSE_WORD_RE) ?? [];
+  const nonLatinCore = proseCore(text.replace(LATIN_PROSE_WORD_RE, ""));
+  return latinWords.length + nonLatinCore.length;
 }
 
 /** Whether stripped candidate text still contains script typical of the source language. */
@@ -524,9 +534,9 @@ function lengthAnomalyDetail(
   locale: ValidatorLocale
 ): string {
   if (locale === "zh-CN") {
-    return `第 ${lineNo} 行原文与候选的正文长度比例异常（原文 ${sourceLength}，候选 ${candidateLength}）；这只是错行/漏译风险证据，需结合相邻行语义复核。`;
+    return `第 ${lineNo} 行原文与候选的正文规模比例异常（可比单位：原文 ${sourceLength}，候选 ${candidateLength}）；这只是错行/漏译风险证据，需结合相邻行语义复核。`;
   }
-  return `Line ${lineNo} has an unusual source/candidate prose-length ratio (${sourceLength} vs ${candidateLength}); this is review evidence for possible omission or shifted alignment, not a semantic verdict.`;
+  return `Line ${lineNo} has an unusual source/candidate prose-size ratio (${sourceLength} vs ${candidateLength} comparable units); this is review evidence for possible omission or shifted alignment, not a semantic verdict.`;
 }
 
 const GENERIC_TRANSLATION_PLACEHOLDERS = new Set([
@@ -1158,14 +1168,21 @@ export function validateTranslationCandidate(
       });
     }
 
-    const sourceCoreLength = proseCore(stripPreservedPayload(src, extractPlaceholders, extractTags)).length;
-    const candidateCoreLength = proseCore(stripPreservedPayload(cand, extractPlaceholders, extractTags)).length;
-    const lengthRatio = candidateCoreLength / Math.max(1, sourceCoreLength);
+    const sourcePayload = stripPreservedPayload(src, extractPlaceholders, extractTags);
+    const candidatePayload = stripPreservedPayload(cand, extractPlaceholders, extractTags);
+    const sourceCoreLength = proseCore(sourcePayload).length;
+    const candidateCoreLength = proseCore(candidatePayload).length;
+    const sourceProseUnits = proseUnitLength(sourcePayload);
+    const candidateProseUnits = proseUnitLength(candidatePayload);
+    const lengthRatio = candidateProseUnits / Math.max(1, sourceProseUnits);
+    const compressionThreshold = sourceLanguage === "en" && targetLanguage && targetLanguage !== "en"
+      ? 0.3
+      : 0.18;
     if (
       sourceCoreLength >= 12
       && candidateCoreLength > 0
       && (
-        lengthRatio <= 0.18
+        lengthRatio <= compressionThreshold
         || (sourceCoreLength >= 8 && candidateCoreLength >= 12 && lengthRatio >= 2.5)
       )
     ) {
@@ -1173,7 +1190,7 @@ export function validateTranslationCandidate(
         code: "length_anomaly",
         severity: "warning",
         line: lineNo,
-        detail: lengthAnomalyDetail(lineNo, sourceCoreLength, candidateCoreLength, locale)
+        detail: lengthAnomalyDetail(lineNo, sourceProseUnits, candidateProseUnits, locale)
       });
     }
 

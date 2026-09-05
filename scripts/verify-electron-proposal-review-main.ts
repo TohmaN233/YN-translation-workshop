@@ -14,6 +14,7 @@ const htmlDir = path.join(workspaceDir, "html");
 const reportDir = path.join(outputDir, "report");
 const sourcePath = path.join(outputDir, "source.txt");
 const translationPath = path.join(outputDir, "translation.txt");
+const initialTranslationPath = path.join(workspaceDir, "extracted-text", "translation", "source.txt");
 const lineReviewPath = path.join(htmlDir, "line-review-fixture.html");
 const lineReviewStatePath = path.join(workspaceDir, "state", `line-${path.basename(lineReviewPath)}.json`);
 const reportPath = path.join(reportDir, "source.proofread.json");
@@ -84,6 +85,7 @@ async function activeView(viewerWindow: BrowserWindow): Promise<BrowserView> {
 await Promise.all([
   mkdir(htmlDir, { recursive: true }),
   mkdir(reportDir, { recursive: true }),
+  mkdir(path.dirname(initialTranslationPath), { recursive: true }),
   mkdir(path.dirname(folderSourceB), { recursive: true }),
   mkdir(path.dirname(folderSourceC), { recursive: true }),
   mkdir(path.dirname(folderSourceD), { recursive: true }),
@@ -98,6 +100,7 @@ await Promise.all([
 await Promise.all([
   writeFile(sourcePath, "原文一\n原文二\n原文三。下一句。", "utf8"),
   writeFile(translationPath, "旧译一\n旧译二\n旧译三", "utf8"),
+  writeFile(initialTranslationPath, "旧译一\n旧译二\n旧译三", "utf8"),
   writeFile(folderSourceA, "source a one\nsource a two", "utf8"),
   writeFile(folderSourceB, "source b one\nsource b two", "utf8"),
   writeFile(folderSourceC, "source c one\nsource c two", "utf8"),
@@ -115,10 +118,14 @@ await writeFile(lineReviewPath, renderLineReviewHtml({
   workflow: {
     sourcePath,
     validationSourcePath: sourcePath,
-    translationPath,
+    translationPath: initialTranslationPath,
     outputDir
   }
 }), "utf8");
+await writeFile(lineReviewStatePath, JSON.stringify({
+  translationPath,
+  translationPromptPath: translationPath
+}, null, 2), "utf8");
 await writeFile(reportPath, JSON.stringify({
   schemaVersion: "1.0",
   documentId: "source",
@@ -800,9 +807,9 @@ async function run(): Promise<void> {
       return { key, lineReviewPath: document?.lineReviewPath || "" };
     })
   )`) as Array<{ key: string; lineReviewPath: string }>;
-  const resolvedLineAPath = resolvedFolderDocuments.find((item) => item.key === "chapter-a.txt")?.lineReviewPath || "";
-  const resolvedLineBPath = resolvedFolderDocuments.find((item) => item.key === "nested/chapter-b.txt")?.lineReviewPath || "";
-  const resolvedLineCPath = resolvedFolderDocuments.find((item) => item.key === "untouched/chapter-c.txt")?.lineReviewPath || "";
+  const resolvedLineAPath = resolvedFolderDocuments.find((item) => item.key === "chapter-a.txt:rows")?.lineReviewPath || "";
+  const resolvedLineBPath = resolvedFolderDocuments.find((item) => item.key === "nested/chapter-b.txt:rows")?.lineReviewPath || "";
+  const resolvedLineCPath = resolvedFolderDocuments.find((item) => item.key === "untouched/chapter-c.txt:rows")?.lineReviewPath || "";
   assert(resolvedLineAPath && path.resolve(resolvedLineAPath) === path.resolve(folderLineA), `Chapter A did not retain its canonical batch child: ${JSON.stringify(resolvedFolderDocuments)}`);
   assert(resolvedLineBPath && path.resolve(resolvedLineBPath) === path.resolve(folderLineB), `Chapter B did not retain its canonical batch child: ${JSON.stringify(resolvedFolderDocuments)}`);
   assert(resolvedLineCPath && path.resolve(resolvedLineCPath) === path.resolve(folderLineC), `Chapter C did not retain its canonical batch child: ${JSON.stringify(resolvedFolderDocuments)}`);

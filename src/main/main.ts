@@ -41,6 +41,7 @@ import {
   type WorkspaceAssetsStatus
 } from "./agent/workspaceAssets.ts";
 import { writeClipboardTextVerified } from "./clipboardText.ts";
+import { buildLanSyncUrls, detectDefaultRouteIpv4Address } from "./lanSyncNetwork.ts";
 import { mergeAuditWhitelistDocument } from "./auditWhitelist.ts";
 import {
   bindBatchLineReviewTranslations,
@@ -1062,18 +1063,9 @@ boot().catch(error => {
 </html>`;
 }
 
-function lanSyncUrls(token: string): { localUrl: string; lanUrls: string[] } {
-  const pathPart = `/s/${encodeURIComponent(token)}`;
-  const localUrl = `http://127.0.0.1:${lanSyncPort}${pathPart}`;
-  const lanUrls: string[] = [];
-  for (const items of Object.values(os.networkInterfaces())) {
-    for (const item of items ?? []) {
-      if (item.family === "IPv4" && !item.internal) {
-        lanUrls.push(`http://${item.address}:${lanSyncPort}${pathPart}`);
-      }
-    }
-  }
-  return { localUrl, lanUrls: [...new Set(lanUrls)] };
+async function lanSyncUrls(token: string): Promise<{ localUrl: string; lanUrls: string[] }> {
+  const preferredAddress = await detectDefaultRouteIpv4Address();
+  return buildLanSyncUrls(token, lanSyncPort, os.networkInterfaces(), preferredAddress);
 }
 
 async function ensureLanSyncServer(): Promise<void> {
@@ -1634,15 +1626,23 @@ function normalizedLineReviewRouting(paths: Record<string, unknown>): {
 }
 
 async function lineReviewRouting(lineReviewPath: string): Promise<{ sourcePaths: string[]; translationPaths: string[] }> {
-  try {
-    const html = await readFile(lineReviewPath, "utf8");
-    const match = html.match(/<script id=["']reviewData["'] type=["']application\/json["']>([\s\S]*?)<\/script>/i);
-    if (!match) return { sourcePaths: [], translationPaths: [] };
-    const parsed = JSON.parse(match[1]) as { workflow?: { paths?: Record<string, unknown> } };
-    return normalizedLineReviewRouting(parsed.workflow?.paths ?? {});
-  } catch {
-    return { sourcePaths: [], translationPaths: [] };
-  }
+  const html = await readFile(lineReviewPath, "utf8");
+  const match = html.match(/<script id=["']reviewData["'] type=["']application\/json["']>([\s\S]*?)<\/script>/i);
+  if (!match) return { sourcePaths: [], translationPaths: [] };
+  const parsed = JSON.parse(match[1]) as { workflow?: { paths?: Record<string, unknown> } };
+  const routing = normalizedLineReviewRouting(parsed.workflow?.paths ?? {});
+  const statePath = await resolveLineReviewSidecarStatePath(lineReviewPath);
+  const state = statePath ? await readOptionalJsonObjectStrict(statePath) : undefined;
+  const sidecarTranslationPaths = [state?.translationPath, state?.translationPromptPath]
+    .filter((value): value is string => typeof value === "string" && path.isAbsolute(value))
+    .map((value) => path.resolve(value));
+  return {
+    sourcePaths: routing.sourcePaths,
+    translationPaths: [...new Map([...routing.translationPaths, ...sidecarTranslationPaths].map((value) => [
+      process.platform === "win32" ? value.toLowerCase() : value,
+      value
+    ])).values()]
+  };
 }
 
 async function openLineReviewRouting(lineReviewPath: string): Promise<{
@@ -1818,6 +1818,73 @@ async function discoverLegacyProposalLineReviews(
         modifiedMs: Math.max(htmlInfo.mtimeMs, stateInfo?.mtimeMs ?? 0)
       };
     }));
+}
+
+async function migrateLegacySingleProposalLineReviews(
+  outputDir: string,
+  canonicalPath: string,
+  routing: { documentId: string; sourcePath: string; translationPath?: string }
+): Promise<number> {
+  const workspaceDir = normalizeProjectFolder(outputDir).workspaceDir;
+  const legacyDir = path.join(workspaceDir, "html", "proposal-line-review");
+  if (isSameOrInside(legacyDir, canonicalPath)) return 0;
+
+  const matching: LegacyProposalLineReviewArtifact[] = [];
+  for (const artifact of await discoverLegacyProposalLineReviews(outputDir)) {
+    if (sameFilePath(artifact.htmlPath, canonicalPath)) continue;
+    try {
+      await assertLineReviewMatchesProposalRouting(artifact.htmlPath, routing);
+      matching.push(artifact);
+    } catch {
+      // This duplicate belongs to another source/translation pair.
+    }
+  }
+  if (matching.length === 0) return 0;
+
+  const canonicalStatePath = await resolveLineReviewSidecarStatePath(canonicalPath);
+  let canonicalState = await readOptionalJsonObjectStrict(canonicalStatePath) ?? {};
+  matching.sort((left, right) => left.modifiedMs - right.modifiedMs
+    || left.htmlPath.localeCompare(right.htmlPath));
+  for (const artifact of matching) {
+    if (artifact.state) canonicalState = mergeLegacyProposalLineReviewState(canonicalState, artifact.state);
+  }
+  canonicalState = {
+    ...canonicalState,
+    ...(routing.translationPath ? {
+      translationPath: routing.translationPath,
+      translationPromptPath: routing.translationPath
+    } : {})
+  };
+  await ensureTransactionalTextTarget(canonicalStatePath, "{}\n");
+  await writeTextFileAtomically(canonicalStatePath, `${JSON.stringify(canonicalState, null, 2)}\n`);
+  broadcastLineReviewState({
+    ok: true,
+    path: canonicalStatePath,
+    lineReviewPath: canonicalPath,
+    state: canonicalState,
+    changedLines: [],
+    changedStateKeys: ["translationPath", "translationPromptPath"]
+  });
+
+  let removed = 0;
+  for (const artifact of matching) {
+    for (const artifactPath of [artifact.htmlPath, artifact.statePath]) {
+      if (!await existingFile(artifactPath)) continue;
+      await rm(artifactPath);
+      removed += 1;
+    }
+  }
+  try {
+    if ((await readdir(legacyDir)).length === 0) await rm(legacyDir, { recursive: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  console.info("[proposal-migration] Merged duplicate single-file line-review state", {
+    canonicalPath,
+    duplicateCount: matching.length,
+    removedArtifactCount: removed
+  });
+  return removed;
 }
 
 function proposalLineReviewArtifactPath(
@@ -2096,11 +2163,12 @@ async function existingProposalLineReview(
     if (await isLineReviewHtml(candidate)) {
       try {
         await assertLineReviewMatchesProposalRouting(candidate, routing);
-        return candidate;
       } catch {
         // This line-review document belongs to another report item.
+        continue;
       }
-      continue;
+      await migrateLegacySingleProposalLineReviews(outputDir, candidate, routing);
+      return candidate;
     }
     let children: Awaited<ReturnType<typeof readBatchLineReviewChildren>>;
     try {
@@ -4151,7 +4219,7 @@ ipcMain.handle("lan-sync:start", async (event, args: LanSyncStartArgs) => {
   return {
     ok: true,
     token,
-    ...lanSyncUrls(token),
+    ...await lanSyncUrls(token),
     externalTunnelNote: session.locale === "en-US"
       ? "translation-workshop does not bundle public tunneling tools. If you use Cloudflare Tunnel, ngrok, or similar tools, point them to the local sync address."
       : "translation-workshop 不内置公网穿透工具。如果你使用 Cloudflare Tunnel、ngrok 等工具，可将它们指向本地同步地址。"

@@ -67,6 +67,13 @@ await test("folder proposal review filters by document and routes jump/apply thr
   assert.doesNotMatch(main, /html\.includes\('id="reviewData"'\)/, "proposal scripts mention reviewData and must not be misclassified as line-review documents");
 });
 
+await test("proposal LAN controls expose only the selected primary address", async () => {
+  const source = await readFile("src/shared/core/html.ts", "utf8");
+  const occurrences = source.match(/if \(lanUrls\[0\]\) \{/g) ?? [];
+  assert.equal(occurrences.length, 2, "line and proposal review must both show one selected LAN address");
+  assert.doesNotMatch(source, /lanUrls\.forEach\(\(url, index\) =>/);
+});
+
 await test("folder proposal cards expose their document without changing single-file cards", () => {
   const html = renderProposalReviewHtml({
     title: "folder proofread",
@@ -173,6 +180,15 @@ await test("cross-file one-click apply includes unreviewed suggestions and publi
   assert.match(persistSource, /if \(!bridge\?\.applyProposalLineReviewStates\) \{/);
   assert.match(persistSource, /throw new Error\("Atomic proposal apply requires the Electron Host transaction API\."\);/);
   assert.doesNotMatch(persistSource, /persistLineReviewState\(/, "cross-file proposal apply must not fall back to partial per-document writes");
+});
+
+await test("proposal apply only treats the exact normalized suggestion as already applied", async () => {
+  const source = await readFile("src/shared/core/html.ts", "utf8");
+  const safetyStart = source.indexOf("function proposalSafetyCheck(");
+  const safetyEnd = source.indexOf("function reconcileStoredProposalConflicts(", safetyStart);
+  const safetySource = source.slice(safetyStart, safetyEnd);
+  assert.match(safetySource, /comparableText\(intendedText\) === comparableText\(currentText\)/);
+  assert.doesNotMatch(safetySource, /textSimilarity\(intendedText, currentText\)\s*>?=/);
 });
 
 await test("proposal review exposes conflict resolution actions without bypassing source checks", async () => {

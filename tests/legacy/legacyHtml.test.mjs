@@ -982,7 +982,11 @@ await test("proposal review Agent entry opens embedded HTML dock and same-state 
 });
 
 await test("proposal review upgrades old embed protocol but not the current locale-aware embed", async () => {
-  const { renderProposalReviewHtml } = await import("../../src/shared/core/html.ts");
+  const {
+    PROPOSAL_REVIEW_PROTOCOL_MARKER,
+    PROPOSAL_REVIEW_PROTOCOL_VERSION,
+    renderProposalReviewHtml
+  } = await import("../../src/shared/core/html.ts");
   const current = renderProposalReviewHtml({
     title: "proposal protocol round trip",
     proposals: [{ id: "p1", line: 1, src: "a", current: "b", problem: "c", suggestion: "d", status: "pending" }],
@@ -990,8 +994,9 @@ await test("proposal review upgrades old embed protocol but not the current loca
   });
   assert.equal(needsLegacyLineReviewUpgrade(current), false, "proposal HTML must never enter the line-review migrator");
   assert.equal(needsLegacyProposalReviewUpgrade(current), false);
-  const previousV11 = current.replace("translation-workshop-proposal-review-v12", "translation-workshop-proposal-review-v11");
-  assert.equal(needsLegacyProposalReviewUpgrade(previousV11), true);
+  const previousMarker = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION - 1}`;
+  const previousProtocol = current.replace(PROPOSAL_REVIEW_PROTOCOL_MARKER, previousMarker);
+  assert.equal(needsLegacyProposalReviewUpgrade(previousProtocol), true);
   const previousProposalProtocol = current.replace(/<meta name="translation-workshop-proposal-review"[^>]*>\s*/, "");
   assert.equal(needsLegacyProposalReviewUpgrade(previousProposalProtocol), true);
   const oldV6 = current.replaceAll(agentChatFlowVersion, "pi-web-react-embedded-v6");

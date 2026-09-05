@@ -194,7 +194,7 @@ async function run(): Promise<void> {
   );
   await remoteWindow.webContents.reload();
   await waitFor(
-    () => remoteWindow.webContents.executeJavaScript('Boolean(document.querySelector("#agentTab")) && !document.querySelector("#app").hidden').catch(() => false),
+    () => remoteWindow.webContents.executeJavaScript('Boolean(document.querySelector("#openMobileAgent")) && !document.querySelector("#app").hidden').catch(() => false),
     Boolean,
     "the authenticated remote workspace"
   );
@@ -232,12 +232,26 @@ async function run(): Promise<void> {
     (value) => value === "远程同步译文",
     "the canonical LAN-to-desktop line edit"
   );
-  await remoteWindow.webContents.executeJavaScript('document.querySelector("#agentTab").click()');
+  await remoteWindow.webContents.executeJavaScript('document.querySelector("#openMobileAgent").click()');
   reportStage("waiting for remote Agent composer");
   await waitFor(
     () => remoteWindow.webContents.executeJavaScript('Boolean(document.querySelector("#remoteAgentRoot .ynAgent textarea"))').catch(() => false),
     Boolean,
     "the reused Pi-web Agent composer"
+  );
+  const desktopLayout = await remoteWindow.webContents.executeJavaScript(`(() => {
+    const sidebar = document.querySelector("#remoteAgentRoot .ynAgentSidebar")?.getBoundingClientRect();
+    const main = document.querySelector("#remoteAgentRoot .ynAgentMain")?.getBoundingClientRect();
+    return sidebar && main ? {
+      sidebar: { top: sidebar.top, left: sidebar.left, right: sidebar.right },
+      main: { top: main.top, left: main.left, right: main.right }
+    } : null;
+  })()`);
+  assert(
+    desktopLayout
+      && Math.abs(desktopLayout.sidebar.top - desktopLayout.main.top) < 2
+      && desktopLayout.main.left >= desktopLayout.sidebar.right - 2,
+    `Desktop LAN Agent must keep its sidebar and chat side by side: ${JSON.stringify(desktopLayout)}`
   );
   await remoteWindow.webContents.executeJavaScript(`(() => {
     const textarea = document.querySelector("#remoteAgentRoot .ynAgent textarea");

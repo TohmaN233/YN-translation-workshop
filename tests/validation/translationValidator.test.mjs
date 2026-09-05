@@ -11,6 +11,7 @@ import {
   splitTextLines,
   looksLikeCodePayload,
   parseSourceLanguageFromPair,
+  parseTargetLanguageFromPair,
   proseCore,
   stripPreservedPayload,
   candidateContainsSourceLanguage
@@ -205,6 +206,20 @@ await test("an isolated severe length anomaly is review evidence rather than a d
   assert.deepEqual(
     result.warnings.filter((finding) => finding.code === "length_anomaly").map((finding) => finding.line),
     [1]
+  );
+});
+
+await test("normal Chinese-to-English expansion is not a length anomaly", () => {
+  const result = validateTranslationCandidate(
+    "八汐海翔正在调查这起事件",
+    "Kaito Yashio is investigating the case.",
+    { languagePair: "zh-CN->Eng" }
+  );
+  assert.equal(result.ok, true, result.summary);
+  assert.equal(
+    result.warnings.some((finding) => finding.code === "length_anomaly"),
+    false,
+    JSON.stringify(result.warnings)
   );
 });
 
@@ -439,6 +454,7 @@ await test("parseSourceLanguageFromPair accepts common aliases", () => {
   assert.equal(parseSourceLanguageFromPair("ja->zh-CN"), "ja");
   assert.equal(parseSourceLanguageFromPair("English => Chinese"), "en");
   assert.equal(parseSourceLanguageFromPair("ko->en"), "ko");
+  assert.equal(parseTargetLanguageFromPair("zh-CN->Eng"), "en");
 });
 
 await test("splitTextLines normalizes CRLF and drops trailing newline", () => {

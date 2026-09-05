@@ -66,6 +66,9 @@ const startLanSync = functionSource("startLanSync", "reportLineReviewPersistFail
 assert.match(startLanSync, /if \(lanSyncToken \|\| lanSyncStarting \|\| lanSyncStopping\) return;/);
 assert.match(startLanSync, /lanSyncStarting = true;/);
 assert.match(startLanSync, /lanSyncStarting = false;/);
+const renderLanSyncLinks = functionSource("renderLanSyncLinks", "startLanSync");
+assert.match(renderLanSyncLinks, /if \(lanUrls\[0\]\)/);
+assert.doesNotMatch(renderLanSyncLinks, /lanUrls\.forEach/);
 
 const lineStopStart = html.indexOf('stopLanSyncButton?.addEventListener("click"');
 const lineStopEnd = html.indexOf("async function syncLines", lineStopStart);
@@ -79,7 +82,7 @@ assert.ok(
 );
 
 const remotePostPatchStart = mainSource.indexOf("async function postPatch(patch)");
-const remotePostPatchEnd = mainSource.indexOf("async function postCommand(command)", remotePostPatchStart);
+const remotePostPatchEnd = mainSource.indexOf("let timers = new Map()", remotePostPatchStart);
 assert.ok(remotePostPatchStart >= 0 && remotePostPatchEnd > remotePostPatchStart);
 const remotePostPatch = mainSource.slice(remotePostPatchStart, remotePostPatchEnd);
 assert.match(remotePostPatch, /const response = await fetch/);

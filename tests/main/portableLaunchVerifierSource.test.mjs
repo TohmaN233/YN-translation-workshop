@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile("scripts/verify-packaged-launch.mjs", "utf8");
 const mainSource = await readFile("src/main/main.ts", "utf8");
+const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 
 assert.doesNotMatch(
   source,
@@ -41,6 +42,11 @@ assert.match(
 );
 assert.match(source, /win-unpacked/, "automatic launch acceptance must use the packaged app, not the NSIS portable envelope");
 assert.doesNotMatch(source, /-Portable-/, "automatic acceptance must never execute the NSIS portable envelope");
+assert.equal(
+  packageJson.build?.portable?.unpackDirName,
+  "translation-workshop-portable",
+  "portable releases need a stable inner executable path so Windows Firewall permissions survive upgrades"
+);
 assert.match(
   mainSource,
   /YN_PORTABLE_SMOKE_MARKER/,

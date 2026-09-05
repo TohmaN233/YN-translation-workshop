@@ -1071,9 +1071,9 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 36;
+export const LINE_REVIEW_PROTOCOL_VERSION = 38;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
-export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 12;
+export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 14;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
 export const PROMPT_SETTINGS_VERSION = 40;
 
@@ -4716,7 +4716,7 @@ function proposalSafetyCheck(item, lineState, rows, options = {}) {
   if (sourceScore < 0.8) return { ok: false, reason: "source-mismatch" };
   const currentText = currentLineReviewText(row, lineState, line);
   const intendedText = String(options.intendedText ?? proposalSuggestionText(item) ?? "").trim();
-  if (intendedText && textSimilarity(intendedText, currentText) >= 0.98) {
+  if (intendedText && comparableText(intendedText) === comparableText(currentText)) {
     return { ok: true, reason: "", alreadyApplied: true };
   }
   const lastRevision = lineReviewRevisionHistory(lineState, line).at(-1);

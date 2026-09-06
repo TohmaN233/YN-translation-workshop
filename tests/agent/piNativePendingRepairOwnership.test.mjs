@@ -12,6 +12,7 @@ import {
 
 import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
 import { YnSubagentSupervisor } from "../../src/main/agent/piNative/subagentSupervisor.ts";
+import { MAX_TRANSLATION_MODEL_PAGE_LINES } from "../../src/main/agent/piNative/subagentRunner.ts";
 
 function outputBlocks(lines, translate) {
   const blocks = [];
@@ -27,8 +28,8 @@ function outputBlocks(lines, translate) {
 
 const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-pending-repair-"));
 const sourcePath = path.join(outputDir, "source.txt");
-const sourceLines = Array.from({ length: 300 }, (_, index) => (
-  index < 272 ? `これは翻訳が必要な日本語の原文です ${index + 1}` : "？？？"
+const sourceLines = Array.from({ length: MAX_TRANSLATION_MODEL_PAGE_LINES + 100 }, (_, index) => (
+  index < MAX_TRANSLATION_MODEL_PAGE_LINES + 72 ? `これは翻訳が必要な日本語の原文です ${index + 1}` : "？？？"
 ));
 await writeFile(sourcePath, sourceLines.join("\n"), "utf8");
 await new PiSessionRepository(outputDir).create("parent-pending-repair");
@@ -49,19 +50,21 @@ provider.setResponses([
     )
   }, { id: "initial-partial-write" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
-    entries: Array.from({ length: 240 }, (_, index) => ({
+    entries: Array.from({ length: MAX_TRANSLATION_MODEL_PAGE_LINES - 16 }, (_, index) => ({
       line: index + 17,
       translation: `第${index + 17}行的完整中文翻译内容。`
     }))
   }, { id: "bounded-block-repair" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("readAssignedSource", {
-    fromLine: 257,
-    toLine: 300
+    fromLine: MAX_TRANSLATION_MODEL_PAGE_LINES + 1,
+    toLine: sourceLines.length
   }, { id: "remaining-source" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
     blocks: outputBlocks(
-      Array.from({ length: 44 }, (_, index) => index + 257),
-      (line) => line <= 272 ? `第${line}行的完整中文翻译内容。` : `待确认 ${line}`
+      Array.from({ length: 100 }, (_, index) => index + MAX_TRANSLATION_MODEL_PAGE_LINES + 1),
+      (line) => line <= MAX_TRANSLATION_MODEL_PAGE_LINES + 72
+        ? `第${line}行的完整中文翻译内容。`
+        : `待确认 ${line}`
     )
   }, { id: "remaining-page-write" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, {

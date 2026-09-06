@@ -96,9 +96,9 @@ try {
   const readLargeAssignment = largeTools.find((tool) => tool.name === "readAssignedSource");
   const firstPage = await readLargeAssignment.execute("read-first-model-page", {});
   assert.equal(firstPage.details.fromLine, 1);
-  assert.equal(firstPage.details.toLine, 256);
+  assert.equal(firstPage.details.toLine, 500);
   assert.equal(firstPage.details.hasMore, true);
-  assert.equal(firstPage.details.nextFromLine, 257,
+  assert.equal(firstPage.details.nextFromLine, 501,
     "model-visible source paging must not change the 600-line logical assignment ownership");
 } finally {
   await rm(outputDir, { recursive: true, force: true });

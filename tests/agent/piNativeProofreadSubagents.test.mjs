@@ -1420,7 +1420,7 @@ await test("proofread children report missing proper nouns as structured parent-
       assert.match(schema, new RegExp(category));
     }
     await readContext.execute("read_context", {});
-    await assert.rejects(() => writeFindings.execute("reject_target_without_evidence", {
+    const missingEvidence = await writeFindings.execute("reject_target_without_evidence", {
       findings: [],
       glossaryCandidates: [{
         source: "こんにちは",
@@ -1429,8 +1429,11 @@ await test("proofread children report missing proper nouns as structured parent-
         evidenceLine: 1,
         rationale: "The target must occur in the current translated evidence row."
       }]
-    }), /target.*translated evidence/i);
-    await assert.rejects(() => writeFindings.execute("reject_bad_category", {
+    });
+    assert.equal(progress.findingsWritten, false);
+    assert.equal(missingEvidence.details.rejectedGlossaryCandidates.length, 1);
+    assert.match(missingEvidence.details.rejectedGlossaryCandidates[0].reason, /target.*translated evidence/i);
+    const badCategory = await writeFindings.execute("reject_bad_category", {
       findings: [],
       glossaryCandidates: [{
         source: "こんにちは",
@@ -1439,7 +1442,9 @@ await test("proofread children report missing proper nouns as structured parent-
         evidenceLine: 1,
         rationale: "Unsupported free-form category must not be silently discarded."
       }]
-    }), /unsupported category/i);
+    });
+    assert.equal(badCategory.details.rejectedGlossaryCandidates.length, 1);
+    assert.match(badCategory.details.rejectedGlossaryCandidates[0].reason, /unsupported category/i);
     assert.equal(progress.findingsWritten, false);
     await writeFindings.execute("write_discovery", {
       findings: [],

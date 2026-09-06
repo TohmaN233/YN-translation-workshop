@@ -4956,7 +4956,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       }, { additionalProperties: false }),
       executionMode: "sequential",
       async execute(_toolCallId, params) {
-        if (context.isWorkflowSuspended?.() === true) {
+        if (
+          context.isWorkflowSuspended?.() === true
+          || context.parkedWorkflows?.().includes("translation") === true
+        ) {
           if (!context.resumeWorkflow) {
             throw new Error("The pending translation reuse decision cannot restore its suspended Host workflow.");
           }
@@ -8190,7 +8193,13 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     return {
       ...guarded,
       async execute(...args) {
-        if (restoreWorkflowBeforeSourceManifest && context.isWorkflowSuspended?.() === true) {
+        if (
+          restoreWorkflowBeforeSourceManifest
+          && (
+            context.isWorkflowSuspended?.() === true
+            || context.parkedWorkflows?.().includes("translation") === true
+          )
+        ) {
           if (!context.resumeWorkflow) {
             throw new Error("The pending translation reuse decision cannot restore its suspended Host workflow.");
           }

@@ -13,6 +13,7 @@ import {
 
 import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
 import { YnSubagentSupervisor } from "../../src/main/agent/piNative/subagentSupervisor.ts";
+import { MAX_TRANSLATION_MODEL_PAGE_LINES } from "../../src/main/agent/piNative/subagentRunner.ts";
 
 function translatedLine(line) {
   const high = String.fromCharCode(0x4e00 + Math.floor(line / 64));
@@ -54,9 +55,9 @@ const provider = fauxProvider({ provider: "final-repair-child", tokensPerSecond:
 models.setProvider(provider.provider);
 const repeatedBoundaryTranslation = "边界之夜已然降临";
 provider.setResponses([
-  ...Array.from({ length: 4 }, (_, page) => {
-    const fromLine = page * 256 + 1;
-    const toLine = fromLine + 255;
+  ...Array.from({ length: Math.ceil(1024 / MAX_TRANSLATION_MODEL_PAGE_LINES) }, (_, page) => {
+    const fromLine = page * MAX_TRANSLATION_MODEL_PAGE_LINES + 1;
+    const toLine = Math.min(1024, fromLine + MAX_TRANSLATION_MODEL_PAGE_LINES - 1);
     return [
       fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: `chunk-1-page-${page + 1}-read` }), { stopReason: "toolUse" }),
       fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {

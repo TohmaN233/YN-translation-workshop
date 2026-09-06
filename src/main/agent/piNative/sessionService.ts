@@ -802,6 +802,16 @@ export class PiNativeSessionService {
       : undefined;
     const markerIntent = /^(?:\uFEFF)?Workflow: yn-(translation|proofread)-v1\.(?:\r?\n|$)/u
       .exec(runtimeRequest.prompt)?.[1] as "translation" | "proofread" | undefined;
+    if (
+      markerIntent
+      && runtimeRequest.workflowIntent
+      && markerIntent !== runtimeRequest.workflowIntent
+    ) {
+      throw new Error(
+        `Workflow marker ${markerIntent} conflicts with typed workflow intent ${runtimeRequest.workflowIntent}.`
+      );
+    }
+    const workflowIntent = runtimeRequest.workflowIntent ?? markerIntent;
     // A verified generated marker starts a full workflow. Typed intent without
     // the marker may only continue the same incomplete Host contract; it can
     // never turn a fresh ordinary prompt into a complete workflow.
@@ -818,18 +828,18 @@ export class PiNativeSessionService {
     const explicitFullWorkflow = markerIntent !== undefined || continuingTypedWorkflow;
     const workflowRequirements = {
       glossaryCandidate: explicitFullWorkflow
-        && runtimeRequest.workflowIntent === "translation"
+        && workflowIntent === "translation"
         && runtimeRequest.glossaryCandidates === true
         && !runtimeRequest.glossaryPath?.trim(),
       characterBible: explicitFullWorkflow
-        && runtimeRequest.workflowIntent === "translation"
+        && workflowIntent === "translation"
         && runtimeRequest.characterBible === true
     };
     // A new explicit user delegation owns a new local task contract. A repeated
     // generated workflow for the same kind and Pi session resumes its incomplete
     // Host contract; selecting New creates the clean task boundary.
     const restoreDomainRun = (snapshot: YnDomainRunSnapshot): YnDomainRunContract => createYnDomainRunContract({
-      workflowIntent: snapshot.activeKind ?? runtimeRequest.workflowIntent,
+      workflowIntent: snapshot.activeKind ?? workflowIntent,
       workflowRequirements,
       subagentEnabled: runtimeRequest.subagentEnabled,
       subagentCount: runtimeRequest.subagentCount,
@@ -855,7 +865,7 @@ export class PiNativeSessionService {
       ...(previous?.hostState.parkedDomainRuns ?? {})
     };
     const requestedKind = explicitFullWorkflow
-      ? runtimeRequest.workflowIntent
+      ? workflowIntent
       : continuingBackgroundOperation && currentDomainRun?.fullWorkflow
         ? currentDomainRun.kind
         : undefined;
@@ -893,7 +903,7 @@ export class PiNativeSessionService {
         : undefined;
     let domainRun = purpose === "prompt" && this.options.enforceDomainCompletion
       ? continuedDomainRun ?? createYnDomainRunContract({
-        workflowIntent: runtimeRequest.workflowIntent,
+        workflowIntent,
         workflowRequirements,
         subagentEnabled: runtimeRequest.subagentEnabled,
         subagentCount: runtimeRequest.subagentCount,
@@ -1148,7 +1158,7 @@ export class PiNativeSessionService {
       // A new typed workflow prompt is explicit continuation authorization.
       // Reuse the transactional Host resume path before the model can falsely
       // report a stopped batch as active. Recovery pauses remain tool-gated.
-      const autoKind = runtimeRequest.workflowIntent;
+      const autoKind = workflowIntent;
       await toolContext.resumeWorkflow?.(
         autoKind === "translation" || autoKind === "proofread" ? autoKind : undefined
       );

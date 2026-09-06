@@ -3,7 +3,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createPiTranslationSubagentTools } from "../../src/main/agent/piNative/subagentRunner.ts";
+import {
+  createPiTranslationSubagentTools,
+  MAX_TRANSLATION_MODEL_PAGE_LINES
+} from "../../src/main/agent/piNative/subagentRunner.ts";
 
 const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-line-entries-"));
 const sourcePath = path.join(outputDir, "source.txt");
@@ -326,7 +329,7 @@ try {
 
 const blockRepairOutputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-block-repair-"));
 const blockRepairSourcePath = path.join(blockRepairOutputDir, "source.txt");
-const blockRepairSources = Array.from({ length: 300 }, (_, index) => `Source ${index + 1}`);
+const blockRepairSources = Array.from({ length: MAX_TRANSLATION_MODEL_PAGE_LINES + 100 }, (_, index) => `Source ${index + 1}`);
 await writeFile(blockRepairSourcePath, blockRepairSources.join("\n"), "utf8");
 try {
   const progress = {
@@ -344,7 +347,7 @@ try {
       modelId: "test",
       languagePair: "en->zh-CN"
     },
-    task: { fromLine: 1, toLine: 300 },
+    task: { fromLine: 1, toLine: blockRepairSources.length },
     publishCustomMessage: async () => {}
   }, progress);
   const read = tools.find((tool) => tool.name === "readAssignedSource");
@@ -364,8 +367,8 @@ try {
   });
   assert.equal(partial.details.accepted, false);
   assert.equal(partial.details.repairMode, "entries");
-  assert.equal(partial.details.requiredLineCount, 248);
-  assert.equal(partial.details.requiredBatchLines.length, 248);
+  assert.equal(partial.details.requiredLineCount, MAX_TRANSLATION_MODEL_PAGE_LINES - 8);
+  assert.equal(partial.details.requiredBatchLines.length, MAX_TRANSLATION_MODEL_PAGE_LINES - 8);
   assert.equal(partial.details.remainingRequiredLineCount, 0);
   assert.equal(Object.hasOwn(partial.details, "requiredLineContext"), false);
   assert.equal(Object.hasOwn(partial.details, "requiredBlocks"), false,
@@ -388,12 +391,12 @@ try {
   assert.equal(firstRepair.details.requiredBatchLines.length, 0);
 
   const remainingSource = await read.execute("block-repair-read-page-2", {});
-  assert.equal(remainingSource.details.fromLine, 257);
-  assert.equal(remainingSource.details.toLine, 300);
+  assert.equal(remainingSource.details.fromLine, MAX_TRANSLATION_MODEL_PAGE_LINES + 1);
+  assert.equal(remainingSource.details.toLine, blockRepairSources.length);
   const repaired = await write.execute("block-repair-complete-page-2", {
-    blocks: Array.from({ length: 3 }, (_, blockIndex) => {
-      const firstLine = 257 + blockIndex * 16;
-      const count = Math.min(16, 301 - firstLine);
+    blocks: Array.from({ length: Math.ceil(100 / 16) }, (_, blockIndex) => {
+      const firstLine = MAX_TRANSLATION_MODEL_PAGE_LINES + 1 + blockIndex * 16;
+      const count = Math.min(16, blockRepairSources.length + 1 - firstLine);
       return {
         id: blockIndex.toString(36),
         lines: Array.from({ length: count }, (_, relativeIndex) => (
@@ -409,7 +412,7 @@ try {
     (await readFile(path.join(blockRepairOutputDir, "AI_translation", "source_translated.txt"), "utf8"))
       .trimEnd()
       .split("\n"),
-    Array.from({ length: 300 }, (_, index) => `译文 ${index + 1}`),
+    Array.from({ length: blockRepairSources.length }, (_, index) => `译文 ${index + 1}`),
     "bounded repair entries must merge only failed lines without losing accepted translations"
   );
 } finally {

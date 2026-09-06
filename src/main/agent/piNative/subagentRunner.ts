@@ -1870,7 +1870,7 @@ export const MAX_TRANSLATION_MODEL_PAGE_LINES = 500;
 const MAX_SPARSE_TRANSLATION_ENTRY_LINES = 16;
 const MAX_HOST_CONTRACT_NO_PROGRESS_TURNS = 3;
 const TRANSLATION_WIRE_BLOCK_LINES = 16;
-const MAX_STRUCTURED_TRANSLATION_REPAIR_LINES = TRANSLATION_WIRE_BLOCK_LINES * 16;
+const MAX_STRUCTURED_TRANSLATION_REPAIR_LINES = MAX_TRANSLATION_MODEL_PAGE_LINES;
 const MAX_TRANSLATION_REPAIR_ISSUE_SAMPLES = 32;
 
 interface TranslationWireLine {
@@ -3421,7 +3421,7 @@ export function createPiProofreadSubagentTools(
           progress.acceptedFindings = findings;
           progress.findingsCount = findings.length;
           progress.reportPath = result.path;
-          if (rejected.length === 0) {
+          if (rejected.length === 0 && discoveryReport.rejectedDiscoveries.length === 0) {
             progress.findingsWritten = true;
             return {
               ...textResult({
@@ -3436,7 +3436,7 @@ export function createPiProofreadSubagentTools(
                   nextAction: "Valid findings were kept. Do not resubmit an empty findings list. Rewrite only rejected glossary candidates if they still matter."
                 } : {})
               }),
-              terminate: discoveryReport.rejectedDiscoveries.length === 0
+              terminate: true
             };
           }
           return textResult({

@@ -12,7 +12,10 @@ import {
 
 import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
 import { YnSubagentSupervisor } from "../../src/main/agent/piNative/subagentSupervisor.ts";
-import { MAX_ASSIGNED_TRANSLATION_CHUNK_LINES } from "../../src/main/agent/piNative/subagentRunner.ts";
+import {
+  MAX_ASSIGNED_TRANSLATION_CHUNK_LINES,
+  MAX_TRANSLATION_MODEL_PAGE_LINES
+} from "../../src/main/agent/piNative/subagentRunner.ts";
 
 function translationBlocks(lines) {
   const blocks = [];
@@ -50,9 +53,9 @@ const provider = fauxProvider({
 });
 models.setProvider(provider.provider);
 provider.setResponses([
-  ...Array.from({ length: 4 }, (_, page) => {
-    const from = page * 256;
-    const to = Math.min(firstChunk.length, from + 256);
+  ...Array.from({ length: Math.ceil(firstChunk.length / MAX_TRANSLATION_MODEL_PAGE_LINES) }, (_, page) => {
+    const from = page * MAX_TRANSLATION_MODEL_PAGE_LINES;
+    const to = Math.min(firstChunk.length, from + MAX_TRANSLATION_MODEL_PAGE_LINES);
     return [
       fauxAssistantMessage(fauxToolCall("readAssignedSource", {}, { id: `chunk-1-page-${page + 1}-source` }), { stopReason: "toolUse" }),
       fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {

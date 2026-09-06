@@ -3584,7 +3584,7 @@ await test("whole-artifact validation cannot fake-pass shifted or merged same-co
     );
 
     const audit = await execute(fx.tool("inspectTranslationAlignment"));
-    assert.equal(audit.details.pendingLines.length, 2);
+    assert.deepEqual(audit.details.pendingLines, [1, 2, 3]);
     assert.ok(
       audit.details.pendingLines.every((line) => line >= 1 && line <= 3),
       "the bounded review must sample distinct rows from the corrupted chunk"
@@ -6308,7 +6308,7 @@ await test("translation review context failures become repair debt and expand th
     subagentCount: 3
   });
   const translationAlignmentState = createTranslationAlignmentHostState();
-  const lineCount = 40;
+  const lineCount = 400;
   const sourceLines = Array.from({ length: lineCount }, (_, index) =>
     `Source sentence ${index + 1} has a distinct complete meaning.`
   );
@@ -6334,7 +6334,7 @@ await test("translation review context failures become repair debt and expand th
     assert.equal(typeof batchArgs.prepareChunkReview, "function");
     await mkdir(path.dirname(candidatePath), { recursive: true });
     const candidateLines = sourceLines.map((_line, index) =>
-      `这是第 ${index + 1} 行的独立完整中文译文，准确保留了该原句中每一个不同且具体的含义。`
+      `第 ${index + 1} 行准确保留原句含义。`
     );
     candidateLines[4] = "中文译文";
     candidateLines[5] = "中文译文";
@@ -6379,13 +6379,24 @@ await test("translation review context failures become repair debt and expand th
     const contextLines = assignment.windows.flatMap((window) =>
       window.rows.filter((row) => !row.selected).map((row) => row.line)
     );
-    assert.ok(contextLines.some((line) => line >= 3 && line <= 9), "risk rows must include nearby context");
+    const visibleLines = assignment.windows.flatMap((window) => window.rows.map((row) => row.line));
+    assert.ok(visibleLines.some((line) => line >= 3 && line <= 9), "risk rows must include nearby context");
     assert.ok(
       assignment.windows.every((window, index, windows) => index === 0 || windows[index - 1].toLine + 1 < window.fromLine),
       "overlapping context windows must be merged"
     );
     const initialRiskLineCount = prepared.task.riskLineCount;
     const propagatedLine = contextLines[0];
+    assert.equal(
+      Number.isInteger(propagatedLine),
+      true,
+      `the review window needs at least one unselected context row: ${JSON.stringify({
+        riskLineCount: prepared.task.riskLineCount,
+        sampledLineCount: prepared.task.sampledLineCount,
+        selectedLineCount: selectedLines.length,
+        windows: assignment.windows.map((window) => [window.fromLine, window.toLine])
+      })}`
+    );
     await assert.rejects(
       () => prepared.submit(prepared.task, [{
         line: propagatedLine,
@@ -6465,7 +6476,7 @@ await test("translation review context failures become repair debt and expand th
     assert.match(restoredActionableRejection.feedback[0].reason, /replace the neighboring source meaning/i);
 
     candidateLines[propagatedLine - 1] =
-      `这是修复后的第 ${propagatedLine} 行独立完整中文译文，准确保留了该原句中每一个不同且具体的含义。`;
+      `修复后第 ${propagatedLine} 行准确保留原句含义。`;
     await writeFile(stagingPath, `${candidateLines.join("\n")}\n`, "utf8");
     await batchArgs.onStagingCandidateCheckpoint({
       documentId: "source.txt",

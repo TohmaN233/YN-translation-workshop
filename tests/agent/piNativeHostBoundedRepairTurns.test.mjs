@@ -13,6 +13,7 @@ import {
 
 import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
 import { YnSubagentSupervisor } from "../../src/main/agent/piNative/subagentSupervisor.ts";
+import { MAX_TRANSLATION_MODEL_PAGE_LINES } from "../../src/main/agent/piNative/subagentRunner.ts";
 
 function outputBlocks(lines) {
   const blocks = [];
@@ -28,7 +29,7 @@ function outputBlocks(lines) {
 
 const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-host-bounded-repair-"));
 const sourcePath = path.join(outputDir, "source.txt");
-const sourceLines = Array.from({ length: 300 }, (_, index) => `Source ${index + 1}`);
+const sourceLines = Array.from({ length: MAX_TRANSLATION_MODEL_PAGE_LINES + 100 }, (_, index) => `Source ${index + 1}`);
 await writeFile(sourcePath, sourceLines.join("\n"), "utf8");
 await new PiSessionRepository(outputDir).create("parent-bounded-repair");
 
@@ -45,17 +46,17 @@ provider.setResponses([
     blocks: outputBlocks(Array.from({ length: 16 }, (_, index) => index + 1))
   }, { id: "initial-partial-write" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("repairAssignedTranslation", {
-    entries: Array.from({ length: 240 }, (_, index) => ({
+    entries: Array.from({ length: MAX_TRANSLATION_MODEL_PAGE_LINES - 16 }, (_, index) => ({
       line: index + 17,
       translation: `第${index + 17}行的完整中文翻译内容。`
     }))
   }, { id: "first-host-repair" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("readAssignedSource", {
-    fromLine: 257,
-    toLine: 300
+    fromLine: MAX_TRANSLATION_MODEL_PAGE_LINES + 1,
+    toLine: sourceLines.length
   }, { id: "remaining-source" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("writeAssignedTranslation", {
-    blocks: outputBlocks(Array.from({ length: 44 }, (_, index) => index + 257))
+    blocks: outputBlocks(Array.from({ length: 100 }, (_, index) => index + MAX_TRANSLATION_MODEL_PAGE_LINES + 1))
   }, { id: "second-page-write" }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxToolCall("validateAssignedTranslation", {}, { id: "host-repair-validate" }), { stopReason: "toolUse" })
 ]);

@@ -23,7 +23,14 @@ function collectFiles(dir) {
 
 const enDictionary = JSON.parse(readFileSync(path.join(root, "src/shared/i18n/en-US.json"), "utf8"));
 const zhDictionary = JSON.parse(readFileSync(path.join(root, "src/shared/i18n/zh-CN.json"), "utf8"));
-assert.doesNotMatch(JSON.stringify(enDictionary), han, "the English workbench dictionary contains Han text");
+const {
+  assetRequiredSourcePlaceholder,
+  assetRequiredTargetPlaceholder,
+  ...englishUiCopy
+} = enDictionary;
+assert.doesNotMatch(JSON.stringify(englishUiCopy), han, "the English workbench dictionary contains Han text outside intentional asset examples");
+assert.match(assetRequiredSourcePlaceholder, han, "the source-term example must demonstrate a real source-script entry");
+assert.match(assetRequiredTargetPlaceholder, han, "the target-term example must demonstrate a real translated entry");
 assert.equal(enDictionary.startupSuggestions.length, 6, "the English startup suggestion set is incomplete");
 assert.equal(zhDictionary.startupSuggestions.length, 6, "the Chinese startup suggestion set is incomplete");
 assert.equal(new Set(zhDictionary.startupSuggestions).size, 6, "startup suggestions must be distinct");

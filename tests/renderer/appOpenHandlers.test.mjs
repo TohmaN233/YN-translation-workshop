@@ -125,7 +125,7 @@ await test("the glossary picker binds the selected reference without importing o
   assert.match(htmlSource, /const canonicalGlossaryIsBound = !boundPath/);
   assert.match(htmlSource, /Object\.prototype\.hasOwnProperty\.call\(value, "glossaryPath"\)/);
   assert.match(htmlSource, /if \(hasGlossaryPath\) \{\s*projectGlossaryPath = glossaryPath;\s*workflowPaths\(\)\.glossaryPath = glossaryPath;/);
-  assert.match(htmlSource, /if \(boundGlossaryPath\(\)\) void syncGlossaryFromBoundFile\(\);\s*else void hydrateProjectPromptSettings\(\);/,
+  assert.match(htmlSource, /if \(hasGlossaryPath\) \{\s*if \(boundGlossaryPath\(\)\) void syncGlossaryFromBoundFile\(false\);\s*else void hydrateProjectPromptSettings\(\);\s*\}/,
     "an explicit empty project binding must clear the stale embedded glossary and restore only a real canonical fallback");
 });
 

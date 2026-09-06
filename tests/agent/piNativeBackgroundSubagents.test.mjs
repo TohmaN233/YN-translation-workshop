@@ -32,27 +32,20 @@ async function main() {
   const childrenStarted = deferred();
   const releaseChildren = deferred();
   let startedCount = 0;
-  const providers = new Map();
-  for (const providerId of ["child-a", "child-b"]) {
-    const provider = fauxProvider({ provider: providerId, tokensPerSecond: 1000 });
-    models.setProvider(provider.provider);
-    providers.set(providerId, provider);
-    provider.setResponses([
-      async () => {
-        startedCount += 1;
-        if (startedCount === 2) childrenStarted.resolve();
-        await releaseChildren.promise;
-        return fauxAssistantMessage(fauxText("Done."));
-      }
-    ]);
-  }
+  const provider = fauxProvider({ provider: "background-child", tokensPerSecond: 1000 });
+  models.setProvider(provider.provider);
+  provider.setResponses(Array.from({ length: 2 }, () => async () => {
+    startedCount += 1;
+    if (startedCount === 2) childrenStarted.resolve();
+    await releaseChildren.promise;
+    return fauxAssistantMessage(fauxText("Done."));
+  }));
 
   let running;
   let subagents;
   try {
     const createSubagentModelSelection = async ({ providerId }) => {
-      const provider = providers.get(providerId);
-      assert.ok(provider, `unexpected provider ${providerId}`);
+      assert.equal(providerId, provider.provider.id);
       return {
         models,
         model: provider.getModel(),
@@ -72,7 +65,12 @@ async function main() {
         prompt: "translate with two background subagents",
         providerId: "parent",
         modelId: "parent",
-        languagePair: "en->zh-CN"
+        languagePair: "en->zh-CN",
+        subagentEnabled: true,
+        subagentCount: 2,
+        subagentProviderId: provider.provider.id,
+        subagentModelId: provider.getModel().id,
+        translationSplitSize: 1
       },
       publishCustomMessage: async () => {},
       createSubagentModelSelection,
@@ -81,12 +79,7 @@ async function main() {
     const tool = tools.find((entry) => entry.name === "runTranslationSubagents");
     assert.ok(tool, "missing runTranslationSubagents tool");
 
-    running = tool.execute("spawn_background_children", {
-      tasks: [
-        { fromLine: 1, toLine: 1, providerId: "child-a", label: "shard-1" },
-        { fromLine: 2, toLine: 2, providerId: "child-b", label: "shard-2" }
-      ]
-    });
+    running = tool.execute("spawn_background_children", { workerCount: 2 });
     await childrenStarted.promise;
 
     const outcome = await Promise.race([
@@ -121,44 +114,16 @@ async function childTranscriptStaysInChildJsonl() {
   const sourcePath = path.join(outputDir, "source.txt");
   await writeFile(sourcePath, "one\ntwo\n", "utf8");
   const models = createModels();
-  const providers = new Map();
   const cards = [];
   const parentNotifications = [];
-  for (const [index, providerId] of ["transcript-a", "transcript-b"].entries()) {
-    const provider = fauxProvider({ provider: providerId, tokensPerSecond: 1000 });
-    models.setProvider(provider.provider);
-    providers.set(providerId, provider);
-    provider.setResponses([
-      fauxAssistantMessage({
-        type: "toolCall",
-        id: `${providerId}-read`,
-        name: "readAssignedSource",
-        arguments: {}
-      }, { stopReason: "toolUse" }),
-      fauxAssistantMessage({
-        type: "toolCall",
-        id: `${providerId}-write`,
-        name: "repairAssignedTranslation",
-        arguments: {
-          entries: [{ line: index + 1, translation: index === 0 ? "一" : "二" }]
-        }
-      }, { stopReason: "toolUse" }),
-      fauxAssistantMessage({
-        type: "toolCall",
-        id: `${providerId}-validate`,
-        name: "validateAssignedTranslation",
-        arguments: {}
-      }, { stopReason: "toolUse" })
-    ]);
-  }
-  const reviewer = fauxProvider({ provider: "transcript-review", tokensPerSecond: 1000 });
-  models.setProvider(reviewer.provider);
-  providers.set(reviewer.provider.id, reviewer);
+  const worker = fauxProvider({ provider: "transcript-worker", tokensPerSecond: 1000 });
+  models.setProvider(worker.provider);
   const bothReviewSubmissionsReady = deferred();
   let reviewSubmissionsReady = 0;
-  const reviewResponse = async (context) => {
+  const workerResponse = async (context) => {
     const toolResults = context.messages.filter((message) => message.role === "toolResult").length;
-    if (toolResults === 0) {
+    const reviewing = context.systemPrompt.includes("read-only native Pi translation safety reviewer");
+    if (reviewing && toolResults === 0) {
       return fauxAssistantMessage({
         type: "toolCall",
         id: `review-read-${Math.random()}`,
@@ -166,7 +131,7 @@ async function childTranscriptStaysInChildJsonl() {
         arguments: {}
       }, { stopReason: "toolUse" });
     }
-    if (toolResults === 1) {
+    if (reviewing && toolResults === 1) {
       reviewSubmissionsReady += 1;
       if (reviewSubmissionsReady === 2) bothReviewSubmissionsReady.resolve();
       await bothReviewSubmissionsReady.promise;
@@ -177,17 +142,39 @@ async function childTranscriptStaysInChildJsonl() {
         arguments: { failures: [] }
       }, { stopReason: "toolUse" });
     }
-    return fauxAssistantMessage(fauxText("Review accepted."));
+    if (reviewing) return fauxAssistantMessage(fauxText("Review accepted."));
+    const line = context.systemPrompt.includes("L2-L2") ? 2 : 1;
+    if (toolResults === 0) {
+      return fauxAssistantMessage({
+        type: "toolCall",
+        id: `translate-read-${line}-${Math.random()}`,
+        name: "readAssignedSource",
+        arguments: {}
+      }, { stopReason: "toolUse" });
+    }
+    if (toolResults === 1) {
+      return fauxAssistantMessage({
+        type: "toolCall",
+        id: `translate-write-${line}-${Math.random()}`,
+        name: "writeAssignedTranslation",
+        arguments: { blocks: [{ id: "0", lines: [`0${line === 1 ? "一" : "二"}`] }] }
+      }, { stopReason: "toolUse" });
+    }
+    return fauxAssistantMessage({
+      type: "toolCall",
+      id: `translate-validate-${line}-${Math.random()}`,
+      name: "validateAssignedTranslation",
+      arguments: {}
+    }, { stopReason: "toolUse" });
   };
-  reviewer.setResponses(Array.from({ length: 12 }, () => reviewResponse));
+  worker.setResponses(Array.from({ length: 24 }, () => workerResponse));
   const createSubagentModelSelection = async ({ providerId }) => {
-    const provider = providers.get(providerId);
-    assert.ok(provider);
+    assert.equal(providerId, worker.provider.id);
     return {
       models,
-      model: provider.getModel(),
-      providerId: provider.provider.id,
-      modelId: provider.getModel().id
+      model: worker.getModel(),
+      providerId: worker.provider.id,
+      modelId: worker.getModel().id
     };
   };
   const subagents = new YnSubagentSupervisor({
@@ -222,8 +209,9 @@ async function childTranscriptStaysInChildJsonl() {
         workflowIntent: "translation",
         subagentEnabled: true,
         subagentCount: 2,
-        subagentProviderId: "transcript-review",
-        subagentModelId: reviewer.getModel().id,
+        subagentProviderId: worker.provider.id,
+        subagentModelId: worker.getModel().id,
+        translationSplitSize: 1,
         reviewSubagentCount: 2
       },
       publishCustomMessage: async (message) => cards.push(message),
@@ -232,13 +220,19 @@ async function childTranscriptStaysInChildJsonl() {
       domainRun
     });
     const tool = tools.find((entry) => entry.name === "runTranslationSubagents");
-    await tool.execute("spawn_transcript_children", {
-      tasks: [
-        { fromLine: 1, toLine: 1, providerId: "transcript-a", label: "shard-1" },
-        { fromLine: 2, toLine: 2, providerId: "transcript-b", label: "shard-2" }
-      ]
-    });
+    await tool.execute("spawn_transcript_children", { workerCount: 2 });
     await subagents.waitForAll();
+    const translationBatch = subagents.list().find((batch) => batch.kind === "translation");
+    const diagnosticTranscripts = await Promise.all((translationBatch?.subagents ?? []).map(async (entry) => ({
+      id: entry.id,
+      status: entry.status,
+      messages: await subagents.inspectTranscript(entry.id)
+    })));
+    assert.equal(
+      translationBatch?.status,
+      "completed",
+      `${translationBatch?.error}\n${JSON.stringify(diagnosticTranscripts)}`
+    );
     const validate = tools.find((entry) => entry.name === "validateTranslationArtifact");
     await validate.execute("validate_parallel_reviews", {});
     const terminalCards = cards.filter((card) => (
@@ -301,35 +295,33 @@ async function failedRepairBatchInvalidatesPriorValidation() {
   assert.deepEqual(contract.incompleteReasons(), []);
 
   const models = createModels();
-  const providers = new Map();
-  const successful = fauxProvider({ provider: "repair-write", tokensPerSecond: 1000 });
-  successful.setResponses([
-    fauxAssistantMessage({ type: "toolCall", id: "repair-read", name: "readAssignedSource", arguments: {} }, { stopReason: "toolUse" }),
-    fauxAssistantMessage({ type: "toolCall", id: "repair-write", name: "repairAssignedTranslation", arguments: { entries: [{ line: 1, translation: "一" }] } }, { stopReason: "toolUse" }),
-    fauxAssistantMessage({ type: "toolCall", id: "repair-validate", name: "validateAssignedTranslation", arguments: {} }, { stopReason: "toolUse" }),
-    fauxAssistantMessage(fauxText("repair shard wrote successfully"))
-  ]);
-  const failing = fauxProvider({ provider: "repair-fail", tokensPerSecond: 1000 });
-  failing.setResponses([
-    async () => {
+  const worker = fauxProvider({ provider: "repair-worker", tokensPerSecond: 1000 });
+  const response = async (context) => {
+    const secondLine = context.systemPrompt.includes("L2-L2");
+    if (secondLine) {
       await new Promise((resolve) => setTimeout(resolve, 50));
       return fauxAssistantMessage([], { stopReason: "error", errorMessage: "forced sibling failure after first shard write" });
     }
-  ]);
-  for (const provider of [successful, failing]) {
-    models.setProvider(provider.provider);
-    providers.set(provider.provider.id, provider);
-  }
+    const toolResults = context.messages.filter((message) => message.role === "toolResult").length;
+    if (toolResults === 0) {
+      return fauxAssistantMessage({ type: "toolCall", id: "repair-read", name: "readAssignedSource", arguments: {} }, { stopReason: "toolUse" });
+    }
+    if (toolResults === 1) {
+      return fauxAssistantMessage({ type: "toolCall", id: "repair-write", name: "writeAssignedTranslation", arguments: { blocks: [{ id: "0", lines: ["0一"] }] } }, { stopReason: "toolUse" });
+    }
+    return fauxAssistantMessage({ type: "toolCall", id: "repair-validate", name: "validateAssignedTranslation", arguments: {} }, { stopReason: "toolUse" });
+  };
+  worker.setResponses(Array.from({ length: 20 }, () => response));
+  models.setProvider(worker.provider);
   const subagents = new YnSubagentSupervisor({
     publishCustomMessage: async () => {},
     createModelSelection: async ({ providerId }) => {
-      const provider = providers.get(providerId);
-      assert.ok(provider);
+      assert.equal(providerId, worker.provider.id);
       return {
         models,
-        model: provider.getModel(),
-        providerId: provider.provider.id,
-        modelId: provider.getModel().id
+        model: worker.getModel(),
+        providerId: worker.provider.id,
+        modelId: worker.getModel().id
       };
     }
   });
@@ -342,19 +334,19 @@ async function failedRepairBatchInvalidatesPriorValidation() {
         prompt: "repair the existing translation with two background children",
         providerId: "parent",
         modelId: "parent",
-        languagePair: "en->zh-CN"
+        languagePair: "en->zh-CN",
+        subagentEnabled: true,
+        subagentCount: 2,
+        subagentProviderId: worker.provider.id,
+        subagentModelId: worker.getModel().id,
+        translationSplitSize: 1
       },
       publishCustomMessage: async () => {},
       subagents,
       domainRun: contract
     });
     const tool = tools.find((entry) => entry.name === "runTranslationSubagents");
-    await tool.execute("failed_repair_batch", {
-      tasks: [
-        { fromLine: 1, toLine: 1, providerId: "repair-write", label: "repair-write" },
-        { fromLine: 2, toLine: 2, providerId: "repair-fail", label: "repair-fail" }
-      ]
-    });
+    await tool.execute("failed_repair_batch", { workerCount: 2 });
     await subagents.waitForAll();
     await assert.rejects(readFile(candidatePath, "utf8"), /ENOENT/);
     assert.notEqual(subagents.list()[0]?.status, "completed");

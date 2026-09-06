@@ -150,15 +150,20 @@ export function buildProofreadDeterministicSignals(args: {
     }
   }
 
-  const seen = new Set<string>();
-  const result = signals
-    .sort((left, right) => left.line - right.line || left.code.localeCompare(right.code))
-    .filter((signal) => {
-      const key = `${signal.code}:${signal.line}:${signal.evidence}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  const unique = new Map<string, ProofreadDeterministicSignal>();
+  for (const signal of signals) {
+    const key = `${signal.code}:${signal.line}`;
+    const existing = unique.get(key);
+    if (!existing) {
+      unique.set(key, signal);
+      continue;
+    }
+    if (!existing.evidence.includes(signal.evidence)) {
+      existing.evidence = `${existing.evidence} ${signal.evidence}`;
+    }
+  }
+  const result = [...unique.values()]
+    .sort((left, right) => left.line - right.line || left.code.localeCompare(right.code));
   args.onProgress?.({ phase: "complete", completedLines: sourceLines.length, totalLines: sourceLines.length });
   return result;
 }

@@ -44,23 +44,8 @@ const workflowCount = 3;
 const expectedChildren = workflowCount * 2;
 const allChildrenEntered = deferred();
 const releaseChildren = deferred();
-const startedProviders = new Set();
+let startedChildren = 0;
 const models = createModels();
-const providers = new Map();
-
-for (let index = 0; index < expectedChildren; index += 1) {
-  const provider = fauxProvider({ provider: `no-cap-child-${index}`, tokensPerSecond: 10_000 });
-  provider.setResponses([
-    async () => {
-      startedProviders.add(provider.provider.id);
-      if (startedProviders.size === expectedChildren) allChildrenEntered.resolve();
-      await releaseChildren.promise;
-      throw new Error(`concurrency probe released ${provider.provider.id}`);
-    }
-  ]);
-  models.setProvider(provider.provider);
-  providers.set(provider.provider.id, provider);
-}
 
 const workspaces = [];
 const runs = [];
@@ -71,9 +56,16 @@ try {
     workspaces.push(outputDir);
     const sourcePath = path.join(outputDir, "source.txt");
     await writeFile(sourcePath, "one\ntwo", "utf8");
+    const provider = fauxProvider({ provider: `no-cap-workflow-${workflowIndex}`, tokensPerSecond: 10_000 });
+    provider.setResponses(Array.from({ length: 2 }, () => async () => {
+      startedChildren += 1;
+      if (startedChildren === expectedChildren) allChildrenEntered.resolve();
+      await releaseChildren.promise;
+      throw new Error(`concurrency probe released ${provider.provider.id}`);
+    }));
+    models.setProvider(provider.provider);
     const createSubagentModelSelection = async ({ providerId }) => {
-      const provider = providers.get(providerId);
-      assert.ok(provider, `unexpected child provider ${providerId}`);
+      assert.equal(providerId, provider.provider.id, `unexpected child provider ${providerId}`);
       return {
         models,
         model: provider.getModel(),
@@ -96,7 +88,10 @@ try {
         modelId: "parent",
         languagePair: "en->zh-CN",
         subagentEnabled: true,
-        subagentCount: 2
+        subagentCount: 2,
+        subagentProviderId: provider.provider.id,
+        subagentModelId: provider.getModel().id,
+        translationSplitSize: 1
       },
       publishCustomMessage: async () => {},
       createSubagentModelSelection,
@@ -104,23 +99,16 @@ try {
     });
     const tool = tools.find((entry) => entry.name === "runTranslationSubagents");
     assert.ok(tool, "missing runTranslationSubagents tool");
-    const firstProvider = `no-cap-child-${workflowIndex * 2}`;
-    const secondProvider = `no-cap-child-${workflowIndex * 2 + 1}`;
-    runs.push(tool.execute(`no_cap_${workflowIndex}`, {
-      tasks: [
-        { fromLine: 1, toLine: 1, providerId: firstProvider },
-        { fromLine: 2, toLine: 2, providerId: secondProvider }
-      ]
-    }));
+    runs.push(tool.execute(`no_cap_${workflowIndex}`, { workerCount: 2 }));
   }
 
   await Promise.race([
     allChildrenEntered.promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(
-      `only ${startedProviders.size}/${expectedChildren} native Pi children entered before release: ${JSON.stringify(supervisors.flatMap((supervisor) => supervisor.list()))}`
+      `only ${startedChildren}/${expectedChildren} native Pi children entered before release: ${JSON.stringify(supervisors.flatMap((supervisor) => supervisor.list()))}`
     )), 3_000))
   ]);
-  assert.equal(startedProviders.size, expectedChildren);
+  assert.equal(startedChildren, expectedChildren);
 } finally {
   releaseChildren.resolve();
   const outcomes = await Promise.allSettled(runs);

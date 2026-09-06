@@ -4,7 +4,13 @@ A local workbench that brings human line editing, project assets, full AI transl
 
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
-[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.1.0](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.0)
+[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.1.2](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.2)
+
+## What's new in 2.1.2
+
+- Standard Provider model catalogs can refresh automatically from upstream Pi, with local cache and bundled-catalog fallback when the network is unavailable.
+- Fixed inconsistent state when resuming parked translation-reuse workflows, retrying proofreading glossary candidates, and restoring typed Workflow intent.
+- Aligned structured repair capacity with the 500-line model page and merged duplicate length-risk signals for the same line.
 
 ## What's new from 2.0.5 to 2.1.0
 
@@ -33,8 +39,8 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.1.0-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.1.0-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.1.2-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.1.2-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.

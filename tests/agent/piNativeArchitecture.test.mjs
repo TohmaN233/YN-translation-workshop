@@ -62,17 +62,16 @@ async function productModuleGraph(roots) {
   return seen;
 }
 
-await test("product pins aligned Pi packages on the local reference source-compatible release line", async () => {
+await test("product pins aligned Pi runtime packages and validates remote catalogs against installed APIs", async () => {
   const pkg = JSON.parse(await source("package.json"));
-  const referenceAgent = JSON.parse(await source(".reference/pi/packages/agent/package.json"));
   const productAgentVersion = pkg.dependencies?.["@earendil-works/pi-agent-core"];
   const productAiVersion = pkg.dependencies?.["@earendil-works/pi-ai"];
   assert.match(productAgentVersion, /^\d+\.\d+\.\d+$/);
   assert.equal(productAiVersion, productAgentVersion);
-  const productParts = productAgentVersion.split(".").map(Number);
-  const referenceParts = referenceAgent.version.split(".").map(Number);
-  assert.deepEqual(productParts.slice(0, 2), referenceParts.slice(0, 2));
-  assert.ok(productParts[2] >= referenceParts[2]);
+  const remoteCatalog = await source("src/main/agent/piNative/remotePiModelCatalog.ts");
+  assert.match(remoteCatalog, /https:\/\/pi\.dev/);
+  assert.match(remoteCatalog, /supportedApis\.has\(/);
+  assert.match(remoteCatalog, /unsupported by the installed Pi provider runtime/);
 });
 
 await test("product parent and child runtimes are built on Pi core Agent and Pi JSONL sessions", async () => {

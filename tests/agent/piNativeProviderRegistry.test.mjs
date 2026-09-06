@@ -337,7 +337,10 @@ await test("listing configured models does not refresh ChatGPT OAuth", async () 
       }
     });
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (input) => {
+      if (String(input).startsWith("https://pi.dev/api/models/providers/")) {
+        return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
       refreshCalls += 1;
       await new Promise((resolve) => setTimeout(resolve, 25));
       return new Response(JSON.stringify({
@@ -411,9 +414,13 @@ await test("all models from every configured provider remain selectable together
       }
     });
 
+    const expectedByProvider = new Map();
+    for (const providerId of ["openai-api", "deepseek-api", "custom-api:local"]) {
+      expectedByProvider.set(providerId, await listPiProviderModels(projectDir, providerId));
+    }
     const configured = (await listPiConfiguredModels(projectDir)).filter((entry) => entry.authenticated);
     for (const providerId of ["openai-api", "deepseek-api", "custom-api:local"]) {
-      const expected = await listPiProviderModels(projectDir, providerId);
+      const expected = expectedByProvider.get(providerId);
       const actual = configured.filter((entry) => entry.providerId === providerId);
       assert.deepEqual(actual.map((entry) => entry.modelId), expected.map((entry) => entry.id));
       assert.deepEqual(actual.map((entry) => entry.supportsImages), expected.map((entry) => entry.supportsImages));
@@ -496,7 +503,10 @@ await test("listing another provider's models does not refresh ChatGPT OAuth", a
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
   try {
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (input) => {
+      if (String(input).startsWith("https://pi.dev/api/models/providers/")) {
+        return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
       fetchCalls += 1;
       throw new Error("OAuth refresh must not run while listing another provider");
     };
@@ -532,6 +542,94 @@ await test("listing another provider's models does not refresh ChatGPT OAuth", a
     const models = await listPiProviderModels(projectDir, "deepseek-api");
     assert.ok(models.some((model) => model.id === "deepseek-v4-flash"));
     assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+await test("official Pi catalog adds new same-runtime API models and reuses the durable cache", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "tw-pi-remote-catalog-"));
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  try {
+    await writeProviderConfig(path.join(projectDir, ".translation-workshop"), {
+      activeProviderId: "openai-chatgpt",
+      providers: {
+        "openai-chatgpt": {
+          id: "openai-chatgpt",
+          type: "openai_compatible",
+          name: "ChatGPT (OAuth)",
+          baseUrl: "https://chatgpt.com/backend-api",
+          model: "gpt-5.6-terra",
+          piProviderId: "openai-codex",
+          auth: {
+            kind: "oauth",
+            accessToken: "remote-model-access",
+            expiresAt: new Date(Date.now() + 60 * 60_000).toISOString()
+          }
+        }
+      }
+    });
+    globalThis.fetch = async (input) => {
+      fetchCalls += 1;
+      assert.equal(String(input), "https://pi.dev/api/models/providers/openai-codex");
+      return new Response(JSON.stringify({
+        "gpt-6-astra": {
+          id: "gpt-6-astra",
+          name: "GPT-6 Astra",
+          api: "openai-codex-responses",
+          provider: "openai-codex",
+          baseUrl: "https://chatgpt.com/backend-api",
+          reasoning: true,
+          input: ["text", "image"],
+          cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+          contextWindow: 272000,
+          maxTokens: 128000,
+          thinkingLevelMap: {
+            off: null,
+            minimal: "low",
+            low: "low",
+            medium: "medium",
+            high: "high",
+            xhigh: "xhigh",
+            max: "max"
+          }
+        },
+        "future-transport-model": {
+          id: "future-transport-model",
+          name: "Future transport model",
+          api: "openai-codex-responses-v2",
+          provider: "openai-codex",
+          baseUrl: "https://chatgpt.com/backend-api",
+          reasoning: true,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 100000,
+          maxTokens: 10000
+        }
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", ETag: '"catalog-1"' }
+      });
+    };
+
+    const first = await listPiProviderModels(projectDir, "openai-chatgpt");
+    assert.ok(first.some((model) => model.id === "gpt-6-astra"));
+    assert.equal(first.some((model) => model.id === "future-transport-model"), false);
+    globalThis.fetch = async () => {
+      throw new Error("fresh Pi catalog cache should prevent another network request");
+    };
+    const second = await listPiProviderModels(projectDir, "openai-chatgpt");
+    assert.ok(second.some((model) => model.id === "gpt-6-astra"));
+    const selection = await createPiModelSelection({
+      workspaceDir: projectDir,
+      providerId: "openai-chatgpt",
+      modelId: "gpt-6-astra"
+    });
+    assert.equal(selection.model.id, "gpt-6-astra");
+    assert.equal(selection.model.api, "openai-codex-responses");
+    assert.equal(fetchCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(projectDir, { recursive: true, force: true });
@@ -592,7 +690,9 @@ await test("a dead ChatGPT refresh token does not hide other configured models",
 
 await test("Grok OAuth injects official grok-4.6 effort levels without inventing GPT tiers", async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "tw-pi-grok-thinking-"));
+  const originalFetch = globalThis.fetch;
   try {
+    globalThis.fetch = async () => new Response("not implemented", { status: 501 });
     await writeProviderConfig(path.join(projectDir, ".translation-workshop"), {
       activeProviderId: "xai-grok",
       providers: {
@@ -634,6 +734,7 @@ await test("Grok OAuth injects official grok-4.6 effort levels without inventing
     assert.deepEqual(selection.model.thinkingLevelMap?.low, "low");
     assert.equal(selection.model.thinkingLevelMap?.off, null);
   } finally {
+    globalThis.fetch = originalFetch;
     await rm(projectDir, { recursive: true, force: true });
   }
 });

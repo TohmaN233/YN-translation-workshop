@@ -28,6 +28,7 @@ import { applyKnownThinkingContract, listThinkingLevelsForModel } from "../../..
 import { resolveProviderOAuthAuth } from "../oauthAuthResolver.ts";
 import { readProviderConfig } from "../providerConfigStore.ts";
 import { resolveProviderProxyUrl, runWithProviderProxy } from "../providers/proxyFetch.ts";
+import { loadPiRemoteModelCatalog } from "./remotePiModelCatalog.ts";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 32_768;
@@ -187,34 +188,51 @@ async function credentialFor(
   return undefined;
 }
 
-function aliasProvider(source: Provider, config: OpenAiCompatibleProviderConfig): Provider {
+function mergeCatalogs(baseline: readonly Model<Api>[], remote: readonly Model<Api>[]): Model<Api>[] {
+  const merged = [...baseline];
+  for (const model of remote) {
+    const index = merged.findIndex((entry) => entry.id === model.id);
+    if (index >= 0) merged[index] = model;
+    else merged.push(model);
+  }
+  return merged;
+}
+
+function aliasProvider(
+  source: Provider,
+  config: OpenAiCompatibleProviderConfig,
+  remoteCatalog: readonly Model<Api>[] = []
+): Provider {
   const configuredBaseUrl = config.baseUrl.trim();
   const remap = (model: Model<Api>): Model<Api> => applyKnownThinkingContract({
     ...model,
     provider: config.id,
     baseUrl: configuredBaseUrl || model.baseUrl
   });
-  const catalog = source.getModels().map((model) => remap(model as Model<Api>));
-  if (isGrokOAuthProvider(config)) {
-    const existing = new Set(catalog.map((model) => model.id));
-    const extras = normalizeExplicitModelIds(config.model, config.models).filter((id) => !existing.has(id));
-    const template = catalog.find((model) => model.id.startsWith("grok-4")) ?? catalog[0];
-    if (extras.length > 0 && !template) {
-      throw new Error(`Grok (OAuth) has no Pi xAI catalog model to clone for ${extras.join(", ")}.`);
-    }
-    if (extras.length > 0 && template) {
-      for (const id of extras) {
-        catalog.push(applyKnownThinkingContract({ ...template, id, name: id }));
+  const getCatalog = (): Model<Api>[] => {
+    const catalog = mergeCatalogs(source.getModels() as readonly Model<Api>[], remoteCatalog).map(remap);
+    if (isGrokOAuthProvider(config)) {
+      const existing = new Set(catalog.map((model) => model.id));
+      const extras = normalizeExplicitModelIds(config.model, config.models).filter((id) => !existing.has(id));
+      const template = catalog.find((model) => model.id.startsWith("grok-4")) ?? catalog[0];
+      if (extras.length > 0 && !template) {
+        throw new Error(`Grok (OAuth) has no Pi xAI catalog model to clone for ${extras.join(", ")}.`);
+      }
+      if (template) {
+        for (const id of extras) {
+          catalog.push(applyKnownThinkingContract({ ...template, id, name: id }));
+        }
       }
     }
-  }
+    return catalog;
+  };
   return {
     id: config.id,
     name: config.name,
     baseUrl: configuredBaseUrl || source.baseUrl,
     headers: source.headers,
     auth: source.auth,
-    getModels: () => catalog,
+    getModels: getCatalog,
     refreshModels: source.refreshModels ? async () => source.refreshModels?.() : undefined,
     stream: (model, context, options) => source.stream(model, context, options),
     streamSimple: (model, context, options) => source.streamSimple(model, context, options)
@@ -245,9 +263,40 @@ function customOpenAiProvider(config: OpenAiCompatibleProviderConfig): Provider 
   });
 }
 
-function providerFor(config: OpenAiCompatibleProviderConfig): Provider {
+async function providerFor(
+  workspaceDir: string,
+  config: OpenAiCompatibleProviderConfig,
+  options?: { refreshCatalog?: boolean; proxyUrl?: string }
+): Promise<Provider> {
   const piProvider = createPinnedPiProvider(config.id, config.piProviderId);
-  if (piProvider) return aliasProvider(piProvider, config);
+  if (piProvider) {
+    const supportedApis = new Set(piProvider.getModels().map((model) => model.api));
+    const piProviderId = resolvePiProviderId(config.id, config.piProviderId);
+    const remote = piProviderId && supportedApis.size > 0
+      ? await loadPiRemoteModelCatalog({
+          workspaceDir,
+          providerId: piProviderId,
+          supportedApis,
+          refresh: options?.refreshCatalog === true,
+          fetcher: options?.proxyUrl
+            ? (url, init) => runWithProviderProxy(options.proxyUrl ?? "", () => fetch(url, init))
+            : fetch
+        })
+      : { models: [], refreshed: false };
+    if (remote.error) {
+      console.warn("[provider-registry] Pi remote model catalog refresh failed", {
+        providerId: piProviderId,
+        message: remote.error.message
+      });
+    }
+    if (remote.unsupportedModels?.length) {
+      console.warn("[provider-registry] Pi remote models require unsupported installed APIs", {
+        providerId: piProviderId,
+        models: remote.unsupportedModels
+      });
+    }
+    return aliasProvider(piProvider, config, remote.models);
+  }
   return customOpenAiProvider(config);
 }
 
@@ -268,6 +317,7 @@ function withNetworkProxy(source: Provider, proxyUrl: string): Provider {
 
 async function createPiRegistry(projectDir: string, options?: {
   refreshProviderId?: string;
+  refreshCatalogProviderId?: string | false;
 }): Promise<{
   config: ProviderConfigDocument;
   models: Models;
@@ -281,8 +331,14 @@ async function createPiRegistry(projectDir: string, options?: {
   const models = createModels({ credentials: credentialStore });
   const authenticatedProviders = new Set<string>();
   const credentialErrors = new Map<string, unknown>();
+  const refreshCatalogProviderId = options?.refreshCatalogProviderId === false
+    ? ""
+    : options?.refreshCatalogProviderId ?? config.activeProviderId;
   for (const stored of Object.values(config.providers)) {
-    models.setProvider(withNetworkProxy(providerFor(stored), proxyUrl));
+    models.setProvider(withNetworkProxy(await providerFor(workspaceDir, stored, {
+      refreshCatalog: stored.id === refreshCatalogProviderId,
+      proxyUrl
+    }), proxyUrl));
     try {
       const credential = await credentialFor(workspaceDir, stored, {
         refresh: options?.refreshProviderId === stored.id
@@ -330,7 +386,8 @@ export async function listPiProviderModels(projectDir: string, providerId: strin
   const config = await readProviderConfig(workspaceDir);
   const stored = config.providers[providerId];
   if (!stored) return [];
-  return providerFor(stored).getModels().map((model) => ({
+  const proxyUrl = await resolveProviderProxyUrl({ workspaceDir });
+  return (await providerFor(workspaceDir, stored, { refreshCatalog: true, proxyUrl })).getModels().map((model) => ({
     id: model.id,
     label: model.name,
     supportsImages: model.input.includes("image")
@@ -344,10 +401,11 @@ export async function createPiModelSelection(args: {
 }): Promise<PiModelSelection> {
   const requestedProviderId = args.providerId?.trim()
     || (await readProviderConfig(providerWorkspaceDir(args.workspaceDir))).activeProviderId;
-  const { config: configDocument, models, authenticatedProviders, credentialErrors } = await createPiRegistry(
+  let registry = await createPiRegistry(
     args.workspaceDir,
-    { refreshProviderId: requestedProviderId }
+    { refreshProviderId: requestedProviderId, refreshCatalogProviderId: false }
   );
+  let { config: configDocument, models, authenticatedProviders, credentialErrors } = registry;
   const providerId = requestedProviderId;
   const selectedConfig = configDocument.providers[providerId];
   if (!selectedConfig) {
@@ -365,7 +423,12 @@ export async function createPiModelSelection(args: {
   }
 
   const modelId = args.modelId?.trim() || selectedConfig.model;
-  const model = models.getModel(providerId, modelId);
+  let model = models.getModel(providerId, modelId);
+  if (!model) {
+    registry = await createPiRegistry(args.workspaceDir, { refreshCatalogProviderId: providerId });
+    ({ config: configDocument, models, authenticatedProviders, credentialErrors } = registry);
+    model = models.getModel(providerId, modelId);
+  }
   if (!model) {
     const available = models.getModels(providerId).map((item) => item.id).join(", ");
     throw new Error(`Model ${providerId}/${modelId} is unavailable. Configured models: ${available || "none"}.`);

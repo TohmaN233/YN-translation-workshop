@@ -1,6 +1,6 @@
 {
   "name": "translation-workshop",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Local translation and proofreading workflow workbench.",
   "type": "module",
   "engines": {

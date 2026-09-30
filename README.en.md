@@ -12,9 +12,7 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 
 - Fixed Grok 4.7 requests incorrectly sending `reasoning_effort=none`: Auto and legacy Off selections use the official `high` default; models without known effort controls omit the parameter.
 - HTML glossary management separates approved terms and AI candidates. Preview, search and delete candidates before import, or delete approved entries individually. Deletion affects only the selected table; older HTML upgrades when opened.
-- Both Pi core packages move to 0.99.1 with native v4 sessions and compaction, corrected persistent-worker prompt reset, cancellation and session resource cleanup.
-- Legacy v3 sessions retain a `.v3.backup` before their first rewrite. Downgrading requires restoring backups, which do not contain later v4 messages; see the [migration report](docs/pi-core-migration-2026-09-30.md).
-- Translation, proofreading, LAN, subagents, glossary management and cold-start recovery regressions passed. Windows installer and portable packages are available on the [2.1.3 release page](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.3).
+- Upgrade the core to 0.99.1 with compatibility updates to prevent regressions.
 
 ## What's new in 2.1.2
 

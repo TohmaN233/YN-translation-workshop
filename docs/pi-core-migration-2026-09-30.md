@@ -1,8 +1,11 @@
 # Isolated Pi core migration
 
 Implemented on `codex/pi-core-migration`, separately from HTML glossary management.
-YN's application version remains 2.1.2. No installer release, publication or push
-was performed. Verification packaging is under the ignored audit directory.
+The migration commit `fbf65fb` retained application version 2.1.2. The subsequent
+local packaging step on `codex/release-2.1.3` includes it in 2.1.3, together with
+HTML glossary management. Installer and portable artifacts are under
+`release/2.1.3/`. No online release, publication or push was performed.
+Migration verification packaging is under the ignored audit directory.
 
 ## Scope and benefits
 

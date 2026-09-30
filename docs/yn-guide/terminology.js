@@ -243,8 +243,8 @@ window.YN_GUIDE_TERMINOLOGY = {
     {
       term: "Compaction",
       category: "persistence",
-      zh: { plain: "长会话接近上下文容量时，把较早内容压缩为可继续使用的摘要。", yn: "使用 Pi 原生 compaction entry 与 Session.buildContext，不另造 YN 摘要文件。", not: "不是删除完整 JSONL；原始历史仍可审计。" },
-      en: { plain: "Compressing older conversation content into a usable summary when a long session approaches context limits.", yn: "YN uses native Pi compaction entries and Session.buildContext rather than a separate summary file.", not: "It does not delete the full JSONL history." }
+      zh: { plain: "长会话接近上下文容量时，把较早内容压缩为可继续使用的摘要。", yn: "使用 Pi 0.99.1 原生 compaction entry、retainedTail 与 branch 上下文投影，不另造 YN 摘要文件。", not: "不是删除完整 JSONL；原始历史仍可审计。" },
+      en: { plain: "Compressing older conversation content into a usable summary when a long session approaches context limits.", yn: "YN uses Pi 0.99.1 native compaction entries, retainedTail and branch context projection rather than a separate summary file.", not: "It does not delete the full JSONL history." }
     },
     {
       term: "Token / Cache",

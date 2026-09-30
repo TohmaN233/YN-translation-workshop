@@ -1,6 +1,6 @@
 # Pi / Pi-web Migration Map
 
-Last updated: 2026-08-09
+Last updated: 2026-09-30 (YN 2.1.3, pinned Pi pair 0.99.1)
 
 This map distinguishes source reuse from YN specialization. The product is not
 allowed to route an old YN runtime through a pi-web-shaped adapter.
@@ -14,7 +14,7 @@ allowed to route an old YN runtime through a pi-web-shaped adapter.
 | Pi `Models`, model/provider types, OAuth implementations | `src/main/agent/piNative/providerRegistry.ts` | Direct dependency, YN config discovery added | Use Pi provider behavior and list all configured models across providers. |
 | Pi `JsonlSessionRepo` + the same core `Agent` runtime | `src/main/agent/piNative/subagentRunner.ts` + `sessionRepository.ts#createChild` | Direct dependency, child-session path policy and range-restricted YN tools added | Run real concurrent child Pi runtimes with independently reopenable Pi JSONL rather than simulated jobs or in-memory transcripts; child tools cannot delegate again. The Host creates line-balanced, non-overlapping assignments across files and dynamically feeds them to persistent workers. Validated chunks are Host-sequenced inside the same child session, and focused repair preserves already accepted candidate lines. |
 | Pi assistant/tool result/custom message contract | `src/shared/agent/piSessionContract.ts` and native package types | Kept native | The renderer receives one message language only. |
-| Pi `prepareCompaction`/`compact`, `Session.buildContext()`, and compaction thresholds | `sessionAgentRuntime.ts`, `sessionService.ts`, native session IPC, and `piSessionContract.ts` | Source-adapted, Electron lifecycle projection added | Keep long-session memory in Pi JSONL instead of adding a YN summary store or renderer-side compressor. Active child batches defer compaction rather than blocking parent conversation. |
+| Pi `prepareCompaction`/`compact`, native v4 branch/retained-tail context, and compaction thresholds | `sessionAccess.ts`, `sessionAgentRuntime.ts`, `sessionService.ts`, native session IPC, and `piSessionContract.ts` | Native storage; internal context helper source-adapted because it is not a public export | Keep long-session memory in Pi JSONL instead of adding a YN summary store or renderer-side compressor. Active child batches defer compaction rather than blocking parent conversation. Legacy v3 is backed up before conversion; reset/reconfigure replaces the active prompt/tool baseline. |
 
 ## Pi-web Frontend
 

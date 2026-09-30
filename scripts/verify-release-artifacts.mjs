@@ -51,6 +51,10 @@ for (const requiredEntry of [
   "/node_modules/cheerio/package.json",
   "/node_modules/electron-updater/package.json",
   "/node_modules/js-yaml/package.json",
+  "/node_modules/@earendil-works/pi-ai/package.json",
+  "/node_modules/@earendil-works/pi-agent-core/package.json",
+  "/node_modules/@earendil-works/chord/package.json",
+  "/node_modules/@earendil-works/pi-telemetry/package.json",
 ]) {
   assert.ok(archiveEntries.has(requiredEntry), `Packaged app is missing ${requiredEntry}`);
 }
@@ -74,7 +78,7 @@ const packedYaml = JSON.parse(
   extractFile(asarPath, path.join("node_modules", "js-yaml", "package.json")).toString("utf8"),
 );
 const packedMain = extractFile(asarPath, path.join("dist", "main", "main.js")).toString("utf8");
-for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js"]) {
+for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js", "README.md", "README.en.md", "THIRD_PARTY_NOTICES.md"]) {
   assert.equal(
     createHash("sha256").update(extractFile(asarPath, path.normalize(entry))).digest("hex"),
     createHash("sha256").update(readFileSync(path.join(rootDir, entry))).digest("hex"),
@@ -82,6 +86,18 @@ for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js"]
   );
 }
 assert.equal(packedPackage.version, packageJson.version, "Packaged app version is stale");
+const packedPiDependencies = {};
+for (const dependency of ["pi-ai", "pi-agent-core", "chord", "pi-telemetry"]) {
+  const dependencyPath = path.join("node_modules", "@earendil-works", dependency, "package.json");
+  const packedDependency = JSON.parse(extractFile(asarPath, dependencyPath).toString("utf8"));
+  const installedDependency = JSON.parse(readFileSync(path.join(rootDir, dependencyPath), "utf8"));
+  assert.equal(packedDependency.version, installedDependency.version, `Packaged Pi dependency is stale: ${dependency}`);
+  packedPiDependencies[dependency] = packedDependency.version;
+  if (dependency === "pi-ai" || dependency === "pi-agent-core") {
+    assert.equal(packedDependency.version, packageJson.dependencies[`@earendil-works/${dependency}`],
+      `Packaged Pi core does not match the exact pin: ${dependency}`);
+  }
+}
 assert.equal(packedUpdater.version, "6.8.9", "Packaged electron-updater version is unexpected");
 assert.equal(packedCheerio.version, "1.2.0", "Packaged web-reference HTML parser version is unexpected");
 assert.doesNotMatch(
@@ -120,6 +136,7 @@ console.log(
       updater: { provider: "github", package: packedUpdater.version },
       webReferenceParser: packedCheerio.version,
       productionYaml: packedYaml.version,
+      piDependencies: packedPiDependencies,
       checksums: "verified",
     },
     null,

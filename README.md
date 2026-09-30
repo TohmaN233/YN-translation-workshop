@@ -1,10 +1,17 @@
-# YN Translation Workshop 2.0
+# YN Translation Workshop 2.1.3
 
 一个把人工逐行编辑、项目资产、完整 AI 翻译、完整 AI 校对和远程操作放进同一工作台的本地翻译工具，内置轻量仅为翻译/校对工作特化的Agent Harness的翻译工作台。
 
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
-[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [下载 2.1.2](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.2)
+[English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [发布下载](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## 2.1.3 更新
+
+- HTML 术语面板分别显示正式译名表与 AI 候选，导入前可查看、搜索和删除候选，正式表也支持逐条删除。删除仅修改对应表，不自动修改译文或角色资料；旧 HTML 打开时会自动升级。
+- Pi 核心包成对升级至 0.99.1，适配原生 v4 会话与压缩，修复持久 Worker 切任务时旧提示残留，完善取消和会话资源释放。
+- 旧 v3 会话首次改写前自动保留 `.v3.backup`。回退旧版需恢复备份，备份不含转换后的新消息；详见[迁移说明](docs/pi-core-migration-2026-09-30.md)。
+- 翻译、校对、LAN、子 Agent、译名管理和冷启动恢复回归通过；本次是本地 2.1.3 打包，尚未上传发布。
 
 ## 2.1.2 更新
 
@@ -39,11 +46,13 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.1.2-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.1.2-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.1.3-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.1.3-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。
+
+当前本地包位于 `release/2.1.3/`，发布页仍以实际上传的版本为准。
 
 ## 完整功能清单
 
@@ -83,10 +92,10 @@
 - **文风指南**：保存作品级语气、表达偏好和格式约束。
 - **翻译记忆**：检索项目中已经接受的原译文对齐片段。
 - 支持 JSON、Tab、`=>`、`->`、`=` 和逗号分隔术语输入。
-- 行对行页面可编辑术语、搜索并替换译文中的命中项、导入候选条目。
+- 行对行页面可编辑正式术语、查看和删除 AI 候选、逐条删除正式译名、搜索并替换译文中的命中项，以及导入保留的候选条目。
 - 每个 assignment 只注入当前原文直接命中的完整结构化记录；缺失歧义才做单词精确搜索。
 - 关闭候选收集只禁止新增候选，已有候选仍可作为只读参考。
-- 同一原词出现竞争译名时会关闭新任务领取门；Parent 决定后，Host 全量重扫当前清单并优先修复全部受影响行。
+- 正式译名优先，其次沿用候选或角色表已建立的译名；后来的不同译法只保留证据。尚无既有权威译名的新发现内部冲突才关闭新任务领取门，Parent 决策后再按当前清单生成精确修复。
 - glossary candidate、角色事实、DomainRun 状态和 Host 持久化在同一事务边界提交或回滚。
 
 ### 4. 模型、Provider 与 Agent 会话

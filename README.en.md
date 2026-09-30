@@ -1,10 +1,17 @@
-# YN Translation Workshop 2.0
+# YN Translation Workshop 2.1.3
 
 A local workbench that brings human line editing, project assets, full AI translation, full AI proofreading, and remote operation into one application.
 
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
-[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Download 2.1.2](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.2)
+[中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## What's new in 2.1.3
+
+- HTML glossary management separates approved terms and AI candidates. Preview, search and delete candidates before import, or delete approved entries individually. Deletion affects only the selected table; older HTML upgrades when opened.
+- Both Pi core packages move to 0.99.1 with native v4 sessions and compaction, corrected persistent-worker prompt reset, cancellation and session resource cleanup.
+- Legacy v3 sessions retain a `.v3.backup` before their first rewrite. Downgrading requires restoring backups, which do not contain later v4 messages; see the [migration report](docs/pi-core-migration-2026-09-30.md).
+- Translation, proofreading, LAN, subagents, glossary management and cold-start recovery regressions passed. This is a local 2.1.3 build; it has not been uploaded as a release.
 
 ## What's new in 2.1.2
 
@@ -39,11 +46,13 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.1.2-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.1.2-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.1.3-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.1.3-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.
+
+Local artifacts are under `release/2.1.3/`; the releases page lists only versions actually uploaded.
 
 ## Complete feature list
 
@@ -83,10 +92,10 @@ The installed build can check for updates and restart into the downloaded instal
 - **Style guide**: title-level tone, expression, and formatting constraints.
 - **Translation memory**: search across accepted source/translation segments.
 - Glossary input supports JSON, Tab, `=>`, `->`, `=`, and comma-separated records.
-- The line-review page can edit terms, search and replace target matches, and import candidates.
+- The line-review page can edit and delete approved terms, preview/search/delete AI candidates before import, and search and replace translation matches.
 - Each assignment receives only directly matched full structured records. Missing ambiguity uses exact-term search.
 - Disabling candidate collection blocks new discoveries but keeps existing candidates readable.
-- Competing targets close the new-assignment claim gate. After the Parent decides, the Host rescans the full current manifest and prioritizes every affected row.
+- Approved targets take priority, followed by the first established candidate/character target; later differing observations remain evidence. Only internally conflicting new discoveries without an established target close the claim gate for Parent resolution and precise repair.
 - Candidate assets, character facts, DomainRun state, and Host persistence commit or roll back together.
 
 ### 4. Models, Providers, and Agent sessions

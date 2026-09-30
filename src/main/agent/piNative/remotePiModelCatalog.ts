@@ -192,7 +192,7 @@ async function refreshCatalog(
     const response = await fetcher(url, {
       headers: {
         accept: "application/json",
-        "user-agent": "pi/0.80.6 YN-translation-workshop",
+        "user-agent": "pi/0.99.1 YN-translation-workshop",
         ...(cached?.etag ? { "if-none-match": cached.etag } : {}),
         ...(cached?.lastModified ? { "if-modified-since": cached.lastModified } : {})
       },

@@ -1,6 +1,6 @@
 # Agent Runtime Topology
 
-Last verified: 2026-07-16
+Last updated: 2026-09-30 (YN 2.1.3 / Pi 0.99.1)
 
 This document records the current product call graph. Historical graphs for the
 deleted job/runtime bridge are archived and are not implementation guidance.
@@ -51,7 +51,9 @@ only Pi tool-call field compatibility.
 ```text
 registerAgentSessionIpc
   -> PiNativeSessionService
-       -> sessionRepository (JsonlSessionRepo / NodeExecutionEnv)
+       -> sessionRepository (native v4 JsonlSessionRepo / NodeExecutionEnv)
+            -> original v3 backup before migration
+            -> sessionAccess (native main branch / atomic mutations / retainedTail)
        -> providerRegistry (Pi Models / OAuth / configured APIs)
        -> PiSessionAgentRuntime (source-adapted from Pi AgentSession)
             -> Pi core Agent
@@ -88,12 +90,13 @@ Pi core parent Agent
        -> runProofreadSubagents
             -> one host-validated, workflow-bound batch with the configured
                child count and complete file/range coverage
-            -> folder mode reserves whole files across persistent workers;
-               single-file mode uses contiguous non-overlapping ranges
-            -> supervisor starts the configured PiSessionAgentRuntime children
+            -> Host divides large files into non-overlapping splitSize ranges
+               and dynamically assigns the staged shared queue
+            -> supervisor starts at most the configured PiSessionAgentRuntime workers
                and returns to the parent immediately
             -> range-restricted tools
-            -> child artifact validation + repair
+            -> child artifact validation + separate read-only review pool
+            -> exact repair returned to the same translation worker
             -> transient live structured card update
             -> terminal structured card persisted to parent Pi JSONL
             -> hidden native custom completion message wakes parent Agent
@@ -209,7 +212,7 @@ idle/settling child
 
 The consumption receipt is not a second queue. Pi core still owns queue order,
 draining, interruption, and continuation. The receipt observes the native
-`message_end` for the exact queued object after `Session.appendMessage`; it only
+`message_end` for the exact queued object after the native `appendSessionMessage` transaction; it only
 closes the gap between Pi's final steering poll and `agent_end`. Any guidance
 arriving after the runtime atomically enters `settling` is rejected rather than
 being accepted into a child that is already validating or persisting its

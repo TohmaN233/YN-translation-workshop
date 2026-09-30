@@ -37,7 +37,19 @@ type OfficialThinkingContract = {
   thinkingLevelMap: Partial<Record<ModelThinkingLevel, string | null>>;
 };
 
-const OFFICIAL_GROK_THINKING_CONTRACTS: Record<"grok-4.6" | "grok-4.5", OfficialThinkingContract> = {
+const OFFICIAL_GROK_THINKING_CONTRACTS: Record<"grok-4.7" | "grok-4.6" | "grok-4.5", OfficialThinkingContract> = {
+  "grok-4.7": {
+    defaultLevel: "high",
+    thinkingLevelMap: {
+      off: null,
+      minimal: null,
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: null
+    }
+  },
   "grok-4.6": {
     defaultLevel: "high",
     thinkingLevelMap: {
@@ -46,7 +58,8 @@ const OFFICIAL_GROK_THINKING_CONTRACTS: Record<"grok-4.6" | "grok-4.5", Official
       low: "low",
       medium: "medium",
       high: "high",
-      xhigh: "xhigh"
+      xhigh: "xhigh",
+      max: null
     }
   },
   "grok-4.5": {
@@ -56,13 +69,16 @@ const OFFICIAL_GROK_THINKING_CONTRACTS: Record<"grok-4.6" | "grok-4.5", Official
       minimal: null,
       low: "low",
       medium: "medium",
-      high: "high"
+      high: "high",
+      xhigh: null,
+      max: null
     }
   }
 };
 
 function officialGrokThinkingFamily(modelId: string): keyof typeof OFFICIAL_GROK_THINKING_CONTRACTS | undefined {
   const id = modelId.trim().toLowerCase();
+  if (id === "grok-4.7" || id.startsWith("grok-4.7-")) return "grok-4.7";
   if (id === "grok-4.6" || id.startsWith("grok-4.6-")) return "grok-4.6";
   if (id === "grok-4.5" || id.startsWith("grok-4.5-")) return "grok-4.5";
   return undefined;
@@ -82,7 +98,13 @@ export function applyKnownThinkingContract<T extends { id: string }>(model: T): 
     // catalog defaults must not turn unknown Grok models into GPT-style pickers.
     return {
       ...current,
-      thinkingLevelMap: undefined,
+      // Responses treats a missing map as GPT defaults and emits effort=none.
+      // Explicitly disable every caller effort tier while preserving the model's
+      // native reasoning support; the server selects its own default effort.
+      thinkingLevelMap: {
+        off: null, minimal: null, low: null, medium: null,
+        high: null, xhigh: null, max: null
+      },
       compat: { ...current.compat, supportsReasoningEffort: false }
     };
   }
@@ -157,6 +179,8 @@ export function resolveThinkingLevelForModel(
   const requested = requestedConcreteLevel(value);
   const concrete = !requested || requested === "auto"
     ? defaultThinkingLevelForModel(model)
+    : officialThinkingContract(model.id) && (requested === "off" || requested === "minimal")
+      ? defaultThinkingLevelForModel(model)
     : requested;
   const resolved = clampThinkingLevel(asPiModel(model), concrete);
   if (value && value !== "auto" && value !== resolved) {

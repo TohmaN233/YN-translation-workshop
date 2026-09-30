@@ -67,6 +67,13 @@ reads. The review algorithm itself was not changed.
   call was not performed; its catalog/auth/effort integration is covered by
   local regression tests.
 
+After local 2.1.3 packaging, Grok 4.7 exposed a missed effort contract: YN
+discarded its Pi map and Responses supplied `none`. The follow-up fix restores
+the official 4.7 tiers, uses `high` for Auto/legacy disabled selections, and
+explicitly omits effort for models without known controls. A copied-credential
+live Grok 4.7 request returned HTTP 200 with `high`; native payload regressions
+cover both auth entrances. See [2.1.3 notes](releases/v2.1.3.md).
+
 For rollback, stop the application first and retain a complete copy of current
 parent/child session directories and backups. Return both packages and code to
 the previous commit, then restore the corresponding v3 files from their backups

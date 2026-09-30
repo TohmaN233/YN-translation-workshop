@@ -106,12 +106,20 @@ await test("thinking levels follow each model's official effort contract", () =>
   const grok46 = applyKnownThinkingContract({ id: "grok-4.6", reasoning: false });
   assert.deepEqual(listThinkingLevelsForModel(grok46), ["low", "medium", "high", "xhigh"]);
   assert.equal(resolveThinkingLevelForModel(grok46, "auto"), "high");
-  assert.equal(resolveThinkingLevelForModel(grok46, "off"), "low");
-  assert.equal(resolveThinkingLevelForModel(grok46, "minimal"), "low");
+  assert.equal(resolveThinkingLevelForModel(grok46, "off"), "high");
+  assert.equal(resolveThinkingLevelForModel(grok46, "minimal"), "high");
   assert.equal(resolveThinkingLevelForModel(grok46, "max"), "xhigh");
   assert.ok(!listThinkingLevelsForModel(grok46).includes("off"));
   assert.ok(!listThinkingLevelsForModel(grok46).includes("minimal"));
   assert.equal(modelShowsThinkingPicker(grok46), true);
+
+  for (const id of ["grok-4.7", "grok-4.7-fast"]) {
+    const grok47 = applyKnownThinkingContract({ id, reasoning: true });
+    assert.deepEqual(listThinkingLevelsForModel(grok47), ["low", "medium", "high", "xhigh"]);
+    assert.equal(resolveThinkingLevelForModel(grok47, "auto"), "high");
+    assert.equal(resolveThinkingLevelForModel(grok47, "off"), "high");
+    assert.equal(modelShowsThinkingPicker(grok47), true);
+  }
 
   const grok45 = applyKnownThinkingContract({ id: "grok-4.5", reasoning: false });
   assert.deepEqual(listThinkingLevelsForModel(grok45), ["low", "medium", "high"]);

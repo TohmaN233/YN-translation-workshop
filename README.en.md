@@ -8,6 +8,7 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 
 ## What's new in 2.1.3
 
+- Fixed Grok 4.7 requests incorrectly sending `reasoning_effort=none`: Auto and legacy Off selections use the official `high` default; models without known effort controls omit the parameter.
 - HTML glossary management separates approved terms and AI candidates. Preview, search and delete candidates before import, or delete approved entries individually. Deletion affects only the selected table; older HTML upgrades when opened.
 - Both Pi core packages move to 0.99.1 with native v4 sessions and compaction, corrected persistent-worker prompt reset, cancellation and session resource cleanup.
 - Legacy v3 sessions retain a `.v3.backup` before their first rewrite. Downgrading requires restoring backups, which do not contain later v4 messages; see the [migration report](docs/pi-core-migration-2026-09-30.md).

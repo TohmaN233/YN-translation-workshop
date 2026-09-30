@@ -4,7 +4,9 @@ Implemented on `codex/pi-core-migration`, separately from HTML glossary manageme
 The migration commit `fbf65fb` retained application version 2.1.2. The subsequent
 local packaging step on `codex/release-2.1.3` includes it in 2.1.3, together with
 HTML glossary management. Installer and portable artifacts are under
-`release/2.1.3/`. No online release, publication or push was performed.
+`release/2.1.3/`. Those implementation and verification steps were local;
+publication is tracked in the [2.1.3 release notes](releases/v2.1.3.md) and
+[GitHub Release](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.3).
 Migration verification packaging is under the ignored audit directory.
 
 ## Scope and benefits

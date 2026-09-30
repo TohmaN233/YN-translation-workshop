@@ -499,6 +499,43 @@ export async function readWorkspaceAssetsStatus(outputDir: string): Promise<Work
   return status;
 }
 
+export async function readGeneratedGlossaryCandidates(outputDir: string): Promise<GlossaryValidationEntry[]> {
+  const glossaryPath = workspaceAssetPaths(outputDir).glossaryCandidates;
+  const source = await readUtf8(glossaryPath);
+  return source === undefined ? [] : parseGeneratedGlossary(source, glossaryPath);
+}
+
+export async function deleteGeneratedGlossaryCandidate(args: {
+  outputDir: string;
+  source: string;
+  expectedTarget: string;
+}): Promise<GlossaryValidationEntry[]> {
+  if (!args.source.trim() || !args.expectedTarget.trim()) {
+    throw new Error("Candidate deletion requires a source and expected target.");
+  }
+  return runWorkspaceGlossaryCandidateTransaction(args.outputDir, async (transaction) => {
+    const entries = await readGeneratedGlossaryCandidates(args.outputDir);
+    const entry = entries.find((item) => normalized(item.source) === normalized(args.source));
+    if (!entry) throw new Error(`Glossary candidate no longer exists: ${args.source}. Refresh the candidates.`);
+    if (entry.target.trim() !== args.expectedTarget.trim()) {
+      throw new Error(`Glossary candidate changed: ${args.source}. Refresh before deleting.`);
+    }
+    const commit = await transaction.commit([], { removeSources: [args.source] });
+    try {
+      const remaining = await readGeneratedGlossaryCandidates(args.outputDir);
+      await readWorkspaceAssetsStatus(args.outputDir);
+      return remaining;
+    } catch (error) {
+      try {
+        await commit.rollback();
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Candidate deletion failed and could not be rolled back.");
+      }
+      throw error;
+    }
+  });
+}
+
 export async function readWorkspaceAgentContext(outputDir: string): Promise<WorkspaceAgentContext> {
   const paths = workspaceAssetPaths(outputDir);
   const [glossarySource, characterBibleSource] = await Promise.all([

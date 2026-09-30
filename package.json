@@ -17,6 +17,7 @@
     "verify:electron-lan-agent": "npm run build && node scripts/verify-electron-lan-agent.mjs",
     "verify:electron-project-open": "npm run build && node scripts/verify-electron-project-open.mjs",
     "verify:electron-agent-ui": "npm run verify:electron-agent-html",
+    "verify:electron-glossary": "npm run build:preload && node scripts/verify-electron-glossary.mjs",
     "verify:electron-agent-real": "npm run build && node scripts/verify-electron-agent-real-html.mjs",
     "verify:real-provider-agent": "node --experimental-strip-types scripts/verify-real-provider-agent-smoke.mjs",
     "toy:agent-artifacts": "npm run setup:toy-agent-artifacts && npm run verify:toy-agent-artifacts && npm run dev",

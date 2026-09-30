@@ -93,6 +93,9 @@ contextBridge.exposeInMainWorld("workshop", {
   importProjectGlossaryFile: (args: { outputDir: string; path: string }) => ipcRenderer.invoke("agent-assets:importGlossaryFile", args),
   replaceProjectGlossary: (args: { outputDir: string; entries: Record<string, unknown>[] }) => ipcRenderer.invoke("agent-assets:replaceGlossary", args),
   updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown>; boundGlossaryPath?: string }) => ipcRenderer.invoke("agent-assets:updateGlossaryEntry", args),
+  deleteProjectGlossaryEntry: (args: { outputDir: string; source: string; expectedTarget: string; boundGlossaryPath?: string }) => ipcRenderer.invoke("agent-assets:deleteGlossaryEntry", args),
+  readGeneratedGlossaryCandidates: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:readGeneratedGlossary", args),
+  deleteGeneratedGlossaryCandidate: (args: { outputDir: string; source: string; expectedTarget: string }) => ipcRenderer.invoke("agent-assets:deleteGeneratedGlossary", args),
   readWorkspaceAssetsStatus: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:workspaceStatus", args),
   importGeneratedGlossaryCandidates: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:importGeneratedGlossary", args),
   onWorkspaceAssetsStatus: (callback: (payload: unknown) => void) => {
@@ -129,6 +132,9 @@ contextBridge.exposeInMainWorld("workshopHtml", {
   importProjectGlossaryFile: (args: { outputDir: string; path: string }) => ipcRenderer.invoke("agent-assets:importGlossaryFile", args),
   replaceProjectGlossary: (args: { outputDir: string; entries: Record<string, unknown>[] }) => ipcRenderer.invoke("agent-assets:replaceGlossary", args),
   updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown>; boundGlossaryPath?: string }) => ipcRenderer.invoke("agent-assets:updateGlossaryEntry", args),
+  deleteProjectGlossaryEntry: (args: { outputDir: string; source: string; expectedTarget: string; boundGlossaryPath?: string }) => ipcRenderer.invoke("agent-assets:deleteGlossaryEntry", args),
+  readGeneratedGlossaryCandidates: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:readGeneratedGlossary", args),
+  deleteGeneratedGlossaryCandidate: (args: { outputDir: string; source: string; expectedTarget: string }) => ipcRenderer.invoke("agent-assets:deleteGeneratedGlossary", args),
   readWorkspaceAssetsStatus: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:workspaceStatus", args),
   importGeneratedGlossaryCandidates: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:importGeneratedGlossary", args),
   onWorkspaceAssetsStatus: (callback: (payload: unknown) => void) => {

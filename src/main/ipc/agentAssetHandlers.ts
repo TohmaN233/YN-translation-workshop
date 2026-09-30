@@ -3,6 +3,7 @@ import path from "node:path";
 
 import {
   approveAssetProposal,
+  deleteProjectGlossaryEntry,
   importProjectGlossaryFile,
   listAssetProposals,
   readProjectAssets,
@@ -10,7 +11,7 @@ import {
   saveProjectAssets,
   updateProjectGlossaryEntry
 } from "../agent/projectAssets.ts";
-import { activateWorkspaceAssets, importGeneratedGlossaryCandidates } from "../agent/workspaceAssets.ts";
+import { activateWorkspaceAssets, deleteGeneratedGlossaryCandidate, importGeneratedGlossaryCandidates, readGeneratedGlossaryCandidates } from "../agent/workspaceAssets.ts";
 
 function requireOutputDir(value: unknown): string {
   const outputDir = typeof value === "string" ? value.trim() : "";
@@ -71,6 +72,32 @@ export function registerAgentAssetIpc(): void {
 
   ipcMain.handle("agent-assets:workspaceStatus", async (_event, args: { outputDir?: unknown }) => {
     return activateWorkspaceAssets(requireOutputDir(args?.outputDir));
+  });
+
+  ipcMain.handle("agent-assets:readGeneratedGlossary", async (_event, args: { outputDir?: unknown }) => {
+    return readGeneratedGlossaryCandidates(requireOutputDir(args?.outputDir));
+  });
+
+  ipcMain.handle("agent-assets:deleteGeneratedGlossary", async (_event, args: { outputDir?: unknown; source?: unknown; expectedTarget?: unknown }) => {
+    if (typeof args?.source !== "string" || typeof args?.expectedTarget !== "string") {
+      throw new Error("Candidate deletion requires a source and expected target.");
+    }
+    return deleteGeneratedGlossaryCandidate({
+      outputDir: requireOutputDir(args.outputDir), source: args.source, expectedTarget: args.expectedTarget
+    });
+  });
+
+  ipcMain.handle("agent-assets:deleteGlossaryEntry", async (_event, args: { outputDir?: unknown; source?: unknown; expectedTarget?: unknown; boundGlossaryPath?: unknown }) => {
+    if (typeof args?.source !== "string" || typeof args?.expectedTarget !== "string") {
+      throw new Error("Glossary deletion requires a source and expected target.");
+    }
+    const outputDir = requireOutputDir(args.outputDir);
+    const assets = await deleteProjectGlossaryEntry({
+      outputDir, source: args.source, expectedTarget: args.expectedTarget,
+      boundGlossaryPath: typeof args.boundGlossaryPath === "string" ? args.boundGlossaryPath.trim() : undefined
+    });
+    broadcastProjectAssets(outputDir, assets);
+    return assets;
   });
 
   ipcMain.handle("agent-assets:importGeneratedGlossary", async (_event, args: { outputDir?: unknown }) => {

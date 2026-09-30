@@ -1004,6 +1004,41 @@ export async function updateProjectGlossaryEntry(args: {
   });
 }
 
+/** Delete from the latest table, preserving unrelated concurrent edits and external source files. */
+export async function deleteProjectGlossaryEntry(args: {
+  outputDir: string;
+  source: string;
+  expectedTarget: string;
+  boundGlossaryPath?: string;
+}): Promise<ProjectAssets> {
+  if (!args.source.trim() || !args.expectedTarget.trim()) {
+    throw new Error("Glossary deletion requires a source and expected target.");
+  }
+  return enqueueProjectAssetWrite(args.outputDir, async () => {
+    await ensureLegacyCharacterBibleMigratedUnlocked(args.outputDir);
+    const paths = assetPaths(args.outputDir);
+    const currentAssets = await readProjectAssetsUnlocked({ outputDir: args.outputDir });
+    const state = await readProjectState(args.outputDir);
+    const canonicalIsBound = typeof state.glossaryPath === "string"
+      && sameAssetPath(state.glossaryPath, paths.glossary);
+    const base = await resolveMutableGlossaryBase({
+      outputDir: args.outputDir,
+      canonicalPath: paths.glossary,
+      currentEntries: currentAssets.glossary.entries,
+      boundGlossaryPath: canonicalIsBound ? paths.glossary : args.boundGlossaryPath
+    });
+    const index = base.entries.findIndex((entry) => glossaryKey(entry.source) === glossaryKey(args.source));
+    if (index < 0) throw new Error(`Glossary entry no longer exists: ${args.source}. Refresh the glossary.`);
+    if (String(base.entries[index].target).trim() !== args.expectedTarget.trim()) {
+      throw new Error(`Glossary entry changed: ${args.source}. Refresh before deleting.`);
+    }
+    const entries = base.entries.filter((_entry, entryIndex) => entryIndex !== index);
+    return writeCanonicalGlossaryAndBindUnlocked({
+      outputDir: args.outputDir, paths, currentAssets, entries, inspectedBinding: base.inspectedBinding
+    });
+  });
+}
+
 export async function mergeProjectGlossaryEntries(args: {
   outputDir: string;
   entries: Record<string, unknown>[];

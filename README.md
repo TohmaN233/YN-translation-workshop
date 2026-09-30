@@ -1,5 +1,7 @@
 # YN Translation Workshop 2.1.3
 
+第一次了解 YN？可以先读[项目介绍 · YN Translation Workshop](https://tgy233.top/tgypage/yn/)，再按下面的教程开始使用。
+
 一个把人工逐行编辑、项目资产、完整 AI 翻译、完整 AI 校对和远程操作放进同一工作台的本地翻译工具，内置轻量仅为翻译/校对工作特化的Agent Harness的翻译工作台。
 
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
@@ -12,7 +14,7 @@
 - HTML 术语面板分别显示正式译名表与 AI 候选，导入前可查看、搜索和删除候选，正式表也支持逐条删除。删除仅修改对应表，不自动修改译文或角色资料；旧 HTML 打开时会自动升级。
 - Pi 核心包成对升级至 0.99.1，适配原生 v4 会话与压缩，修复持久 Worker 切任务时旧提示残留，完善取消和会话资源释放。
 - 旧 v3 会话首次改写前自动保留 `.v3.backup`。回退旧版需恢复备份，备份不含转换后的新消息；详见[迁移说明](docs/pi-core-migration-2026-09-30.md)。
-- 翻译、校对、LAN、子 Agent、译名管理和冷启动恢复回归通过；本次是本地 2.1.3 打包，尚未上传发布。
+- 翻译、校对、LAN、子 Agent、译名管理和冷启动恢复回归通过；Windows 安装版与便携版见 [2.1.3 发布页](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.3)。
 
 ## 2.1.2 更新
 
@@ -53,7 +55,7 @@
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。
 
-当前本地包位于 `release/2.1.3/`，发布页仍以实际上传的版本为准。
+下载 [2.1.3 安装版或便携版](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.3)；本地构建文件位于 `release/2.1.3/`。
 
 ## 完整功能清单
 

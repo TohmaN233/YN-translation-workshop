@@ -1,5 +1,7 @@
 # YN Translation Workshop 2.1.3
 
+New to YN? Start with the [project introduction (Chinese)](https://tgy233.top/tgypage/yn/), then follow the guide below to begin using the workshop.
+
 A local workbench that brings human line editing, project assets, full AI translation, full AI proofreading, and remote operation into one application.
 
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
@@ -12,7 +14,7 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 - HTML glossary management separates approved terms and AI candidates. Preview, search and delete candidates before import, or delete approved entries individually. Deletion affects only the selected table; older HTML upgrades when opened.
 - Both Pi core packages move to 0.99.1 with native v4 sessions and compaction, corrected persistent-worker prompt reset, cancellation and session resource cleanup.
 - Legacy v3 sessions retain a `.v3.backup` before their first rewrite. Downgrading requires restoring backups, which do not contain later v4 messages; see the [migration report](docs/pi-core-migration-2026-09-30.md).
-- Translation, proofreading, LAN, subagents, glossary management and cold-start recovery regressions passed. This is a local 2.1.3 build; it has not been uploaded as a release.
+- Translation, proofreading, LAN, subagents, glossary management and cold-start recovery regressions passed. Windows installer and portable packages are available on the [2.1.3 release page](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.3).
 
 ## What's new in 2.1.2
 

@@ -9,6 +9,7 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
 import { zaiProvider } from "@earendil-works/pi-ai/providers/zai";
+import { PI_LEGACY_CONFIGURED_MODELS } from "./piLegacyConfiguredModels.ts";
 
 export interface ProviderModelOption {
   id: string;
@@ -75,11 +76,11 @@ export function listModelsForProvider(
   const provider = createPinnedPiProvider(providerId, options?.piProviderId);
   if (provider) {
     const models = provider.getModels().map((model) => ({ id: model.id, label: model.name }));
-    if (providerId === "xai-grok") {
-      for (const id of normalizeExplicitModelIds(options?.model, options?.modelIds)) {
-        if (!models.some((model) => model.id === id)) {
-          models.push({ id, label: id });
-        }
+    const legacy = PI_LEGACY_CONFIGURED_MODELS[provider.id] ?? [];
+    for (const id of normalizeExplicitModelIds(options?.model, options?.modelIds)) {
+      if (!legacy.some((model) => model.id === id) && provider.id !== "xai") continue;
+      if (!models.some((model) => model.id === id)) {
+        models.push({ id, label: id });
       }
     }
     return models;

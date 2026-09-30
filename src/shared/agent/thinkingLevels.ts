@@ -75,8 +75,17 @@ export function officialThinkingContract(modelId: string): OfficialThinkingContr
 
 export function applyKnownThinkingContract<T extends { id: string }>(model: T): T {
   const contract = officialThinkingContract(model.id);
-  if (!contract) return model;
   const current = model as T & ThinkingModelLike;
+  if (!contract) {
+    if (!model.id.toLowerCase().startsWith("grok-")) return model;
+    // Preserve YN's explicit effort contract during core upgrades: new Pi
+    // catalog defaults must not turn unknown Grok models into GPT-style pickers.
+    return {
+      ...current,
+      thinkingLevelMap: undefined,
+      compat: { ...current.compat, supportsReasoningEffort: false }
+    };
+  }
   return {
     ...current,
     reasoning: true,

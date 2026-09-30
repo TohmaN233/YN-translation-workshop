@@ -273,7 +273,7 @@ Source files are always read-only. Candidate text, HTML page state, and real tra
 
 ## Development and verification
 
-Requires Node.js `>=22.6.0`.
+Requires Node.js `>=22.19.0`.
 
 ```bash
 npm ci

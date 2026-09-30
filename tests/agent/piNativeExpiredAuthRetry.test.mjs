@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 
 import {
@@ -6,7 +7,7 @@ import {
   fauxProvider,
   fauxText
 } from "@earendil-works/pi-ai";
-import { InMemorySessionRepo } from "@earendil-works/pi-agent-core/node";
+import { MemorySessionRepo } from "@earendil-works/pi-agent-core/node";
 
 const { PiSessionAgentRuntime } = await import("../../src/main/agent/piNative/sessionAgentRuntime.ts");
 
@@ -28,7 +29,7 @@ async function runExpiredAuth(options = {}) {
   ]);
   const models = createModels();
   models.setProvider(provider.provider);
-  const session = await new InMemorySessionRepo().create({ id: options.sessionId ?? "expired-auth" });
+  const session = await new MemorySessionRepo().create({ id: options.sessionId ?? "expired-auth" });
   let refreshCalls = 0;
   const runtime = new PiSessionAgentRuntime({
     session,
@@ -48,7 +49,7 @@ async function runExpiredAuth(options = {}) {
   });
   try {
     await runtime.prompt("continue the workflow");
-    const messages = (await session.buildContext()).messages;
+    const messages = (await readSessionConversation(session)).messages;
     const last = messages.at(-1);
     return {
       providerCalls,

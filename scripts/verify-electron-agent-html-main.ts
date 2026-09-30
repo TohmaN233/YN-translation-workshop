@@ -1,5 +1,6 @@
+import { readSessionEntries, appendSessionMessage } from "../tests/helpers/pi-session.mjs";
 import { app, BrowserWindow, clipboard, ipcMain, nativeImage } from "electron";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -456,7 +457,7 @@ const reviewProviderId = "verify-translation-review";
 const reviewProvider = fauxProvider({ provider: reviewProviderId, tokensPerSecond: 1000, tokenSize: { min: 10, max: 20 } });
 let reviewResponseId = 0;
 reviewProvider.setResponses(Array.from({ length: 40 }, () => async (context) => {
-  const serialized = JSON.stringify(context.messages);
+  const serialized = JSON.stringify(context.messages.filter((message) => message.role !== "system"));
   const id = `${reviewProviderId}_${reviewResponseId++}`;
   if (serialized.includes('\"name\":\"submitTranslationReview\"')) {
     return fauxAssistantMessage(fauxText(`${reviewProviderId} accepted the assignment.`));
@@ -472,7 +473,7 @@ const folderChildProviderId = "verify-folder-worker";
 const folderChild = fauxProvider({ provider: folderChildProviderId, tokensPerSecond: 1000, tokenSize: { min: 10, max: 20 } });
 let folderChildResponseId = 0;
 folderChild.setResponses(Array.from({ length: 40 }, () => async (context) => {
-  const serialized = JSON.stringify(context.messages);
+  const serialized = JSON.stringify(context.messages.filter((message) => message.role !== "system"));
   const id = `${folderChildProviderId}_${folderChildResponseId++}`;
   if (serialized.includes('"name":"submitTranslationAudit"')) {
     return fauxAssistantMessage(fauxText(`${folderChildProviderId} reuse audit submitted`));
@@ -2320,7 +2321,7 @@ async function run(): Promise<void> {
   await service.disposeWorkspace(workspace);
   const compactionSession = await new PiSessionRepository(workspace).open(compactionBootstrap.activeSessionId);
   for (let index = 0; index < 30; index += 1) {
-    await compactionSession.appendMessage({
+    await appendSessionMessage(compactionSession, {
       role: "custom",
       customType: "verifier-memory-seed",
       content: `memory-${index}: ${"persistent context ".repeat(450)}`,
@@ -2360,7 +2361,7 @@ async function run(): Promise<void> {
   );
   assert(compactionState.contextUsage?.tokens === compactionState.lastCompaction.estimatedTokensAfter, "Context telemetry does not match the native Pi compaction result");
   const compactedSession = await new PiSessionRepository(workspace).open(compactionBootstrap.activeSessionId);
-  const compactionEntries = (await compactedSession.getBranch()).filter((entry) => entry.type === "compaction");
+  const compactionEntries = (await readSessionEntries(compactedSession)).filter((entry) => entry.type === "compaction");
   assert(compactionEntries.length === 1, `Expected one native Pi JSONL compaction entry, found ${compactionEntries.length}`);
   await capturePaintedWindow(win, compactionScreenshot);
   await waitFor(win, '!document.querySelector("[data-agent-compaction-result=true]")', 4_000);
@@ -2526,8 +2527,8 @@ async function run(): Promise<void> {
     fauxAssistantMessage(fauxText("高风险译文语义审计完成。是否保留通过的行并只重译不合格行？"))
   ]);
   const reuseDecisionResponses = () => [
-    fauxAssistantMessage(fauxToolCall("resumeYnWorkflow", {}, { id: "reuse_ui_resume" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage(fauxToolCall("resumeYnWorkflow", {}, { id: "reuse_ui_resume_again" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("resumeYnWorkflow", { workflow: "translation" }, { id: "reuse_ui_resume" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("resumeYnWorkflow", { workflow: "translation" }, { id: "reuse_ui_resume_again" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("applyTranslationReuseDecision", {
       decision: "reuse_accepted"
     }, { id: "reuse_ui_apply" }), { stopReason: "toolUse" }),
@@ -2667,6 +2668,10 @@ async function run(): Promise<void> {
   await writeFile(path.join(workspace, ".translation-workshop", "project.json"), JSON.stringify({
     sourceKind: "file",
     sourcePath: epubOriginalSourcePath,
+    // Extracted review text is an explicit binding; an unbound project correctly
+    // clears extracted temporary targets instead of adopting them as canonical.
+    translationPath: epubEditableTranslationPath,
+    translationBindingOrigin: "user",
     languagePair: "ja->zh-CN"
   }), "utf8");
   expectEpubHostBinding = true;
@@ -2692,8 +2697,20 @@ async function run(): Promise<void> {
     `EPUB Host inspection resolved the wrong source: ${JSON.stringify(epubInspectResult?.details)}`);
   mark("epub-editable-txt-binding");
 
+  const processes = app.getAppMetrics();
+  const rendererPid = win.webContents.getOSProcessId();
+  const folderParentMetadata = await new PiSessionRepository(workspace).findMetadata(folderUiBootstrap.activeSessionId!);
+  assert(folderParentMetadata, "Folder parent session must remain durable after later UI tasks");
+  const runtimeMetrics = {
+    rendererWorkingSetKiB: processes.find((entry) => entry.pid === rendererPid)?.memory.workingSetSize,
+    totalWorkingSetKiB: processes.reduce((sum, entry) => sum + entry.memory.workingSetSize, 0),
+    parentJsonlBytes: (await stat(folderParentMetadata.path)).size,
+    maxChildCardBytes: Math.max(0, ...folderUiChildStates.map((card) => Buffer.byteLength(JSON.stringify(card))))
+  };
+
   console.log(JSON.stringify({
     ok: true,
+    runtimeMetrics,
     interactiveMs,
     optimisticMs: Number(optimisticMs.toFixed(1)),
     screenshots: [folderAgentScreenshot, folderBatchRunScreenshot, translationReuseDecisionScreenshot, commandsScreenshot, interfaceImageScreenshot, progressScreenshot, providerRetryScreenshot, streamScreenshot, subagentInteractionScreenshot, subagentRepliesScreenshot, completeScreenshot, providerSettingsScreenshot, popoutScreenshot, compactionScreenshot],

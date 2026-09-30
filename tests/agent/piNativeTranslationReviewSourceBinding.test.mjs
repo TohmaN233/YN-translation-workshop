@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -125,7 +126,7 @@ try {
   assert.equal(reviewBatch?.status, "completed", reviewBatch?.error);
   assert.equal(reviewBatch?.subagents[0]?.label, "Review second.txt L1");
   const child = await new PiSessionRepository(outputDir).openChild(reviewBatch.subagents[0].id);
-  const messages = (await child.buildContext()).messages;
+  const messages = (await readSessionConversation(child)).messages;
   const searchResult = messages.find((message) => (
     message.role === "toolResult" && message.toolCallId === "search-bound-source"
   ));

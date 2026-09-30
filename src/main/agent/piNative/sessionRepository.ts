@@ -1,6 +1,8 @@
-import { mkdir, readFile } from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { link, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/harness/context";
+import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 
 import {
@@ -193,6 +195,10 @@ function migrateLegacyParentMessage(message: unknown): { message: unknown; chang
 }
 
 function migrateLegacyParentSessionJsonl(source: string): { text: string; changed: boolean } {
+  const header = readValidatedSessionHeader(source);
+  // Released YN sessions use v3. Format 4 belongs to Pi's native transaction
+  // codec and must never be rewritten as old flat message records.
+  if (header.v === 4) return { text: source, changed: false };
   const hadTrailingNewline = source.endsWith("\n");
   const lines = source.split("\n");
   if (hadTrailingNewline) lines.pop();
@@ -205,16 +211,76 @@ function migrateLegacyParentSessionJsonl(source: string): { text: string; change
     } catch (error) {
       throw new Error(`Failed to migrate Pi session JSONL line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (!isRecord(entry) || entry.type !== "message") return line;
-    const result = migrateLegacyParentMessage(entry.message);
+    if (!isRecord(entry)) return line;
+    const message = entry.type === "message" ? entry.message
+      : entry.type === "custom_message" ? { ...entry, role: "custom" } : undefined;
+    if (message === undefined) return line;
+    const result = migrateLegacyParentMessage(message);
     if (!result.changed) return line;
     changed = true;
-    return JSON.stringify({ ...entry, message: result.message });
+    if (entry.type === "message") return JSON.stringify({ ...entry, message: result.message });
+    const migratedMessage = result.message as Record<string, unknown>;
+    return JSON.stringify({ ...entry, content: migratedMessage.content, details: migratedMessage.details });
   });
   return {
     text: `${migrated.join("\n")}${hadTrailingNewline ? "\n" : ""}`,
     changed
   };
+}
+
+function readValidatedSessionHeader(source: string): Record<string, unknown> {
+  const firstLine = source.split("\n", 1)[0];
+  const header: unknown = JSON.parse(firstLine);
+  if (!isRecord(header) || typeof header.id !== "string" || typeof header.cwd !== "string") {
+    throw new Error("Invalid Pi session header identity.");
+  }
+  if (header.type === "session" && header.version === 3
+    && typeof header.timestamp === "string" && Number.isFinite(Date.parse(header.timestamp))) return header;
+  if (header.kind === "header" && header.v === 4
+    && header.storageVersion === 1
+    && Number.isSafeInteger(header.createdAt) && (header.createdAt as number) >= 0
+    && (header.parentSessionId === undefined || typeof header.parentSessionId === "string")
+    && (header.legacyParentSessionPath === undefined || typeof header.legacyParentSessionPath === "string")) return header;
+  throw new Error("Unsupported Pi session header; expected legacy v3 or native v4.");
+}
+
+async function backupLegacySession(sessionPath: string, source: string): Promise<void> {
+  const header = readValidatedSessionHeader(source);
+  if (header.v === 4) return;
+  const backupPath = `${sessionPath}.v3.backup`;
+  const temporaryPath = `${backupPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const file = await open(temporaryPath, "wx");
+    try {
+      await file.writeFile(source, "utf8");
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    try {
+      // Hard-link publication is atomic and cannot overwrite the first backup,
+      // even when two repository instances encounter the same legacy file.
+      await link(temporaryPath, backupPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const backup = await readFile(backupPath, "utf8");
+      const backupHeader = readValidatedSessionHeader(backup);
+      if (backupHeader.version !== 3 || backupHeader.id !== header.id || backupHeader.cwd !== header.cwd) {
+        throw new Error(`Legacy Pi backup identity does not match ${sessionPath}.`);
+      }
+      // A retry may follow an already committed v3 slimming write. Preserve the
+      // earlier original, while rejecting an unusable or partial backup.
+      for (const line of backup.split("\n")) if (line.trim()) JSON.parse(line);
+      if (source.endsWith("\n") && !backup.endsWith("\n")) {
+        throw new Error(`Legacy Pi backup is incomplete for ${sessionPath}.`);
+      }
+      if (backup !== source && migrateLegacyParentSessionJsonl(backup).text !== source) {
+        throw new Error(`Legacy Pi backup does not match the original or migrated source at ${sessionPath}.`);
+      }
+    }
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 
 async function readSessionMigrationState(filePath: string): Promise<PiSessionMigrationState> {
@@ -248,10 +314,11 @@ async function readSessionMigrationState(filePath: string): Promise<PiSessionMig
 async function migrateLegacyParentSession(workspaceDir: string, sessionPath: string): Promise<void> {
   const statePath = sessionMigrationsPath(workspaceDir);
   await serializeSessionMigration(statePath, async () => {
+    if ((await readSessionHeader(sessionPath)).v === 4) return;
     const state = await readSessionMigrationState(statePath);
-    if (state.migratedSessionPaths.includes(sessionPath)) return;
-
     const source = await readFile(sessionPath, "utf8");
+    await backupLegacySession(sessionPath, source);
+    if (state.migratedSessionPaths.includes(sessionPath)) return;
     const migrated = migrateLegacyParentSessionJsonl(source);
     if (migrated.changed) await writeTextFileAtomically(sessionPath, migrated.text);
 
@@ -259,6 +326,20 @@ async function migrateLegacyParentSession(workspaceDir: string, sessionPath: str
     await mkdir(rootDir(workspaceDir), { recursive: true });
     await writeTextFileAtomically(statePath, JSON.stringify(state, null, 2));
   });
+}
+
+async function readSessionHeader(filePath: string): Promise<Record<string, unknown>> {
+  const input = createReadStream(filePath, { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (line.trim()) return readValidatedSessionHeader(line);
+    }
+    throw new Error(`Empty Pi session file: ${filePath}.`);
+  } finally {
+    lines.close();
+    input.destroy();
+  }
 }
 
 function textFromMessage(message: AgentMessage): string {
@@ -275,13 +356,25 @@ function textFromMessage(message: AgentMessage): string {
 async function firstUserMessage(filePath: string): Promise<string> {
   const input = createReadStream(filePath, { encoding: "utf8" });
   const lines = createInterface({ input, crlfDelay: Infinity });
+  let headerRead = false;
+  let native = false;
   try {
     for await (const line of lines) {
       if (!line.trim()) continue;
-      const entry = JSON.parse(line) as { type?: string; message?: AgentMessage };
-      if (entry.type !== "message" || entry.message?.role !== "user") continue;
-      return textFromMessage(entry.message) || "New session";
+      if (!headerRead) {
+        native = readValidatedSessionHeader(line).v === 4;
+        headerRead = true;
+        continue;
+      }
+      const record: unknown = JSON.parse(line);
+      const records = native && Array.isArray(record) ? record : [record];
+      for (const entry of records) {
+        if (!isRecord(entry) || (native && entry.kind !== "entry")) continue;
+        if (entry.type !== "message" || !isRecord(entry.message) || entry.message.role !== "user") continue;
+        return textFromMessage(entry.message as unknown as AgentMessage) || "New session";
+      }
     }
+    if (!headerRead) throw new Error(`Empty Pi session file: ${filePath}.`);
     return "New session";
   } finally {
     lines.close();
@@ -294,29 +387,34 @@ export class PiSessionRepository {
   readonly env: NodeExecutionEnv;
   readonly repo: JsonlSessionRepo;
   readonly childRepo: JsonlSessionRepo;
+  private readonly sessions = new Map<string, Promise<Session<JsonlSessionMetadata>>>();
+  private readonly childSessions = new Map<string, Promise<Session<JsonlSessionMetadata>>>();
 
   constructor(workspaceDir: string) {
     this.workspaceDir = path.resolve(workspaceDir);
     this.env = new NodeExecutionEnv({ cwd: this.workspaceDir });
-    this.repo = new JsonlSessionRepo({ fs: this.env, sessionsRoot: sessionsRoot(this.workspaceDir) });
-    this.childRepo = new JsonlSessionRepo({ fs: this.env, sessionsRoot: childSessionsRoot(this.workspaceDir) });
+    this.repo = new JsonlSessionRepo({ fileSystem: this.env, sessionsRoot: sessionsRoot(this.workspaceDir) });
+    this.childRepo = new JsonlSessionRepo({ fileSystem: this.env, sessionsRoot: childSessionsRoot(this.workspaceDir) });
   }
 
   async create(id?: string): Promise<Session<JsonlSessionMetadata>> {
-    return this.repo.create({ cwd: this.workspaceDir, id });
+    const session = await this.repo.create({ cwd: this.workspaceDir, id }, BACKGROUND_CONTEXT);
+    this.sessions.set(session.metadata.id, Promise.resolve(session));
+    return session;
   }
 
   async createChild(id?: string, parentSessionId?: string): Promise<Session<JsonlSessionMetadata>> {
-    const parent = parentSessionId ? await this.findMetadata(parentSessionId) : undefined;
-    return this.childRepo.create({
+    const session = await this.childRepo.create({
       cwd: this.workspaceDir,
       id,
-      ...(parent ? { parentSessionPath: parent.path } : {})
-    });
+      ...(parentSessionId ? { parentSessionId } : {})
+    }, BACKGROUND_CONTEXT);
+    this.childSessions.set(session.metadata.id, Promise.resolve(session));
+    return session;
   }
 
   async listChildMetadata(): Promise<JsonlSessionMetadata[]> {
-    return this.childRepo.list({ cwd: this.workspaceDir });
+    return this.childRepo.list({ cwd: this.workspaceDir }, BACKGROUND_CONTEXT);
   }
 
   async findChildMetadata(sessionId: string): Promise<JsonlSessionMetadata | undefined> {
@@ -326,7 +424,7 @@ export class PiSessionRepository {
   async openChild(sessionId: string): Promise<Session<JsonlSessionMetadata>> {
     const metadata = await this.findChildMetadata(sessionId);
     if (!metadata) throw new Error(`Pi child session ${sessionId} was not found.`);
-    return this.childRepo.open(metadata);
+    return this.openOwned(metadata, true);
   }
 
   async openChildForParent(
@@ -339,14 +437,14 @@ export class PiSessionRepository {
     ]);
     if (!child) throw new Error(`Pi child session ${childSessionId} was not found.`);
     if (!parent) throw new Error(`Pi session ${parentSessionId} was not found.`);
-    if (child.parentSessionPath !== parent.path) {
+    if (!await this.belongsToParent(child, parent)) {
       throw new Error(`Pi child session ${childSessionId} does not belong to Pi session ${parentSessionId}.`);
     }
-    return this.childRepo.open(child);
+    return this.openOwned(child, true);
   }
 
   async listMetadata(): Promise<JsonlSessionMetadata[]> {
-    return this.repo.list({ cwd: this.workspaceDir });
+    return this.repo.list({ cwd: this.workspaceDir }, BACKGROUND_CONTEXT);
   }
 
   async findMetadata(sessionId: string): Promise<JsonlSessionMetadata | undefined> {
@@ -356,17 +454,19 @@ export class PiSessionRepository {
   async open(sessionId: string): Promise<Session<JsonlSessionMetadata>> {
     const metadata = await this.findMetadata(sessionId);
     if (!metadata) throw new Error(`Pi session ${sessionId} was not found.`);
-    await migrateLegacyParentSession(this.workspaceDir, metadata.path);
-    return this.repo.open(metadata);
+    return this.openOwned(metadata, false);
   }
 
   async delete(sessionId: string): Promise<boolean> {
     const metadata = await this.findMetadata(sessionId);
     if (!metadata) return false;
-    const linkedChildren = (await this.listChildMetadata())
-      .filter((child) => child.parentSessionPath === metadata.path);
-    for (const child of linkedChildren) await this.childRepo.delete(child);
-    await this.repo.delete(metadata);
+    for (const child of await this.listChildMetadata()) {
+      if (!await this.belongsToParent(child, metadata)) continue;
+      await this.closeChildSession(child.id);
+      await this.childRepo.delete(child, BACKGROUND_CONTEXT);
+    }
+    await this.closeSession(metadata.id);
+    await this.repo.delete(metadata, BACKGROUND_CONTEXT);
     return true;
   }
 
@@ -376,20 +476,70 @@ export class PiSessionRepository {
   }
 
   async summaryForMetadata(item: JsonlSessionMetadata): Promise<PiSessionSummary> {
-    const [firstMessage, fileInfo] = await Promise.all([
-      firstUserMessage(item.path),
-      this.env.fileInfo(item.path)
-    ]);
-    if (!fileInfo.ok) throw fileInfo.error;
+    // Keep the existing sidebar contract and streaming title read. Opening a
+    // native Session just for getStats/name loads the entire historical JSONL.
     return {
       id: item.id,
       path: item.path,
       cwd: item.cwd,
-      created: item.createdAt,
-      modified: new Date(fileInfo.value.mtimeMs).toISOString(),
+      created: new Date(item.createdAt).toISOString(),
+      modified: new Date(item.modifiedAt).toISOString(),
       messageCount: 0,
-      firstMessage
+      firstMessage: await firstUserMessage(item.path)
     };
+  }
+
+  private async belongsToParent(child: JsonlSessionMetadata, parent: JsonlSessionMetadata): Promise<boolean> {
+    if (child.parentSessionId !== undefined) return child.parentSessionId === parent.id;
+    if (child.legacyParentSessionPath === undefined) return false;
+    if (path.resolve(child.legacyParentSessionPath) !== path.resolve(parent.path)) return false;
+    const [legacyPath, parentPath] = await Promise.all([realpath(child.legacyParentSessionPath), realpath(parent.path)]);
+    if (legacyPath !== parentPath) return false;
+    const header = await readSessionHeader(parentPath);
+    if (header.id !== parent.id || path.resolve(header.cwd as string) !== this.workspaceDir) {
+      throw new Error(`Legacy Pi parent identity does not match ${parent.id}.`);
+    }
+    return true;
+  }
+
+  private async openOwned(metadata: JsonlSessionMetadata, child: boolean): Promise<Session<JsonlSessionMetadata>> {
+    const cache = child ? this.childSessions : this.sessions;
+    const existing = cache.get(metadata.id);
+    if (existing) return existing;
+    const opening = (async () => {
+      if (child) {
+        await serializeSessionMigration(metadata.path, async () => {
+          if ((await readSessionHeader(metadata.path)).v !== 4) {
+            await backupLegacySession(metadata.path, await readFile(metadata.path, "utf8"));
+          }
+        });
+      } else await migrateLegacyParentSession(this.workspaceDir, metadata.path);
+      return (child ? this.childRepo : this.repo).open(metadata, BACKGROUND_CONTEXT);
+    })();
+    cache.set(metadata.id, opening);
+    try { return await opening; }
+    catch (error) {
+      if (cache.get(metadata.id) === opening) cache.delete(metadata.id);
+      throw error;
+    }
+  }
+
+  async closeSession(sessionId: string): Promise<void> { await this.closeOwned(sessionId, false); }
+  async closeChildSession(sessionId: string): Promise<void> { await this.closeOwned(sessionId, true); }
+
+  private async closeOwned(sessionId: string, child: boolean): Promise<void> {
+    const cache = child ? this.childSessions : this.sessions;
+    const session = cache.get(sessionId);
+    if (!session) return;
+    await (await session).close(BACKGROUND_CONTEXT);
+    if (cache.get(sessionId) === session) cache.delete(sessionId);
+  }
+
+  async close(): Promise<void> {
+    for (const id of this.sessions.keys()) await this.closeSession(id);
+    for (const id of this.childSessions.keys()) await this.closeChildSession(id);
+    await this.repo.close(BACKGROUND_CONTEXT);
+    await this.childRepo.close(BACKGROUND_CONTEXT);
   }
 
   async readActiveSessionId(): Promise<string> {

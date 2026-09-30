@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -18,7 +19,7 @@ const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-proofread-host-sta
 try {
   const repository = new PiSessionRepository(workspaceDir);
   const session = await repository.create("proofread-owner");
-  const metadata = await session.getMetadata();
+  const metadata = await Promise.resolve(session.metadata);
   const domainRun = createYnDomainRunContract({
     workflowIntent: "proofread",
     fullWorkflow: true,
@@ -216,7 +217,7 @@ try {
     `cold loading retained ${loadDiagnostics.peakRetainedStateCount} reconstructed states`
   );
 
-  const context = await reopened.buildContext();
+  const context = await readSessionConversation(reopened);
   assert.deepEqual(context.messages, [], "Host custom state must not enter the Pi model transcript");
 
   await assert.rejects(

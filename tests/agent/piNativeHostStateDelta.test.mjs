@@ -1,3 +1,4 @@
+import { readSessionConversation, readSessionEntries, appendSessionCustomEntry } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
@@ -17,7 +18,7 @@ const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-host-state-delta-"
 try {
   const repository = new PiSessionRepository(workspaceDir);
   const session = await repository.create("host-state-delta-owner");
-  const metadata = await session.getMetadata();
+  const metadata = await Promise.resolve(session.metadata);
   const sourceLines = Array.from({ length: 1_024 }, (_, index) =>
     `Source row ${index + 1} carries a distinct complete sentence.`
   );
@@ -47,7 +48,7 @@ try {
   await appendYnSessionHostState(session, state);
   await appendYnSessionHostState(session, state);
   assert.equal(
-    (await session.getBranch()).filter((entry) => entry.type === "custom" && entry.customType === "yn.host-state.v2").length,
+    (await readSessionEntries(session)).filter((entry) => entry.type === "custom" && entry.customType === "yn.host-state.v2").length,
     1,
     "persisting an unchanged Host state must not append an empty delta"
   );
@@ -58,17 +59,14 @@ try {
   }
 
   const fileInfo = await stat(metadata.path);
-  const entries = (await readFile(metadata.path, "utf8"))
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
+  const entries = await readSessionEntries(session);
   const hostEntries = entries.filter((entry) => entry.type === "custom" && entry.customType === "yn.host-state.v2");
   assert.equal(hostEntries.length, 65);
   assert.equal(hostEntries.filter((entry) => entry.data?.mode === "checkpoint").length, 1);
   assert.equal(hostEntries.filter((entry) => entry.data?.mode === "delta").length, 64);
   assert.ok(
-    fileInfo.size < fullSnapshotBytes * 16,
-    `incremental Host persistence must remain bounded; JSONL=${fileInfo.size}, full=${fullSnapshotBytes}`
+    hostEntries.reduce((bytes, entry) => bytes + Buffer.byteLength(JSON.stringify(entry.data)), 0) < fullSnapshotBytes * 16,
+    `incremental Host payload must remain bounded inside native v4 transactions; JSONL=${fileInfo.size}, full=${fullSnapshotBytes}`
   );
 
   const reopened = await repository.open(metadata.id);
@@ -77,18 +75,18 @@ try {
     restored?.translationAlignment.ranges["chapter.txt"][0].checks[63 % scope.checks.length].reason,
     "accepted mutation 64"
   );
-  assert.deepEqual((await reopened.buildContext()).messages, []);
+  assert.deepEqual((await readSessionConversation(reopened)).messages, []);
 
   console.log("ok Pi Host state uses bounded checkpoint-plus-delta persistence and reloads exactly");
 
   const legacySession = await repository.create("host-state-contract-migration-owner");
-  const legacyMetadata = await legacySession.getMetadata();
+  const legacyMetadata = await Promise.resolve(legacySession.metadata);
   const legacyScope = structuredClone(scope);
   legacyScope.checks.forEach((check, index) => {
     check.verdict = index === 0 ? "misaligned" : "aligned";
     check.reason = index === 0 ? "known alignment debt" : "legacy selected-only acceptance";
   });
-  await legacySession.appendCustomEntry("yn.host-state.v1", {
+  await appendSessionCustomEntry(legacySession, "yn.host-state.v1", {
     schemaVersion: 1,
     ownerSessionId: legacyMetadata.id,
     proofread: createProofreadHostState(),
@@ -107,7 +105,7 @@ try {
     migratedChecks.slice(1).every((check) => check.verdict === undefined && check.reason === undefined),
     "cold contract migration must retain known failures but make legacy accepted review evidence pending"
   );
-  const migratedBranch = await legacySession.getBranch();
+  const migratedBranch = await readSessionEntries(legacySession);
   const migratedHostEntries = migratedBranch.filter((entry) => (
     entry.type === "custom" && entry.customType === "yn.host-state.v2"
   ));
@@ -115,15 +113,15 @@ try {
   assert.equal(migratedHostEntries[0].data?.mode, "checkpoint");
   assert.equal(migratedHostEntries[0].data?.runtimeContractVersion, YN_RUNTIME_CONTRACT_VERSION);
 
-  const beforeSecondLoad = (await legacySession.getBranch()).length;
+  const beforeSecondLoad = (await readSessionEntries(legacySession)).length;
   await loadYnSessionHostState(legacySession, legacyMetadata.id);
   assert.equal(
-    (await legacySession.getBranch()).length,
+    (await readSessionEntries(legacySession)).length,
     beforeSecondLoad,
     "current Host behavior contract must not rewrite a session again on every cold load"
   );
 
-  await legacySession.appendCustomEntry("yn.host-state.v1", {
+  await appendSessionCustomEntry(legacySession, "yn.host-state.v1", {
     schemaVersion: 1,
     ownerSessionId: legacyMetadata.id,
     proofread: createProofreadHostState(),

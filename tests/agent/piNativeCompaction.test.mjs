@@ -1,3 +1,4 @@
+import { readSessionConversation, readSessionEntries, appendSessionMessage } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -21,8 +22,8 @@ function userMessage(text) {
 async function seedLongConversation(repository, sessionId, turns = 14) {
   const session = await repository.open(sessionId);
   for (let turn = 0; turn < turns; turn += 1) {
-    await session.appendMessage(userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
-    await session.appendMessage(fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
+    await appendSessionMessage(session, userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
+    await appendSessionMessage(session, fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
   }
 }
 
@@ -82,13 +83,14 @@ try {
     "compacting an inactive session must not take persisted selection ownership"
   );
 
+  await repository.closeSession(created.id);
   const reopened = await repository.open(created.id);
-  const entries = await reopened.getEntries();
+  const entries = await readSessionEntries(reopened);
   const compactions = entries.filter((entry) => entry.type === "compaction");
   assert.equal(compactions.length, 1, "manual compression must persist one native Pi compaction entry");
   assert.equal(compactions[0].summary, result.summary);
 
-  const context = await reopened.buildContext();
+  const context = await readSessionConversation(reopened);
   assert.equal(context.messages[0]?.role, "compactionSummary");
   assert.equal(context.messages[0]?.summary, result.summary);
   assert.ok(context.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("user-13")));
@@ -155,8 +157,9 @@ try {
   ]);
   unsubscribeState();
 
+  await repository.closeSession(created.id);
   const reopened = await repository.open(created.id);
-  assert.equal((await reopened.getEntries()).filter((entry) => entry.type === "compaction").length, 1);
+  assert.equal((await readSessionEntries(reopened)).filter((entry) => entry.type === "compaction").length, 1);
   const runState = await automaticService.getRunState(automaticWorkspace, created.id);
   assert.equal(runState.lastCompaction?.reason, "threshold");
   assert.ok(runState.contextUsage?.tokens < runState.contextUsage?.contextWindow);
@@ -196,10 +199,10 @@ childThresholdModels.setProvider(childThresholdFaux.provider);
 try {
   const repository = new PiSessionRepository(childThresholdWorkspace);
   const session = await repository.create();
-  const metadata = await session.getMetadata();
+  const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 22; turn += 1) {
-    await session.appendMessage(userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
-    await session.appendMessage(fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
+    await appendSessionMessage(session, userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
+    await appendSessionMessage(session, fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
   }
   const runtime = new PiSessionAgentRuntime({
     session,
@@ -213,7 +216,7 @@ try {
 
   await runtime.prompt("Continue this child assignment.");
 
-  const entries = await session.getEntries();
+  const entries = await readSessionEntries(session);
   assert.equal(
     entries.filter((entry) => entry.type === "compaction").length,
     1,
@@ -247,10 +250,10 @@ resetChildModels.setProvider(resetChildFaux.provider);
 try {
   const repository = new PiSessionRepository(resetChildWorkspace);
   const session = await repository.create();
-  const metadata = await session.getMetadata();
+  const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 22; turn += 1) {
-    await session.appendMessage(userMessage(`discarded-user-${turn}: ${"u".repeat(5_000)}`));
-    await session.appendMessage(fauxAssistantMessage(fauxText(`discarded-assistant-${turn}: ${"a".repeat(5_000)}`)));
+    await appendSessionMessage(session, userMessage(`discarded-user-${turn}: ${"u".repeat(5_000)}`));
+    await appendSessionMessage(session, fauxAssistantMessage(fauxText(`discarded-assistant-${turn}: ${"a".repeat(5_000)}`)));
   }
   const runtime = new PiSessionAgentRuntime({
     session,
@@ -266,7 +269,7 @@ try {
 
   await runtime.prompt("Run the next independent child assignment.");
 
-  const entries = await session.getEntries();
+  const entries = await readSessionEntries(session);
   assert.equal(
     entries.filter((entry) => entry.type === "compaction").length,
     0,
@@ -301,12 +304,12 @@ resetChildActiveModels.setProvider(resetChildActiveFaux.provider);
 try {
   const repository = new PiSessionRepository(resetChildActiveWorkspace);
   const session = await repository.create();
-  const metadata = await session.getMetadata();
+  const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 22; turn += 1) {
-    await session.appendMessage(userMessage(`discarded-user-${turn}: ${"u".repeat(5_000)}`));
-    await session.appendMessage(fauxAssistantMessage(fauxText(`discarded-assistant-${turn}: ${"a".repeat(5_000)}`)));
+    await appendSessionMessage(session, userMessage(`discarded-user-${turn}: ${"u".repeat(5_000)}`));
+    await appendSessionMessage(session, fauxAssistantMessage(fauxText(`discarded-assistant-${turn}: ${"a".repeat(5_000)}`)));
   }
-  const discardedEntryIds = new Set((await session.getEntries()).map((entry) => entry.id));
+  const discardedEntryIds = new Set((await readSessionEntries(session)).map((entry) => entry.id));
   const runtime = new PiSessionAgentRuntime({
     session,
     sessionId: metadata.id,
@@ -322,11 +325,11 @@ try {
   await runtime.prompt("Run fresh child turn one.");
   await runtime.prompt("Run fresh child turn two.");
 
-  const activeEntries = await session.getEntries();
+  const activeEntries = await readSessionEntries(session);
   const compaction = activeEntries.find((entry) => entry.type === "compaction");
   assert.ok(compaction, "an oversized active post-reset assignment must still receive native Pi compaction");
   assert.equal(
-    discardedEntryIds.has(compaction.firstKeptEntryId),
+    compaction.retainedTail.some((message) => String(message.content).includes("discarded-")),
     false,
     "post-reset compaction must keep an entry from the active assignment rather than discarded history"
   );
@@ -358,10 +361,10 @@ deferredParentModels.setProvider(deferredParentFaux.provider);
 try {
   const repository = new PiSessionRepository(deferredParentWorkspace);
   const session = await repository.create();
-  const metadata = await session.getMetadata();
+  const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 22; turn += 1) {
-    await session.appendMessage(userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
-    await session.appendMessage(fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
+    await appendSessionMessage(session, userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
+    await appendSessionMessage(session, fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
   }
   let childRunning = true;
   const runtime = new PiSessionAgentRuntime({
@@ -377,7 +380,7 @@ try {
 
   await runtime.prompt("Report the live child state.");
   assert.equal(
-    (await session.getEntries()).filter((entry) => entry.type === "compaction").length,
+    (await readSessionEntries(session)).filter((entry) => entry.type === "compaction").length,
     0,
     "parent threshold compaction must be deferred while a child runtime is active"
   );
@@ -385,7 +388,7 @@ try {
   childRunning = false;
   await runtime.prompt("Continue after the child settles.");
   assert.equal(
-    (await session.getEntries()).filter((entry) => entry.type === "compaction").length,
+    (await readSessionEntries(session)).filter((entry) => entry.type === "compaction").length,
     1,
     "deferred parent threshold compaction must run on the next prompt after children settle"
   );
@@ -450,9 +453,10 @@ try {
   ]);
   unsubscribeState();
 
+  await repository.closeSession(created.id);
   const reopened = await repository.open(created.id);
   assert.equal(
-    (await reopened.getEntries()).filter((entry) => entry.type === "compaction").length,
+    (await readSessionEntries(reopened)).filter((entry) => entry.type === "compaction").length,
     1,
     "context overflow must persist one native Pi compaction entry in the same run"
   );
@@ -498,10 +502,10 @@ successfulOverflowModels.setProvider(successfulOverflowFaux.provider);
 try {
   const repository = new PiSessionRepository(successfulOverflowWorkspace);
   const session = await repository.create();
-  const metadata = await session.getMetadata();
+  const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 2; turn += 1) {
-    await session.appendMessage(userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
-    await session.appendMessage(fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
+    await appendSessionMessage(session, userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
+    await appendSessionMessage(session, fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
   }
   const runtime = new PiSessionAgentRuntime({
     session,
@@ -515,7 +519,7 @@ try {
 
   await runtime.prompt("Return the completed translation answer.");
 
-  const entries = await session.getEntries();
+  const entries = await readSessionEntries(session);
   assert.equal(entries.filter((entry) => entry.type === "compaction").length, 1);
   assert.equal(successfulOverflowFaux.state.callCount, 2, "a successful overflow compacts but must not call Agent.continue()");
   assert.ok(entries.some((entry) => (
@@ -560,10 +564,10 @@ lengthOverflowModels.setProvider(lengthOverflowFaux.provider);
 try {
   const repository = new PiSessionRepository(lengthOverflowWorkspace);
   const session = await repository.create();
-  const metadata = await session.getMetadata();
+  const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 4; turn += 1) {
-    await session.appendMessage(userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
-    await session.appendMessage(fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
+    await appendSessionMessage(session, userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
+    await appendSessionMessage(session, fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
   }
   const runtime = new PiSessionAgentRuntime({
     session,
@@ -576,7 +580,7 @@ try {
   });
   await runtime.prompt(`Continue after a zero-output length overflow. ${"p".repeat(160_000)}`);
 
-  const entries = await session.getEntries();
+  const entries = await readSessionEntries(session);
   assert.equal(entries.filter((entry) => entry.type === "compaction").length, 1);
   assert.ok(
     lengthOverflowFaux.state.callCount >= 3 && lengthOverflowFaux.state.callCount <= 4,

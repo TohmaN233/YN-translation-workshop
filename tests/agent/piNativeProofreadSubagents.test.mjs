@@ -1,3 +1,5 @@
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -582,7 +584,7 @@ await test("a persistent proofread worker retries its failed block before claimi
   models.setProvider(faux.provider);
   let failedFirstBlock = false;
   const response = (context) => {
-    if (!failedFirstBlock && context.systemPrompt.includes("L1-L2")) {
+    if (!failedFirstBlock && getCurrentSystemPrompt(context.messages).includes("L1-L2")) {
       failedFirstBlock = true;
       throw new Error("retry this proofread block");
     }
@@ -664,7 +666,7 @@ await test("two native Pi proofread children merge strict findings and expose on
   models.setProvider(faux.provider);
   const response = (context) => {
     const toolResults = context.messages.filter((message) => message.role === "toolResult").length;
-    const firstRange = context.systemPrompt.includes("L1-L2");
+    const firstRange = getCurrentSystemPrompt(context.messages).includes("L1-L2");
     if (toolResults === 0) {
       return fauxAssistantMessage(fauxToolCall("readAssignedProofreadContext", {}), { stopReason: "toolUse" });
     }
@@ -983,7 +985,7 @@ await test("parent abort cancels every proofread child before any delayed findin
           if (released) return;
           released = true;
           setTimeout(() => {
-            const firstRange = context.systemPrompt.includes("L1-L2");
+            const firstRange = getCurrentSystemPrompt(context.messages).includes("L1-L2");
             resolve(fauxAssistantMessage(fauxToolCall("writeAssignedFindings", {
               findings: [firstRange ? {
                 id: "M1-101",
@@ -1622,7 +1624,7 @@ await test("a successful findings write terminates the assignment without a toke
     assert.equal(Object.hasOwn(cards.at(-1)?.details || {}, "reply"), false);
     assert.equal(Object.hasOwn(cards.at(-1)?.details || {}, "transcript"), false);
     const child = await new PiSessionRepository(outputDir).openChild(cards.at(-1)?.details?.subagentId);
-    const transcript = (await child.buildContext()).messages;
+    const transcript = (await readSessionConversation(child)).messages;
     assert.ok(transcript.some((message) => (
       message.role === "assistant"
       && Array.isArray(message.content)

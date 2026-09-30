@@ -1,5 +1,8 @@
+import { readSessionContext, readSessionEntries, appendSessionMessage, appendSessionCustomEntry, appendSessionCompaction } from "./sessionAccess.ts";
 import {
   Agent,
+  BACKGROUND_CONTEXT,
+  withAbortSignal,
   calculateContextTokens,
   DEFAULT_COMPACTION_SETTINGS,
   compact as compactSession,
@@ -17,6 +20,8 @@ import {
 } from "@earendil-works/pi-agent-core/node";
 import {
   createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  toToolDeclaration,
   isContextOverflow,
   isRetryableAssistantError,
   type AssistantMessage,
@@ -424,12 +429,16 @@ export class PiSessionAgentRuntime {
   private readonly retrySettings: PiAutoRetrySettings;
   private retryAttempt = 0;
   private retryAbortController?: AbortController;
+  private compactionAbortController?: AbortController;
+  private configuredSystemPrompt: string;
+  private resetBaselinePending = false;
   private readonly deferThresholdCompaction: () => boolean;
   private readonly refreshExpiredProviderAuth?: PiSessionAgentRuntimeOptions["refreshExpiredProviderAuth"];
   private resetContextActive = false;
   private resetContextStartEntryId?: string;
 
   constructor(options: PiSessionAgentRuntimeOptions) {
+    this.configuredSystemPrompt = options.systemPrompt;
     this.sessionId = options.sessionId;
     this.session = options.session;
     this.models = options.models;
@@ -469,7 +478,7 @@ export class PiSessionAgentRuntime {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    this.initializeTask ??= this.runSessionOperation(() => this.session.buildContext()).then((context) => {
+    this.initializeTask ??= this.runSessionOperation(() => readSessionContext(this.session, { includeFailedAssistant: false })).then((context) => {
       this.agent.state.messages = compactSubagentCards(context.messages);
       this.initialized = true;
     });
@@ -487,6 +496,7 @@ export class PiSessionAgentRuntime {
 
   async prompt(input: string | AgentMessage | AgentMessage[], options?: { images?: ImageContent[] }): Promise<void> {
     await this.initialize();
+    await this.synchronizeSystemPrompt();
     await this.compactBeforePromptIfNeeded();
     const initial = typeof input === "string"
       ? [userMessage(input, options?.images)]
@@ -564,7 +574,7 @@ export class PiSessionAgentRuntime {
 
   async appendCustomEntry(customType: string, data: unknown): Promise<void> {
     await this.runSessionOperation(async () => {
-      await this.session.appendCustomEntry(customType, data);
+      await appendSessionCustomEntry(this.session, customType, data);
     });
   }
 
@@ -575,7 +585,7 @@ export class PiSessionAgentRuntime {
     details?: unknown;
   }> {
     if (this.agent.state.isStreaming) throw new Error("compact() requires an idle Pi Agent");
-    const fullBranchEntries = await this.runSessionOperation(() => this.session.getBranch());
+    const fullBranchEntries = await this.runSessionOperation(() => readSessionEntries(this.session));
     let branchEntries = fullBranchEntries;
     if (this.resetContextActive) {
       if (!this.resetContextStartEntryId) throw new Error("Nothing to compact");
@@ -588,25 +598,32 @@ export class PiSessionAgentRuntime {
     const preparationResult = prepareCompaction(branchEntries, DEFAULT_COMPACTION_SETTINGS);
     if (!preparationResult.ok) throw preparationResult.error;
     if (!preparationResult.value) throw new Error("Nothing to compact");
-    const result = await compactSession(
-      preparationResult.value,
-      this.models,
-      this.agent.state.model,
-      customInstructions,
-      undefined,
-      this.agent.state.thinkingLevel
-    );
+    const controller = new AbortController();
+    this.compactionAbortController = controller;
+    let result;
+    try {
+      result = await compactSession(
+        preparationResult.value,
+        this.models,
+        this.agent.state.model,
+        customInstructions,
+        this.agent.state.thinkingLevel,
+        undefined,
+        undefined,
+        withAbortSignal(controller.signal, BACKGROUND_CONTEXT)
+      );
+    } finally {
+      if (this.compactionAbortController === controller) this.compactionAbortController = undefined;
+    }
     if (!result.ok) throw result.error;
-    await this.runSessionOperation(() => this.session.appendCompaction(
-      result.value.summary,
-      result.value.firstKeptEntryId,
-      result.value.tokensBefore,
-      result.value.details
-    ));
-    const context = await this.runSessionOperation(() => this.session.buildContext());
+    const entryId = await this.runSessionOperation(() => appendSessionCompaction(this.session, result.value));
+    const context = await this.runSessionOperation(() => readSessionContext(this.session, { includeFailedAssistant: false }));
     this.agent.state.messages = compactSubagentCards(context.messages);
+    await this.synchronizeSystemPrompt();
     this.initialized = true;
-    return result.value;
+    // The v4 retained tail belongs to this native compaction entry. Keep the
+    // existing IPC field as a reference to that owner, without fabricating a v3 cut.
+    return { ...result.value, firstKeptEntryId: entryId };
   }
 
   getModel(): Model<any> {
@@ -629,8 +646,14 @@ export class PiSessionAgentRuntime {
     if (this.phase !== "idle" || this.agent.state.isStreaming) {
       throw new Error("Pi runtime can only be reconfigured while idle.");
     }
-    this.agent.state.systemPrompt = options.systemPrompt;
+    this.configuredSystemPrompt = options.systemPrompt;
     this.agent.state.tools = options.tools;
+    if (this.resetBaselinePending) {
+      this.agent.state.messages = [{
+        role: "system", content: "", sections: { yn: this.configuredSystemPrompt },
+        toolsAdded: this.agent.state.tools.map(toToolDeclaration), timestamp: Date.now()
+      }];
+    }
   }
 
   resetContext(): void {
@@ -646,6 +669,17 @@ export class PiSessionAgentRuntime {
       throw new Error("Pi runtime context cannot reset while queued user input is pending.");
     }
     this.agent.reset();
+    // Agent.reset() keeps the replayed baseline. A persistent worker may have
+    // reconfigured for its next assignment immediately before reset, so replace
+    // that baseline now; old assignment instructions must not remain in context.
+    this.agent.state.messages = [{
+      role: "system",
+      content: "",
+      sections: { yn: this.configuredSystemPrompt },
+      toolsAdded: this.agent.state.tools.map(toToolDeclaration),
+      timestamp: Date.now()
+    }];
+    this.resetBaselinePending = true;
     this.initialized = true;
     this.resetContextActive = true;
     this.resetContextStartEntryId = undefined;
@@ -656,6 +690,7 @@ export class PiSessionAgentRuntime {
     const clearedFollowUp = this.queuedFollowUp.splice(0);
     this.agent.clearAllQueues();
     this.retryAbortController?.abort(new Error("Retry cancelled"));
+    this.compactionAbortController?.abort(new Error("Compaction cancelled"));
     this.agent.abort();
     await this.emitQueueUpdate();
     await this.agent.waitForIdle();
@@ -683,6 +718,7 @@ export class PiSessionAgentRuntime {
 
   dispose(): void {
     this.retryAbortController?.abort(new Error("Runtime disposed"));
+    this.compactionAbortController?.abort(new Error("Runtime disposed"));
     // A runtime can be replaced after Pi emits `settled` but while its outer
     // prompt task is still finalizing. Always abort the native Agent before
     // detaching listeners so no provider stream can outlive its owner.
@@ -697,7 +733,7 @@ export class PiSessionAgentRuntime {
       this.overflowRecoveryAttempted = false;
     }
     if (event.type === "message_end") {
-      const entryId = await this.runSessionOperation(() => this.session.appendMessage(event.message));
+      const entryId = await this.runSessionOperation(() => appendSessionMessage(this.session, event.message));
       this.captureResetContextStart(entryId);
       if (event.message.role === "assistant") {
         this.lastAssistantMessage = event.message;
@@ -815,7 +851,7 @@ export class PiSessionAgentRuntime {
     if (this.deferThresholdCompaction()) return;
     const messages = this.resetContextActive
       ? this.agent.state.messages
-      : (await this.runSessionOperation(() => this.session.buildContext())).messages;
+      : (await this.runSessionOperation(() => readSessionContext(this.session))).messages;
     const tokens = estimateContextTokens(messages).tokens;
     const model = this.agent.state.model;
     if (!shouldCompact(tokens, model.contextWindow, DEFAULT_COMPACTION_SETTINGS)) return;
@@ -881,7 +917,7 @@ export class PiSessionAgentRuntime {
           this.agent.state.messages = messages.slice(0, -1);
         }
       }
-      const context = await this.runSessionOperation(() => this.session.buildContext());
+      const context = await this.runSessionOperation(() => readSessionContext(this.session));
       const estimatedTokensAfter = estimateContextTokens(context.messages).tokens;
       const result: PiSessionCompactionResult = {
         reason,
@@ -914,9 +950,32 @@ export class PiSessionAgentRuntime {
   }
 
   private async persistExternalMessage(message: AgentMessage): Promise<void> {
-    const entryId = await this.runSessionOperation(() => this.session.appendMessage(message));
+    const entryId = await this.runSessionOperation(() => appendSessionMessage(this.session, message));
     this.captureResetContextStart(entryId);
     if (this.initialized) this.agent.state.messages = [...this.agent.state.messages, message];
+  }
+
+  private async synchronizeSystemPrompt(): Promise<void> {
+    const messages = this.agent.state.messages;
+    if (this.resetBaselinePending) {
+      const baseline = messages[0];
+      if (!baseline || baseline.role !== "system") throw new Error("Pi reset baseline is missing.");
+      const id = await this.runSessionOperation(() => appendSessionMessage(this.session, baseline));
+      this.captureResetContextStart(id);
+      this.resetBaselinePending = false;
+      return;
+    }
+    const hasSystem = messages.some((message) => message.role === "system");
+    if (hasSystem && getCurrentSystemPrompt(messages) === this.configuredSystemPrompt) return;
+    const message: AgentMessage = {
+      role: "system",
+      content: "",
+      sections: { yn: this.configuredSystemPrompt },
+      ...(!hasSystem ? { toolsAdded: this.agent.state.tools.map(toToolDeclaration) } : {}),
+      timestamp: Date.now()
+    };
+    await this.runSessionOperation(() => appendSessionMessage(this.session, message));
+    this.agent.state.messages = hasSystem ? [...messages, message] : [message, ...messages];
   }
 
   private captureResetContextStart(entryId: string): void {

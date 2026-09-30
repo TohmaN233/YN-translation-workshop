@@ -1,3 +1,5 @@
+import { readSessionContext, appendSessionMessage } from "./sessionAccess.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/node";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -441,7 +443,8 @@ export class PiNativeSessionService {
       const sessionId = `pi_${randomUUID()}`;
       const session = await repository.create(sessionId);
       await repository.writeActiveSessionId(sessionId);
-      const summary = await repository.summaryForMetadata(await session.getMetadata());
+      const summary = await repository.summaryForMetadata(session.metadata);
+      await repository.closeSession(sessionId);
       this.emitState(workspaceDir, this.idleState(sessionId), true);
       return summary;
     });
@@ -473,6 +476,7 @@ export class PiNativeSessionService {
         if (active?.compacting) throw new Error("Wait for native Pi compaction before deleting this session.");
         active?.unsubscribe();
         active?.runtime.dispose();
+        await active?.session.close(BACKGROUND_CONTEXT);
         this.active.delete(key);
         this.events.delete(key);
 
@@ -502,17 +506,24 @@ export class PiNativeSessionService {
     if (!sessionId) return [];
     return this.withSessionTransition(workspaceDir, sessionId, async () => {
       const key = sessionKey(workspaceDir, sessionId);
-      const session = await new PiSessionRepository(workspaceDir).open(sessionId);
-      const messages = compactSubagentCards((await session.buildContext()).messages.map(piWebDisplayMessage));
-      const interrupted = interruptedSubagentCards(
-        messages,
-        Date.now(),
-        ownedSubagentIds(this.active.get(key))
-      );
-      for (const message of interrupted) await session.appendMessage(message);
-      return interrupted.length > 0
-        ? compactSubagentCards([...messages, ...interrupted])
-        : messages;
+      const active = this.active.get(key);
+      const repository = new PiSessionRepository(workspaceDir);
+      const session = active?.session ?? await repository.open(sessionId);
+      try {
+        const messages = compactSubagentCards((await readSessionContext(session)).messages
+          .filter((message) => message.role !== "system").map(piWebDisplayMessage));
+        const interrupted = interruptedSubagentCards(
+          messages,
+          Date.now(),
+          ownedSubagentIds(this.active.get(key))
+        );
+        for (const message of interrupted) await appendSessionMessage(session, message);
+        return interrupted.length > 0
+          ? compactSubagentCards([...messages, ...interrupted])
+          : messages;
+      } finally {
+        if (!active) await repository.closeSession(sessionId);
+      }
     });
   }
 
@@ -523,7 +534,8 @@ export class PiNativeSessionService {
   ): Promise<AgentMessage[]> {
     const repository = new PiSessionRepository(workspaceDir);
     const child = await repository.openChildForParent(childSessionId, parentSessionId);
-    return (await child.buildContext()).messages.map(piWebDisplayMessage);
+    try { return (await readSessionContext(child)).messages.filter((message) => message.role !== "system").map(piWebDisplayMessage); }
+    finally { await repository.closeChildSession(childSessionId); }
   }
 
   listRecentEvents(workspaceDir: string, sessionId: string, afterSequence = 0): PiSessionEventEnvelope[] {
@@ -761,6 +773,7 @@ export class PiNativeSessionService {
       for (const [key, active] of sessions) {
         active.unsubscribe();
         active.runtime.dispose();
+        await active.session.close(BACKGROUND_CONTEXT);
         this.active.delete(key);
         this.events.delete(key);
       }
@@ -778,7 +791,24 @@ export class PiNativeSessionService {
     }
     const queuedCarryover = previous ? orderedQueuedMessages(previous).map((entry) => entry.message) : [];
     const repository = new PiSessionRepository(request.outputDir);
-    const session = await repository.open(request.sessionId);
+    const session = previous?.session ?? await repository.open(request.sessionId);
+    try {
+      return await this.prepareOwnedRuntime(request, purpose, previous, session, queuedCarryover);
+    } catch (error) {
+      // A failed provider/tool preparation never transfers this new handle to
+      // the active owner. Keep an existing owner's session usable on rejection.
+      if (!previous) await session.close(BACKGROUND_CONTEXT);
+      throw error;
+    }
+  }
+
+  private async prepareOwnedRuntime(
+    request: PiSessionPromptRequest,
+    purpose: "prompt" | "compaction",
+    previous: ActiveSession | undefined,
+    session: Session,
+    queuedCarryover: AgentMessage[]
+  ): Promise<PreparedRuntime> {
     const persistedHostState = await loadYnSessionHostState(session, request.sessionId);
     const selection = await (this.options.createModelSelection ?? createPiModelSelection)({
       workspaceDir: request.outputDir,
@@ -1541,7 +1571,7 @@ export class PiNativeSessionService {
   ): Promise<PiSessionCompactionResult> {
     try {
       const nativeResult = await active.runtime.compact(customInstructions?.trim() || undefined);
-      const context = await active.session.buildContext();
+      const context = await readSessionContext(active.session);
       const estimatedTokensAfter = estimateContextTokens(context.messages).tokens;
       const model = active.runtime.getModel();
       const contextWindow = model.contextWindow;
@@ -1669,7 +1699,7 @@ export class PiNativeSessionService {
   }
 
   private async refreshContextUsage(active: ActiveSession): Promise<PiSessionContextUsage> {
-    const messages = (await active.session.buildContext()).messages;
+    const messages = (await readSessionContext(active.session)).messages;
     const tokens = estimateContextTokens(messages).tokens;
     const contextWindow = active.runtime.getModel().contextWindow;
     const usage = {

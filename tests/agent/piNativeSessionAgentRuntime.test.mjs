@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 
 import {
@@ -6,7 +7,7 @@ import {
   fauxProvider,
   fauxText
 } from "@earendil-works/pi-ai";
-import { InMemorySessionRepo } from "@earendil-works/pi-agent-core/node";
+import { MemorySessionRepo } from "@earendil-works/pi-agent-core/node";
 
 const { PiSessionAgentRuntime } = await import("../../src/main/agent/piNative/sessionAgentRuntime.ts");
 
@@ -25,7 +26,7 @@ provider.setResponses([
 ]);
 const models = createModels();
 models.setProvider(provider.provider);
-const session = await new InMemorySessionRepo().create({ id: "pi_agent_runtime" });
+const session = await new MemorySessionRepo().create({ id: "pi_agent_runtime" });
 const runtime = new PiSessionAgentRuntime({
   session,
   sessionId: "pi_agent_runtime",
@@ -48,7 +49,7 @@ try {
     timestamp: Date.now()
   });
 
-  const messages = (await session.buildContext()).messages;
+  const messages = (await readSessionConversation(session)).messages;
   assert.deepEqual(messages.map((message) => message.role), ["user", "assistant", "custom", "assistant"]);
   assert.equal(messages[2].display, false);
   assert.equal(completionSeenByModel, true, "native Pi custom completion message was dropped before the provider request");
@@ -70,7 +71,7 @@ try {
 
 console.log("ok Pi session runtime starts an idle parent turn from a native custom message without a fake user message");
 
-const concurrentSession = await new InMemorySessionRepo().create({ id: "pi_agent_runtime_concurrent_writes" });
+const concurrentSession = await new MemorySessionRepo().create({ id: "pi_agent_runtime_concurrent_writes" });
 const concurrentRuntime = new PiSessionAgentRuntime({
   session: concurrentSession,
   sessionId: "pi_agent_runtime_concurrent_writes",
@@ -97,7 +98,7 @@ try {
       timestamp: 2
     })
   ]);
-  const persisted = (await concurrentSession.buildContext()).messages;
+  const persisted = (await readSessionConversation(concurrentSession)).messages;
   assert.deepEqual(
     persisted.map((message) => typeof message.content === "string" ? message.content : ""),
     ["first terminal child card", "second terminal child card"],
@@ -127,7 +128,7 @@ slowProvider.setResponses([
 ]);
 const slowModels = createModels();
 slowModels.setProvider(slowProvider.provider);
-const activeSession = await new InMemorySessionRepo().create({ id: "pi_agent_runtime_active_write" });
+const activeSession = await new MemorySessionRepo().create({ id: "pi_agent_runtime_active_write" });
 const activeRuntime = new PiSessionAgentRuntime({
   session: activeSession,
   sessionId: "pi_agent_runtime_active_write",
@@ -153,7 +154,7 @@ try {
   releaseProvider.resolve();
   await Promise.all([parentTurn, externalWrite]);
   assert.deepEqual(
-    (await activeSession.buildContext()).messages.map((message) => message.role),
+    (await readSessionConversation(activeSession)).messages.map((message) => message.role),
     ["user", "assistant", "custom"],
     "parent messages and terminal child transcript did not share one linear Pi branch"
   );
@@ -173,7 +174,7 @@ terminalProvider.setResponses([
 ]);
 const terminalModels = createModels();
 terminalModels.setProvider(terminalProvider.provider);
-const terminalSession = await new InMemorySessionRepo().create({ id: "pi_agent_runtime_terminal_steer" });
+const terminalSession = await new MemorySessionRepo().create({ id: "pi_agent_runtime_terminal_steer" });
 const terminalRuntime = new PiSessionAgentRuntime({
   session: terminalSession,
   sessionId: "pi_agent_runtime_terminal_steer",
@@ -196,7 +197,7 @@ try {
   const steering = terminalRuntime.steerAndWaitForConsumption("late terminal guidance");
   releaseTerminalPoll.resolve();
   await Promise.all([turn, steering]);
-  const persisted = (await terminalSession.buildContext()).messages;
+  const persisted = (await readSessionConversation(terminalSession)).messages;
   assert.deepEqual(
     persisted.map((message) => message.role),
     ["user", "assistant", "user", "assistant"],
@@ -235,7 +236,7 @@ terminalFollowUpProvider.setResponses([
 ]);
 const terminalFollowUpModels = createModels();
 terminalFollowUpModels.setProvider(terminalFollowUpProvider.provider);
-const terminalFollowUpSession = await new InMemorySessionRepo().create({ id: "pi_agent_runtime_terminal_follow_up" });
+const terminalFollowUpSession = await new MemorySessionRepo().create({ id: "pi_agent_runtime_terminal_follow_up" });
 const terminalFollowUpRuntime = new PiSessionAgentRuntime({
   session: terminalFollowUpSession,
   sessionId: "pi_agent_runtime_terminal_follow_up",
@@ -266,7 +267,7 @@ try {
   await Promise.all([turn, completion]);
   assert.equal(completionReachedProvider, true, "child completion queued at Pi's final poll never reached the parent provider");
   assert.deepEqual(
-    (await terminalFollowUpSession.buildContext()).messages.map((message) => message.role),
+    (await readSessionConversation(terminalFollowUpSession)).messages.map((message) => message.role),
     ["user", "assistant", "custom", "assistant"],
     "terminal child completion was accepted without being consumed and persisted"
   );

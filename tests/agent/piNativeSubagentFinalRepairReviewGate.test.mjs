@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -191,7 +192,7 @@ try {
   assert.equal(candidateLines[1025], translatedLine(1026));
   const childMetadata = await new PiSessionRepository(outputDir).listChildMetadata();
   assert.equal(childMetadata.length, 1, "the same persistent Pi translator must repair and continue the queue");
-  const childContext = await (await new PiSessionRepository(outputDir).openChild(childMetadata[0].id)).buildContext();
+  const childContext = await readSessionConversation(await new PiSessionRepository(outputDir).openChild(childMetadata[0].id));
   const prompts = childContext.messages
     .filter((message) => message.role === "user")
     .flatMap((message) => message.content.filter((block) => block.type === "text").map((block) => block.text));

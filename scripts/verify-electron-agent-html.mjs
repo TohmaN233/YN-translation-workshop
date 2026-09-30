@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 
 import electronPath from "electron";
@@ -21,6 +21,9 @@ async function removeElectronTempDir(directory) {
 }
 
 async function buildVerifier(entryPoint, outputName) {
+  // Bundled verifiers resolve the prescan worker relative to their own bundle,
+  // just as the packaged main process resolves dist/main/proofreadPrescanWorker.js.
+  await copyFile(path.join(root, "dist/main/proofreadPrescanWorker.js"), path.join(tempDir, "proofreadPrescanWorker.js"));
   const outfile = path.join(tempDir, outputName);
   await build({
     absWorkingDir: root,

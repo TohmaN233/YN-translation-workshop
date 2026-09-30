@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
-import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import readline from "node:readline";
+import { isPiChildOf, readPiSessionEntries, readPiSessionHeader } from "./pi-jsonl-entries.mjs";
 
 const sessionPath = process.argv[2] ? path.resolve(process.argv[2]) : undefined;
 const outputDir = process.argv[3] ? path.resolve(process.argv[3]) : undefined;
@@ -32,28 +31,9 @@ const childSessionDir = path.join(
 const previous = new Map();
 const TERMINAL_HOST_TOOLS = new Set(["validateAssignedTranslation", "submitTranslationReview"]);
 
-function normalizedPath(value) {
-  const resolved = path.resolve(value);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-async function readFirstJsonEntry(filePath) {
-  const lines = readline.createInterface({
-    input: createReadStream(filePath, { encoding: "utf8" }),
-    crlfDelay: Infinity
-  });
-  try {
-    for await (const line of lines) {
-      if (line.trim()) return JSON.parse(line);
-    }
-  } finally {
-    lines.close();
-  }
-  return undefined;
-}
-
 async function sessionFiles() {
   const files = [sessionPath];
+  const parentHeader = await readPiSessionHeader(sessionPath);
   let entries = [];
   try {
     entries = await readdir(childSessionDir, { withFileTypes: true });
@@ -63,12 +43,7 @@ async function sessionFiles() {
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
     const filePath = path.join(childSessionDir, entry.name);
-    const header = await readFirstJsonEntry(filePath);
-    if (
-      header?.type === "session"
-      && typeof header.parentSession === "string"
-      && normalizedPath(header.parentSession) === normalizedPath(sessionPath)
-    ) {
+    if (await isPiChildOf(filePath, sessionPath, parentHeader)) {
       files.push(filePath);
     }
   }
@@ -180,15 +155,9 @@ async function analyzeSession(filePath) {
     durableToolDetailsBytes: 0
   };
   const validationResultHashes = new Map();
-  const lines = readline.createInterface({
-    input: createReadStream(filePath, { encoding: "utf8" }),
-    crlfDelay: Infinity
-  });
   let pendingTerminalTool;
   let hiddenRepairActive = false;
-  for await (const line of lines) {
-    if (!line.trim()) continue;
-    const entry = JSON.parse(line);
+  for await (const { entry } of readPiSessionEntries(filePath)) {
     result.latestTimestamp = entry.timestamp ?? result.latestTimestamp;
     if (entry.type === "compaction") result.compactions += 1;
     if (entry.type === "custom") {

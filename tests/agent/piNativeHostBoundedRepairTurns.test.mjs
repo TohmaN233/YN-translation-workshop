@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -104,7 +105,7 @@ try {
   const childId = cards.at(-1)?.details?.subagentId;
   assert.ok(childId, "the completed worker card must reference its native Pi child session");
   const child = await new PiSessionRepository(outputDir).openChild(childId);
-  const messages = (await child.buildContext()).messages;
+  const messages = (await readSessionConversation(child)).messages;
   const userPrompts = messages
     .filter((message) => message.role === "user")
     .map((message) => message.content

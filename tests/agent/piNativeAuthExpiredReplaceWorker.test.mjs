@@ -10,6 +10,7 @@ import {
   fauxToolCall
 } from "@earendil-works/pi-ai";
 import { YnSubagentSupervisor } from "../../src/main/agent/piNative/subagentSupervisor.ts";
+import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
 import { isExpiredProviderAuthError } from "../../src/main/agent/piNative/assignmentFailure.ts";
 
 assert.equal(
@@ -32,6 +33,9 @@ function translationTurn(prefix, translatedText) {
 
 const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-auth-replace-"));
 const sourcePath = path.join(outputDir, "source.txt");
+const repository = new PiSessionRepository(outputDir);
+await repository.create("auth-replace");
+await repository.close();
 await writeFile(sourcePath, "first line\n", "utf8");
 const models = createModels();
 const provider = fauxProvider({ provider: "auth-replace", tokensPerSecond: 10_000 });

@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -67,7 +68,7 @@ try {
   assert.equal(await readFile(candidatePath, "utf8"), "一\n二\n三\n");
   const repository = new PiSessionRepository(outputDir);
   const [child] = await repository.listChildMetadata();
-  const context = await (await repository.openChild(child.id)).buildContext();
+  const context = await readSessionConversation(await repository.openChild(child.id));
   const firstPrompt = context.messages.find((message) => message.role === "user")
     .content.filter((block) => block.type === "text")
     .map((block) => block.text)

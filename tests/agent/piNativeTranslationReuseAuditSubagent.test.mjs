@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -122,7 +123,7 @@ try {
   const children = await new PiSessionRepository(outputDir).listChildMetadata();
   assert.equal(children.length, 1, "one persistent Pi child session must process both audit assignments");
   const child = await new PiSessionRepository(outputDir).openChild(children[0].id);
-  const childMessages = (await child.buildContext()).messages;
+  const childMessages = (await readSessionConversation(child)).messages;
   const firstAuditRead = childMessages.find((message) => (
     message.role === "toolResult" && message.toolName === "readAssignedTranslationAudit"
   ));

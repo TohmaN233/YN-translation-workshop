@@ -1,3 +1,4 @@
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -27,6 +28,7 @@ import {
   createTranslationChunkReviewAudit
 } from "../../src/main/agent/piNative/translationAlignmentState.ts";
 import { YnSubagentSupervisor } from "../../src/main/agent/piNative/subagentSupervisor.ts";
+import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
 import { writeProofreadFindings } from "../../src/main/agent/writeProofreadFindings.ts";
 import {
   prepareTranslationStagingCandidate,
@@ -64,6 +66,9 @@ async function fixture(extraContext = {}, sourceText = "こんにちは {name}\n
     ...(extraContext.requestPatch ?? {})
   };
   const publishCustomMessage = extraContext.publishCustomMessage ?? (async () => {});
+  const repository = new PiSessionRepository(outputDir);
+  await repository.create(request.sessionId);
+  await repository.close();
   const subagents = extraContext.subagents ?? new YnSubagentSupervisor({
     publishCustomMessage,
     createModelSelection: extraContext.createSubagentModelSelection
@@ -2318,7 +2323,7 @@ await test("prompt-defined translation repairs preserve exact local objectives a
   let repairCoachingPrompt = "";
   const response = (context) => {
     const toolResultMessages = context.messages.filter((message) => message.role === "toolResult");
-    if (context.systemPrompt.includes("general-purpose native Pi subagent")) {
+    if (getCurrentSystemPrompt(context.messages).includes("general-purpose native Pi subagent")) {
       return toolResultMessages.length === 0
         ? fauxAssistantMessage(fauxToolCall("listProjectDir", { path: "." }), { stopReason: "toolUse" })
         : fauxAssistantMessage(fauxText("已定位第 3 行并返回证据。"));
@@ -3662,7 +3667,16 @@ await test("large translation alignment reviews every mechanical risk plus a bou
 
     const reviewRows = await execute(fx.tool("readTranslationAlignmentRows"));
     assert.equal(reviewRows.details.selectedLineCount, 19);
-    assert.ok(reviewRows.details.windows.every((window) => window.rows.length <= 23));
+    // Nearby deterministic samples merge their context windows. Their combined
+    // span can exceed 23 rows without expanding beyond the selected ±2 context.
+    const reviewLines = reviewRows.details.windows.flatMap((window) => window.rows.map((row) => row.line));
+    assert.equal(new Set(reviewLines).size, reviewLines.length, "merged context must not duplicate rows");
+    assert.ok(reviewLines.length <= audit.details.pendingCount * 5, "review remains bounded by selected context");
+    assert.ok(audit.details.pendingLines.every((line) => reviewLines.includes(line)));
+    assert.ok(reviewLines.every((line) => audit.details.pendingLines.some((selected) => Math.abs(line - selected) <= 2)),
+      "context must remain within two lines of an actual selected review row");
+    const repeatedRows = await execute(fx.tool("readTranslationAlignmentRows"));
+    assert.deepEqual(repeatedRows.details.windows, reviewRows.details.windows, "hash-current sample/context must be stable");
     await assert.rejects(
       execute(fx.tool("readSourceLines"), { fromLine: 1, toLine: 240 }),
       /alignment rows|active alignment review|bounded review reader/i
@@ -6860,7 +6874,7 @@ await test("two Host-planned ranges launch two native Pi child runtimes and clos
   const response = async (context) => {
     const toolResultMessages = context.messages.filter((message) => message.role === "toolResult");
     const toolResults = toolResultMessages.length;
-    if (context.systemPrompt.includes("translation safety reviewer")) {
+    if (getCurrentSystemPrompt(context.messages).includes("translation safety reviewer")) {
       if (toolResults === 0) {
         activeReviewReads += 1;
         maximumConcurrentReviewReads = Math.max(maximumConcurrentReviewReads, activeReviewReads);
@@ -6877,7 +6891,7 @@ await test("two Host-planned ranges launch two native Pi child runtimes and clos
       }
       return fauxAssistantMessage(fauxText("Review accepted."));
     }
-    const firstRange = context.systemPrompt.includes("L1-L1");
+    const firstRange = getCurrentSystemPrompt(context.messages).includes("L1-L1");
     if (toolResults === 0) {
       return fauxAssistantMessage(fauxToolCall("readAssignedSource", {}), { stopReason: "toolUse" });
     }

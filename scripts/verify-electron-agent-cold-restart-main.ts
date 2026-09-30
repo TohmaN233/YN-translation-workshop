@@ -1,3 +1,4 @@
+import { readSessionEntries, appendSessionMessage } from "../tests/helpers/pi-session.mjs";
 import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -96,7 +97,7 @@ async function seed(): Promise<void> {
   });
   const repository = new PiSessionRepository(workspace);
   const session = await repository.create(sessionId);
-  await session.appendMessage({
+  await appendSessionMessage(session, {
     role: "custom",
     customType: "subagent.translation",
     content: "Worker 1 is running",
@@ -189,7 +190,7 @@ async function recover(): Promise<void> {
     assert(!runState.running && !runState.compacting, `Cold process restart restored a fake run state: ${JSON.stringify(runState)}`);
     await service.loadMessages(workspace, sessionId);
     const recoveredSession = await new PiSessionRepository(workspace).open(sessionId);
-    const terminalEntries = (await recoveredSession.getBranch()).filter((entry) => {
+    const terminalEntries = (await readSessionEntries(recoveredSession)).filter((entry) => {
       if (entry.type !== "message" || entry.message.role !== "custom") return false;
       if (!entry.message.details || typeof entry.message.details !== "object") return false;
       const details = entry.message.details as Record<string, unknown>;

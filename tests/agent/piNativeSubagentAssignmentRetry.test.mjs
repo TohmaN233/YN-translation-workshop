@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -68,7 +69,7 @@ try {
   assert.equal(batch.subagents[0].assignmentCount, 1, "provider recovery must stay inside the current assignment turn");
   const childMessages = (await new PiSessionRepository(outputDir)
     .openChild(batch.subagents[0].id)
-    .then((session) => session.buildContext())).messages;
+    .then((session) => readSessionConversation(session))).messages;
   const childUserPrompts = childMessages
     .filter((message) => message.role === "user")
     .map((message) => message.content

@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -132,7 +133,7 @@ try {
   assert.equal(finalLines[90], candidateLines[90]);
 
   const childId = batch.subagents[0].id;
-  const childContext = await (await new PiSessionRepository(outputDir).openChild(childId)).buildContext();
+  const childContext = await readSessionConversation(await new PiSessionRepository(outputDir).openChild(childId));
   const userPrompts = childContext.messages
     .filter((message) => message.role === "user")
     .flatMap((message) => message.content.filter((block) => block.type === "text").map((block) => block.text));

@@ -1,4 +1,4 @@
-import type { AgentHarnessEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import type { CanonicalCustomPreserveRule } from "../validation/customPreserveRules.ts";
 
@@ -133,7 +133,10 @@ export interface PiSessionCompactionResult {
   details?: unknown;
 }
 
-export type PiSessionRuntimeEvent = AgentHarnessEvent
+export type PiSessionRuntimeEvent = AgentEvent
+  | { type: "settled"; nextTurnCount: number }
+  | { type: "abort"; clearedSteer: AgentMessage[]; clearedFollowUp: AgentMessage[] }
+  | { type: "queue_update"; steer: AgentMessage[]; followUp: AgentMessage[]; nextTurn: AgentMessage[] }
   | {
       type: "auto_retry_start";
       attempt: number;

@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -163,7 +164,7 @@ try {
   assert.match(persistedCards.at(-1).details.resultSummary, /Review-worker-accepted candidate source\.txt L1-L1025.*accepted before queue advance/i);
   const repository = new PiSessionRepository(outputDir);
   const [childMetadata] = await repository.listChildMetadata();
-  const childContext = await (await repository.openChild(childMetadata.id)).buildContext();
+  const childContext = await readSessionConversation(await repository.openChild(childMetadata.id));
   const userPrompts = childContext.messages
     .filter((message) => message.role === "user")
     .map((message) => message.content

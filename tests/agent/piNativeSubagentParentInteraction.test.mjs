@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -146,13 +147,13 @@ try {
     const children = await new PiSessionRepository(workspaceDir).listChildMetadata();
     if (children.length !== 2) return false;
     const transcripts = await Promise.all(children.map(async (child) => (
-      await (await new PiSessionRepository(workspaceDir).openChild(child.id)).buildContext()
+      await readSessionConversation(await new PiSessionRepository(workspaceDir).openChild(child.id))
     ).messages));
     return transcripts.every((transcript) => transcript.some((message) => message.role === "toolResult"));
   }, "two live child Pi JSONL tool results");
   let messages = await service.loadMessages(workspaceDir, session.id);
   assert.equal(messages.filter((message) => message.role === "custom" && message.details?.status === "running").length, 2);
-  const rawContext = await (await new PiSessionRepository(workspaceDir).open(session.id)).buildContext();
+  const rawContext = await readSessionConversation(await new PiSessionRepository(workspaceDir).open(session.id));
   assert.equal(
     rawContext.messages.filter((message) => message.role === "custom" && message.details?.subagentId).length,
     2,

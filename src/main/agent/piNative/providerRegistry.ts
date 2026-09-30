@@ -25,6 +25,7 @@ import {
 } from "../../../shared/agent/providerModels.ts";
 import { isGrokOAuthProvider } from "../../../shared/agent/providerPresets.ts";
 import { applyKnownThinkingContract, listThinkingLevelsForModel } from "../../../shared/agent/thinkingLevels.ts";
+import { PI_LEGACY_CONFIGURED_MODELS } from "../../../shared/agent/piLegacyConfiguredModels.ts";
 import { resolveProviderOAuthAuth } from "../oauthAuthResolver.ts";
 import { readProviderConfig } from "../providerConfigStore.ts";
 import { resolveProviderProxyUrl, runWithProviderProxy } from "../providers/proxyFetch.ts";
@@ -211,17 +212,20 @@ function aliasProvider(
   });
   const getCatalog = (): Model<Api>[] => {
     const catalog = mergeCatalogs(source.getModels() as readonly Model<Api>[], remoteCatalog).map(remap);
-    if (isGrokOAuthProvider(config)) {
+    {
       const existing = new Set(catalog.map((model) => model.id));
       const extras = normalizeExplicitModelIds(config.model, config.models).filter((id) => !existing.has(id));
       const template = catalog.find((model) => model.id.startsWith("grok-4")) ?? catalog[0];
-      if (extras.length > 0 && !template) {
-        throw new Error(`Grok (OAuth) has no Pi xAI catalog model to clone for ${extras.join(", ")}.`);
-      }
-      if (template) {
-        for (const id of extras) {
-          catalog.push(applyKnownThinkingContract({ ...template, id, name: id }));
-        }
+      const supportedApis = new Set(catalog.map((model) => model.api));
+      for (const id of extras) {
+        const legacy = PI_LEGACY_CONFIGURED_MODELS[source.id]?.find((model) => model.id === id);
+        if (!legacy && source.id !== "xai") continue;
+        if (!template) throw new Error(`Pi ${source.id} has no compatible catalog model for configured ID ${id}.`);
+        // xAI moved its native chat adapter to Responses; keep old effort/input
+        // metadata but use the installed adapter. Never add a legacy API.
+        const preserved = legacy ?? { ...template, reasoning: false, thinkingLevelMap: undefined };
+        const api = supportedApis.has(preserved.api) ? preserved.api : template.api;
+        catalog.push(remap(applyKnownThinkingContract({ ...preserved, api, id, name: preserved.name || id })));
       }
     }
     return catalog;
@@ -233,7 +237,7 @@ function aliasProvider(
     headers: source.headers,
     auth: source.auth,
     getModels: getCatalog,
-    refreshModels: source.refreshModels ? async () => source.refreshModels?.() : undefined,
+    refreshModels: source.refreshModels ? async (context) => source.refreshModels?.(context) : undefined,
     stream: (model, context, options) => source.stream(model, context, options),
     streamSimple: (model, context, options) => source.streamSimple(model, context, options)
   };

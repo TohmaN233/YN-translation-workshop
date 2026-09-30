@@ -1,10 +1,11 @@
+import { readSessionConversation, readSessionEntries } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 
 import {
   createModels,
   fauxProvider
 } from "@earendil-works/pi-ai";
-import { InMemorySessionRepo } from "@earendil-works/pi-agent-core/node";
+import { MemorySessionRepo } from "@earendil-works/pi-agent-core/node";
 
 const { DEFAULT_PI_PROVIDER_STREAM_TIMEOUTS, PiSessionAgentRuntime } = await import("../../src/main/agent/piNative/sessionAgentRuntime.ts");
 assert.equal(DEFAULT_PI_PROVIDER_STREAM_TIMEOUTS.inactivityMs, 3_000_000);
@@ -23,7 +24,7 @@ provider.setResponses([
 ]);
 const models = createModels();
 models.setProvider(provider.provider);
-const session = await new InMemorySessionRepo().create({ id: "pi_provider_idle_timeout" });
+const session = await new MemorySessionRepo().create({ id: "pi_provider_idle_timeout" });
 const runtime = new PiSessionAgentRuntime({
   session,
   sessionId: "pi_provider_idle_timeout",
@@ -49,11 +50,11 @@ try {
   if (outcome === "hung") await runtime.abort();
   assert.equal(outcome, "settled", "a provider stream with no events remained running past its inactivity deadline");
 
-  const messages = (await session.buildContext()).messages;
+  const messages = (await readSessionConversation(session)).messages;
   const assistant = messages.findLast((message) => message.role === "assistant");
   assert.equal(assistant?.stopReason, "error");
   assert.match(assistant?.errorMessage ?? "", /provider stream inactivity timeout/i);
-  const timeoutDiagnostic = (await session.getEntries()).find((entry) => (
+  const timeoutDiagnostic = (await readSessionEntries(session)).find((entry) => (
     entry.type === "custom" && entry.customType === "yn_provider_transport_error"
   ));
   assert.equal(timeoutDiagnostic?.data?.sessionId, "pi_provider_idle_timeout");
@@ -100,7 +101,7 @@ websocketProvider.setResponses([
 ]);
 const websocketModels = createModels();
 websocketModels.setProvider(websocketProvider.provider);
-const websocketSession = await new InMemorySessionRepo().create({ id: "pi_provider_websocket_retry" });
+const websocketSession = await new MemorySessionRepo().create({ id: "pi_provider_websocket_retry" });
 const websocketRuntime = new PiSessionAgentRuntime({
   session: websocketSession,
   sessionId: "pi_provider_websocket_retry",
@@ -114,7 +115,7 @@ const websocketRuntime = new PiSessionAgentRuntime({
 });
 try {
   await websocketRuntime.prompt("Recover after a websocket stream error.");
-  const diagnostics = (await websocketSession.getEntries()).filter((entry) => (
+  const diagnostics = (await readSessionEntries(websocketSession)).filter((entry) => (
     entry.type === "custom" && entry.customType === "yn_provider_transport_error"
   ));
   assert.equal(diagnostics.length, 1, "one provider failure must create one durable diagnostic");
@@ -150,7 +151,7 @@ activeProvider.setResponses([
 ]);
 const activeModels = createModels();
 activeModels.setProvider(activeProvider.provider);
-const activeSession = await new InMemorySessionRepo().create({ id: "pi_provider_no_wall_clock_timeout" });
+const activeSession = await new MemorySessionRepo().create({ id: "pi_provider_no_wall_clock_timeout" });
 const activeRuntime = new PiSessionAgentRuntime({
   session: activeSession,
   sessionId: "pi_provider_no_wall_clock_timeout",
@@ -166,7 +167,7 @@ const activeRuntime = new PiSessionAgentRuntime({
 });
 try {
   await activeRuntime.prompt("Finish normally even though this turn takes longer than 30ms.");
-  const assistant = (await activeSession.buildContext()).messages
+  const assistant = (await readSessionConversation(activeSession)).messages
     .findLast((message) => message.role === "assistant");
   assert.equal(assistant?.stopReason, "stop");
   assert.match(JSON.stringify(assistant?.content), /former wall-clock deadline/);
@@ -199,7 +200,7 @@ transientProvider.setResponses([
 ]);
 const transientModels = createModels();
 transientModels.setProvider(transientProvider.provider);
-const transientSession = await new InMemorySessionRepo().create({ id: "pi_provider_transient_retry" });
+const transientSession = await new MemorySessionRepo().create({ id: "pi_provider_transient_retry" });
 const transientRuntime = new PiSessionAgentRuntime({
   session: transientSession,
   sessionId: "pi_provider_transient_retry",
@@ -213,13 +214,13 @@ const transientRuntime = new PiSessionAgentRuntime({
 });
 try {
   await transientRuntime.prompt("Recover this turn without user intervention.");
-  const assistants = (await transientSession.buildContext()).messages
+  const assistants = (await readSessionConversation(transientSession)).messages
     .filter((message) => message.role === "assistant");
   assert.equal(assistants.length, 2, "the failed provider attempt must remain observable in Pi JSONL");
   assert.equal(assistants[0].errorMessage, "fetch failed");
   assert.equal(assistants[1].stopReason, "stop");
   assert.match(JSON.stringify(assistants[1].content), /recovered without another user message/);
-  const diagnostic = (await transientSession.getEntries()).find((entry) => (
+  const diagnostic = (await readSessionEntries(transientSession)).find((entry) => (
     entry.type === "custom" && entry.customType === "yn_provider_transport_error"
   ));
   assert.equal(diagnostic?.data?.sessionId, "pi_provider_transient_retry");
@@ -243,7 +244,7 @@ backoffProvider.setResponses([
 ]);
 const backoffModels = createModels();
 backoffModels.setProvider(backoffProvider.provider);
-const backoffSession = await new InMemorySessionRepo().create({ id: "pi_provider_abort_retry_backoff" });
+const backoffSession = await new MemorySessionRepo().create({ id: "pi_provider_abort_retry_backoff" });
 const backoffRuntime = new PiSessionAgentRuntime({
   session: backoffSession,
   sessionId: "pi_provider_abort_retry_backoff",
@@ -281,7 +282,7 @@ const stubbornProvider = fauxProvider({ provider: "stubborn-provider", tokensPer
 stubbornProvider.setResponses([() => new Promise(() => {})]);
 const stubbornModels = createModels();
 stubbornModels.setProvider(stubbornProvider.provider);
-const stubbornSession = await new InMemorySessionRepo().create({ id: "pi_provider_abort" });
+const stubbornSession = await new MemorySessionRepo().create({ id: "pi_provider_abort" });
 const stubbornRuntime = new PiSessionAgentRuntime({
   session: stubbornSession,
   sessionId: "pi_provider_abort",
@@ -305,7 +306,7 @@ try {
   ]);
   assert.equal(stopped, "stopped", "Stop waited for a provider that ignored its AbortSignal");
   await stubbornTurn;
-  const assistant = (await stubbornSession.buildContext()).messages
+  const assistant = (await readSessionConversation(stubbornSession)).messages
     .findLast((message) => message.role === "assistant");
   assert.equal(assistant?.stopReason, "aborted");
 } finally {

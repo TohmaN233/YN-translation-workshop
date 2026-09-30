@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
-import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import readline from "node:readline";
+import { isPiChildOf, readPiSessionEntries, readPiSessionHeader } from "./pi-jsonl-entries.mjs";
 
 const sessionPath = path.resolve(process.argv[2] || "");
 if (!process.argv[2]) {
@@ -26,11 +25,7 @@ async function analyze(filePath) {
     usage: { input: 0, output: 0, cacheRead: 0 },
     largestEntries: []
   };
-  const lines = readline.createInterface({ input: createReadStream(filePath, { encoding: "utf8" }), crlfDelay: Infinity });
-  for await (const line of lines) {
-    if (!line.trim()) continue;
-    const entry = JSON.parse(line);
-    const lineBytes = byteLength(line);
+  for await (const { entry, bytes: lineBytes } of readPiSessionEntries(filePath)) {
     result.entries += 1;
     result.entryTypes[entry.type] = (result.entryTypes[entry.type] || 0) + 1;
     if (entry.type === "compaction") {
@@ -123,6 +118,7 @@ async function analyze(filePath) {
 }
 
 const parent = await analyze(sessionPath);
+const parentHeader = await readPiSessionHeader(sessionPath);
 const childDir = process.argv[3] ? path.resolve(process.argv[3]) : undefined;
 const children = [];
 if (childDir) {
@@ -130,6 +126,7 @@ if (childDir) {
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
     const filePath = path.join(childDir, entry.name);
+    if (!await isPiChildOf(filePath, sessionPath, parentHeader)) continue;
     const info = await stat(filePath);
     if (info.mtimeMs < Date.parse("2026-08-04T07:00:00Z")) continue;
     children.push(await analyze(filePath));

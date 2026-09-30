@@ -1,3 +1,4 @@
+import { getCurrentTools } from "@earendil-works/pi-ai";
 import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -95,7 +96,7 @@ async function fixture({ largeGlossary = false, largeStyleGuide = false } = {}) 
   const referenceToolAvailability = [];
   provider.setResponses(Array.from({ length: 24 }, () => (context) => {
     referenceToolAvailability.push(
-      context.tools.some((tool) => tool.name === "readProofreadReference")
+      getCurrentTools(context.messages).some((tool) => tool.name === "readProofreadReference")
     );
     const current = currentTurnMessages(context.messages);
     const toolResults = current.filter((message) => message.role === "toolResult");

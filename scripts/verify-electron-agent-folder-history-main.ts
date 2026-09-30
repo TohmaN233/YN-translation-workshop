@@ -1,3 +1,5 @@
+import { getCurrentTools } from "@earendil-works/pi-ai";
+import { readSessionConversation } from "../tests/helpers/pi-session.mjs";
 import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
 import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -548,7 +550,7 @@ function successfulToolCalls(context: Context, name: string): Array<Record<strin
 }
 
 function assignedRange(context: Context): { fromLine: number; toLine: number } {
-  const description = context.tools?.find((tool) => tool.name === "readAssignedSource")?.description ?? "";
+  const description = getCurrentTools(context.messages)?.find((tool) => tool.name === "readAssignedSource")?.description ?? "";
   const match = /L(\d+)-L(\d+)/.exec(description);
   if (!match) throw new Error(`Could not resolve the assigned source range from: ${description}`);
   return { fromLine: Number(match[1]), toLine: Number(match[2]) };
@@ -606,7 +608,7 @@ async function waitForChildren(supervisor: ObservableSupervisor | undefined): Pr
 
 function responseFactory(activeSupervisor: () => ObservableSupervisor | undefined): FauxResponseFactory {
   return async (context) => {
-    const names = new Set(context.tools?.map((tool) => tool.name) ?? []);
+    const names = new Set(getCurrentTools(context.messages)?.map((tool) => tool.name) ?? []);
     if (names.has("readAssignedSource")) {
       const validation = toolResults(context, "validateAssignedTranslation").find((result) => !result.isError);
       if (validation) return fauxAssistantMessage(fauxText("REAL_FOLDER_CHILD_COMPLETE"));
@@ -1269,7 +1271,7 @@ void app.whenReady().then(async () => {
       const bootstrap = await service?.bootstrap(workspace);
       if (bootstrap?.activeSessionId) {
         const session = await new PiSessionRepository(workspace).open(bootstrap.activeSessionId);
-        const context = await session.buildContext();
+        const context = await readSessionConversation(session);
         const toolErrors = context.messages.filter((message): message is ToolResultMessage => (
           message.role === "toolResult" && message.isError
         )).slice(-20).map((message) => ({

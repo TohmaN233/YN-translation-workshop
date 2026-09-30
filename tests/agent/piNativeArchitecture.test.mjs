@@ -86,8 +86,8 @@ await test("product parent and child runtimes are built on Pi core Agent and Pi 
     "new Agent({",
     "convertToLlm,",
     "JsonlSessionRepo",
-    "session.buildContext()",
-    "session.appendMessage(",
+    "readSessionContext(session)",
+    "appendSessionMessage(session,",
     "active.runtime.prompt(",
     "active.runtime.steer(",
     "active.runtime.followUp(",
@@ -102,7 +102,7 @@ await test("product parent and child runtimes are built on Pi core Agent and Pi 
   assert.match(childSupervisor, /openChild\(record\.id\)/);
   assert.match(childSupervisor, /record\.results = \[\]/);
   assert.match(repository, /childRepo = new JsonlSessionRepo\(/);
-  assert.match(repository, /return this\.childRepo\.create\(/);
+  assert.match(repository, /await this\.childRepo\.create\(/);
   for (const forbidden of [
     "new AgentHarness(",
     "harness.prompt(",
@@ -277,7 +277,7 @@ await test("renderer consumes native Pi messages and events without a legacy tra
   const hook = await source("src/renderer/agent/piweb/useAgentSession.ts");
   const contract = await source("src/shared/agent/piSessionContract.ts");
   assert.ok(client.includes("agentSession"));
-  assert.match(contract, /export type PiSessionRuntimeEvent = AgentHarnessEvent/);
+  assert.match(contract, /export type PiSessionRuntimeEvent = AgentEvent/);
   assert.match(contract, /event:\s*PiSessionRuntimeEvent/);
   assert.equal(contract.includes("event: unknown"), false);
   assert.equal(hook.includes("interface NativeHarnessEvent"), false);

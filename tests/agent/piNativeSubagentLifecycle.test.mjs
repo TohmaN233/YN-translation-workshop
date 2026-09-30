@@ -1,3 +1,5 @@
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -160,8 +162,8 @@ await test("general Pi children receive the current approved project style guide
       })
     });
     assert.ok(modelContext, "the general child provider did not receive a model context");
-    assert.match(modelContext.systemPrompt, /Approved style guide/);
-    assert.match(modelContext.systemPrompt, /Preserve restrained narration and precise technical terminology/);
+    assert.match(getCurrentSystemPrompt(modelContext.messages), /Approved style guide/);
+    assert.match(getCurrentSystemPrompt(modelContext.messages), /Preserve restrained narration and precise technical terminology/);
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
@@ -1153,7 +1155,7 @@ await test("successful translation validation is terminal and does not buy a pro
     assert.match(result.resultSummary, /child-validated candidate.*review-worker safety check required/i);
     assert.equal(Object.hasOwn(cards.at(-1)?.details || {}, "transcript"), false);
     const child = await new PiSessionRepository(outputDir).openChild(cards.at(-1)?.details?.subagentId);
-    const transcript = (await child.buildContext()).messages;
+    const transcript = (await readSessionConversation(child)).messages;
     assert.equal(transcript.at(-1)?.role, "toolResult");
     assert.equal(transcript.at(-1)?.toolName, "validateAssignedTranslation");
     assert.equal(transcript.some((message) => (
@@ -2522,8 +2524,8 @@ await test("translation children execute the host-owned Pi prompt and receive va
     assert.match(userPrompt, /Never write progress narration.*generic placeholder prose/s);
     assert.ok(userPrompt.length < 2_800, `translation child prompt is still bloated (${userPrompt.length} chars)`);
     assert.doesNotMatch(userPrompt, /readProjectFile|readSourceLines|writeTranslationChunk/);
-    assert.doesNotMatch(firstContext.systemPrompt, /Current workflow glossary candidates|用語|Alice: calm/);
-    const postReadMessages = JSON.stringify(postReadContext?.messages ?? []);
+    assert.doesNotMatch(getCurrentSystemPrompt(firstContext.messages), /Current workflow glossary candidates|用語|Alice: calm/);
+    const postReadMessages = JSON.stringify((postReadContext?.messages ?? []).filter((message) => message.role !== "system"));
     assert.match(postReadMessages, /Built-in translate-text child workflow/);
     assert.match(postReadMessages, /Translation Child Contract/);
     assert.doesNotMatch(postReadMessages, /Host Tool Sequence|Self-check Before Every Write|Non-Translate Patterns/);
@@ -2621,8 +2623,8 @@ await test("proofreading children receive one aligned host context with the comp
     assert.match(userPrompt, /readAssignedProofreadContext/);
     assert.match(userPrompt, /writeAssignedFindings/);
     assert.doesNotMatch(userPrompt, /readAssignedSource|readAssignedTranslation|readProjectFile/);
-    assert.doesNotMatch(firstContext.systemPrompt, /Current workflow glossary candidates|术语目标|Alice: calm/);
-    const postReadMessages = JSON.stringify(postReadContext?.messages ?? []);
+    assert.doesNotMatch(getCurrentSystemPrompt(firstContext.messages), /Current workflow glossary candidates|术语目标|Alice: calm/);
+    const postReadMessages = JSON.stringify((postReadContext?.messages ?? []).filter((message) => message.role !== "system"));
     assert.match(postReadMessages, /Built-in proofread-translation child workflow/);
     assert.match(postReadMessages, /Proofread Child Task Contract/);
     assert.match(postReadMessages, /H1-001/);

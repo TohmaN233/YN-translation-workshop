@@ -273,7 +273,7 @@ flowchart LR
 
 ## 开发与验证
 
-要求 Node.js `>=22.6.0`。
+要求 Node.js `>=22.19.0`。
 
 ```bash
 npm ci

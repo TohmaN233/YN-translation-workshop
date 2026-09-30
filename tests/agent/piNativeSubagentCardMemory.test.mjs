@@ -1,3 +1,4 @@
+import { appendSessionMessage } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 
 import {
@@ -6,7 +7,7 @@ import {
   fauxProvider,
   fauxText
 } from "@earendil-works/pi-ai";
-import { InMemorySessionRepo } from "@earendil-works/pi-agent-core/node";
+import { MemorySessionRepo } from "@earendil-works/pi-agent-core/node";
 
 import { compactSubagentCards } from "../../src/main/agent/piNative/sessionService.ts";
 import { PiSessionAgentRuntime } from "../../src/main/agent/piNative/sessionAgentRuntime.ts";
@@ -66,10 +67,10 @@ compactionProvider.setResponses([
 ]);
 const models = createModels();
 models.setProvider(compactionProvider.provider);
-const session = await new InMemorySessionRepo().create({ id: "subagent_card_compaction" });
+const session = await new MemorySessionRepo().create({ id: "subagent_card_compaction" });
 for (let turn = 0; turn < 14; turn += 1) {
-  await session.appendMessage({ role: "user", content: [{ type: "text", text: `user-${turn}: ${"u".repeat(5_000)}` }], timestamp: turn * 2 + 1 });
-  await session.appendMessage(fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
+  await appendSessionMessage(session, { role: "user", content: [{ type: "text", text: `user-${turn}: ${"u".repeat(5_000)}` }], timestamp: turn * 2 + 1 });
+  await appendSessionMessage(session, fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
 }
 for (const message of [
   {
@@ -94,7 +95,7 @@ for (const message of [
     timestamp: 101
   }
 ]) {
-  await session.appendMessage(message);
+  await appendSessionMessage(session, message);
 }
 const runtime = new PiSessionAgentRuntime({
   session,

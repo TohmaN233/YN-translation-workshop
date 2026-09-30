@@ -1,8 +1,10 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { BACKGROUND_CONTEXT, JsonlSessionRepo, NodeExecutionEnv, branchTip, insertEntry, insertUsage, setValue, appendList, list }
+  from "@earendil-works/pi-agent-core/node";
 
 function jsonl(entries) {
   return `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
@@ -10,6 +12,62 @@ function jsonl(entries) {
 
 function message(timestamp, body) {
   return { type: "message", timestamp, message: body };
+}
+
+async function nativeFixture(filePath, { parentSessionId, compaction = false } = {}) {
+  const source = (await readFile(filePath, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+  const header = source[0];
+  let now = Date.parse(header.timestamp);
+  const repo = new JsonlSessionRepo({ fileSystem: new NodeExecutionEnv({ cwd: header.cwd }),
+    sessionsRoot: path.join(header.cwd, `native-fixture-${header.id}`), now: () => now });
+  const session = await repo.create({ cwd: header.cwd, id: header.id, parentSessionId }, BACKGROUND_CONTEXT);
+  try {
+    const branch = await session.createBranch("main", null, BACKGROUND_CONTEXT);
+    for (const entry of source.slice(1)) {
+      now = Date.parse(entry.timestamp);
+      if (entry.type === "message") await branch.appendMessage(entry.message, BACKGROUND_CONTEXT);
+      else if (entry.type === "custom") await branch.appendCustomEntry(entry.customType, entry.data, BACKGROUND_CONTEXT);
+      else throw new Error(`Unimplemented native test fixture type: ${entry.type}`);
+    }
+    if (compaction) {
+      now += 1;
+      const id = session.idGenerator.next(now);
+      await session.mutate(async (mutation) => {
+        const tip = await mutation.getValue(branchTip("main"), BACKGROUND_CONTEXT);
+        await mutation.commit([
+          insertEntry({ id, parentId: tip.value, type: "compaction", summary: "native fixture compaction",
+            tokensBefore: 123, fromHook: false,
+            retainedTail: source.filter((entry) => entry.message?.role === "assistant").map((entry) => entry.message) }),
+          setValue(branchTip("main"), id)
+        ], BACKGROUND_CONTEXT);
+      }, BACKGROUND_CONTEXT);
+    }
+    // Native stores usage and lane/checkpoint values separately. These rows
+    // must not become extra messages or duplicate the message's token totals.
+    const diagnosticPayload = { type: "message", message: { role: "assistant", stopReason: "error", errorMessage: "must not count", usage: { totalTokens: 9_999 } } };
+    const separateUsage = { input: 9_999, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 9_999,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    await session.mutate(async (mutation) => mutation.commit([
+      insertUsage({ id: session.idGenerator.next(), usage: separateUsage, adjustment: false }),
+      setValue({ namespace: "pi.pending.entry", key: "ignored", kind: "value" }, diagnosticPayload),
+      appendList(list("pi.pending.assistant_frame", "ignored"), diagnosticPayload)
+    ], BACKGROUND_CONTEXT), BACKGROUND_CONTEXT);
+    await session.setName("single native value transaction", BACKGROUND_CONTEXT);
+    await writeFile(filePath, await readFile(session.metadata.path), "utf8");
+  } finally {
+    await session.close(BACKGROUND_CONTEXT);
+    await repo.close(BACKGROUND_CONTEXT);
+  }
+}
+
+function runMonitor(parentPath, outputDir) {
+  return spawnSync(process.execPath, [path.resolve("scripts/monitor-pi-live-session.mjs"), parentPath, outputDir, "1000", "1"],
+    { cwd: path.resolve("."), encoding: "utf8" });
+}
+
+function runGrowth(parentPath, childDir) {
+  return spawnSync(process.execPath, [path.resolve("scripts/analyze-pi-session-growth.mjs"), parentPath, childDir],
+    { cwd: path.resolve("."), encoding: "utf8" });
 }
 
 const root = await mkdtemp(path.join(os.tmpdir(), "yn-pi-session-monitor-"));
@@ -42,7 +100,7 @@ try {
   message("2026-08-12T00:00:00.200Z", {
     role: "assistant",
     stopReason: "toolUse",
-    content: [],
+    content: [{ type: "toolCall", id: "inspect-call", name: "inspectSubagents", arguments: { childSessionId: "owned-child" } }],
     usage: { input: 4, output: 1, cacheRead: 0, totalTokens: 5 }
   }),
   message("2026-08-12T00:00:00.300Z", {
@@ -225,6 +283,81 @@ try {
   assert.ok(report.totals.alerts.includes("synthetic_zero_count_reconciliations:1"));
   assert.ok(report.totals.alerts.includes("completion_state_contradictions:1"));
   console.log("ok live Pi monitoring isolates one parent run and reports transport, token, tool, terminal, and review-evidence anomalies");
+
+  const legacyGrowthRun = runGrowth(parentPath, childDir);
+  assert.equal(legacyGrowthRun.status, 0, legacyGrowthRun.stderr);
+  const legacyGrowth = JSON.parse(legacyGrowthRun.stdout);
+  assert.equal(legacyGrowth.children.length, 1);
+  await nativeFixture(parentPath, { compaction: true });
+  await nativeFixture(ownedChildPath, { parentSessionId: "parent-monitor" });
+  await nativeFixture(foreignChildPath, { parentSessionId: "foreign-parent" });
+  const nativeBytes = await readFile(parentPath, "utf8");
+  const nativeRun = runMonitor(parentPath, outputDir);
+  assert.equal(nativeRun.status, 0, nativeRun.stderr);
+  const nativeReport = JSON.parse(nativeRun.stdout.trim());
+  assert.equal(nativeReport.sessions, 2);
+  const { bytes: legacySize, ...legacyMetrics } = report.totals;
+  const { bytes: nativeSize, ...nativeMetrics } = nativeReport.totals;
+  assert.deepEqual(nativeMetrics, { ...legacyMetrics, compactions: 1 },
+    "native messages must produce all the same token, error, tool and review metrics without retained-tail/usage/value duplication");
+  const nativeGrowthRun = runGrowth(parentPath, childDir);
+  assert.equal(nativeGrowthRun.status, 0, nativeGrowthRun.stderr);
+  const nativeGrowth = JSON.parse(nativeGrowthRun.stdout);
+  assert.equal(nativeGrowth.children.length, 1);
+  assert.deepEqual(nativeGrowth.parent.roles, legacyGrowth.parent.roles);
+  assert.deepEqual(nativeGrowth.parent.usage, legacyGrowth.parent.usage);
+  assert.deepEqual(nativeGrowth.parent.toolCalls, legacyGrowth.parent.toolCalls);
+  assert.equal(nativeGrowth.parent.toolCalls.inspectSubagents.count, 1);
+  assert.ok(nativeGrowth.parent.toolCalls.inspectSubagents.argumentBytes > 0);
+  assert.deepEqual(nativeGrowth.children[0].roles, legacyGrowth.children[0].roles);
+  assert.deepEqual(nativeGrowth.children[0].usage, legacyGrowth.children[0].usage);
+  assert.deepEqual(nativeGrowth.children[0].toolResults, legacyGrowth.children[0].toolResults);
+  assert.equal(nativeGrowth.parent.compactions.length, 1);
+  assert.equal(nativeGrowth.parent.compactions[0].tokensBefore, 123);
+  assert.equal(nativeGrowth.parent.entries, legacyGrowth.parent.entries + 1);
+  assert.equal(nativeGrowth.parent.entryTypes.usage, undefined);
+  assert.equal(nativeGrowth.parent.entryTypes.value, undefined);
+  assert.equal(nativeGrowth.parent.entryTypes.list, undefined);
+  assert.equal(await readFile(parentPath, "utf8"), nativeBytes, "diagnostic reads must not rewrite native files");
+  console.log("ok native v4 diagnostic transactions preserve metrics and child ownership without duplicate retained-tail or storage rows");
+
+  // Legacy fallback metadata may coexist with a native header. A conflicting
+  // explicit ID remains authoritative and cannot be bypassed by that path.
+  const foreignLines = (await readFile(foreignChildPath, "utf8")).trimEnd().split("\n");
+  const foreignHeader = JSON.parse(foreignLines[0]);
+  foreignHeader.legacyParentSessionPath = parentPath;
+  foreignLines[0] = JSON.stringify(foreignHeader);
+  await writeFile(foreignChildPath, `${foreignLines.join("\n")}\n`);
+  const conflictingRun = runMonitor(parentPath, outputDir);
+  assert.equal(conflictingRun.status, 0, conflictingRun.stderr);
+  assert.equal(JSON.parse(conflictingRun.stdout).sessions, 2);
+  delete foreignHeader.parentSessionId;
+  foreignLines[0] = JSON.stringify(foreignHeader);
+  await writeFile(foreignChildPath, `${foreignLines.join("\n")}\n`);
+  const fallbackRun = runMonitor(parentPath, outputDir);
+  assert.equal(fallbackRun.status, 0, fallbackRun.stderr);
+  assert.equal(JSON.parse(fallbackRun.stdout).sessions, 3);
+
+  for (const malformed of [
+    nativeBytes.replace('"v":4', '"v":5'),
+    `${nativeBytes}${nativeBytes.trimEnd().split("\n")[1]}\n`,
+    `${nativeBytes}${JSON.stringify({ type: "message", timestamp: "2026-08-12T00:00:15Z", message: { role: "assistant" } })}\n`,
+    `${nativeBytes}${JSON.stringify({ kind: "entry", seq: 999, timestamp: 1, id: "bad-parent", parentId: "missing", type: "message", message: { role: "user", content: "bad" } })}\n`
+  ]) {
+    await writeFile(parentPath, malformed);
+    const invalidMonitor = runMonitor(parentPath, outputDir);
+    assert.notEqual(invalidMonitor.status, 0);
+    assert.match(invalidMonitor.stderr, /Unsupported Pi session format|Invalid Pi JSONL/);
+    const invalidGrowth = runGrowth(parentPath, childDir);
+    assert.notEqual(invalidGrowth.status, 0);
+    assert.match(invalidGrowth.stderr, /Unsupported Pi session format|Invalid Pi JSONL/);
+  }
+  await writeFile(parentPath, `${nativeBytes}{"kind":"entry"`);
+  const inFlightRun = runMonitor(parentPath, outputDir);
+  assert.equal(inFlightRun.status, 0, inFlightRun.stderr);
+  assert.equal(JSON.parse(inFlightRun.stdout).totals.compactions, 1);
+  assert.equal(await readFile(parentPath, "utf8"), `${nativeBytes}{"kind":"entry"`);
+  console.log("ok diagnostics reject malformed formats/transactions and observe only complete live records without rewriting EOF");
 } finally {
   await rm(root, { recursive: true, force: true });
 }

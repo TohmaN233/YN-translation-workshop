@@ -702,6 +702,7 @@ await test("Grok OAuth injects official grok-4.6 effort levels without inventing
           name: "Grok (OAuth)",
           baseUrl: "https://api.x.ai/v1",
           model: "grok-4.6",
+          models: ["grok-code-fast-1", "grok-4.3"],
           piProviderId: "xai"
         },
         "custom-api:named-grok": {

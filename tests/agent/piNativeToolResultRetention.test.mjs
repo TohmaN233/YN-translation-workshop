@@ -1,3 +1,4 @@
+import { readSessionConversation, appendSessionMessage } from "../helpers/pi-session.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -31,13 +32,13 @@ async function lane(name, makeCall, verify, maxRetainedMiB = 32) {
   const baseline = process.memoryUsage().heapUsed;
   for (let i = 0; i < iterations; i++) {
     const result = await call(i);
-    await session.appendMessage({ role: "toolResult", toolCallId: `${name}-${i}`, toolName: name,
+    await appendSessionMessage(session, { role: "toolResult", toolCallId: `${name}-${i}`, toolName: name,
       ...result, isError: false, timestamp: Date.now() });
   }
   global.gc();
   const retainedMiB = (process.memoryUsage().heapUsed - baseline) / 1024 ** 2;
   // Keep the real Pi history reachable during measurement, as persistent workers do.
-  const messages = (await session.buildContext()).messages;
+  const messages = (await readSessionConversation(session)).messages;
   assert.equal(messages.length, iterations);
   await verify?.(messages);
   console.log(`${name}: ${retainedMiB.toFixed(1)} MiB retained for ${iterations} small results`);

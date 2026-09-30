@@ -4,6 +4,7 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
+import { PI_LEGACY_CONFIGURED_MODELS } from "../../src/shared/agent/piLegacyConfiguredModels.ts";
 import { listModelsForProvider } from "../../src/shared/agent/providerModels.ts";
 import { getProviderDescriptor, PROVIDER_PRESETS } from "../../src/shared/agent/providerPresets.ts";
 import {
@@ -116,8 +117,9 @@ await test("thinking levels follow each model's official effort contract", () =>
   assert.deepEqual(listThinkingLevelsForModel(grok45), ["low", "medium", "high"]);
   assert.equal(resolveThinkingLevelForModel(grok45, "xhigh"), "high");
 
-  const grokFast = xaiProvider().getModels().find((model) => model.id === "grok-code-fast-1");
-  const grok43 = xaiProvider().getModels().find((model) => model.id === "grok-4.3");
+  const grokModels = [...xaiProvider().getModels(), ...PI_LEGACY_CONFIGURED_MODELS.xai].map(applyKnownThinkingContract);
+  const grokFast = grokModels.find((model) => model.id === "grok-code-fast-1");
+  const grok43 = grokModels.find((model) => model.id === "grok-4.3");
   assert.ok(grokFast && grok43);
   assert.deepEqual(listThinkingLevelsForModel(grokFast), ["off"]);
   assert.deepEqual(listThinkingLevelsForModel(grok43), ["off"]);

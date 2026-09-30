@@ -1,5 +1,6 @@
+import { readSessionConversation, appendSessionMessage } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
-import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -22,11 +23,12 @@ async function test(name, fn) {
 
 await test("Pi child sessions persist as reopenable JSONL without entering the parent session list", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-child-jsonl-"));
+  const repository = new PiSessionRepository(workspaceDir);
+  const reopenedRepository = new PiSessionRepository(workspaceDir);
   try {
-    const repository = new PiSessionRepository(workspaceDir);
     const parent = await repository.create("parent-session");
     const child = await repository.createChild("child-session", "parent-session");
-    await child.appendMessage({
+    await appendSessionMessage(child, {
       role: "user",
       content: "persist this child turn",
       timestamp: Date.now()
@@ -37,19 +39,18 @@ await test("Pi child sessions persist as reopenable JSONL without entering the p
     assert.ok(parentMetadata);
     assert.ok(childMetadata);
     assert.match(childMetadata.path, /pi-child-sessions[\\/].+\.jsonl$/i);
-    assert.equal(childMetadata.parentSessionPath, parentMetadata.path);
+    assert.equal(childMetadata.parentSessionId, parentMetadata.id);
     await access(childMetadata.path);
     assert.deepEqual((await repository.listMetadata()).map((item) => item.id), ["parent-session"]);
 
-    const reopenedRepository = new PiSessionRepository(workspaceDir);
     const reopened = await reopenedRepository.openChildForParent("child-session", "parent-session");
-    const context = await reopened.buildContext();
+    const context = await readSessionConversation(reopened);
     assert.deepEqual(context.messages.map((message) => message.role), ["user"]);
     assert.equal(context.messages[0].content, "persist this child turn");
 
     const unrelatedParent = await reopenedRepository.create("unrelated-parent");
     await assert.rejects(
-      reopenedRepository.openChildForParent("child-session", (await unrelatedParent.getMetadata()).id),
+      reopenedRepository.openChildForParent("child-session", unrelatedParent.metadata.id),
       /does not belong to Pi session unrelated-parent/
     );
 
@@ -57,17 +58,20 @@ await test("Pi child sessions persist as reopenable JSONL without entering the p
     assert.deepEqual(await reopenedRepository.listChildMetadata(), []);
     await assert.rejects(access(childMetadata.path), /ENOENT/);
   } finally {
+    await reopenedRepository.close();
+    await repository.close();
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
 
 await test("opening a legacy parent session removes embedded child transcripts without touching child JSONL", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-parent-migration-"));
+  const repository = new PiSessionRepository(workspaceDir);
+  const reopenedRepository = new PiSessionRepository(workspaceDir);
   try {
-    const repository = new PiSessionRepository(workspaceDir);
     const parent = await repository.create("legacy-parent-session");
     const child = await repository.createChild("preserved-child-session", "legacy-parent-session");
-    await child.appendMessage({
+    await appendSessionMessage(child, {
       role: "assistant",
       content: [{ type: "text", text: "child transcript remains in the child session" }],
       api: "openai-responses",
@@ -99,7 +103,7 @@ await test("opening a legacy parent session removes embedded child transcripts w
         reply: "full child reply must not remain in the parent"
       }
     };
-    await parent.appendMessage({
+    await appendSessionMessage(parent, {
       role: "toolResult",
       toolCallId: "inspect-call",
       toolName: "inspectSubagents",
@@ -108,7 +112,7 @@ await test("opening a legacy parent session removes embedded child transcripts w
       isError: false,
       timestamp: Date.now()
     });
-    await parent.appendMessage({
+    await appendSessionMessage(parent, {
       role: "custom",
       customType: "subagent.translation",
       content: `full child reply ${"x".repeat(50_000)}`,
@@ -128,12 +132,26 @@ await test("opening a legacy parent session removes embedded child transcripts w
     const childMetadata = await repository.findChildMetadata("preserved-child-session");
     assert.ok(parentMetadata);
     assert.ok(childMetadata);
+    // The released runtime wrote flat format-3 records. Build the real old
+    // fixture after releasing its native handle; native format-4 transactions
+    // must never be modified by the legacy transcript slimming migration.
+    const legacyMessages = (await readSessionConversation(parent)).messages;
+    await repository.closeSession(parentMetadata.id);
+    const legacyParentText = [
+      { type: "session", version: 3, id: parentMetadata.id, cwd: workspaceDir,
+        timestamp: new Date(parentMetadata.createdAt).toISOString() },
+      ...legacyMessages.map((message, index) => ({
+        type: "message", id: `legacy-message-${index}`,
+        parentId: index === 0 ? null : `legacy-message-${index - 1}`,
+        timestamp: new Date(message.timestamp).toISOString(), message
+      }))
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    await writeFile(parentMetadata.path, legacyParentText, "utf8");
     const sizeBefore = (await stat(parentMetadata.path)).size;
     const childBefore = await readFile(childMetadata.path, "utf8");
 
-    const reopenedRepository = new PiSessionRepository(workspaceDir);
     const reopened = await reopenedRepository.open("legacy-parent-session");
-    const context = await reopened.buildContext();
+    const context = await readSessionConversation(reopened);
     const migrated = context.messages.find((message) => message.role === "toolResult");
     assert.ok(migrated);
     assert.equal(migrated.toolName, "inspectSubagents");
@@ -153,13 +171,16 @@ await test("opening a legacy parent session removes embedded child transcripts w
     assert.doesNotMatch(parentAfter, /large child message|full child prompt|full child reply/);
     assert.ok(sizeAfter < sizeBefore / 20, `${sizeAfter} should be much smaller than ${sizeBefore}`);
     assert.equal(await readFile(childMetadata.path, "utf8"), childBefore);
+    assert.equal(await readFile(`${parentMetadata.path}.v3.backup`, "utf8"), legacyParentText);
 
     const reopenedChild = await reopenedRepository.openChildForParent(
       "preserved-child-session",
       "legacy-parent-session"
     );
-    assert.equal((await reopenedChild.buildContext()).messages[0].content[0].text, "child transcript remains in the child session");
+    assert.equal((await readSessionConversation(reopenedChild)).messages[0].content[0].text, "child transcript remains in the child session");
   } finally {
+    await reopenedRepository.close();
+    await repository.close();
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });

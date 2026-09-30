@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -146,7 +147,7 @@ try {
   assert.equal(childMetadata.length, 2, "one persistent translator and one persistent reviewer should own all assignments");
   const translationMetadata = childMetadata.find((entry) => entry.id === batch.subagents[0].id);
   assert.ok(translationMetadata);
-  const childContext = await (await new PiSessionRepository(outputDir).openChild(translationMetadata.id)).buildContext();
+  const childContext = await readSessionConversation(await new PiSessionRepository(outputDir).openChild(translationMetadata.id));
   const prompts = childContext.messages
     .filter((message) => message.role === "user")
     .flatMap((message) => message.content.filter((block) => block.type === "text").map((block) => block.text));

@@ -1,3 +1,5 @@
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -22,7 +24,7 @@ function tracked(timeline, label, message, inspect) {
 }
 
 function contextText(context) {
-  return [context.systemPrompt, ...context.messages.flatMap((message) => {
+  return [getCurrentSystemPrompt(context.messages), ...context.messages.flatMap((message) => {
     if (typeof message.content === "string") return [message.content];
     if (!Array.isArray(message.content)) return [];
     return message.content
@@ -256,8 +258,9 @@ try {
   assert.equal(translationBatch.status, "completed");
   assert.equal(reviewBatch.status, "completed");
   assert.equal(reviewBatch.subagents.length, 1);
-  const reviewContext = await (await new PiSessionRepository(outputDir)
-    .openChild(reviewBatch.subagents[0].id)).buildContext();
+  const reviewRepository = new PiSessionRepository(outputDir);
+  const reviewContext = await readSessionConversation(await reviewRepository.openChild(reviewBatch.subagents[0].id));
+  await reviewRepository.close();
   const reviewRead = reviewContext.messages.find((message) => (
     message.role === "toolResult" && message.toolName === "readAssignedTranslationReview"
   ));

@@ -1,3 +1,4 @@
+import { readSessionEntries, appendSessionCustomEntry } from "./sessionAccess.ts";
 import { createHash } from "node:crypto";
 
 import type { Session } from "@earendil-works/pi-agent-core/node";
@@ -379,7 +380,7 @@ export async function loadYnSessionHostState(
   session: Session,
   ownerSessionId: string
 ): Promise<YnSessionHostState | undefined> {
-  const branch = await session.getBranch();
+  const branch = await readSessionEntries(session);
   let current: YnSessionHostState | undefined;
   let previous: YnSessionHostState | undefined;
   let beforePrevious: YnSessionHostState | undefined;
@@ -450,7 +451,7 @@ export async function loadYnSessionHostState(
       );
     }
     const next = normalizeYnSessionHostState(
-      applyJsonDelta(current, entry.data.operations as JsonDeltaOperation[]),
+      applyJsonDelta(current, entry.data.operations as unknown as JsonDeltaOperation[]),
       ownerSessionId
     );
     currentHash = hostStateHash(next);
@@ -552,7 +553,7 @@ export async function appendYnSessionHostState(
   if (options.appendCustomEntry) {
     await options.appendCustomEntry(YN_HOST_STATE_DELTA_CUSTOM_TYPE, entry);
   } else {
-    await session.appendCustomEntry(YN_HOST_STATE_DELTA_CUSTOM_TYPE, entry);
+    await appendSessionCustomEntry(session, YN_HOST_STATE_DELTA_CUSTOM_TYPE, entry);
   }
   hostStatePersistenceCursors.set(session as object, {
     ownerSessionId: normalized.ownerSessionId,

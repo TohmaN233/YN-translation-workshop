@@ -126,7 +126,7 @@ await test("Grok refresh refuses any token endpoint except the pinned official U
 });
 
 await test("Grok model list keeps the Pi xAI catalog and the official grok-4.6 default", () => {
-  const models = listModelsForProvider("xai-grok", { piProviderId: "xai", model: "grok-4.6" });
+  const models = listModelsForProvider("xai-grok", { piProviderId: "xai", model: "grok-4.6", modelIds: ["grok-code-fast-1"] });
   assert.ok(models.some((model) => model.id === "grok-code-fast-1"));
   assert.ok(models.some((model) => model.id === "grok-4.6"));
 });

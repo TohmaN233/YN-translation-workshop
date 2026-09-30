@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -120,7 +121,7 @@ try {
   assert.equal(boundedAttempts, 3, "retryable provider failures must stop after two retries");
   const boundedMessages = (await new PiSessionRepository(bounded.outputDir)
     .openChild("retry-child-bounded")
-    .then((session) => session.buildContext())).messages;
+    .then((session) => readSessionConversation(session))).messages;
   assert.equal(
     boundedMessages.filter((message) => message.role === "user").length,
     1,

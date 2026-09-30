@@ -1,3 +1,5 @@
+import { readSessionEntries } from "../helpers/pi-session.mjs";
+import { appendSessionMessage } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -25,7 +27,7 @@ async function waitUntil(predicate, message, timeoutMs = 5_000) {
 }
 
 async function appendRunningCard(session, subagentId) {
-  await session.appendMessage({
+  await appendSessionMessage(session, {
     role: "custom",
     customType: "subagent.translation",
     content: "Worker 1 is running",
@@ -87,7 +89,7 @@ function findChild(messages, subagentId) {
 try {
   const repository = new PiSessionRepository(workspaceDir);
   const session = await repository.create("pi_restart_orphan");
-  const metadata = await session.getMetadata();
+  const metadata = await Promise.resolve(session.metadata);
   const subagentId = "subagent_orphan_after_process_exit";
 
   await appendRunningCard(session, subagentId);
@@ -109,10 +111,7 @@ try {
   const popoutRecovered = findChild(popoutLoad, subagentId);
   assert.equal(popoutRecovered?.details?.status, "stopped", "concurrent popout load must observe the same terminal Pi card");
 
-  const terminalEntryCount = async () => (await readFile(metadata.path, "utf8"))
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
+  const terminalEntryCount = async () => (await readSessionEntries(await new PiSessionRepository(workspaceDir).open(metadata.id)))
     .filter((entry) => (
       entry.type === "message"
       && entry.message?.role === "custom"
@@ -126,7 +125,7 @@ try {
   await restarted.disposeWorkspace(workspaceDir);
 
   const loadFirstSession = await repository.create("pi_restart_load_first_race");
-  const loadFirstMetadata = await loadFirstSession.getMetadata();
+  const loadFirstMetadata = await Promise.resolve(loadFirstSession.metadata);
   const loadFirstId = "subagent_load_before_prompt_reservation";
   await appendRunningCard(loadFirstSession, loadFirstId);
   const loadFirst = createPromptService();
@@ -154,7 +153,7 @@ try {
   await loadFirst.service.disposeWorkspace(workspaceDir);
 
   const promptFirstSession = await repository.create("pi_restart_prompt_first_race");
-  const promptFirstMetadata = await promptFirstSession.getMetadata();
+  const promptFirstMetadata = await Promise.resolve(promptFirstSession.metadata);
   const promptFirstId = "subagent_prompt_before_load";
   await appendRunningCard(promptFirstSession, promptFirstId);
   const selectionEntered = deferred();

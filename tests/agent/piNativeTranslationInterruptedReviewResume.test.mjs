@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -101,7 +102,7 @@ try {
   const batch = supervisor.list().find((entry) => entry.kind === "translation");
   assert.equal(batch?.status, "completed", batch?.error);
   const childId = batch.subagents[0].id;
-  const childContext = await (await new PiSessionRepository(outputDir).openChild(childId)).buildContext();
+  const childContext = await readSessionConversation(await new PiSessionRepository(outputDir).openChild(childId));
   assert.equal(
     childContext.messages.some((message) => message.role === "user"),
     false,

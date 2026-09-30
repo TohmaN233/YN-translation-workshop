@@ -1,3 +1,4 @@
+import { readSessionConversation, appendSessionMessage } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -11,7 +12,7 @@ import {
   fauxThinking,
   fauxToolCall
 } from "@earendil-works/pi-ai";
-import { Session } from "@earendil-works/pi-agent-core/node";
+import { StorageBackedSession as Session } from "@earendil-works/pi-agent-core/node";
 import { Type } from "typebox";
 import { buildProductYnSystemPrompt, PiNativeSessionService } from "../../src/main/agent/piNative/sessionService.ts";
 import { createYnDomainRunContract } from "../../src/main/agent/piNative/domainRunContract.ts";
@@ -42,6 +43,49 @@ async function test(name, fn) {
     console.log(`  ${error && error.stack ? error.stack : error}`);
   }
 }
+
+await test("failed runtime preparation closes a new native handle and preserves an existing owner", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-preparation-close-"));
+  const faux = fauxProvider({ tokensPerSecond: 100_000 });
+  faux.setResponses([fauxAssistantMessage(fauxText("ready"))]);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  let rejectSelection = true;
+  let closes = 0;
+  const originalClose = Session.prototype.close;
+  Session.prototype.close = async function (...args) { closes++; return originalClose.apply(this, args); };
+  const service = new PiNativeSessionService({
+    createModelSelection: async () => {
+      if (rejectSelection) throw new Error("selection rejected");
+      return { models, model: faux.getModel(), providerId: faux.provider.id, modelId: faux.getModel().id };
+    }
+  });
+  const terminal = deferred();
+  const unsubscribe = service.subscribeEvents((entry) => {
+    if (entry.event.type === "settled") terminal.resolve();
+  });
+  try {
+    const summary = await service.createSession(workspaceDir);
+    const request = { outputDir: workspaceDir, sessionId: summary.id, prompt: "hello" };
+    closes = 0;
+    await assert.rejects(service.prompt(request), /selection rejected/);
+    assert.equal(closes, 1, "failed fresh preparation must release its native storage handle");
+    rejectSelection = false;
+    await service.prompt(request);
+    await terminal.promise;
+    rejectSelection = true;
+    closes = 0;
+    await assert.rejects(service.prompt(request), /selection rejected/);
+    assert.equal(closes, 0, "a failed replacement must not close the active session owner");
+    assert.ok((await service.loadMessages(workspaceDir, summary.id)).some(message =>
+      message.role === "assistant" && message.content.some(block => block.type === "text" && block.text === "ready")));
+  } finally {
+    unsubscribe();
+    await service.disposeWorkspace(workspaceDir);
+    Session.prototype.close = originalClose;
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
 
 function deferred() {
   let resolve;
@@ -1336,7 +1380,7 @@ await test("Stop never lets an old Session writer overwrite a continuation accep
     releaseChildShutdown.resolve();
     await aborting;
     const reopened = await new PiSessionRepository(workspaceDir).open(session.id);
-    const coldContext = await reopened.buildContext();
+    const coldContext = await readSessionConversation(reopened);
     assert.match(
       JSON.stringify(coldContext.messages),
       /continuation committed by the new Session owner/,
@@ -3497,8 +3541,8 @@ await test("Pi session bootstrap does not read every historical transcript body"
   try {
     for (let index = 0; index < 24; index += 1) {
       const session = await repository.create(`history_${index}`);
-      await session.appendMessage({ role: "user", content: `history ${index}`, timestamp: Date.now() });
-      await session.appendMessage({
+      await appendSessionMessage(session, { role: "user", content: `history ${index}`, timestamp: Date.now() });
+      await appendSessionMessage(session, {
         role: "custom",
         customType: "large.history",
         content: "x".repeat(100_000),
@@ -3648,10 +3692,10 @@ await test("Stop during native preflight prevents the model turn from starting a
   const contextInspectionStarted = deferred();
   const releaseContextInspection = deferred();
   const eventTypes = [];
-  const originalBuildContext = Session.prototype.buildContext;
+  const originalBuildContext = Session.prototype.branch;
   let blockNextBuildContext = false;
-  Session.prototype.buildContext = async function (...args) {
-    if (blockNextBuildContext) {
+  Session.prototype.branch = async function (...args) {
+    if (blockNextBuildContext && new Error().stack?.includes("refreshContextUsage")) {
       blockNextBuildContext = false;
       contextInspectionStarted.resolve();
       await releaseContextInspection.promise;
@@ -3679,7 +3723,7 @@ await test("Stop during native preflight prevents the model turn from starting a
     assert.equal(eventTypes.includes("agent_start"), false, "the Pi harness started after Stop completed");
     assert.deepEqual(await service.loadMessages(workspaceDir, session.id), []);
   } finally {
-    Session.prototype.buildContext = originalBuildContext;
+    Session.prototype.branch = originalBuildContext;
     releaseContextInspection.resolve();
     unsubscribe();
     await service.disposeWorkspace(workspaceDir);
@@ -3721,11 +3765,11 @@ await test("a replacement prompt rebases its sequence after the previous turn fi
   const previousFinalizationStarted = deferred();
   const releasePreviousFinalization = deferred();
   const previousIdleState = deferred();
-  const originalBuildContext = Session.prototype.buildContext;
+  const originalBuildContext = Session.prototype.branch;
   let blockFinalBuildContext = false;
   let awaitingPreviousIdle = false;
-  Session.prototype.buildContext = async function (...args) {
-    if (blockFinalBuildContext) {
+  Session.prototype.branch = async function (...args) {
+    if (blockFinalBuildContext && new Error().stack?.includes("refreshContextUsage")) {
       blockFinalBuildContext = false;
       previousFinalizationStarted.resolve();
       await releasePreviousFinalization.promise;
@@ -3772,7 +3816,7 @@ await test("a replacement prompt rebases its sequence after the previous turn fi
       `replacement prompt reused sequence ${replacementRunning.sequence} after terminal ${previousIdle.sequence}`
     );
   } finally {
-    Session.prototype.buildContext = originalBuildContext;
+    Session.prototype.branch = originalBuildContext;
     releasePreviousFinalization.resolve();
     releaseReplacementPreparation.resolve();
     releaseReplacement.resolve();

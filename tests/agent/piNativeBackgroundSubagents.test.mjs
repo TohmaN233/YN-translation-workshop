@@ -1,3 +1,5 @@
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -122,7 +124,7 @@ async function childTranscriptStaysInChildJsonl() {
   let reviewSubmissionsReady = 0;
   const workerResponse = async (context) => {
     const toolResults = context.messages.filter((message) => message.role === "toolResult").length;
-    const reviewing = context.systemPrompt.includes("read-only native Pi translation safety reviewer");
+    const reviewing = getCurrentSystemPrompt(context.messages).includes("read-only native Pi translation safety reviewer");
     if (reviewing && toolResults === 0) {
       return fauxAssistantMessage({
         type: "toolCall",
@@ -143,7 +145,7 @@ async function childTranscriptStaysInChildJsonl() {
       }, { stopReason: "toolUse" });
     }
     if (reviewing) return fauxAssistantMessage(fauxText("Review accepted."));
-    const line = context.systemPrompt.includes("L2-L2") ? 2 : 1;
+    const line = getCurrentSystemPrompt(context.messages).includes("L2-L2") ? 2 : 1;
     if (toolResults === 0) {
       return fauxAssistantMessage({
         type: "toolCall",
@@ -248,7 +250,7 @@ async function childTranscriptStaysInChildJsonl() {
       );
       assert.ok(JSON.stringify(card).length < 4096, "the parent card exceeded the lightweight card budget");
       const child = await repository.openChild(card.details.subagentId);
-      const transcript = (await child.buildContext()).messages;
+      const transcript = (await readSessionConversation(child)).messages;
       assert.ok(transcript.some((message) => message.role === "toolResult"));
       assert.ok(transcript.some((message) => (
         message.role === "assistant"
@@ -297,7 +299,7 @@ async function failedRepairBatchInvalidatesPriorValidation() {
   const models = createModels();
   const worker = fauxProvider({ provider: "repair-worker", tokensPerSecond: 1000 });
   const response = async (context) => {
-    const secondLine = context.systemPrompt.includes("L2-L2");
+    const secondLine = getCurrentSystemPrompt(context.messages).includes("L2-L2");
     if (secondLine) {
       await new Promise((resolve) => setTimeout(resolve, 50));
       return fauxAssistantMessage([], { stopReason: "error", errorMessage: "forced sibling failure after first shard write" });

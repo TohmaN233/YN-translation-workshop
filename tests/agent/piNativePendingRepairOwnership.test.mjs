@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -115,7 +116,7 @@ try {
   const childId = cards.at(-1)?.details?.subagentId;
   assert.ok(childId);
   const child = await new PiSessionRepository(outputDir).openChild(childId);
-  const userPrompts = (await child.buildContext()).messages
+  const userPrompts = (await readSessionConversation(child)).messages
     .filter((message) => message.role === "user")
     .map((message) => message.content
       .filter((block) => block.type === "text")

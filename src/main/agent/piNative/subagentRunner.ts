@@ -1,8 +1,10 @@
+import { readSessionContext } from "./sessionAccess.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
+  BACKGROUND_CONTEXT,
   type AfterToolCallContext,
   type AfterToolCallResult,
   type AgentMessage,
@@ -832,7 +834,7 @@ function compactErrorCause(error: unknown): string {
 }
 
 async function latestFailedToolFeedback(session: Session): Promise<string | undefined> {
-  const messages = (await session.buildContext()).messages;
+  const messages = (await readSessionContext(session)).messages;
   const laterSuccessfulTools = new Set<string>();
   for (const message of [...messages].reverse()) {
     if (message.role !== "toolResult") continue;
@@ -852,7 +854,7 @@ async function latestFailedToolFeedback(session: Session): Promise<string | unde
 }
 
 async function latestToolResultHasRepairEvidence(session: Session): Promise<boolean> {
-  const messages = (await session.buildContext()).messages;
+  const messages = (await readSessionContext(session)).messages;
   for (const message of [...messages].reverse()) {
     if (message.role !== "toolResult") continue;
     if (message.toolName !== "writeAssignedTranslation" && message.toolName !== "repairAssignedTranslation") {
@@ -875,14 +877,14 @@ function assertRuntimeResponse(message: { stopReason?: string; errorMessage?: st
 type PiAssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
 
 async function latestAssistantMessage(session: Session): Promise<PiAssistantMessage> {
-  const messages = (await session.buildContext()).messages;
+  const messages = (await readSessionContext(session)).messages;
   const assistant = [...messages].reverse().find((message): message is PiAssistantMessage => message.role === "assistant");
   if (!assistant) throw new Error("Pi subagent completed a turn without an assistant message.");
   return assistant;
 }
 
 async function assistantMessageCount(session: Session): Promise<number> {
-  return (await session.buildContext()).messages.filter((message) => message.role === "assistant").length;
+  return (await readSessionContext(session)).messages.filter((message) => message.role === "assistant").length;
 }
 
 // Pi continues the same native turn so retries do not append the complete assignment prompt again.
@@ -3877,7 +3879,7 @@ export async function createPiTranslationReviewSubagentWorker(
   const onAbort = () => { void abortRuntime().catch(() => undefined); };
   initialContext.signal?.addEventListener("abort", onAbort, { once: true });
   const control: PiSubagentControl = {
-    inspect: async () => (await session.buildContext()).messages,
+    inspect: async () => (await readSessionContext(session)).messages,
     steer: async (text) => runtime.queueSteer(text),
     followUp: async (text) => runtime.followUp(text),
     abort: async () => { await abortRuntime(); }
@@ -3981,6 +3983,7 @@ export async function createPiTranslationReviewSubagentWorker(
       initialContext.signal?.removeEventListener("abort", onAbort);
       if (runtimeAbort) await runtimeAbort;
       runtime.dispose();
+      await session.close(BACKGROUND_CONTEXT);
     }
   };
 }
@@ -4029,7 +4032,7 @@ export async function createPiTranslationAuditSubagentWorker(
   const onAbort = () => { void abortRuntime().catch(() => undefined); };
   initialContext.signal?.addEventListener("abort", onAbort, { once: true });
   const control: PiSubagentControl = {
-    inspect: async () => (await session.buildContext()).messages,
+    inspect: async () => (await readSessionContext(session)).messages,
     steer: async (text) => runtime.queueSteer(text),
     followUp: async (text) => runtime.followUp(text),
     abort: async () => { await abortRuntime(); }
@@ -4088,6 +4091,7 @@ export async function createPiTranslationAuditSubagentWorker(
       initialContext.signal?.removeEventListener("abort", onAbort);
       if (runtimeAbort) await runtimeAbort;
       runtime.dispose();
+      await session.close(BACKGROUND_CONTEXT);
       void activeSignal;
     }
   };
@@ -4232,7 +4236,7 @@ async function runPiSubagentRuntime<
     return runtimeAbort;
   };
   context.registerControl?.({
-    inspect: async () => (await session.buildContext()).messages,
+    inspect: async () => (await readSessionContext(session)).messages,
     steer: async (text) => {
       throwIfAborted(context.signal);
       return runtime.queueSteer(text);
@@ -4356,6 +4360,7 @@ async function runPiSubagentRuntime<
       }
     }
     runtime.dispose();
+    await session.close(BACKGROUND_CONTEXT);
     if (unhandledAbortFailure !== undefined) throw unhandledAbortFailure;
   }
 }
@@ -4936,7 +4941,7 @@ export async function createPiTranslationSubagentWorker(
   if (initialContext.signal?.aborted) onAbort();
 
   const control: PiSubagentControl = {
-    inspect: async () => (await session.buildContext()).messages,
+    inspect: async () => (await readSessionContext(session)).messages,
     steer: async (text) => {
       throwIfAborted(initialContext.signal);
       return runtime.queueSteer(text);
@@ -5512,6 +5517,7 @@ export async function createPiTranslationSubagentWorker(
         }
       }
       runtime.dispose();
+      await session.close(BACKGROUND_CONTEXT);
       if (abortFailure !== undefined) throw abortFailure;
     }
   };
@@ -5730,7 +5736,7 @@ export async function createPiProofreadSubagentWorker(
   initialContext.signal?.addEventListener("abort", onAbort, { once: true });
   if (initialContext.signal?.aborted) onAbort();
   const control: PiSubagentControl = {
-    inspect: async () => (await session.buildContext()).messages,
+    inspect: async () => (await readSessionContext(session)).messages,
     steer: async (text) => {
       if (!runtime) throw new Error(`Pi proofread worker ${subagentId} has no active assignment to steer.`);
       return runtime.queueSteer(text);
@@ -5882,6 +5888,7 @@ export async function createPiProofreadSubagentWorker(
       initialContext.signal?.removeEventListener("abort", onAbort);
       if (runtimeAbort) await runtimeAbort;
       runtime?.dispose();
+      await session.close(BACKGROUND_CONTEXT);
     }
   };
 }

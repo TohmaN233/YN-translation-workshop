@@ -1,3 +1,4 @@
+import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -162,7 +163,7 @@ try {
   const childMetadata = (await new PiSessionRepository(outputDir).listChildMetadata())
     .find((entry) => entry.id === childId);
   assert.ok(childMetadata);
-  const childContext = await (await new PiSessionRepository(outputDir).openChild(childId)).buildContext();
+  const childContext = await readSessionConversation(await new PiSessionRepository(outputDir).openChild(childId));
   const repairPrompt = childContext.messages
     .filter((message) => message.role === "user")
     .flatMap((message) => message.content.filter((block) => block.type === "text").map((block) => block.text))

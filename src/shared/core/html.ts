@@ -4,6 +4,8 @@ import type { GlossaryEntry } from "./glossary.ts";
 import type { ReviewProposal } from "./reviewReport.ts";
 import type { EpubReplacementOptions } from "./epubExport.ts";
 import { agentChatEmbedCss, agentChatEmbedHtml, agentChatEmbedScript } from "./agentChatEmbed.ts";
+import { proposalSafetyBrowserScript } from "./proposalSafety.ts";
+import { characterBibleTableButton, characterBibleTableHtml, characterBibleTableScript } from "./characterBibleTable.ts";
 
 export type UiLocale = "zh-CN" | "en-US";
 
@@ -163,11 +165,10 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     promptSettingsApply: "\u751f\u6210\u63d0\u793a\u8bcd",
     promptSettingsCancel: "\u53d6\u6d88",
     promptGenerationFailed: "\u63d0\u793a\u8bcd\u751f\u6210\u5931\u8d25",
-    style: "\u98ce\u683c",
+    style: "翻译风格",
     workDescription: "\u4f5c\u54c1\u8bf4\u660e",
     translateOutputDir: "\u7ffb\u8bd1\u8f93\u51fa\u6587\u4ef6\u5939",
     proofreadOutputDir: "\u62a5\u544a\u8f93\u51fa\u6587\u4ef6\u5939",
-    split: "\u62c6\u5206",
     splitSize: "\u62c6\u5206\u5927\u5c0f",
     folderTranslationOrder: "\u6587\u4ef6\u7ffb\u8bd1\u987a\u5e8f",
     folderTranslationOrderHint: "\u5927\u62ec\u53f7\u5185\u7684\u6587\u4ef6\u4e92\u76f8\u6ca1\u6709\u5148\u540e\u8981\u6c42\uff0c\u4ecd\u7531\u5b50 Agent \u6309\u884c\u6570\u52a8\u6001\u6392\u961f\uff0c\u4e0d\u4ee3\u8868\u5fc5\u987b\u540c\u65f6\u5f00\u59cb\u6216\u5b8c\u6210\uff1b\u79fb\u5230\u5927\u62ec\u53f7\u5916\u624d\u4f1a\u6309\u4e66\u5199\u987a\u5e8f\u4e25\u683c\u5148\u540e\u5904\u7406\uff1b\u4ece\u8868\u8fbe\u5f0f\u4e2d\u5220\u9664\u7684\u6587\u4ef6\u4f1a\u5728\u7ffb\u8bd1\u548c\u6821\u5bf9\u4e2d\u8df3\u8fc7\u3002",
@@ -346,11 +347,10 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     promptSettingsApply: "Generate prompt",
     promptSettingsCancel: "Cancel",
     promptGenerationFailed: "Prompt generation failed",
-    style: "Style",
+    style: "Translation style",
     workDescription: "Work description",
     translateOutputDir: "Translation output folder",
     proofreadOutputDir: "Report output folder",
-    split: "Split",
     splitSize: "Split size",
     folderTranslationOrder: "File translation order",
     folderTranslationOrderHint: "Files inside braces have no order preference and remain in the line-balanced dynamic worker queue; they do not have to start or finish together. Move a file outside the braces to enforce written order. Delete a filename from the expression to skip it in translation and proofreading.",
@@ -550,7 +550,8 @@ function workflowData(workflow: HtmlWorkflowOptions | undefined, initialTranslat
   const promptInputMode = workflow?.promptInputMode ?? inputMode;
   const promptDefaults = promptParameterDefaults(outputDir, advanced);
   const factoryPromptDefaults = promptParameterDefaults(outputDir, {
-    folderSourceDocuments: advanced?.folderSourceDocuments
+    folderSourceDocuments: advanced?.folderSourceDocuments,
+    folderSourceSelection: advanced?.folderSourceSelection
   });
 
   return {
@@ -810,7 +811,6 @@ function promptSettingsHtml(t: Record<string, string>): string {
             <label class="prompt-check"><input id="promptGlossaryCandidates" type="checkbox"><span>${t.glossaryCandidates ?? "Glossary candidates"}</span></label>
             <label class="prompt-check"><input id="promptCharacterBible" type="checkbox"><span>${t.characterBible ?? "Character bible"}</span></label>
             <label class="prompt-check"><input id="promptReuseExistingTranslation" type="checkbox"><span>${t.reuseExistingTranslation ?? "Audit and reuse existing translation"}</span></label>
-            <label id="promptSplitField" class="prompt-check"><input id="promptSplit" type="checkbox"><span>${t.split ?? "Split"}</span></label>
           </div>
         </div>
         <div id="proofreadPromptSettings" class="prompt-section">
@@ -969,7 +969,7 @@ const batchLabels: Record<UiLocale, Record<string, string>> = {
 // v3 removed the obsolete outer batch prompt sidebar. v4 added the compact,
 // Host-backed batch TXT action. v5 flushes the active child before Host preflight.
 // v6 keeps match state internal instead of presenting stale same-name-file status.
-export const BATCH_LINE_REVIEW_PROTOCOL_VERSION = 6;
+export const BATCH_LINE_REVIEW_PROTOCOL_VERSION = 8;
 export const BATCH_LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-batch-review-v${BATCH_LINE_REVIEW_PROTOCOL_VERSION}`;
 
 export function renderBatchLineReviewIndexHtml(options: BatchLineReviewIndexOptions): string {
@@ -1031,12 +1031,14 @@ export function renderBatchLineReviewIndexHtml(options: BatchLineReviewIndexOpti
         <strong id="activeTitle">${escapeHtml(firstFile?.sourceName ?? "")}</strong>
         <button id="openActive" type="button">${t.open}</button>
         <button id="writeAllTxt" type="button">${t.writeAllTxt}</button>
+        ${characterBibleTableButton(locale)}
         <span id="batchWriteStatus" class="batchWriteStatus" role="status" aria-live="polite"></span>
       </div>
       <iframe id="fileFrame" src="${escapeHtml(firstFile?.outputPath ?? "about:blank")}"></iframe>
     </section>
   </main>
-  <script id="batchData" type="application/json">${jsonScript({ files: options.files, labels: t, folderAgentRoute })}</script>
+  ${characterBibleTableHtml(locale)}
+  <script id="batchData" type="application/json">${jsonScript({ files: options.files, labels: t, folderAgentRoute, locale, outputDir: options.workflow?.outputDir ?? "" })}</script>
   <script>
 const data = JSON.parse(document.getElementById("batchData").textContent);
 const select = document.getElementById("fileSelect");
@@ -1087,13 +1089,14 @@ document.getElementById("writeAllTxt").addEventListener("click", async () => {
 });
 applyFile(0);
   </script>
+  <script>${characterBibleTableScript()}</script>
 </body>
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 39;
+export const LINE_REVIEW_PROTOCOL_VERSION = 43;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
-export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 14;
+export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 17;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
 export const PROMPT_SETTINGS_VERSION = 40;
 
@@ -1138,6 +1141,7 @@ export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
       <button id="agentChatPopout" type="button">${t.agentChatPopout ?? "New window"}</button>
       <button id="agentChatPopoutBack" type="button" hidden>${t.back ?? "Back"}</button>
       <button id="glossaryDrawerToggle" type="button">${t.glossaryOpen ?? "Glossary"}</button>
+      ${characterBibleTableButton(locale)}
       ${themeControlsHtml(t)}
     </div>
   </header>
@@ -1158,6 +1162,8 @@ export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   </div>
   <script id="reviewData" type="application/json">${jsonScript({ rows, pageSize: firstPage.pageSize, startPage: firstPage.page, labels: t, workflow, locale, lineReviewPath: options.lineReviewPath ?? "" })}</script>
   <script>${lineReviewScript()}</script>
+  ${characterBibleTableHtml(locale)}
+  <script>${characterBibleTableScript()}</script>
 </body>
 </html>`;
 }
@@ -1745,9 +1751,7 @@ const promptProofreadOutputDir = document.getElementById("promptProofreadOutputD
 const promptGlossaryCandidates = document.getElementById("promptGlossaryCandidates");
 const promptCharacterBible = document.getElementById("promptCharacterBible");
 const promptReuseExistingTranslation = document.getElementById("promptReuseExistingTranslation");
-const promptSplit = document.getElementById("promptSplit");
 const promptSplitSize = document.getElementById("promptSplitSize");
-const promptSplitField = document.getElementById("promptSplitField");
 const promptSplitSizeField = document.getElementById("promptSplitSizeField");
 const promptFolderTranslationOrder = document.getElementById("promptFolderTranslationOrder");
 const promptFolderTranslationOrderField = document.getElementById("promptFolderTranslationOrderField");
@@ -1806,12 +1810,13 @@ function normalizedPromptDefaults(defaults = {}) {
     workflowTemplateId: defaults.workflowTemplateId || "",
     translateOutputDir: defaults.translateOutputDir || "",
     proofreadOutputDir: defaults.proofreadOutputDir || "",
-    split: defaults.split !== false,
+    split: true,
     splitSize: Number(defaults.splitSize || 1000),
-    folderTranslationOrder: defaults.folderTranslationOrder || "",
+    folderTranslationOrder: defaults.folderTranslationOrder?.trim() || defaultFolderTranslationOrder(defaults.folderSourceDocuments),
     folderSourceDocuments: Array.isArray(defaults.folderSourceDocuments)
       ? defaults.folderSourceDocuments
       : undefined,
+    ...(defaults.folderSourceSelection ? { folderSourceSelection: defaults.folderSourceSelection } : {}),
     customPreserveRules: Array.isArray(defaults.customPreserveRules) ? defaults.customPreserveRules : [],
     glossaryCandidates: defaults.glossaryCandidates !== false,
     characterBible: defaults.characterBible !== false,
@@ -1859,7 +1864,11 @@ function readStoredPromptSettings() {
   return projectPromptSettings;
 }
 function promptSettingsValue() {
-  return { ...promptStoredDefaults(), ...readStoredPromptSettings() };
+  const defaults = promptStoredDefaults();
+  const settings = { ...defaults, ...readStoredPromptSettings(), split: true };
+  settings.folderTranslationOrder = settings.folderTranslationOrder?.trim()
+    || defaultFolderTranslationOrder(defaults.folderSourceDocuments) || defaults.folderTranslationOrder;
+  return settings;
 }
 async function writeStoredPromptSettings(settings) {
   projectPromptSettings = { ...settings };
@@ -2043,7 +2052,7 @@ function currentPromptSettings() {
     workflowTemplateId: defaults.workflowTemplateId || "",
     translateOutputDir: promptTranslateOutputDir?.value.trim() || defaults.translateOutputDir,
     proofreadOutputDir: promptProofreadOutputDir?.value.trim() || defaults.proofreadOutputDir,
-    split: promptSplit?.checked !== false,
+    split: true,
     splitSize: numberFromField(promptSplitSize, defaults.splitSize),
     folderTranslationOrder: promptFolderTranslationOrder?.value.trim() || defaults.folderTranslationOrder || "",
     customPreserveRules: readPromptCustomPreserveRules(),
@@ -2072,7 +2081,6 @@ function fillPromptSettingsForm() {
   setFieldChecked(promptGlossaryCandidates, settings.glossaryCandidates);
   setFieldChecked(promptCharacterBible, settings.characterBible);
   setFieldChecked(promptReuseExistingTranslation, settings.reuseExistingTranslation);
-  setFieldChecked(promptSplit, settings.split);
   setFieldValue(promptSplitSize, settings.splitSize);
   setFieldValue(promptFolderTranslationOrder, settings.folderTranslationOrder);
   setPromptCustomPreserveRules(settings.customPreserveRules);
@@ -2141,7 +2149,6 @@ function updatePromptSettingsVisibility() {
   if (isFolderPrompt && promptProofreadMode) promptProofreadMode.value = "split";
   const isMontecarlo = isProofread && !isFolderPrompt && promptProofreadMode?.value === "montecarlo";
   const isSplitProofread = isProofread && !isMontecarlo;
-  const isTranslateSplit = isTranslate && promptSplit?.checked !== false;
   if (promptSettingsHeading) {
     promptSettingsHeading.textContent = isProofread
       ? (data.labels.promptSettingsProofreadTitle || "Proofread parameters")
@@ -2150,8 +2157,7 @@ function updatePromptSettingsVisibility() {
   if (translatePromptSettings) translatePromptSettings.hidden = isProofread;
   if (proofreadPromptSettings) proofreadPromptSettings.hidden = !isProofread;
   if (promptProofreadModeField) promptProofreadModeField.hidden = isProofread && isFolderPrompt;
-  if (promptSplitField) promptSplitField.hidden = !isTranslate;
-  if (promptSplitSizeField) promptSplitSizeField.hidden = !(isTranslateSplit || isSplitProofread);
+  if (promptSplitSizeField) promptSplitSizeField.hidden = !(isTranslate || isSplitProofread);
   if (promptFolderTranslationOrderField) {
     promptFolderTranslationOrderField.hidden = !isFolderPrompt;
   }
@@ -2218,7 +2224,7 @@ for (const field of [
   field?.addEventListener("blur", commitPromptSettingsAfterFieldExit);
 }
 for (const field of [
-  promptGlossaryCandidates, promptCharacterBible, promptReuseExistingTranslation, promptSplit, promptSubagent,
+  promptGlossaryCandidates, promptCharacterBible, promptReuseExistingTranslation, promptSubagent,
   promptProofreadMode, promptSubagentModel
 ]) {
   field?.addEventListener("change", () => {
@@ -2255,56 +2261,10 @@ async function resetPromptSettings() {
     setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
   }
 }
-async function buildPromptFromSettings() {
-  let settings;
-  window.clearTimeout(promptSettingsWriteTimer);
-  promptSettingsWriteTimer = 0;
-  try {
-    settings = currentPromptSettings();
-    await writeStoredPromptSettings(settings);
-  } catch (error) {
-    setAiStatus((data.labels.promptSettingsSaveFailed || "Project settings save failed") + ": " + (error?.message || String(error)));
-    return;
-  }
-  const bridge = invokeBridge();
-  if (!bridge?.buildPrompt) {
-    setAiStatus((data.labels.promptGenerationFailed || "Prompt generation failed") + ": Electron prompt bridge is unavailable.");
-    return;
-  }
-  let generated = "";
-  try {
-    generated = await bridge.buildPrompt({
-      kind: activePromptKind,
-      sourcePath: workflow.paths?.promptSourcePath || workflow.paths?.sourcePath || "",
-      sourceKind: workflow.paths?.promptSourceKind || workflow.paths?.sourceKind || "file",
-      translationPath: boundPromptTranslationPath(),
-      outputDir: workflow.paths?.outputDir || "",
-      glossaryPath: boundGlossaryPath(),
-      inputMode: workflow.promptInputMode || workflow.inputMode || "separate",
-      advanced: settings
-    });
-  } catch (error) {
-    setAiStatus((data.labels.promptGenerationFailed || "Prompt generation failed") + ": " + (error?.message || String(error)));
-    return;
-  }
-  if (!generated.trim()) {
-    setAiStatus((data.labels.promptGenerationFailed || "Prompt generation failed") + ": Empty prompt returned by Electron host.");
-    return;
-  }
-  setPromptText(generated);
-  closePromptSettings();
-  try {
-    await openAgentChatForPrompt();
-  } catch (error) {
-    setAiStatus("Agent prompt insertion failed: " + (error?.message || String(error)));
-  }
-}
-async function openAgentChatForPrompt() {
-  const promptText = promptPreview.value || "";
-  const settings = currentPromptSettings();
+function workflowPromptMetadata(settings, kind) {
   const defaults = promptStoredDefaults();
-  const workflowMetadata = {
-    workflowIntent: activePromptKind === "proofread" ? "proofread" : "translation",
+  return {
+    workflowIntent: kind === "proofread" ? "proofread" : "translation",
     languagePair: settings.languagePair,
     style: settings.style,
     workDescription: settings.workDescription,
@@ -2322,20 +2282,77 @@ async function openAgentChatForPrompt() {
     translationSplitSize: settings.splitSize,
     folderTranslationOrder: settings.folderTranslationOrder,
     folderSourceDocuments: defaults.folderSourceDocuments,
+    ...(defaults.folderSourceSelection ? { folderSourceSelection: defaults.folderSourceSelection } : {}),
     proofreadMode: settings.proofreadMode,
     proofreadSplitSize: settings.splitSize,
     proofreadMontecarloSize: settings.montecarloSize,
     proofreadMontecarloRoundMin: settings.montecarloRoundMin,
     proofreadMontecarloRoundMax: settings.montecarloRoundMax
   };
-  const agentHost = window.__ynAgentChatPiWebEmbedded;
-  if (agentHost?.replaceText) {
-    await agentHost.replaceText(promptText, workflowMetadata);
-  } else if (agentHost?.insertText) {
-    await agentHost.insertText(promptText, workflowMetadata);
-  } else {
-    throw new Error("Agent embedded host is unavailable.");
+}
+async function buildWorkflowPromptFromSettings(kind) {
+  if (kind !== "translate" && kind !== "proofread") throw new Error("Invalid workflow prompt kind.");
+  activePromptKind = kind;
+  window.clearTimeout(promptSettingsWriteTimer);
+  promptSettingsWriteTimer = 0;
+  const settings = currentPromptSettings();
+  await writeStoredPromptSettings(settings);
+  const bridge = invokeBridge();
+  if (!bridge?.buildPrompt) throw new Error("Electron prompt bridge is unavailable.");
+  const bindings = {
+    sourcePath: workflow.paths?.promptSourcePath || workflow.paths?.sourcePath || "",
+    sourceKind: workflow.paths?.promptSourceKind || workflow.paths?.sourceKind || "file",
+    translationPath: boundPromptTranslationPath(),
+    outputDir: workflow.paths?.outputDir || "",
+    glossaryPath: boundGlossaryPath(),
+    inputMode: workflow.promptInputMode || workflow.inputMode || "separate"
+  };
+  const prompt = await bridge.buildPrompt({ kind, ...bindings, advanced: settings });
+  if (!prompt?.trim()) throw new Error("Empty workflow prompt returned by Electron host.");
+  return { prompt, bindings, settings, metadata: workflowPromptMetadata(settings, kind) };
+}
+async function synchronizeTaskParameters() {
+  window.clearTimeout(promptSettingsWriteTimer);
+  promptSettingsWriteTimer = 0;
+  if (promptSettingsDirty) {
+    await writeStoredPromptSettings(currentPromptSettings());
+    promptSettingsDirty = false;
   }
+  const bridge = invokeBridge();
+  if (!bridge?.readProjectState) throw new Error("Electron project settings bridge is unavailable.");
+  applyProjectPromptSettings(await bridge.readProjectState(workflow.paths?.outputDir));
+  fillPromptSettingsForm();
+  updatePromptSettingsVisibility();
+  // Materialize the same form defaults before Host scans/checks parameters.
+  // Otherwise a later Generate prompt could silently introduce new settings.
+  await writeStoredPromptSettings(currentPromptSettings());
+}
+window.translationWorkshopTaskParameters = {
+  synchronize: synchronizeTaskParameters,
+  prepare: async (kind) => {
+    await synchronizeTaskParameters();
+    const packet = await buildWorkflowPromptFromSettings(kind);
+    setPromptText(packet.prompt);
+    return packet;
+  }
+};
+async function buildPromptFromSettings() {
+  try {
+    const packet = await buildWorkflowPromptFromSettings(activePromptKind);
+    setPromptText(packet.prompt);
+    closePromptSettings();
+    await openAgentChatForPrompt(packet);
+  } catch (error) {
+    setAiStatus((data.labels.promptGenerationFailed || "Prompt generation failed") + ": " + (error?.message || String(error)));
+  }
+}
+async function openAgentChatForPrompt(packet) {
+  const promptText = packet?.prompt ?? promptPreview.value ?? "";
+  const workflowMetadata = packet?.metadata ?? workflowPromptMetadata(currentPromptSettings(), activePromptKind);
+  const agentHost = window.__ynAgentChatPiWebEmbedded;
+  if (agentHost?.replaceText) await agentHost.replaceText(promptText, workflowMetadata);
+  else if (agentHost?.insertText) await agentHost.insertText(promptText, workflowMetadata);
+  else throw new Error("Agent embedded host is unavailable.");
 }
 function ensureAgentMessageInput() {
   if (!promptPreview.value) {
@@ -2440,7 +2457,6 @@ document.getElementById("resetPromptSettings")?.addEventListener("click", () => 
 });
 document.getElementById("cancelPromptSettings")?.addEventListener("click", closePromptSettings);
 promptProofreadMode?.addEventListener("change", updatePromptSettingsVisibility);
-promptSplit?.addEventListener("change", updatePromptSettingsVisibility);
 promptSubagent?.addEventListener("change", updatePromptSettingsVisibility);
 function currentLineReviewPath() {
   if (location.protocol !== "file:") {
@@ -4303,6 +4319,7 @@ export function renderProposalReviewHtml(options: ProposalReviewHtmlOptions): st
       <p class="subtle">${escapeHtml(options.title)}</p>
       ${themeControlsHtml(t)}
       <label>${t.search}</label><input id="search" type="search">
+      ${characterBibleTableButton(locale)}
       <label>${t.documentFilter}</label><select id="documentFilter"></select>
       <label>${t.issueFilter}</label><select id="issueFilter"></select>
       <label>${t.page}</label><input id="pageInput" type="number" min="1" value="${firstPage.page}">
@@ -4346,6 +4363,8 @@ export function renderProposalReviewHtml(options: ProposalReviewHtmlOptions): st
   </div>
   <script id="proposalData" type="application/json">${jsonScript({ proposals: options.proposals, pageSize: firstPage.pageSize, startPage: firstPage.page, labels: t, locale, outputDir: options.outputDir ?? "", reportPath: options.reportPath ?? "", lineReviewPath: options.lineReviewPath ?? "" })}</script>
   <script>${proposalReviewScript()}</script>
+  ${characterBibleTableHtml(locale)}
+  <script>${characterBibleTableScript()}</script>
 </body>
 </html>`;
 }
@@ -4770,30 +4789,6 @@ async function readLinkedLineReviewDocument(item = data.proposals[0]) {
 async function readLinkedLineReviewRows(item = data.proposals[0]) {
   return (await readLinkedLineReviewDocument(item)).rows;
 }
-function comparableText(value) {
-  return String(value || "").normalize("NFKC").replace(/\s+/g, "").trim().toLowerCase();
-}
-function textSimilarity(left, right) {
-  const a = comparableText(left);
-  const b = comparableText(right);
-  if (!a && !b) return 1;
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  if (a.includes(b) || b.includes(a)) {
-    return Math.min(a.length, b.length) / Math.max(a.length, b.length);
-  }
-  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
-  const current = new Array(b.length + 1);
-  for (let i = 1; i <= a.length; i += 1) {
-    current[0] = i;
-    for (let j = 1; j <= b.length; j += 1) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
-    }
-    for (let j = 0; j <= b.length; j += 1) previous[j] = current[j];
-  }
-  return 1 - previous[b.length] / Math.max(a.length, b.length);
-}
 function lineReviewRowFor(rows, line) {
   const numericLine = Number(line || 0);
   if (!Number.isInteger(numericLine) || numericLine <= 0) return undefined;
@@ -4826,31 +4821,17 @@ function recordTargetLineRevision(lineState, line, text, status, source) {
   lineState.revisionHistory[key] = history.slice(-12);
   return revision;
 }
+${proposalSafetyBrowserScript()}
 function proposalSafetyCheck(item, lineState, rows, options = {}) {
   const line = Number(item.line);
   const row = lineReviewRowFor(rows, line);
-  if (!row) return { ok: false, reason: "missing-line" };
-  const sourceScore = item.src ? textSimilarity(item.src, row.source) : 1;
-  if (sourceScore < 0.8) return { ok: false, reason: "source-mismatch" };
   const currentText = currentLineReviewText(row, lineState, line);
   const intendedText = String(options.intendedText ?? proposalSuggestionText(item) ?? "").trim();
-  if (intendedText && comparableText(intendedText) === comparableText(currentText)) {
-    return { ok: true, reason: "", alreadyApplied: true };
-  }
   const lastRevision = lineReviewRevisionHistory(lineState, line).at(-1);
-  if (lastRevision?.source === "desktop-edit" && options.allowStaleTarget !== true) {
-    return { ok: false, reason: "manual-edit" };
-  }
-  if (options.allowStaleTarget === true) return { ok: true, reason: "" };
-  const oldText = String(item.oldText || item.current || "");
-  if (oldText && textSimilarity(oldText, currentText) < 0.8) {
-    return { ok: false, reason: "patch-conflict" };
-  }
-  const baseRevision = Number(item.baseRevision);
-  if (Number.isInteger(baseRevision) && baseRevision >= 0 && lineReviewRevision(lineState, line) !== baseRevision) {
-    return { ok: false, reason: "base-revision-conflict" };
-  }
-  return { ok: true, reason: "" };
+  return checkProposalSafety({ sourceText: item.src, rowSource: row?.source, rowExists: Boolean(row),
+    currentText, intendedText, oldText: String(item.oldText || item.current || ""),
+    baseRevision: Number(item.baseRevision), revision: lineReviewRevision(lineState, line),
+    lastRevisionSource: lastRevision?.source, allowStaleTarget: options.allowStaleTarget });
 }
 function reconcileStoredProposalConflicts(lineState, rows, documentKey = "", setDecision = (id, decision) => {
   state.decisions[id] = decision;

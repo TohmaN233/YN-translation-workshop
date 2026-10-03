@@ -6,6 +6,7 @@ import {
   deleteProjectGlossaryEntry,
   importProjectGlossaryFile,
   listAssetProposals,
+  mutateProjectCharacterBibleEntry,
   readProjectAssets,
   replaceProjectGlossaryEntries,
   saveProjectAssets,
@@ -28,6 +29,12 @@ function broadcastProjectAssets(outputDir: string, assets: Awaited<ReturnType<ty
 }
 
 export function registerAgentAssetIpc(): void {
+  ipcMain.handle("agent-assets:mutateCharacter", async (_event, args: Parameters<typeof mutateProjectCharacterBibleEntry>[0]) => {
+    const outputDir = requireOutputDir(args?.outputDir);
+    const assets = await mutateProjectCharacterBibleEntry({ ...args, outputDir });
+    broadcastProjectAssets(outputDir, assets);
+    return assets;
+  });
   ipcMain.handle("agent-assets:read", async (_event, args: { outputDir?: unknown }) => {
     return readProjectAssets({ outputDir: requireOutputDir(args?.outputDir) });
   });

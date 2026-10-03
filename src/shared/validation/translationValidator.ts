@@ -496,13 +496,29 @@ function defaultExtractPlaceholders(line: string): string[] {
   return line.match(DEFAULT_PLACEHOLDER_RE) ?? [];
 }
 
+/** An explicitly selected short escape must not freeze adjacent Latin prose.
+ * Keep bracketed engine commands and every other default placeholder intact. */
+function defaultPlaceholdersWithSelectedEscapes(line: string, rules: RegExp[]): string[] {
+  if (!rules.length) return defaultExtractPlaceholders(line);
+  const selected = new Map<number, string>();
+  for (const regex of rules) {
+    regex.lastIndex = 0;
+    for (const match of line.matchAll(regex)) if (/^\\[nrt]$/.test(match[0])) selected.set(match.index, match[0]);
+  }
+  if (!selected.size) return defaultExtractPlaceholders(line);
+  return [...line.matchAll(DEFAULT_PLACEHOLDER_RE)].map(match => {
+    const escape = selected.get(match.index);
+    return escape && match[0].startsWith(escape) && !match[0].includes("[") ? escape : match[0];
+  });
+}
+
 export function createTranslationPreservedPayloadStripper(
   options: Pick<ValidationOptions, "extractPlaceholders" | "extractTags" | "customPreserveRules"> = {}
 ): (line: string) => string {
-  const extractPlaceholders = options.extractPlaceholders ?? defaultExtractPlaceholders;
   const extractTags = options.extractTags ?? defaultExtractTags;
   const customRules = normalizeCustomPreserveRules(options.customPreserveRules)
     .map((rule) => compileCustomPreserveRule(rule));
+  const extractPlaceholders = options.extractPlaceholders ?? ((line: string) => defaultPlaceholdersWithSelectedEscapes(line, customRules));
   return (line) => stripPreservedPayload(
     line,
     (value) => [
@@ -1021,7 +1037,6 @@ export function validateTranslationCandidate(
   onProgress?: (completedLines: number, totalLines: number) => void
 ): TranslationValidationResult {
   const locale = validatorLocale(options);
-  const comparePlaceholders = options.extractPlaceholders ?? defaultExtractPlaceholders;
   const extractTags = options.extractTags ?? defaultExtractTags;
   const customPreserveRules = normalizeCustomPreserveRules(options.customPreserveRules);
   const compiledCustomPreserveRules = customPreserveRules.map((rule, index) => ({
@@ -1029,6 +1044,9 @@ export function validateTranslationCandidate(
     label: rule.label || `Rule ${index + 1}`,
     regex: compileCustomPreserveRule(rule)
   }));
+  const customPreserveRegexes = compiledCustomPreserveRules.map(({ regex }) => regex);
+  const comparePlaceholders = options.extractPlaceholders ?? ((line: string) =>
+    defaultPlaceholdersWithSelectedEscapes(line, customPreserveRegexes));
   const extractCustomPreserved = (line: string) => compiledCustomPreserveRules.flatMap(({ regex }) =>
     regexMatches(line, regex)
   );

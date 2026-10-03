@@ -1,8 +1,8 @@
 const fn = (name, group, summary, params = [], note = "") => ({ name, group, summary, params, note });
 
 window.YN_GUIDE = {
-  version: "2.1.3",
-  verified: "2026-09-30",
+  version: "2.1.4",
+  verified: "2026-10-02",
   metrics: {
     workflowTemplates: 2,
     canonicalWorkflows: 2,
@@ -18,8 +18,8 @@ window.YN_GUIDE = {
       path: ".translation-workshop/glossary.json",
       format: "JSON",
       readers: "inspectTranslationContext、validator、翻译/校对 assignment 的直接命中注入",
-      writers: "人工术语编辑器、逐条删除与经过校验的导入/合并",
-      rule: "正式表优先于候选表；冲突不会静默覆盖。删除仅修改正式表，不自动修改译文、候选或角色资料。"
+      writers: "人工术语编辑器、逐条删除、经过校验的导入/合并、资料整理草稿的原子提交",
+      rule: "正式表优先于候选表；冲突不会静默覆盖。资料整理先写可修改草稿，核查后一次性提交正式译名与角色表；中断保留草稿。删除仅修改正式表，不自动修改译文、候选或角色资料。"
     },
     {
       name: "术语候选",
@@ -34,7 +34,7 @@ window.YN_GUIDE = {
       path: "AI_translation/_workspace/character_bible.md",
       format: "Markdown",
       readers: "系统提示、翻译/校对直接命中注入、validator",
-      writers: "人工资产编辑器或 resolveTranslationDiscoveries 的校验合并",
+      writers: "人工资产编辑器、resolveTranslationDiscoveries 的校验合并或资料整理草稿的原子提交",
       rule: "角色身份、称谓、语气、代词必须附证据；unknown 可以保留。"
     },
     {
@@ -59,7 +59,7 @@ window.YN_GUIDE = {
       format: "JSON",
       readers: "启动页、HTML 参数面板、每次 parent turn",
       writers: "Electron bridge 的原子 patch/save",
-      rule: "splitSize 是唯一 canonical 分片设置；旧字段只做一次迁移。"
+      rule: "splitSize 是唯一 canonical 分片设置；所有界面共用 style。简便启动先检查内容与参数、试跑保留规则，再由 HTML 的同一参数表生成相同翻译提示词；参数工具返回并修改此内部文件，不能手写另一份设置。旧字段只做一次迁移。"
     },
     {
       name: "Pi 会话与 Host 状态",
@@ -68,6 +68,14 @@ window.YN_GUIDE = {
       readers: "sessionAccess 原生 v4 branch/retainedTail 投影、会话恢复、按需展开 child Reply",
       writers: "同一 PiSessionAgentRuntime 的 parent/child 消息与 custom entries",
       rule: "完整 child transcript 只保存在 child JSONL，不嵌入 parent 卡片。旧 v3 改写前保留 .v3.backup；native system/tool 声明不显示为聊天气泡。"
+    },
+    {
+      name: "资料整理草稿",
+      path: ".translation-workshop/agent/asset-drafts/<preparation-id>.json",
+      format: "JSON",
+      readers: "readTaskAssetDraft、checkTaskAssetDraft、同一原生会话的冷恢复",
+      writers: "importTaskAssets、deleteTaskAssetDraftEntries、commitTaskAssets 的 Host 事务",
+      rule: "本次准备自己的记录可以改译名、改事实、替换数组或删除。Agent 核对两类草稿后先检查，再一次性正式提交；任何版本变化须重查，失败或停止保留草稿。普通回复不等于提交完成。"
     },
     {
       name: "翻译 staging",
@@ -89,9 +97,9 @@ window.YN_GUIDE = {
     { key: "languagePair", area: "提示词", def: "ja->zh-CN", effect: "目标语言、未翻译检测和模型任务语境。", used: "system prompt、validator、hash 绑定、翻译记忆" },
     { key: "style", area: "提示词", def: "game", effect: "声明文本领域/文体。", used: "parent 与 child 的任务上下文" },
     { key: "workDescription", area: "提示词", def: "空", effect: "作品说明、世界观、可靠资料 URL。", used: "system prompt；URL 需 fetchWebReference 后才可信" },
-    { key: "splitSize", area: "调度", def: "1000", effect: "Host 创建 assignment 的最大行块大小。", used: "翻译队列、split 校对、文件夹 staged queue" },
-    { key: "split", area: "兼容", def: "true", effect: "历史显示字段；实际分片以 splitSize 为唯一来源。", used: "旧提示词兼容，不应当作为新调度开关" },
-    { key: "folderTranslationOrder", area: "调度", def: "文件名排序", effect: "大括号内同阶段并行，括号前后形成严格屏障；删除名称即跳过。", used: "manifest 替换、stage 编号、assignment 队列" },
+    { key: "splitSize", area: "调度", def: "500", effect: "Host 创建 assignment 的最大行块大小。", used: "翻译队列、split 校对、文件夹 staged queue" },
+    { key: "split", area: "兼容", def: "true", effect: "旧字段固定为 true，不提供开关；实际分片以 splitSize 为唯一来源。", used: "历史配置兼容" },
+    { key: "folderTranslationOrder", area: "调度", def: "{完整文件名列表}", effect: "空值自动填入 manifest 文件名并用大括号包住；已有选择保留。大括号内同阶段并行，括号前后形成严格屏障；删除名称即跳过。", used: "manifest 替换、stage 编号、assignment 队列" },
     { key: "customPreserveRules", area: "校验", def: "[]", effect: "自定义正则命中必须在同一译文行逐字保留。", used: "提示词、复用快筛、翻译 validator、proofread prescan" },
     { key: "glossaryCandidates", area: "资产", def: "true", effect: "允许构造/更新术语候选和处理候选冲突；关闭后现有候选仍可只读参考。", used: "assignment 通过后 observed、术语领取门与优先修复" },
     { key: "characterBible", area: "资产", def: "true", effect: "允许构建/维护角色圣经。", used: "翻译前资产准备、发现合并、validation context" },

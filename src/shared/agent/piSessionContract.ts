@@ -1,9 +1,10 @@
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import type { CanonicalCustomPreserveRule } from "../validation/customPreserveRules.ts";
+import type { YnTaskPreparationRequest } from "./taskPreparation.ts";
 
-export const YN_WORKFLOW_SUBAGENT_COUNT = 2;
-export const YN_DEFAULT_SPLIT_SIZE = 1_000;
+export const YN_WORKFLOW_SUBAGENT_COUNT = 3;
+export const YN_DEFAULT_SPLIT_SIZE = 500;
 export type PiWorkflowIntent = "translation" | "proofread";
 export type PiProofreadMode = "split" | "montecarlo";
 
@@ -34,6 +35,12 @@ export type PiSourceSelection =
 export interface PiFolderSourceDocument {
   id: string;
   path: string;
+  /** Host-generated separated text, bound to the selected input and projected bytes. */
+  projection?: {
+    kind: "bilingual-pairs" | "epub-text" | "text-lines";
+    originalHash: string;
+    projectionHash: string;
+  };
 }
 
 export interface PiWorkflowPromptMetadata {
@@ -55,6 +62,7 @@ export interface PiWorkflowPromptMetadata {
   translationSplitSize?: number;
   folderTranslationOrder?: string;
   folderSourceDocuments?: PiFolderSourceDocument[];
+  folderSourceSelection?: "prepared-inputs";
   proofreadMode?: PiProofreadMode;
   proofreadSplitSize?: number;
   proofreadMontecarloSize?: number;
@@ -164,6 +172,7 @@ export type PiSessionRuntimeEvent = AgentEvent
     };
 
 export interface PiSessionPromptRequest {
+  taskPreparation?: YnTaskPreparationRequest;
   outputDir: string;
   sessionId: string;
   prompt: string;
@@ -189,6 +198,7 @@ export interface PiSessionPromptRequest {
   translationSplitSize?: number;
   folderTranslationOrder?: string;
   folderSourceDocuments?: PiFolderSourceDocument[];
+  folderSourceSelection?: "prepared-inputs";
   sourcePath?: string;
   sourceSelection?: PiSourceSelection;
   translationPath?: string;

@@ -67,6 +67,10 @@ import {
 import { isExtractedWorkshopTranslationPath } from "../../../shared/core/translationBinding.ts";
 import { existsSync } from "node:fs";
 import { normalizeCustomPreserveRules } from "../../../shared/validation/customPreserveRules.ts";
+import {
+  buildTaskPreparationPrompt, createTaskPreparationState, createTaskPreparationTools,
+  taskPreparationContext, type YnTaskPreparationHost, type YnTaskPreparationState
+} from "./taskPreparation.ts";
 
 type EventListener = (envelope: PiSessionEventEnvelope) => void;
 type StateListener = (
@@ -103,10 +107,15 @@ async function resolveCurrentProjectPromptRequest(
   const state = await readProjectState(request.outputDir);
   const current: Partial<PiSessionPromptRequest> = {};
   if (markerIntent) current.workflowIntent = markerIntent;
-  if (state.sourcePath !== undefined || state.sourceKind !== undefined) {
-    if (typeof state.sourcePath !== "string" || !state.sourcePath.trim()) {
-      throw new Error("Invalid project setting sourcePath: expected a non-empty string.");
-    }
+  if (state.sourcePath !== undefined && typeof state.sourcePath !== "string") {
+    throw new Error("Invalid project setting sourcePath: expected a string.");
+  }
+  if (state.sourceKind !== undefined && state.sourceKind !== "file" && state.sourceKind !== "folder") {
+    throw new Error("Invalid project setting sourceKind: expected file or folder.");
+  }
+  // A saved empty homepage field is an absent selection, not corrupt state.
+  // Materials preparation and ordinary conversation do not require a source.
+  if (typeof state.sourcePath === "string" && state.sourcePath.trim()) {
     if (state.sourceKind !== "file" && state.sourceKind !== "folder") {
       throw new Error("Invalid project setting sourceKind: expected file or folder.");
     }
@@ -118,6 +127,7 @@ async function resolveCurrentProjectPromptRequest(
       current.sourcePath = sourcePath;
       current.sourceSelection = { kind: state.sourceKind, path: sourcePath };
       current.folderSourceDocuments = undefined;
+      current.folderSourceSelection = undefined;
     }
   }
   for (const key of PROJECT_STRING_SETTINGS) {
@@ -212,6 +222,7 @@ interface ActiveSession {
   compactionTask?: Promise<PiSessionCompactionResult>;
   domainRun?: YnDomainRunContract;
   hostState: {
+    taskPreparation?: YnTaskPreparationState;
     domainRun?: YnDomainRunContract;
     parkedDomainRuns: Partial<Record<YnWorkflowKind, YnDomainRunSnapshot>>;
     workflowSuspended: boolean;
@@ -248,6 +259,7 @@ interface SessionOperationReservation {
 interface PromptOperation {
   generation: number;
   cancelled: boolean;
+  abortController: AbortController;
 }
 
 interface PreparedRuntime {
@@ -410,9 +422,14 @@ export class PiNativeSessionService {
   private readonly options: PiNativeSessionServiceOptions;
   private nextQueuedInputSequence = 0;
   private nextPromptGeneration = 0;
+  private taskPreparationHost?: YnTaskPreparationHost;
 
   constructor(options: PiNativeSessionServiceOptions = {}) {
     this.options = options;
+  }
+
+  configureTaskPreparationHost(host: YnTaskPreparationHost): void {
+    this.taskPreparationHost = host;
   }
 
   subscribeEvents(listener: EventListener): () => void {
@@ -549,9 +566,21 @@ export class PiNativeSessionService {
   }
 
   async prompt(request: PiSessionPromptRequest): Promise<PiSessionPromptAcceptance> {
+    return this.acceptPrompt(request);
+  }
+
+  hasActiveWork(workspaceDir: string): boolean {
+    const prefix = `${workspaceKey(workspaceDir)}::`;
+    return [...this.sessionOperationReservations.keys()].some(key => key.startsWith(prefix))
+      || [...this.active.entries()].some(([key, active]) => key.startsWith(prefix)
+        && (active.running || active.compacting || active.subagents.hasRunning()));
+  }
+
+  private async acceptPrompt(request: PiSessionPromptRequest, preparationHandoff?: YnTaskPreparationState, handoffCancelled?: () => boolean): Promise<PiSessionPromptAcceptance> {
     request = await resolveCurrentProjectPromptRequest(request);
     assertWorkflowPromptMetadata(request);
     if (request.workflowIntent) await ensureYnWorkflowWorkspace(request.outputDir);
+    if (handoffCancelled?.()) throw new DOMException("Task preparation handoff was stopped.", "AbortError");
     const key = sessionKey(request.outputDir, request.sessionId);
     if (this.closingSessions.has(key)) throw new Error(`Pi session ${request.sessionId} is closing.`);
     if (this.sessionOperationReservations.has(key)) {
@@ -562,21 +591,22 @@ export class PiNativeSessionService {
     try {
       await this.active.get(key)?.subagents.waitForTerminalSettlements();
       return await this.withWorkspaceSessionTransition(request.outputDir, request.sessionId, async () => {
-        if (reservation.cancelled) {
+        if (reservation.cancelled || handoffCancelled?.()) {
           throw new DOMException("Pi prompt was cancelled before the native runtime started.", "AbortError");
         }
         if (this.closingSessions.has(key)) throw new Error(`Pi session ${request.sessionId} is closing.`);
         if (this.active.get(key)?.running || this.active.get(key)?.compacting) {
           throw new Error("Pi session is already running. Use Steer or Follow-up.");
         }
-        const prepared = await this.prepareRuntime(request);
-        if (reservation.cancelled) {
+        const prepared = await this.prepareRuntime(request, "prompt", preparationHandoff);
+        if (reservation.cancelled || handoffCancelled?.()) {
           throw new DOMException("Pi prompt was cancelled before the native runtime started.", "AbortError");
         }
         const active = this.commitPreparedRuntime(key, prepared);
         const operation: PromptOperation = {
           generation: ++this.nextPromptGeneration,
-          cancelled: false
+          cancelled: false,
+          abortController: new AbortController()
         };
         active.promptOperation = operation;
         active.running = true;
@@ -699,7 +729,10 @@ export class PiNativeSessionService {
 
   private async abortActiveSession(active: ActiveSession): Promise<void> {
     const promptOperation = active.promptOperation;
-    if (promptOperation) promptOperation.cancelled = true;
+    if (promptOperation) {
+      promptOperation.cancelled = true;
+      promptOperation.abortController.abort(new DOMException("Pi operation was stopped.", "AbortError"));
+    }
     const acceptedOrder = [...active.queuedUserOrder]
       .sort((left, right) => left.sequence - right.sequence)
       .map((entry) => ({ ...entry }));
@@ -782,7 +815,8 @@ export class PiNativeSessionService {
 
   private async prepareRuntime(
     request: PiSessionPromptRequest,
-    purpose: "prompt" | "compaction" = "prompt"
+    purpose: "prompt" | "compaction" = "prompt",
+    preparationHandoff?: YnTaskPreparationState
   ): Promise<PreparedRuntime> {
     const key = sessionKey(request.outputDir, request.sessionId);
     const previous = this.active.get(key);
@@ -793,7 +827,7 @@ export class PiNativeSessionService {
     const repository = new PiSessionRepository(request.outputDir);
     const session = previous?.session ?? await repository.open(request.sessionId);
     try {
-      return await this.prepareOwnedRuntime(request, purpose, previous, session, queuedCarryover);
+      return await this.prepareOwnedRuntime(request, purpose, previous, session, queuedCarryover, preparationHandoff);
     } catch (error) {
       // A failed provider/tool preparation never transfers this new handle to
       // the active owner. Keep an existing owner's session usable on rejection.
@@ -807,7 +841,8 @@ export class PiNativeSessionService {
     purpose: "prompt" | "compaction",
     previous: ActiveSession | undefined,
     session: Session,
-    queuedCarryover: AgentMessage[]
+    queuedCarryover: AgentMessage[],
+    preparationHandoff?: YnTaskPreparationState
   ): Promise<PreparedRuntime> {
     const persistedHostState = await loadYnSessionHostState(session, request.sessionId);
     const selection = await (this.options.createModelSelection ?? createPiModelSelection)({
@@ -926,7 +961,14 @@ export class PiNativeSessionService {
       : fullWorkflow
         ? operationScopeChanged ? restoredParkedTarget : currentDomainRun
         : undefined;
-    const continuedDomainRun = continuingBackgroundOperation
+    const finishingPreparation = !request.taskPreparation
+      && (previous?.hostState.taskPreparation ?? persistedHostState?.taskPreparation)?.started === true
+      && (previous?.hostState.taskPreparation ?? persistedHostState?.taskPreparation)?.completed !== true
+      && currentDomainRun?.fullWorkflow === true
+      && (markerIntent === undefined || markerIntent === currentDomainRun.kind)
+      && (runtimeRequest.workflowIntent === undefined || runtimeRequest.workflowIntent === currentDomainRun.kind)
+      && currentDomainRun.incompleteReasons().length === 0;
+    const continuedDomainRun = finishingPreparation ? currentDomainRun : continuingBackgroundOperation
       ? resumableCandidate
       : resumableCandidate?.fullWorkflow && resumableCandidate.incompleteReasons().length > 0
         ? resumableCandidate
@@ -964,13 +1006,24 @@ export class PiNativeSessionService {
         runtimeRequest.subagentCount
       );
     }
+    const inheritedPreparation = previous?.hostState.taskPreparation ?? persistedHostState?.taskPreparation;
+    const retainedPreparation = workflowIntent && inheritedPreparation?.intent !== workflowIntent
+      ? undefined : inheritedPreparation;
     const hostState = {
+      taskPreparation: preparationHandoff ?? (request.taskPreparation
+        ? createTaskPreparationState(request.taskPreparation)
+        : retainedPreparation),
       domainRun,
       parkedDomainRuns,
       workflowSuspended: Boolean(inheritedSuspension),
       proofread: proofreadState,
       translationAlignment: translationAlignmentState
     };
+    if (!previous && hostState.taskPreparation?.pendingRequest && !hostState.taskPreparation.started) {
+      // A cold reopen must recheck Host source/trial evidence through the start
+      // tool before consuming a prepared request whose files may have changed.
+      hostState.taskPreparation.stopped = true;
+    }
     const autoResumeStoppedWorkflow = Boolean(
       explicitFullWorkflow
       && hostState.workflowSuspended
@@ -1010,6 +1063,7 @@ export class PiNativeSessionService {
           ? { parkedDomainRuns: hostState.parkedDomainRuns }
           : {}),
         ...(hostState.workflowSuspended ? { workflowSuspended: true } : {}),
+        ...(hostState.taskPreparation ? { taskPreparation: hostState.taskPreparation } : {}),
         proofread: hostState.proofread,
         translationAlignment: hostState.translationAlignment
       };
@@ -1137,6 +1191,7 @@ export class PiNativeSessionService {
           );
         }
         const suspendedSnapshot = suspendedRun.snapshot();
+        const previousPreparationStopped = hostState.taskPreparation?.stopped;
         const previousDeferredTranslationReuseAuditIds = [...deferredTranslationReuseAuditIds];
         try {
           suspendedRun.resume();
@@ -1155,8 +1210,12 @@ export class PiNativeSessionService {
           toolContext.domainRun = suspendedRun;
           if (activeRuntime) activeRuntime.domainRun = suspendedRun;
           hostState.workflowSuspended = false;
+          if (hostState.taskPreparation?.started && hostState.taskPreparation.intent === suspendedRun.kind) {
+            hostState.taskPreparation.stopped = false;
+          }
           await persistHostState();
         } catch (error) {
+          if (hostState.taskPreparation) hostState.taskPreparation.stopped = previousPreparationStopped;
           suspendedRun.suspend();
           const restoredSuspendedRun = restoreDomainRun(suspendedSnapshot);
           restoredSuspendedRun.suspend();
@@ -1193,7 +1252,13 @@ export class PiNativeSessionService {
         autoKind === "translation" || autoKind === "proofread" ? autoKind : undefined
       );
     }
-    const rawTools = purpose === "prompt" ? await this.options.createTools?.(toolContext) ?? [] : [];
+    const preparation = hostState.taskPreparation;
+    const preparing = purpose === "prompt" && preparation !== undefined && !preparation.started && !preparation.completed;
+    if (preparing && !this.taskPreparationHost) throw new Error("YN task preparation Host is not configured.");
+    const rawTools = purpose === "prompt" ? [
+      ...await this.options.createTools?.(toolContext) ?? [],
+      ...(preparing ? createTaskPreparationTools({ state: preparation!, request: runtimeRequest, host: this.taskPreparationHost!, persist: persistHostState }) : [])
+    ] : [];
     const tools = rawTools.map((tool) => {
       const execute = tool.execute.bind(tool);
       return {
@@ -1213,11 +1278,11 @@ export class PiNativeSessionService {
       subagentEnabled: domainRun.configuredSubagents > 0,
       subagentCount: domainRun.configuredSubagents
     } : runtimeRequest;
-    const systemPrompt = await this.options.buildSystemPrompt?.(promptRequest, {
+    const systemPrompt = (preparing ? buildTaskPreparationPrompt(preparation!) + "\n" : "") + (await this.options.buildSystemPrompt?.(promptRequest, {
       fullWorkflow: domainRun?.fullWorkflow ?? fullWorkflow,
       workflowSuspended: hostState.workflowSuspended || hasParkedWorkflow(),
       domainRun
-    }) ?? GENERIC_SYSTEM_PROMPT;
+    }) ?? GENERIC_SYSTEM_PROMPT);
     let userGateAssistantKey = "";
     let terminateUserGateBatch = false;
     runtime = new PiSessionAgentRuntime({
@@ -1228,6 +1293,9 @@ export class PiNativeSessionService {
       thinkingLevel: normalizeThinkingLevel(selection.model, request.thinkingLevel),
       systemPrompt,
       tools,
+      beforeToolCall: async () => hostState.taskPreparation?.pendingRequest && !hostState.taskPreparation.stopped
+        ? { block: true, reason: "Preparation is complete; Host is handing off to the full workflow.", terminate: true }
+        : undefined,
       deferThresholdCompaction: () => subagents.hasRunning(),
       refreshExpiredProviderAuth: async (model) => {
         const refreshed = await (this.options.createModelSelection ?? createPiModelSelection)({
@@ -1238,6 +1306,11 @@ export class PiNativeSessionService {
         return refreshed.model;
       },
       afterToolCall: async (context) => {
+        // Pi only terminates when every result in an assistant batch agrees.
+        // Mark earlier results too, and block later calls after preparation succeeds.
+        if (context.assistantMessage.content.some(block => block.type === "toolCall" && block.name === "startPreparedWorkflow")) {
+          if (context.toolCall.name !== "startPreparedWorkflow" || !context.isError) return { terminate: true };
+        }
         const assistantKey = JSON.stringify([
           context.assistantMessage.timestamp,
           context.assistantMessage.content.map((block) => (
@@ -1378,8 +1451,10 @@ export class PiNativeSessionService {
         active.error = assistant.errorMessage?.trim() || "The model provider failed without an error message.";
       }
     } else if (event.type === "settled") {
-      active.running = false;
-      active.phase = "idle";
+      // Native provider idle is not the end of a Host-owned preparation/finish.
+      active.running = Boolean(active.promptOperation && !active.promptOperation.cancelled
+        && active.hostState.taskPreparation && !active.hostState.taskPreparation.completed);
+      active.phase = active.running ? "turn" : "idle";
       active.streamingMessage = null;
     } else if (event.type === "queue_update") {
       active.queuedSteer = [...event.steer];
@@ -1531,7 +1606,8 @@ export class PiNativeSessionService {
         }
         const operation: PromptOperation = {
           generation: ++this.nextPromptGeneration,
-          cancelled: false
+          cancelled: false,
+          abortController: new AbortController()
         };
         active.promptOperation = operation;
         active.running = true;
@@ -1653,8 +1729,6 @@ export class PiNativeSessionService {
       }
     } finally {
       if (!this.isCurrentPromptOperation(active, operation) || operation.cancelled) return;
-      active.running = false;
-      active.phase = "idle";
       active.streamingMessage = null;
       try {
         await this.refreshContextUsage(active);
@@ -1662,8 +1736,77 @@ export class PiNativeSessionService {
         active.error = error instanceof Error ? error.message : String(error);
       }
       if (!this.isCurrentPromptOperation(active, operation) || operation.cancelled) return;
-      active.promptOperation = undefined;
-      this.emitActiveState(active);
+      // Handoff is deliberately outside the prompt/session transition lock.
+      // The old closures keep their immutable request until the native turn settles.
+      try {
+        await this.settleTaskPreparation(active, operation);
+      } catch (error) {
+        if (this.isCurrentPromptOperation(active, operation) && !operation.cancelled) {
+          active.error = error instanceof Error ? error.message : String(error);
+        }
+      } finally {
+        if (this.isCurrentPromptOperation(active, operation) && !operation.cancelled) {
+          active.running = false;
+          active.phase = "idle";
+          active.promptOperation = undefined;
+          this.emitActiveState(active);
+        }
+      }
+    }
+  }
+
+  private async settleTaskPreparation(active: ActiveSession, operation: PromptOperation): Promise<void> {
+    const preparation = active.hostState.taskPreparation;
+    const stillOwned = () => !operation.cancelled
+      && this.active.get(sessionKey(active.workspaceDir, active.sessionId)) === active
+      && active.promptOperation === operation && !preparation?.stopped;
+    if (!preparation || !stillOwned() || active.error || active.hostState.workflowSuspended || active.subagents.hasRunning()) return;
+    if (preparation.pendingRequest && !preparation.started) {
+      let request = structuredClone(preparation.pendingRequest);
+      if (workspaceKey(request.outputDir) === workspaceKey(active.workspaceDir)) {
+        request.sessionId = active.sessionId;
+      } else {
+        const summary = await this.createSession(request.outputDir);
+        if (!stillOwned()) return;
+        request.sessionId = summary.id;
+        request.prompt += `\n\nPreparation handoff from another project: ${preparation.intent}; use only this project's current settings and assets.`;
+      }
+      if (!stillOwned()) return;
+      const handoff = { ...preparation, pendingRequest: undefined, started: true, stopped: false };
+      // The pending request is already durable. acceptPrompt persists the new
+      // started baseline before its first provider call; do not claim a launch
+      // in the old baseline, which would strand recovery if the app exits here.
+      try {
+        active.running = false;
+        await this.acceptPrompt({ ...request, taskPreparation: undefined }, handoff, () => !stillOwned());
+        if (workspaceKey(request.outputDir) !== workspaceKey(active.workspaceDir)) {
+          preparation.pendingRequest = undefined;
+          preparation.started = true;
+          await active.persistHostState();
+        }
+      } catch (error) {
+        preparation.started = false;
+        preparation.stopped = true;
+        await active.persistHostState();
+        throw error;
+      }
+      return;
+    }
+    const domain = active.domainRun;
+    if (!preparation.started || preparation.completed || !domain?.fullWorkflow
+      || domain.kind !== preparation.intent || domain.awaitingUserInput || domain.recoveryPauseId
+      || domain.incompleteReasons().length > 0) return;
+    if (!this.taskPreparationHost) throw new Error("YN task completion Host is not configured.");
+    await this.taskPreparationHost.finishWorkflow(taskPreparationContext(preparation, {
+      outputDir: active.workspaceDir, sessionId: active.sessionId
+    }), { workflow: domain.kind, autoApplyProofreadSuggestions: preparation.autoApplyProofreadSuggestions === true }, operation.abortController.signal);
+    if (!stillOwned()) return;
+    preparation.completed = true;
+    try {
+      await active.persistHostState();
+    } catch (error) {
+      preparation.completed = false;
+      throw error;
     }
   }
 
@@ -1716,7 +1859,8 @@ export class PiNativeSessionService {
     return {
       sessionId: active.sessionId,
       sequence: active.sequence,
-      running: active.running,
+      running: active.running || Boolean(active.promptOperation && !active.promptOperation.cancelled
+        && active.hostState.taskPreparation && !active.hostState.taskPreparation.completed),
       phase: active.phase,
       streamingMessage: active.streamingMessage,
       model: { provider: model.provider, id: model.id, name: model.name },
@@ -1866,6 +2010,7 @@ export class PiNativeSessionService {
   }
 
   private suspendDomainRun(active: ActiveSession): void {
+    if (active.hostState.taskPreparation) active.hostState.taskPreparation.stopped = true;
     const domainRun = active.domainRun ?? active.hostState.domainRun;
     if (domainRun && domainRun.incompleteReasons().length > 0) {
       domainRun.suspend();

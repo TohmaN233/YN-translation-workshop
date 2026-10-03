@@ -900,6 +900,673 @@ code {
   }
 }
 
+/* Built-in YN workflow entry and task settings modal. */
+.builtinTaskEntry {
+  width: 100%;
+  margin: 0 auto 18px;
+  padding: clamp(16px, 2vw, 24px);
+  border: 1px solid #d8e2df;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #f7fbf9, #ffffff 62%, #f1f7f5);
+  box-shadow: 0 10px 30px rgba(31, 43, 40, 0.06);
+}
+
+.builtinTaskEntryHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.builtinTaskEntryHeader h2,
+.builtinTaskDialogHeader h2 {
+  margin: 5px 0 0;
+  color: #1f342e;
+  font-size: 21px;
+  line-height: 1.25;
+}
+
+.builtinTaskEntryHeader p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.builtinTaskEyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #327461;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.builtinTaskProjectTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(42%, 430px);
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid #d7e3de;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #4d645d;
+  font-size: 12px;
+}
+
+.builtinTaskProjectTag span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.builtinTaskCards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.builtinTaskCard {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-content: start;
+  align-items: start;
+  gap: 4px 11px;
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid #dce6e2;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.builtinTaskCardIcon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+}
+
+.builtinTaskCardIcon.translation {
+  background: #e5f4ef;
+  color: #12674f;
+}
+
+.builtinTaskCardIcon.proofread {
+  background: #edf0fb;
+  color: #4c5d9b;
+}
+
+.builtinTaskCardIcon.assets {
+  background: #fff3df;
+  color: #976117;
+}
+
+.builtinTaskCardCopy {
+  min-width: 0;
+}
+
+.builtinTaskCard h3 {
+  margin: 1px 0 4px;
+  color: #273b34;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.builtinTaskCard p {
+  margin: 0;
+  color: #6b7c76;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.builtinTaskButton,
+.builtinTaskQuietButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid #bfd7ce;
+  border-radius: 9px;
+  background: #eef7f3;
+  color: #195d49;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.builtinTaskCard > .builtinTaskButton {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 7px;
+}
+
+.builtinTaskButton:hover:not(:disabled),
+.builtinTaskQuietButton:hover:not(:disabled) {
+  border-color: #75a995;
+  background: #e1f1eb;
+}
+
+.builtinTaskButton.primary {
+  min-height: 40px;
+  padding-inline: 17px;
+  border-color: #176b53;
+  background: #176b53;
+  color: #fff;
+}
+
+.builtinTaskButton.primary:hover:not(:disabled) {
+  border-color: #105741;
+  background: #105741;
+}
+
+.builtinTaskButton:disabled,
+.builtinTaskQuietButton:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.builtinTaskAssetsCard {
+  grid-template-columns: 40px minmax(0, 1fr);
+}
+
+.builtinTaskAssetsCard > .builtinTaskButton {
+  grid-column: 2;
+}
+
+.builtinTaskAssetsProject {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.builtinTaskAssetsProject > label {
+  flex: 1;
+  min-width: 0;
+}
+
+.builtinTaskAssetsProject small {
+  color: #687970;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.builtinTaskAssetsProject .builtinTaskQuietButton {
+  min-height: 31px;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.builtinTaskMaterials {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+  margin-top: 7px;
+  color: #405750;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.builtinTaskMaterials textarea,
+.builtinTaskField textarea {
+  width: 100%;
+  min-height: 66px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+
+.builtinTaskAssetActions {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.builtinTaskQuietButton {
+  border-color: #dbe4e0;
+  background: #fff;
+  color: #4b625a;
+  font-weight: 600;
+}
+
+.builtinTaskFeedback {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border: 1px solid #cde2d8;
+  border-radius: 9px;
+  background: #f0faf5;
+  color: #23634c;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.builtinTaskFeedback.error {
+  border-color: #efc7bd;
+  background: #fff4f0;
+  color: #922e17;
+}
+
+.builtinTaskOverlay {
+  position: fixed;
+  z-index: 3000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(20, 31, 28, 0.48);
+  backdrop-filter: blur(3px);
+}
+
+.builtinTaskDialog {
+  display: flex;
+  flex-direction: column;
+  width: min(840px, 100%);
+  max-height: min(92vh, 960px);
+  overflow: hidden;
+  border: 1px solid #d7e2dd;
+  border-radius: 16px;
+  background: #fbfdfc;
+  box-shadow: 0 28px 90px rgba(13, 31, 25, 0.28);
+  outline: none;
+}
+
+.builtinTaskDialogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid #e1e9e5;
+  background: #f4f9f6;
+}
+
+.builtinTaskClose {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #d4e0db;
+  border-radius: 9px;
+  background: #fff;
+  color: #4d635a;
+  cursor: pointer;
+}
+
+.builtinTaskClose:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.builtinTaskDialogBody {
+  display: grid;
+  gap: 14px;
+  min-height: 0;
+  padding: 18px 22px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.builtinTaskFieldGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.builtinTaskField {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  color: #3d514a;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.builtinTaskField.full {
+  grid-column: 1 / -1;
+}
+
+.builtinTaskField input,
+.builtinTaskField select,
+.builtinTaskField textarea,
+.builtinTaskMaterials textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid #d1ddd7;
+  border-radius: 8px;
+  background: #fff;
+  color: #253832;
+  font-size: 13px;
+  font-weight: 450;
+}
+
+.builtinTaskField input:focus,
+.builtinTaskField select:focus,
+.builtinTaskField textarea:focus,
+.builtinTaskMaterials textarea:focus {
+  border-color: #62a18a;
+  box-shadow: 0 0 0 3px rgba(47, 133, 101, 0.12);
+  outline: none;
+}
+
+.builtinTaskField small {
+  color: #6c7c76;
+  font-size: 11px;
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+.builtinTaskPathInput {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+}
+
+.builtinTaskField:first-child .builtinTaskPathInput,
+.builtinTaskField.full:not(:has(.builtinTaskPathInput)) {
+  grid-column: 1 / -1;
+}
+
+.builtinTaskPathInput button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  min-height: 36px;
+  border: 1px solid #d1ddd7;
+  border-radius: 8px;
+  background: #fff;
+  color: #49665a;
+  cursor: pointer;
+}
+
+.builtinTaskPathInput button:hover {
+  border-color: #89b7a3;
+  background: #f0f8f4;
+}
+
+.builtinTaskCheckbox {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid #e0e9e4;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.builtinTaskCheckbox input,
+.builtinTaskAutoApply input {
+  width: 16px;
+  min-height: 16px;
+  accent-color: #1d795c;
+}
+
+.builtinTaskNotice {
+  display: grid;
+  grid-template-columns: 21px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid #cfe3da;
+  border-radius: 10px;
+  background: #eff8f3;
+  color: #277155;
+}
+
+.builtinTaskNotice p,
+.builtinTaskExistingRules p {
+  margin: 0;
+  color: #47645a;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.builtinTaskExistingRules {
+  padding: 11px 12px;
+  border: 1px solid #e0e8e4;
+  border-radius: 9px;
+  background: #fff;
+  color: #425850;
+  font-size: 12px;
+}
+
+.builtinTaskExistingRules ul {
+  display: grid;
+  gap: 6px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.builtinTaskExistingRules li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 6px;
+  border-top: 1px solid #edf1ef;
+}
+
+.builtinTaskExistingRules li code {
+  max-width: 70%;
+  overflow: hidden;
+  color: #315b4b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.builtinTaskAdvanced {
+  border: 1px solid #dfe8e3;
+  border-radius: 10px;
+  background: #f7faf8;
+}
+
+.builtinTaskAdvanced summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 13px;
+  color: #38574a;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  list-style: none;
+}
+
+.builtinTaskAdvanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.builtinTaskAdvanced[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.builtinTaskAdvanced .builtinTaskFieldGrid {
+  padding: 0 13px 13px;
+}
+
+.builtinTaskRangeInputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.builtinTaskAutoApply {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d6e1dc;
+  border-radius: 10px;
+  background: #fff;
+  color: #335348;
+  cursor: pointer;
+}
+
+.builtinTaskAutoApply > span {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.builtinTaskAutoApply small {
+  color: #6a7b74;
+  font-size: 11px;
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+.builtinTaskAutoApply > svg {
+  color: #699b85;
+}
+
+.builtinTaskDialogFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 13px 22px;
+  border-top: 1px solid #e1e9e5;
+  background: #f8fbf9;
+}
+
+.builtinTaskSpinner {
+  animation: builtinTaskSpin 900ms linear infinite;
+}
+
+@keyframes builtinTaskSpin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 900px) {
+  .builtinTaskCards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .builtinTaskAssetsCard {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 620px) {
+  .builtinTaskEntryHeader {
+    display: grid;
+  }
+
+  .builtinTaskProjectTag {
+    max-width: 100%;
+  }
+
+  .builtinTaskCards,
+  .builtinTaskFieldGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .builtinTaskAssetsCard {
+    grid-column: auto;
+  }
+
+  .builtinTaskCard > .builtinTaskButton {
+    grid-column: 1 / -1;
+  }
+
+  .builtinTaskField.full {
+    grid-column: auto;
+  }
+
+  .builtinTaskOverlay {
+    padding: 8px;
+  }
+
+  .builtinTaskDialog {
+    max-height: 96vh;
+    border-radius: 12px;
+  }
+
+  .builtinTaskDialogHeader,
+  .builtinTaskDialogBody,
+  .builtinTaskDialogFooter {
+    padding-left: 13px;
+    padding-right: 13px;
+  }
+
+  .builtinTaskAssetActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .builtinTaskAssetActions > button {
+    width: 100%;
+  }
+
+  .builtinTaskExistingRules li {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .builtinTaskExistingRules li code {
+    max-width: 100%;
+  }
+}
+
+.homepageProviderSettings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.homepageProviderSettings p {
+  margin: 5px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.homepageProviderButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.homepageProviderDialog {
+  width: min(900px, calc(100vw - 32px));
+  height: min(720px, calc(100vh - 48px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.homepageProviderDialog::backdrop { background: rgb(15 23 42 / 40%); }
+
+@media (max-width: 640px) {
+  .homepageProviderSettings { align-items: stretch; flex-direction: column; }
+  .homepageProviderDialog .ynAgentProviderSettingsBody { grid-template-columns: 120px minmax(0, 1fr); }
+}
+
 .ynAgent {
   --bg: #f6f8fb;
   --bg-panel: #ffffff;

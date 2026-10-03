@@ -1,4 +1,4 @@
-import { YN_DEFAULT_SPLIT_SIZE } from "../agent/piSessionContract.ts";
+import { YN_DEFAULT_SPLIT_SIZE, type PiFolderSourceDocument } from "../agent/piSessionContract.ts";
 import {
   normalizeCustomPreserveRules,
   type CustomPreserveRule
@@ -31,7 +31,8 @@ export interface PromptAdvancedOptions {
   subagentProviderId?: string;
   subagentModelId?: string;
   folderTranslationOrder?: string;
-  folderSourceDocuments?: Array<{ id: string; path: string }>;
+  folderSourceDocuments?: PiFolderSourceDocument[];
+  folderSourceSelection?: "prepared-inputs";
   customPreserveRules?: CustomPreserveRule[];
 }
 
@@ -124,7 +125,7 @@ export function promptParameterDefaults(projectDir: string, advanced: PromptAdva
   return {
     languagePair: clean(advanced.languagePair) || "ja->zh-CN",
     style: clean(advanced.style) || "game",
-    split: boolOrDefault(advanced.split, true),
+    split: true,
     splitSize: numberOrDefault(advanced.splitSize, YN_DEFAULT_SPLIT_SIZE),
     glossaryCandidates: boolOrDefault(advanced.glossaryCandidates, true),
     characterBible: boolOrDefault(advanced.characterBible, true),
@@ -145,8 +146,10 @@ export function promptParameterDefaults(projectDir: string, advanced: PromptAdva
     folderTranslationOrder: clean(advanced.folderTranslationOrder),
     folderSourceDocuments: advanced.folderSourceDocuments?.map((document) => ({
       id: clean(document.id),
-      path: clean(document.path)
+      path: clean(document.path),
+      ...(document.projection ? { projection: { ...document.projection } } : {})
     })).filter((document) => document.id && document.path),
+    ...(advanced.folderSourceSelection ? { folderSourceSelection: advanced.folderSourceSelection } : {}),
     customPreserveRules: normalizeCustomPreserveRules(advanced.customPreserveRules)
   };
 }
@@ -236,7 +239,7 @@ export function buildTranslatePrompt(options: TranslatePromptOptions): string {
     `- ${glossaryInstruction}`,
     `- Character bible: ${characterBibleModule}`,
     `- Existing translation: ${defaults.reuseExistingTranslation ? "audit and reuse" : "discard and retranslate"}`,
-    `- Split enabled: ${defaults.split}; splitSize=${defaults.splitSize}`,
+    `- Lines per chunk: splitSize=${defaults.splitSize}`,
     `- Subagents: ${defaults.subagentEnabled ? `enabled; maximum=${defaults.subagentCount ?? "project ceiling"}` : "disabled"}`,
     `- Translation review Agents: ${defaults.subagentEnabled ? `maximum=${defaults.reviewSubagentCount ?? defaults.subagentCount ?? "project ceiling"}` : "disabled"}`,
     `- Subagent model: ${subagentModelText(options.advanced)}`,

@@ -1,4 +1,4 @@
-# YN Translation Workshop 2.1.3
+# YN Translation Workshop 2.1.4
 
 New to YN? Start with the [project introduction (Chinese)](https://tgy233.top/tgypage/yn/), then follow the guide below to begin using the workshop.
 
@@ -7,6 +7,19 @@ A local workbench that brings human line editing, project assets, full AI transl
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
 [中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## What's new in 2.1.4
+
+- Create a project from reference preparation before translating. Clear homepage entries and restore task defaults in one click.
+- Reference preparation uses editable drafts, checks them, then commits both formal assets together. Interrupted or failed tasks retain their drafts.
+- One-click setup checks parameters against the source and trials control-token rules, then uses the shared HTML parameters and translation prompt. Generate line-by-line HTML first for hands-on control.
+- Removed the unused chunking toggle. Folder HTML initializes the file order inside braces and preserves explicit selections.
+
+- Configure providers and models at the top of the homepage before opening a project or HTML; settings are shared globally.
+
+- Built-in task setup opens HTML and starts translation or proofreading after settings confirmation; reference materials can be organized directly. Defaults: 500 lines and up to 3 agents, with preservation-rule scanning before translation.
+- Editable HTML character tables and optional proofreading auto-apply to HTML; TXT saving remains manual.
+- Fixed canceled tasks and compaction starting after Stop.
 
 ## What's new in 2.1.3
 
@@ -47,13 +60,13 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.1.3-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.1.3-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.1.4-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.1.4-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.
 
-Local artifacts are under `release/2.1.3/`; the releases page lists only versions actually uploaded.
+Local 2.1.4 artifacts are under `release/`; the releases page lists only versions actually uploaded.
 
 ## Complete feature list
 

@@ -1,10 +1,11 @@
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import { parseGlossaryText } from "../../shared/core/glossary.ts";
-import { normalizeHandwrittenCharacterRequiredTerms } from "../../shared/validation/translationValidator.ts";
-import { writeTextFileAtomically } from "../atomicFile.ts";
-import { patchProjectStateIfUnchanged, readProjectState } from "../projectState.ts";
+import { normalizeHandwrittenCharacterRequiredTerms, parseCharacterVoiceRequiredTerm } from "../../shared/validation/translationValidator.ts";
+import { writeTextFileAtomically, writeTextFilesAtomically, type TextFileTransactionUpdate } from "../atomicFile.ts";
+import { patchProjectStateIfUnchanged, readProjectState, transactProjectState } from "../projectState.ts";
 import { readTranslationMemoryStats, type TranslationMemoryStats, translationMemoryPath } from "./translationMemory.ts";
 
 export type AssetProposalKind = "glossary" | "character_bible";
@@ -35,7 +36,7 @@ export interface ProjectAssets {
     translationMemory: boolean;
   };
   glossary: { entries: Record<string, unknown>[] };
-  characterBible: { characters: Record<string, unknown>[]; source: string };
+  characterBible: { characters: Record<string, unknown>[]; source: string; revisions: Record<string, string> };
   styleGuide: string;
   translationMemory: TranslationMemoryStats;
 }
@@ -490,11 +491,22 @@ function assetProposalFrom(value: unknown, filePath: string): AssetProposal {
   return value;
 }
 
-async function readProjectAssetsUnlocked(args: { outputDir: string }): Promise<ProjectAssets> {
+async function readProjectAssetsUnlocked(args: { outputDir: string; includeLegacyCharacters?: boolean }): Promise<ProjectAssets> {
   const paths = assetPaths(args.outputDir);
   const glossary = await readJsonObject(paths.glossary);
   const glossaryEntries = entriesFrom(glossary, "entries", paths.glossary);
   let characterBibleSource = await readOptionalText(paths.characterBible);
+  if (characterBibleSource === undefined && args.includeLegacyCharacters) {
+    characterBibleSource = await readOptionalText(paths.legacyMarkdownCharacterBible);
+    if (characterBibleSource === undefined && await readOptionalText(paths.migratedLegacyCharacterBible) === undefined) {
+      const legacy = await readJsonObject(paths.legacyCharacterBible);
+      if (legacy) {
+        const entries = entriesFrom(legacy, "characters", paths.legacyCharacterBible);
+        assertFormalAssetEntries("character_bible", entries, paths.legacyCharacterBible);
+        characterBibleSource = serializeCharacterBibleMarkdown(entries);
+      }
+    }
+  }
   const characterBibleAvailable = characterBibleSource !== undefined;
   let characterEntries: Record<string, unknown>[];
   if (characterBibleSource === undefined) {
@@ -507,6 +519,7 @@ async function readProjectAssetsUnlocked(args: { outputDir: string }): Promise<P
   assertFormalAssetEntries("character_bible", characterEntries, paths.characterBible);
   const styleGuideSource = await readOptionalText(paths.styleGuide);
   const translationMemory = await readTranslationMemoryStats(args.outputDir);
+  const characterSections = characterBibleSource.split(/^##\s+/m).slice(1);
   return {
     paths: {
       glossary: paths.glossary,
@@ -521,7 +534,7 @@ async function readProjectAssetsUnlocked(args: { outputDir: string }): Promise<P
       translationMemory: translationMemory.initialized
     },
     glossary: { entries: glossaryEntries },
-    characterBible: { characters: characterEntries, source: characterBibleSource },
+    characterBible: { characters: characterEntries, source: characterBibleSource, revisions: Object.fromEntries(characterEntries.map((entry, index) => [String(entry.name), characterRecordRevision(characterSections[index] ?? "")])) },
     styleGuide: styleGuideSource ?? "",
     translationMemory
   };
@@ -1088,6 +1101,285 @@ export async function importProjectGlossaryFile(args: {
     outputDir: args.outputDir,
     entries: entries.map((entry) => ({ ...entry }))
   })).assets;
+}
+
+function mergeImportedCharacters(existing: Record<string, unknown>[], incoming: Record<string, unknown>[]) {
+  const characters = existing.map((entry) => ({ ...entry }));
+  const indexes = new Map(characters.map((entry, index) => [glossaryKey(entry.name), index]));
+  let added = 0;
+  for (const raw of incoming) {
+    const entry = { ...raw };
+    const supported = new Set(["name", "target", "localizedName", "translation", "aliases", "gender", "pronouns", "genderConfidence", "termsOfAddress", "requiredTerms", "mustIncludeTerms", "voiceRequiredTerms", "forbiddenTerms", "avoidTerms", "voiceForbiddenTerms", "voice", "identity", "role", "relationships", "catchphrases", "evidence"]);
+    for (const key of Object.keys(entry)) {
+      if (!supported.has(key)) throw new Error(`Unsupported character bible field: ${key}.`);
+      if (typeof entry[key] === "string" && /[\r\n]/.test(String(entry[key]))) throw new Error(`Character bible field ${key} must fit one canonical Markdown line.`);
+    }
+    const targets = targetKeys("character_bible").map((key) => firstText(entry, [key])).filter(Boolean);
+    if (new Set(targets).size > 1) throw new Error(`Character conflict: ${String(entry.name)} has different localized names.`);
+    if (targets[0]) entry.target = targets[0];
+    delete entry.localizedName;
+    delete entry.translation;
+    const required = uniqueStrings([ ...stringArray(entry.requiredTerms), ...stringArray(entry.mustIncludeTerms), ...stringArray(entry.voiceRequiredTerms) ]);
+    if (required.length) entry.requiredTerms = normalizeHandwrittenCharacterRequiredTerms(required, {
+      name: String(entry.name), target: typeof entry.target === "string" ? entry.target : undefined, aliases: stringArray(entry.aliases)
+    });
+    delete entry.mustIncludeTerms;
+    delete entry.voiceRequiredTerms;
+    const forbidden = uniqueStrings([ ...stringArray(entry.forbiddenTerms), ...stringArray(entry.avoidTerms), ...stringArray(entry.voiceForbiddenTerms) ]);
+    if (forbidden.length) entry.forbiddenTerms = forbidden;
+    delete entry.avoidTerms;
+    delete entry.voiceForbiddenTerms;
+    const roundTrip = parseCharacterBibleMarkdown(serializeCharacterBibleMarkdown([entry]), "import")[0];
+    for (const [key, value] of Object.entries(entry)) {
+      if (Array.isArray(value) && value.length === 0) continue;
+      if (typeof value === "string" && (!value.trim() || value.trim() === "unknown")) continue;
+      const normalized = Array.isArray(value) ? uniqueStrings(value as string[]) : typeof value === "string" ? value.trim() : value;
+      if (JSON.stringify(roundTrip[key]) !== JSON.stringify(normalized)) throw new Error(`Character bible field ${key} cannot be preserved by the canonical serializer.`);
+    }
+    const index = indexes.get(glossaryKey(entry.name));
+    if (index === undefined) {
+      indexes.set(glossaryKey(entry.name), characters.length);
+      characters.push(entry);
+      added += 1;
+      continue;
+    }
+    const current = characters[index];
+    for (const [key, value] of Object.entries(entry)) {
+      if (["name", "aliases", "requiredTerms", "forbiddenTerms"].includes(key)) continue;
+      const before = firstText(current, [key]);
+      const after = typeof value === "string" ? value.trim() : "";
+      if (before && before !== "unknown" && after && after !== "unknown" && before !== after) throw new Error(`Character conflict: ${String(entry.name)} has different ${key} values.`);
+    }
+    const mappings = new Map<string, string>();
+    for (const term of [...stringArray(current.requiredTerms), ...stringArray(entry.requiredTerms)]) {
+      const mapping = parseCharacterVoiceRequiredTerm(term);
+      if (!mapping) throw new Error(`Character required terms must use "source -> target". Invalid value: ${term}`);
+      const { source, target } = mapping;
+      const prior = mappings.get(glossaryKey(source));
+      if (prior !== undefined && prior !== target) throw new Error(`Character conflict: ${String(entry.name)} has different dialogue mappings for ${source}.`);
+      mappings.set(glossaryKey(source), target);
+    }
+    characters[index] = mergeAssetEntry("character_bible", current, entry);
+    for (const [key, value] of Object.entries(entry)) if (current[key] === "unknown") characters[index][key] = value;
+  }
+  return { characters, counts: { imported: incoming.length, added, deduplicated: incoming.length - added } };
+}
+
+function characterRecordRevision(section: string): string {
+  return createHash("sha256").update(section).digest("hex");
+}
+
+function characterSectionAnnotations(section: string): string[] {
+  const known = new Set(["localized name", "target", "aliases", "gender/pronouns", "terms of address", "required terms", "required dialogue mappings", "forbidden terms", "voice", "identity", "role", "relationships", "catchphrases", "evidence"]);
+  let readingMappings = false;
+  return section.split(/\r?\n/).slice(1).filter((line) => {
+    if (/^\s*[-*]\s*(?:\*\*)?Required dialogue mappings(?:\*\*)?\s*:\s*$/i.test(line)) {
+      readingMappings = true;
+      return false;
+    }
+    if (readingMappings && /^\s{2,}[-*]\s+(.+?)\s*$/.test(line)) return false;
+    readingMappings = false;
+    const field = line.match(/^\s*[-*]\s*(?:\*\*)?([^:*]+)(?:\*\*)?\s*:\s*(?:\*\*)?(.+?)\s*$/);
+    return Boolean(line.trim()) && (!field || !known.has(field[1].trim().toLocaleLowerCase()));
+  });
+}
+
+function importedCharacterBibleSource(source: string, existing: Record<string, unknown>[], merged: Record<string, unknown>[]): string {
+  const sections = [...source.matchAll(/^##\s+[^\r\n]*$/gm)];
+  if (sections.length !== existing.length) throw new Error("Character source sections do not match the parsed records.");
+  const nextByName = new Map(merged.map((entry) => [glossaryKey(entry.name), entry]));
+  if (nextByName.size !== merged.length) throw new Error("Character bible contains duplicate source names. Resolve them before importing.");
+  let result = source.slice(0, sections[0]?.index ?? source.length);
+  for (const [index, previous] of existing.entries()) {
+    const key = glossaryKey(previous.name);
+    const next = nextByName.get(key);
+    if (!next) throw new Error("Character import cannot remove an existing record.");
+    nextByName.delete(key);
+    const original = source.slice(sections[index].index!, sections[index + 1]?.index ?? source.length);
+    const serialized = serializeCharacterBibleMarkdown([next]);
+    if (serialized === serializeCharacterBibleMarkdown([previous])) {
+      result += original;
+    } else {
+      const annotations = characterSectionAnnotations(original);
+      result += serialized.replace(/^# Character Bible\s*\n/, "").trimEnd()
+        + (annotations.length ? "\n" + annotations.join("\n") : "") + "\n\n";
+    }
+  }
+  if (nextByName.size) {
+    result = result.trimEnd() + (result.trim() ? "\n\n" : "# Character Bible\n\n")
+      + serializeCharacterBibleMarkdown([...nextByName.values()]).replace(/^# Character Bible\s*\n/, "");
+  }
+  return result;
+}
+
+/** Human table edits touch one canonical record, with a revision captured when editing began. */
+export async function mutateProjectCharacterBibleEntry(args: {
+  outputDir: string;
+  operation: "add" | "update" | "delete";
+  name?: string;
+  expectedRevision?: string;
+  entry?: Record<string, unknown>;
+}): Promise<ProjectAssets> {
+  if (!["add", "update", "delete"].includes(args.operation)) throw new Error("Invalid character operation.");
+  return enqueueProjectAssetWrite(args.outputDir, async () => {
+    await ensureLegacyCharacterBibleMigratedUnlocked(args.outputDir);
+    const current = await readProjectAssetsUnlocked({ outputDir: args.outputDir });
+    const characters = current.characterBible.characters;
+    const keys = characters.map((entry) => glossaryKey(entry.name));
+    if (new Set(keys).size !== keys.length) throw new Error("Character bible contains duplicate source names. Resolve them before editing.");
+    const index = keys.indexOf(glossaryKey(args.name));
+    if (args.operation !== "add") {
+      if (!args.name?.trim() || index < 0) throw new Error("Character no longer exists. Refresh the character table.");
+      const revision = current.characterBible.revisions[String(characters[index].name)];
+      if (!args.expectedRevision || args.expectedRevision !== revision) throw new Error("Character changed since the table was read. Refresh and review the current record before saving.");
+    }
+    let replacement = "";
+    if (args.operation !== "delete") {
+      if (!args.entry || typeof args.entry !== "object" || Array.isArray(args.entry)) throw new Error("Character entry must be an object.");
+      const merged = { ...(args.operation === "update" ? characters[index] : {}), ...args.entry };
+      assertFormalAssetEntry("character_bible", merged, current.paths.characterBible);
+      // Reuse strict import checks: unsupported fields, lossy Markdown and invalid dialogue mappings fail before writing.
+      const normalized = mergeImportedCharacters([], [merged]).characters[0];
+      const newKey = glossaryKey(normalized.name);
+      if (keys.some((key, other) => key === newKey && (args.operation === "add" || other !== index))) throw new Error("A character with this source name already exists.");
+      replacement = serializeCharacterBibleMarkdown([normalized]).replace(/^# Character Bible\s*\n/, "").trimEnd() + "\n\n";
+      if (args.operation === "update") {
+        const originalSection = current.characterBible.source.split(/^##\s+/m).slice(1)[index];
+        const annotations = characterSectionAnnotations(originalSection);
+        if (annotations.length) replacement = replacement.trimEnd() + "\n" + annotations.join("\n") + "\n\n";
+      }
+    }
+    const source = current.characterBible.source;
+    const sections = [...source.matchAll(/^##\s+[^\r\n]*$/gm)];
+    let nextSource: string;
+    if (args.operation === "add") {
+      nextSource = source.trimEnd() + (source.trim() ? "\n\n" : "# Character Bible\n\n") + replacement;
+    } else {
+      const from = sections[index]?.index;
+      if (from === undefined) throw new Error("Character source section is missing; no changes were written.");
+      const to = sections[index + 1]?.index ?? source.length;
+      nextSource = source.slice(0, from) + replacement + source.slice(to);
+    }
+    assertFormalAssetEntries("character_bible", parseCharacterBibleMarkdown(nextSource, current.paths.characterBible), current.paths.characterBible);
+    await mkdir(path.dirname(current.paths.characterBible), { recursive: true });
+    await writeTextFileAtomically(current.paths.characterBible, nextSource);
+    return readProjectAssetsUnlocked({ outputDir: args.outputDir });
+  });
+}
+
+/** Import both formal assets in the same serialized rollback boundary, retaining external glossary authority. */
+export async function importProjectFormalAssets(args: {
+  outputDir: string;
+  glossary?: Record<string, unknown>[];
+  characters?: Record<string, unknown>[];
+}, options: {
+  dryRun?: boolean;
+  expectedRevision?: string;
+  receipt?: TextFileTransactionUpdate;
+  signal?: AbortSignal;
+} = {}): Promise<{
+  assets: ProjectAssets;
+  revision: string;
+  counts: { glossary: GlossaryMergeCounts; characters: { imported: number; added: number; deduplicated: number } };
+}> {
+  if (args.glossary === undefined && args.characters === undefined) throw new Error("At least one formal asset collection is required.");
+  return enqueueProjectAssetWrite(args.outputDir, async () => {
+    const paths = assetPaths(args.outputDir);
+    if (args.glossary !== undefined && !Array.isArray(args.glossary)) throw new Error("glossary must be an array.");
+    if (args.characters !== undefined && !Array.isArray(args.characters)) throw new Error("characters must be an array.");
+    assertFormalAssetEntries("glossary", args.glossary ?? [], paths.glossary);
+    assertFormalAssetEntries("character_bible", args.characters ?? [], paths.characterBible);
+    // Validate incoming canonical representation before any legacy migration or write.
+    mergeImportedCharacters([], args.characters ?? []);
+    // Read legacy input without migrating it before the rollback boundary.
+    // A character update writes the canonical file in the same transaction;
+    // legacy inputs remain intact rather than being renamed ahead of commit.
+    const current = await readProjectAssetsUnlocked({ outputDir: args.outputDir, includeLegacyCharacters: true });
+    const selected = await selectedGlossaryLayer(args.outputDir, paths.glossary);
+    const revision = createHash("sha256").update(JSON.stringify({
+      glossary: current.glossary.entries, characters: current.characterBible.source,
+      glossaryAvailable: current.available.glossary, charactersAvailable: current.available.characterBible, selected
+    })).digest("hex");
+    if (options.expectedRevision && options.expectedRevision !== revision) {
+      throw new Error("Formal assets changed after draft validation. Check the current draft again before committing.");
+    }
+    const base = selected.path ? mergeGlossaryLayers(current.glossary.entries, selected.entries, {
+      conflict: "replace", conflictPath: selected.path
+    }).entries : current.glossary.entries;
+    const importReferences = new Map(base.map((entry) => [glossaryKey(entry.source), { ...entry }]));
+    for (const incoming of args.glossary ?? []) {
+      const key = glossaryKey(incoming.source);
+      const existing = importReferences.get(key);
+      if (existing) {
+        for (const [field, value] of Object.entries(incoming)) {
+          if (["source", "aliases", "alternatives"].includes(field)) continue;
+          const before = existing[field];
+          const present = before !== undefined && before !== "";
+          const same = typeof before === "string" && typeof value === "string"
+            ? glossaryValue(before) === glossaryValue(value)
+            : JSON.stringify(before) === JSON.stringify(value);
+          if (present && value !== undefined && value !== "" && !same) throw new Error(`Glossary conflict at ${paths.glossary}: source ${JSON.stringify(String(incoming.source))} has different ${field} values.`);
+        }
+      }
+      importReferences.set(key, {
+        ...(existing ? mergeMatchingGlossaryEntry(existing, incoming).entry : incoming),
+        alternatives: uniqueStrings([...stringArray(existing?.alternatives), ...stringArray(incoming.alternatives)])
+      });
+    }
+    const glossary = mergeGlossaryLayers(base, args.glossary ?? [], { conflict: "reject", conflictPath: paths.glossary });
+    for (const entry of glossary.entries) {
+      const alternatives = stringArray(importReferences.get(glossaryKey(entry.source))?.alternatives);
+      if (alternatives.length) entry.alternatives = alternatives;
+    }
+    const characters = mergeImportedCharacters(current.characterBible.characters, args.characters ?? []);
+    // The two formal assets cannot establish divergent names in one import.
+    const glossaryTargets = new Map(glossary.entries.map((entry) => [glossaryKey(entry.source), glossaryValue(entry.target)]));
+    for (const entry of characters.characters) {
+      const target = firstText(entry, targetKeys("character_bible"));
+      const term = glossaryTargets.get(glossaryKey(entry.name));
+      if (term && target && term !== target) throw new Error(`Formal asset conflict: ${String(entry.name)} has different glossary and character targets.`);
+    }
+    const updates = [
+      ...(args.glossary !== undefined ? [{ targetPath: paths.glossary, text: JSON.stringify({ entries: glossary.entries }, null, 2) }] : []),
+      ...(args.characters?.length ? [{ targetPath: paths.characterBible,
+        text: importedCharacterBibleSource(current.characterBible.source, current.characterBible.characters, characters.characters) }] : [])
+    ];
+    const counts = { glossary: glossary.counts, characters: characters.counts };
+    if (options.dryRun) return { assets: current, revision, counts };
+    if (options.receipt) updates.push(options.receipt);
+    options.signal?.throwIfAborted();
+    const snapshots = await Promise.all(updates.map(async (update) => {
+      try {
+        const info = await lstat(update.targetPath);
+        if (!info.isFile() || info.isSymbolicLink()) throw new Error(`Formal asset import target is not a regular file: ${update.targetPath}.`);
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      return { ...update, previous: await readOptionalText(update.targetPath) };
+    }));
+    await transactProjectState({
+      outputDir: args.outputDir,
+      expected: { glossaryPath: selected.inspectedBinding },
+      patch: args.glossary !== undefined ? { glossaryPath: paths.glossary } : {},
+      apply: async () => {
+        options.signal?.throwIfAborted();
+        for (const update of snapshots) {
+          await mkdir(path.dirname(update.targetPath), { recursive: true });
+          if (update.previous === undefined) await writeFile(update.targetPath, "", { encoding: "utf8", flag: "wx" });
+        }
+        await writeTextFilesAtomically(updates);
+      },
+      rollback: async () => {
+        const failures: unknown[] = [];
+        for (const update of snapshots) {
+          try {
+            if (update.previous === undefined) await rm(update.targetPath, { force: true });
+            else await writeTextFileAtomically(update.targetPath, update.previous);
+          } catch (error) { failures.push(error); }
+        }
+        if (failures.length) throw new AggregateError(failures, "Formal asset import rollback failed.");
+      }
+    });
+    return { assets: await readProjectAssetsUnlocked({ outputDir: args.outputDir, includeLegacyCharacters: true }), revision, counts };
+  });
 }
 
 export async function proposeAssetUpdate(args: {

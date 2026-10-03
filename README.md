@@ -1,4 +1,4 @@
-# YN Translation Workshop 2.1.3
+# YN Translation Workshop 2.1.4
 
 第一次了解 YN？可以先读[项目介绍 · YN Translation Workshop](https://tgy233.top/tgypage/yn/)，再按下面的教程开始使用。
 
@@ -7,6 +7,19 @@
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
 [English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [发布下载](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## 2.1.4 更新
+
+- 整理参考资料可直接新建并绑定项目，在翻译前准备译名表和角色表；首页支持一键清空填写内容并恢复默认参数。
+- 资料整理先生成可修改、删除的草稿，核查后一次性提交正式译名表和角色表；中断或失败保留草稿。
+- 简便启动先核对参数与原文、试跑控制符保留规则，再使用 HTML 共用参数表和相同翻译提示词；需要人工介入时可先生成行对行 HTML。
+- 移除无效的分块开关，保留每块行数；文件夹 HTML 自动填入带大括号的文件顺序，保留已填写的选择。
+
+- 首页顶部可直接配置供应商和模型，无需先选择项目或打开 HTML；设置全局共用。
+
+- 首页新增内置 Agent 任务入口：确认参数后自动打开 HTML 并启动翻译或校对，也可直接整理项目资料。默认分块 500 行、子 Agent 上限 3；翻译前预扫并试跑保留规则。
+- HTML 新增角色表查看、编辑和删除；校对可自动应用意见到 HTML，TXT 仍手动保存。
+- 修复停止后旧任务或压缩仍继续启动的竞态。
 
 ## 2.1.3 更新
 
@@ -47,13 +60,13 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.1.3-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.1.3-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.1.4-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.1.4-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。
 
-下载 [2.1.3 安装版或便携版](https://github.com/TohmaN233/YN-translation-workshop/releases/tag/v2.1.3)；本地构建文件位于 `release/2.1.3/`。
+本地 2.1.4 构建位于 `release/`；公开包以[发布页面](https://github.com/TohmaN233/YN-translation-workshop/releases)实际上传的版本为准。
 
 ## 完整功能清单
 

@@ -14,7 +14,8 @@ import {
   parseTargetLanguageFromPair,
   proseCore,
   stripPreservedPayload,
-  candidateContainsSourceLanguage
+  candidateContainsSourceLanguage,
+  createTranslationPreservedPayloadStripper
 } from "../../src/shared/validation/translationValidator.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -36,6 +37,19 @@ function test(name, fn) {
 
 const source = readFileSync(path.join(examples, "source.txt"), "utf8");
 const translation = readFileSync(path.join(examples, "translation.txt"), "utf8");
+
+await test("selected short escape rules preserve control tokens without freezing adjacent English prose", () => {
+  const source = String.raw`Hello/nworld.\nNext.`;
+  const target = String.raw`你好/n世界。\n下一句。`;
+  const options = { languagePair: "en->zh-CN", customPreserveRules: [{ pattern: String.raw`/n|\\n` }] };
+  const valid = validateTranslationCandidate(source, target, options);
+  assert.equal(valid.ok, true, JSON.stringify(valid.blocking));
+  assert.ok(validateTranslationCandidate(source, target.replace(String.raw`\n`, ""), options).blocking.some(finding => /preserve|placeholder/.test(finding.code)));
+  assert.ok(validateTranslationCandidate(String.raw`\N[2]Hello.`, String.raw`\N[3]你好。`, options).blocking.some(finding => finding.code === "placeholder_mismatch"));
+  assert.ok(validateTranslationCandidate("Hello %s.", "你好 %d。", options).blocking.some(finding => finding.code === "placeholder_mismatch"));
+  const strip = createTranslationPreservedPayloadStripper(options);
+  assert.equal(strip(source), "Helloworld.Next.");
+});
 
 await test("toy-txt-audit: 7 source lines align with 7 translation lines", () => {
   const result = validateTranslationCandidate(source, translation);

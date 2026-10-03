@@ -141,7 +141,6 @@ export function ProviderSettingsPanel({ outputDir, locale, onClose, onSaved }: P
   const activeConnectionLabel = connectionLabel(draft ?? undefined, supportsOAuth ? oauthProfiles.profiles.length : 0, p);
 
   const load = useCallback(async () => {
-    if (!outputDir) return;
     try {
       const [providerList, providerConfig] = await Promise.all([
         window.workshop.listAgentProviders({ outputDir }),
@@ -181,7 +180,7 @@ export function ProviderSettingsPanel({ outputDir, locale, onClose, onSaved }: P
   }, [activeProviderId, outputDir]);
 
   useEffect(() => {
-    if (!outputDir || !activeProviderId || !supportsOAuth) {
+    if (!activeProviderId || !supportsOAuth) {
       oauthProfileEpochRef.current += 1;
       setOauthProfiles({ activeProfileId: "", profiles: [] });
       return;
@@ -202,7 +201,9 @@ export function ProviderSettingsPanel({ outputDir, locale, onClose, onSaved }: P
 
   useEffect(() => {
     if (!draft || usesExplicitModels || models.length === 0) return;
-    if (draft.model && models.some((model) => model.id === draft.model)) return;
+    // Keep a saved model even when a refreshed catalog does not include it.
+    // modelOptions includes that ID; browsing settings must not silently replace it.
+    if (draft.model) return;
     setDraft({ ...draft, model: models[0]?.id || "" });
   }, [draft, models, usesExplicitModels]);
 
@@ -232,7 +233,7 @@ export function ProviderSettingsPanel({ outputDir, locale, onClose, onSaved }: P
   }, []);
 
   const save = useCallback(async () => {
-    if (!outputDir || !draft) return;
+    if (!draft) return;
     const explicitModelIds = usesExplicitModels
       ? normalizeModelIds("", modelIdsDraft.split(/[\n,]/))
       : normalizeModelIds(draft.model, draft.models);
@@ -274,7 +275,7 @@ export function ProviderSettingsPanel({ outputDir, locale, onClose, onSaved }: P
   }, [activeProviderId, apiKeyDraft, draft, modelIdsDraft, onSaved, outputDir, supportsApiKey, usesExplicitModels]);
 
   const disableProvider = useCallback(async () => {
-    if (!outputDir || !activeProviderId) return;
+    if (!activeProviderId) return;
     setSaving(true);
     setStatus(p.disabling);
     try {
@@ -299,7 +300,7 @@ export function ProviderSettingsPanel({ outputDir, locale, onClose, onSaved }: P
   }, [activeProviderId, onSaved, outputDir]);
 
   const deleteProfile = useCallback(async () => {
-    if (!outputDir || !activeProviderId || !isSavedCustomProfile) return;
+    if (!activeProviderId || !isSavedCustomProfile) return;
     if (!window.confirm(p.deleteConfirm.replace("{name}", draft?.name || activeProviderId))) return;
     setSaving(true);
     setStatus(p.deleting);
@@ -324,7 +325,7 @@ export function ProviderSettingsPanel({ outputDir, locale, onClose, onSaved }: P
   }, [activeProviderId, draft?.name, isSavedCustomProfile, onSaved, outputDir, p.deleteConfirm]);
 
   const connectOAuth = useCallback(async (mode: "import" | "pkce") => {
-    if (!outputDir || !activeProviderId) return;
+    if (!activeProviderId) return;
     setSaving(true);
     setStatus(mode === "import" ? p.importingOAuth : p.openingOAuth);
     try {
@@ -341,7 +342,7 @@ export function ProviderSettingsPanel({ outputDir, locale, onClose, onSaved }: P
   }, [activeProviderId, load, onSaved, outputDir]);
 
   const validate = useCallback(async () => {
-    if (!outputDir || !activeProviderId) return;
+    if (!activeProviderId) return;
     setSaving(true);
     setStatus(p.checking);
     try {

@@ -1,32 +1,10 @@
+import type { StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
+import type { PiWorkflowPromptMetadata } from "../shared/agent/piSessionContract.ts";
 export {};
 
 type WorkshopPromptKind = "translate" | "proofread";
 type WorkshopWorkflowIntent = "translation" | "proofread";
-type WorkshopWorkflowPromptMetadata = {
-  workflowIntent: WorkshopWorkflowIntent;
-  languagePair: string;
-  style?: string;
-  workDescription?: string;
-  glossaryPath?: string;
-  glossaryCandidates?: boolean;
-  characterBible?: boolean;
-  reuseExistingTranslation?: boolean;
-  auditWhitelistLines?: number[];
-  customPreserveRules?: Array<{ label?: string; pattern: string; flags: string }>;
-  subagentEnabled?: boolean;
-  subagentCount?: number;
-  reviewSubagentCount?: number;
-  subagentProviderId?: string;
-  subagentModelId?: string;
-  translationSplitSize?: number;
-  folderTranslationOrder?: string;
-  folderSourceDocuments?: Array<{ id: string; path: string }>;
-  proofreadMode?: "split" | "montecarlo";
-  proofreadSplitSize?: number;
-  proofreadMontecarloSize?: number;
-  proofreadMontecarloRoundMin?: number;
-  proofreadMontecarloRoundMax?: number;
-};
+type WorkshopWorkflowPromptMetadata = PiWorkflowPromptMetadata;
 type WorkshopProofreadMode = "split" | "montecarlo";
 
 type WorkshopPromptBuildArgs = {
@@ -193,6 +171,8 @@ type WorkshopAgentProviderApi = {
 declare global {
   interface Window {
     workshop: WorkshopAgentArtifactApi & WorkshopAgentProviderApi & {
+      startBuiltinTask: (args: StartBuiltinTaskRequest) => Promise<{ outputPath?: string; sessionId: string }>;
+      mutateProjectCharacterBibleEntry: (args: unknown) => Promise<unknown>;
       agentSession: WorkshopAgentSessionApi;
       publishAgentInterfaceContext: (args: import("../shared/agent/ynInterfaceContext.ts").YnInterfaceContext) => Promise<import("../shared/agent/ynInterfaceContext.ts").YnInterfaceContextPublishResult>;
       openFile: (filters?: Array<{ name: string; extensions: string[] }>) => Promise<string | undefined>;
@@ -303,6 +283,7 @@ declare global {
       agentChatEmbeddedEntryUrl: () => Promise<{ ok: boolean; url?: string; cssUrl?: string; message?: string }>;
     };
     workshopHtml?: WorkshopAgentArtifactApi & WorkshopAgentProviderApi & {
+      mutateProjectCharacterBibleEntry: (args: unknown) => Promise<unknown>;
       agentSession: WorkshopAgentSessionApi;
       publishAgentInterfaceContext: (args: import("../shared/agent/ynInterfaceContext.ts").YnInterfaceContext) => Promise<import("../shared/agent/ynInterfaceContext.ts").YnInterfaceContextPublishResult>;
       openFile: (filters?: Array<{ name: string; extensions: string[] }>) => Promise<string | undefined>;

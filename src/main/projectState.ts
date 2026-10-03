@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { normalizeCustomPreserveRules } from "../shared/validation/customPreserveRules.ts";
@@ -144,6 +144,48 @@ async function enqueueProjectWrite<T>(outputDir: string, work: () => Promise<T>)
 
 export async function patchProjectState(outputDir: string, patch: ProjectState): Promise<ProjectState> {
   return patchProjectStateIfUnchanged(outputDir, {}, patch);
+}
+
+/** Serialize an asset mutation and its binding with all other project-state writers. */
+export async function transactProjectState<T>(args: {
+  outputDir: string;
+  expected: ProjectState;
+  patch: ProjectState;
+  apply: () => Promise<T>;
+  rollback: () => Promise<void>;
+}): Promise<T> {
+  const root = projectRoot(args.outputDir);
+  return enqueueProjectWrite(root, async () => {
+    const current = await readProjectState(root);
+    for (const [key, value] of Object.entries(args.expected)) {
+      if (current[key] !== value) throw new Error(`Project state changed before the atomic update: ${key} no longer matches the inspected value.`);
+    }
+    const state = canonicalProjectState({ ...current, ...args.patch, outputDir: root, updatedAt: new Date().toISOString() });
+    const filePath = projectStatePath(root);
+    let previous: string | undefined;
+    try { previous = await readFile(filePath, "utf8"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    let stateWriteAttempted = false;
+    try {
+      const result = await args.apply();
+      await mkdir(workspaceDir(root), { recursive: true });
+      stateWriteAttempted = true;
+      await writeTextFileAtomically(filePath, JSON.stringify(state, null, 2));
+      for (const subscriber of subscribers) subscriber(root, state, canonicalProjectState(args.patch));
+      return result;
+    } catch (error) {
+      const failures: unknown[] = [error];
+      try { await args.rollback(); } catch (rollbackError) { failures.push(rollbackError); }
+      if (stateWriteAttempted) {
+        try {
+          if (previous === undefined) await rm(filePath, { force: true });
+          else await writeTextFileAtomically(filePath, previous);
+        } catch (rollbackError) { failures.push(rollbackError); }
+      }
+      if (failures.length > 1) throw new AggregateError(failures, "Project asset transaction failed and could not be fully rolled back.");
+      throw error;
+    }
+  });
 }
 
 export async function patchProjectStateIfUnchanged(

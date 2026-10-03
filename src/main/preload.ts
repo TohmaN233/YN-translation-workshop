@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
 
 const agentArtifactApi = {
   discoverAgentArtifacts: (args: { projectDir: string; sourcePaths?: string[] }) =>
@@ -78,6 +79,7 @@ const interfaceContextApi = {
 };
 
 contextBridge.exposeInMainWorld("workshop", {
+  startBuiltinTask: (args: StartBuiltinTaskRequest) => ipcRenderer.invoke("tasks:start", args),
   openFile: (filters?: Electron.FileFilter[]) => ipcRenderer.invoke("dialog:openFile", filters),
   openFolder: () => ipcRenderer.invoke("dialog:openFolder"),
   openProjectFolder: () => ipcRenderer.invoke("dialog:openProjectFolder"),
@@ -90,6 +92,7 @@ contextBridge.exposeInMainWorld("workshop", {
     return () => ipcRenderer.removeListener("project:stateUpdate", listener);
   },
   readProjectAssets: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:read", args),
+  mutateProjectCharacterBibleEntry: (args: unknown) => ipcRenderer.invoke("agent-assets:mutateCharacter", args),
   importProjectGlossaryFile: (args: { outputDir: string; path: string }) => ipcRenderer.invoke("agent-assets:importGlossaryFile", args),
   replaceProjectGlossary: (args: { outputDir: string; entries: Record<string, unknown>[] }) => ipcRenderer.invoke("agent-assets:replaceGlossary", args),
   updateProjectGlossaryEntry: (args: { outputDir: string; entry: Record<string, unknown>; boundGlossaryPath?: string }) => ipcRenderer.invoke("agent-assets:updateGlossaryEntry", args),
@@ -127,6 +130,7 @@ contextBridge.exposeInMainWorld("workshop", {
 });
 
 contextBridge.exposeInMainWorld("workshopHtml", {
+  mutateProjectCharacterBibleEntry: (args: unknown) => ipcRenderer.invoke("agent-assets:mutateCharacter", args),
   openFile: (filters?: Electron.FileFilter[]) => ipcRenderer.invoke("dialog:openFile", filters),
   readProjectAssets: (args: { outputDir: string }) => ipcRenderer.invoke("agent-assets:read", args),
   importProjectGlossaryFile: (args: { outputDir: string; path: string }) => ipcRenderer.invoke("agent-assets:importGlossaryFile", args),

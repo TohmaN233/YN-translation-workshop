@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type { Session } from "@earendil-works/pi-agent-core/node";
 
 import type { ProofreadPrescanSummary } from "./proofreadPrescan.ts";
+import { normalizeTaskPreparationState, type YnTaskPreparationState } from "./taskPreparation.ts";
 import {
   type YnDomainRunSnapshot,
   type YnWorkflowKind
@@ -99,6 +100,7 @@ export interface ProofreadLocalScopeState {
 }
 
 export interface YnSessionHostState {
+  taskPreparation?: YnTaskPreparationState;
   schemaVersion: 1;
   ownerSessionId: string;
   domainRun?: YnDomainRunSnapshot;
@@ -333,6 +335,7 @@ function normalizeYnSessionHostState(value: unknown, ownerSessionId: string): Yn
       : {}),
     ...(Object.keys(parkedDomainRuns).length > 0 ? { parkedDomainRuns } : {}),
     ...(value.workflowSuspended === true ? { workflowSuspended: true } : {}),
+    ...(value.taskPreparation !== undefined ? { taskPreparation: normalizeTaskPreparationState(value.taskPreparation) } : {}),
     proofread: normalizeProofreadState(value.proofread),
     translationAlignment: normalizeTranslationAlignmentState(value.translationAlignment)
   });

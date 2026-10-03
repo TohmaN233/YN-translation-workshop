@@ -1,6 +1,6 @@
 {
   "name": "translation-workshop",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "Local translation and proofreading workflow workbench.",
   "type": "module",
   "engines": {
@@ -18,13 +18,14 @@
     "verify:electron-project-open": "npm run build && node scripts/verify-electron-project-open.mjs",
     "verify:electron-agent-ui": "npm run verify:electron-agent-html",
     "verify:electron-glossary": "npm run build:preload && node scripts/verify-electron-glossary.mjs",
+    "verify:electron-builtin-tasks": "npm run build && node scripts/verify-electron-builtin-tasks.mjs",
     "verify:electron-agent-real": "npm run build && node scripts/verify-electron-agent-real-html.mjs",
     "verify:real-provider-agent": "node --experimental-strip-types scripts/verify-real-provider-agent-smoke.mjs",
     "toy:agent-artifacts": "npm run setup:toy-agent-artifacts && npm run verify:toy-agent-artifacts && npm run dev",
     "typecheck": "tsc --noEmit",
     "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=esm --outfile=dist/main/main.js --external:electron --external:electron-updater --external:electron-updater/* --external:extract-zip --external:cheerio --external:cheerio/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* && npm run build:preload",
     "build:preload": "esbuild src/main/preload.ts --bundle --platform=node --format=cjs --outfile=dist/main/preload.cjs --external:electron && npm run build:prescan-worker",
-    "build:prescan-worker": "esbuild src/main/agent/piNative/proofreadPrescanWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/proofreadPrescanWorker.js",
+    "build:prescan-worker": "esbuild src/main/agent/piNative/proofreadPrescanWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/proofreadPrescanWorker.js && esbuild src/main/agent/sourcePreparationWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/sourcePreparationWorker.js",
     "dev": "concurrently -k -n renderer,electron \"npm run dev:renderer\" \"npm run dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1",
     "dev:electron": "npm run build:main && wait-on http://127.0.0.1:5173 && cross-env TRANSLATION_WORKSHOP_DEV=1 electron .",

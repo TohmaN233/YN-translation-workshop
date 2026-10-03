@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { buildPrompt } from "../shared/core/prompts.ts";
-import { YN_DEFAULT_SPLIT_SIZE } from "../shared/agent/piSessionContract.ts";
+import { YN_DEFAULT_SPLIT_SIZE, YN_WORKFLOW_SUBAGENT_COUNT } from "../shared/agent/piSessionContract.ts";
+import { builtinTaskDefaults, type BuiltinTaskKind, type BuiltinTaskSettings } from "../shared/builtinTasks.ts";
 import { normalizeHandwrittenCharacterRequiredTerms } from "../shared/validation/translationValidator.ts";
 import { getWorkflowTemplate, workflowTemplates, type WorkflowTemplateId } from "../shared/agent/workflowTemplates.ts";
 import {
@@ -18,6 +19,8 @@ import appIcon from "./assets/app-icon.png";
 import companionFull from "./assets/companion-full.png";
 import { parsePiWebAgentWindowRoute, PiWebAgentWindow } from "./agent/PiWebAgentWindow.tsx";
 import { rebuildNewProjectForm } from "./newProjectForm.ts";
+import { HomepageProviderSettings } from "./HomepageProviderSettings.tsx";
+import { BuiltinTaskEntry } from "./BuiltinTaskEntry.tsx";
 import "./styles.css";
 
 type Locale = "zh-CN" | "en-US";
@@ -113,6 +116,14 @@ interface FormState {
   splitSize: number;
   glossaryCandidates: boolean;
   characterBible: boolean;
+  reuseExistingTranslation: boolean;
+  subagentEnabled: boolean;
+  subagentCount: number;
+  reviewSubagentCount?: number;
+  subagentProviderId?: string;
+  subagentModelId?: string;
+  folderTranslationOrder?: string;
+  folderSourceDocuments?: Array<{ id: string; path: string }>;
   proofreadMode: ProofreadMode;
   candidateRatio: number;
   montecarloSize: number;
@@ -137,6 +148,8 @@ type LoadedProjectState = Partial<FormState> & {
   sourceColumn?: number;
   translationColumn?: number;
   customPreserveRules?: CustomPreserveRule[];
+  builtinTaskInputSettings?: { translationPath?: string };
+  builtinTaskTranslationPath?: string;
 };
 
 const dictionaries = { "zh-CN": zhCN, "en-US": enUS };
@@ -144,6 +157,8 @@ const projectFormKeys = [
   "locale", "inputMode", "sourcePath", "sourceKind", "translationPath", "translationBindingOrigin", "glossaryPath",
   "fileType", "pageSize", "startPage", "languagePair", "style", "translateOutputDir",
   "proofreadOutputDir", "split", "splitSize", "glossaryCandidates", "characterBible",
+  "reuseExistingTranslation", "subagentEnabled", "subagentCount", "reviewSubagentCount",
+  "subagentProviderId", "subagentModelId", "folderTranslationOrder", "folderSourceDocuments",
   "proofreadMode", "candidateRatio", "montecarloSize", "montecarloRoundMin",
   "montecarloRoundMax", "translationType", "workDescription", "reportPath",
   "sourcePosition", "translationPosition", "workflowTemplateId", "agentProxyEnabled", "agentProxyUrl"
@@ -160,6 +175,16 @@ function formPatchFromProjectState(value: Record<string, unknown>): Partial<Form
 function sameProjectPath(left: string, right: string): boolean {
   const normalize = (value: string) => value.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLocaleLowerCase();
   return normalize(left) === normalize(right);
+}
+
+function readBuiltinTaskTranslationBinding(value: Record<string, unknown>): { originalPath: string; expectedPath: string } | undefined {
+  const inputSettings = value.builtinTaskInputSettings;
+  const expectedPath = value.builtinTaskTranslationPath;
+  if (!inputSettings || typeof inputSettings !== "object" || Array.isArray(inputSettings) || typeof expectedPath !== "string" || !expectedPath.trim()) {
+    return undefined;
+  }
+  const originalPath = (inputSettings as Record<string, unknown>).translationPath;
+  return { originalPath: typeof originalPath === "string" ? originalPath : "", expectedPath };
 }
 
 function preserveRuleDrafts(value: unknown): CustomPreserveRuleDraft[] {
@@ -211,6 +236,14 @@ function initialFormState(): FormState {
     splitSize: YN_DEFAULT_SPLIT_SIZE,
     glossaryCandidates: true,
     characterBible: true,
+    reuseExistingTranslation: false,
+    subagentEnabled: true,
+    subagentCount: YN_WORKFLOW_SUBAGENT_COUNT,
+    reviewSubagentCount: undefined,
+    subagentProviderId: "",
+    subagentModelId: "",
+    folderTranslationOrder: "",
+    folderSourceDocuments: [],
     proofreadMode: "split",
     candidateRatio: 1.5,
     montecarloSize: 3000,
@@ -227,13 +260,14 @@ function initialFormState(): FormState {
   };
 }
 
-function App() {
+function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (locale: Locale) => void }) {
   const agentWindowRoute = parsePiWebAgentWindowRoute();
   if (agentWindowRoute) {
     return <PiWebAgentWindow route={agentWindowRoute} />;
   }
 
-  const [form, setForm] = useState<FormState>(initialFormState);
+  const [form, setForm] = useState<FormState>(() => ({ ...initialFormState(), locale: initialLocale }));
+  const [builtinTaskTranslationBinding, setBuiltinTaskTranslationBinding] = useState<{ originalPath: string; expectedPath: string } | undefined>();
   const [prompt, setPrompt] = useState("");
   const [promptKind, setPromptKind] = useState<AgentTaskKind>("translate");
   const [status, setStatus] = useState("");
@@ -330,6 +364,7 @@ function App() {
 
   useEffect(() => window.workshop.onProjectStateUpdate(({ outputDir, state }) => {
     if (!form.outputDir || !sameProjectPath(outputDir, form.outputDir)) return;
+    setBuiltinTaskTranslationBinding(readBuiltinTaskTranslationBinding(state));
     if (projectTextFieldEditing.current) {
       if (autoSaveTimer.current) {
         window.clearTimeout(autoSaveTimer.current);
@@ -424,6 +459,18 @@ function App() {
     window.setTimeout(() => void saveProject().catch(showActionError), 0);
   }
 
+  function clearHomepage() {
+    // Detach before unmounting: pending blur saves must not write cleared values
+    // into the previously selected project. Remount clears all local drafts too.
+    formRef.current = { ...initialFormState(), locale: form.locale };
+    hydratingProject.current = true;
+    if (autoSaveTimer.current) {
+      window.clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = undefined;
+    }
+    onClear(form.locale);
+  }
+
   function showActionError(error: unknown) {
     setStatus(error instanceof Error ? error.message : String(error));
   }
@@ -476,6 +523,7 @@ function App() {
     setWorkspaceAssets(undefined);
     const loaded = asLoadedProject(await window.workshop.loadProject(outputDir));
     if (!loaded) {
+      setBuiltinTaskTranslationBinding(undefined);
       const selectedKeys = [...userSelectedFormKeys.current];
       hydratingProject.current = true;
       setForm((current) => rebuildNewProjectForm(initialFormState(), current, selectedKeys, outputDir));
@@ -498,6 +546,7 @@ function App() {
     lastLineReviewHtml.current = loaded.lastLineReviewHtml || loaded.lineReviewPath || "";
     lastProposalReviewHtml.current = loaded.lastProposalReviewHtml || "";
     const projectOutputDir = typeof loaded.outputDir === "string" && loaded.outputDir ? loaded.outputDir : outputDir;
+    setBuiltinTaskTranslationBinding(readBuiltinTaskTranslationBinding(loaded));
     const loadedCustomPreserveRules = normalizeCustomPreserveRules(loaded.customPreserveRules);
     setSavedCustomPreserveRules(loadedCustomPreserveRules);
     setCustomPreserveRuleDrafts(preserveRuleDrafts(loadedCustomPreserveRules));
@@ -645,6 +694,14 @@ function App() {
       splitSize: form.splitSize,
       glossaryCandidates: form.glossaryCandidates,
       characterBible: form.characterBible,
+      reuseExistingTranslation: form.reuseExistingTranslation,
+      subagentEnabled: form.subagentEnabled,
+      subagentCount: form.subagentCount,
+      reviewSubagentCount: form.reviewSubagentCount,
+      subagentProviderId: form.subagentProviderId,
+      subagentModelId: form.subagentModelId,
+      folderTranslationOrder: form.folderTranslationOrder,
+      folderSourceDocuments: form.folderSourceDocuments,
       proofreadMode: form.proofreadMode,
       candidateRatio: form.candidateRatio,
       montecarloSize: form.montecarloSize,
@@ -655,6 +712,63 @@ function App() {
       translationType: form.translationType,
       customPreserveRules: savedCustomPreserveRules
     };
+  }
+
+  const builtinTaskSettings = useMemo(() => builtinTaskDefaults({
+    ...promptAdvanced(),
+    outputDir: form.outputDir,
+    sourcePath: form.sourcePath,
+    sourceKind: form.sourceKind,
+    translationPath: form.translationBindingOrigin === "canonical"
+      && builtinTaskTranslationBinding
+      && sameProjectPath(form.translationPath, builtinTaskTranslationBinding.expectedPath)
+      ? builtinTaskTranslationBinding.originalPath
+      : form.translationPath,
+    glossaryPath: form.glossaryPath,
+    locale: form.locale,
+    fileType: form.fileType,
+    inputMode: form.inputMode,
+    sourcePosition: form.sourcePosition,
+    translationPosition: form.translationPosition,
+    pageSize: form.pageSize,
+    materials: ""
+  }), [form, savedCustomPreserveRules, builtinTaskTranslationBinding]);
+
+  function onBuiltinTaskStarting() {
+    if (autoSaveTimer.current) {
+      window.clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = undefined;
+    }
+    hydratingProject.current = true;
+  }
+
+  function onBuiltinTaskStartFailed(error: unknown) {
+    hydratingProject.current = false;
+    showActionError(error);
+  }
+
+  async function onBuiltinTaskStarted(
+    task: BuiltinTaskKind,
+    result: { outputPath?: string; sessionId: string },
+    settings: BuiltinTaskSettings
+  ) {
+    try {
+      if (autoSaveTimer.current) {
+        window.clearTimeout(autoSaveTimer.current);
+        autoSaveTimer.current = undefined;
+      }
+      await loadProjectState(settings.outputDir, false);
+      if (result.outputPath) {
+        lastLineReviewHtml.current = result.outputPath;
+        setLastOutput(result.outputPath);
+      }
+      setStatus(form.locale === "zh-CN"
+        ? task === "translation" ? "翻译任务已启动。" : task === "proofread" ? "校对任务已启动。" : "资料整理任务已启动。"
+        : task === "translation" ? "Translation task started." : task === "proofread" ? "Proofreading task started." : "Reference-material task started.");
+    } catch (error) {
+      hydratingProject.current = false;
+      showActionError(error);
+    }
   }
 
   function buildDefaultAgentPrompt(kind: AgentTaskKind = promptKind) {
@@ -1219,6 +1333,10 @@ function App() {
           </div>
         </div>
         <div className="topActions">
+          <button type="button" className="command clearHomepage" onClick={clearHomepage}
+            title={form.locale === "zh-CN" ? "清空当前填写内容并恢复默认参数，不删除项目文件" : "Clear entries and restore defaults without deleting project files"}>
+            <RefreshCw size={18} /><span>{form.locale === "zh-CN" ? "一键清空" : "Clear"}</span>
+          </button>
           <IconButton icon={<FolderOpen size={18} />} label={t.openProject} onClick={openProject} />
           <IconButton icon={<ExternalLink size={18} />} label={t.openHtml} onClick={openExistingHtml} />
           <div className="segmented">
@@ -1231,6 +1349,16 @@ function App() {
           </div>
         </div>
       </section>
+
+      <HomepageProviderSettings locale={form.locale} outputDir={form.outputDir} />
+
+      <BuiltinTaskEntry
+        locale={form.locale}
+        currentSettings={builtinTaskSettings}
+        onStarting={onBuiltinTaskStarting}
+        onStartFailed={onBuiltinTaskStartFailed}
+        onStarted={onBuiltinTaskStarted}
+      />
 
       <section className="workspace">
         <aside className="panel">
@@ -1331,13 +1459,7 @@ function App() {
                 <input type="checkbox" checked={form.characterBible} onChange={(event) => patch({ characterBible: event.target.checked })} />
                 <span>{t.characterBible ?? "Character bible"}</span>
               </label>
-              <label className="field checkboxField">
-                <input type="checkbox" checked={form.split} onChange={(event) => patch({ split: event.target.checked })} />
-                <span>{t.split ?? "Split"}</span>
-              </label>
-              {form.split && (
-                <label className="field"><span>{t.splitSize ?? "Split size"}</span><input type="number" min={1} value={form.splitSize} onChange={(event) => patch({ splitSize: Number(event.target.value) })} /></label>
-              )}
+              <label className="field"><span>{t.splitSize ?? "Split size"}</span><input type="number" min={1} value={form.splitSize} onChange={(event) => patch({ splitSize: Number(event.target.value) })} /></label>
 
               <strong>{t.proofreadPromptParams ?? "Proofread prompt parameters"}</strong>
               <label className="field"><span>{t.proofreadOutputDir ?? "Report output folder"}</span><input value={form.proofreadOutputDir || defaultProofreadOutputDir()} onChange={(event) => patch({ proofreadOutputDir: event.target.value })} /></label>
@@ -1776,4 +1898,10 @@ function IconButton(props: { icon: ReactNode; label: string; onClick: () => void
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+function AppRoot() {
+  const [screen, setScreen] = useState({ generation: 0, locale: "zh-CN" as Locale });
+  return <App key={screen.generation} initialLocale={screen.locale}
+    onClear={(locale) => setScreen((current) => ({ generation: current.generation + 1, locale }))} />;
+}
+
+createRoot(document.getElementById("root")!).render(<AppRoot />);

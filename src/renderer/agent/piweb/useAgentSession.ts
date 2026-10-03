@@ -733,6 +733,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
         translationSplitSize: workflowMetadata?.translationSplitSize,
         folderTranslationOrder: workflowMetadata?.folderTranslationOrder,
         folderSourceDocuments: workflowMetadata?.folderSourceDocuments,
+        folderSourceSelection: workflowMetadata?.folderSourceSelection,
         proofreadMode: workflowMetadata?.proofreadMode,
         proofreadSplitSize: workflowMetadata?.proofreadSplitSize,
         proofreadMontecarloSize: workflowMetadata?.proofreadMontecarloSize,

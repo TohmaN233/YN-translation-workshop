@@ -303,9 +303,34 @@ await test("app-open upgrade uses the explicit line-review protocol marker", asy
   assert.equal(needsLegacyLineReviewUpgrade(html), false);
   assert.match(html, new RegExp(LINE_REVIEW_PROTOCOL_MARKER));
   const previousMarker = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION - 1}`;
-  assert.equal(needsLegacyLineReviewUpgrade(html.replace(LINE_REVIEW_PROTOCOL_MARKER, previousMarker)), true);
+  const previousHtml = html.replace(LINE_REVIEW_PROTOCOL_MARKER, previousMarker);
+  assert.equal(needsLegacyLineReviewUpgrade(previousHtml), true);
+  const upgraded = upgradeLegacyLineReviewHtmlContent(previousHtml, "line-review-test.html", "G:/proj/html/line-review-test.html");
+  assert.ok(upgraded);
+  assert.match(upgraded, new RegExp(LINE_REVIEW_PROTOCOL_MARKER));
+  assert.match(upgraded, /window\.translationWorkshopTaskParameters/);
+  assert.match(upgraded, /synchronize: synchronizeTaskParameters/);
+  assert.match(upgraded, /await buildWorkflowPromptFromSettings\(kind\)/);
+  assert.doesNotMatch(upgraded, /id="promptSplit"/);
   assert.equal(needsLegacyLineReviewUpgrade(html.replace(LINE_REVIEW_PROTOCOL_MARKER, "translation-workshop-line-review-v16")), true);
   assert.equal(needsLegacyLineReviewUpgrade("<!doctype html><p>not a line review</p>"), false);
+});
+
+await test("folder parameter form initializes saved blank order and keeps explicit selections", async () => {
+  const { renderLineReviewHtml } = await import("../../src/shared/core/html.ts");
+  const html = renderLineReviewHtml({ title: "folder parameters", sourceText: "source", translationText: "", workflow: {
+    paths: { sourcePath: "G:/proj/source/a.txt", promptSourcePath: "G:/proj/source", promptSourceKind: "folder", outputDir: "G:/proj" },
+    advanced: { folderSourceDocuments: [{ id: "b.txt", path: "G:/proj/source/b.txt" }, { id: "a.txt", path: "G:/proj/source/a.txt" }] }
+  }});
+  const source = html.match(/function promptSettingsValue\(\) \{[\s\S]*?\n\}/)?.[0];
+  const formatter = html.match(/function defaultFolderTranslationOrder\(documents\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(source && formatter);
+  const evaluate = new Function("promptStoredDefaults", "readStoredPromptSettings", `${formatter}\n${source}\nreturn promptSettingsValue();`);
+  const defaults = { folderTranslationOrder: '{\n"a.txt"\n"b.txt"\n}', folderSourceDocuments: [{ id: "b.txt" }, { id: "a.txt" }], split: true };
+  assert.equal(evaluate(() => defaults, () => ({ folderTranslationOrder: "", split: false })).folderTranslationOrder, defaults.folderTranslationOrder);
+  assert.equal(evaluate(() => defaults, () => ({ folderTranslationOrder: '"b.txt"' })).folderTranslationOrder, '"b.txt"');
+  assert.equal(evaluate(() => ({ folderTranslationOrder: "" }), () => ({ folderTranslationOrder: "" })).folderTranslationOrder, "");
+  assert.equal(evaluate(() => defaults, () => ({ split: false })).split, true);
 });
 
 await test("new line-review HTML materializes the product default subagent count", async () => {
@@ -522,17 +547,17 @@ await test("renderLineReviewHtml inline script is valid JavaScript", async () =>
   assert.match(html, /onProjectStateUpdate/);
   assert.match(html, /await persistProjectState\(settings\)/);
   assert.ok(
-    html.indexOf("await writeStoredPromptSettings(settings)") < html.indexOf("generated = await bridge.buildPrompt"),
+    html.indexOf("await writeStoredPromptSettings(settings)") < html.indexOf("const prompt = await bridge.buildPrompt"),
     "prompt generation must wait for project settings to reach durable storage"
   );
   assert.match(
     html,
-    /if \(!bridge\?\.buildPrompt\) \{[\s\S]*?promptGenerationFailed[\s\S]*?return;[\s\S]*?\}/,
+    /if \(!bridge\?\.buildPrompt\) throw new Error\("Electron prompt bridge is unavailable\."\)/,
     "project prompt generation must stop when the Electron prompt bridge is unavailable"
   );
   assert.match(
     html,
-    /catch \(error\) \{\s*setAiStatus\(\(data\.labels\.promptGenerationFailed[\s\S]*?\);\s*return;\s*\}/,
+    /catch \(error\) \{\s*setAiStatus\(\(data\.labels\.promptGenerationFailed[\s\S]*?\);\s*\}/,
     "project prompt generation must stop after a bridge failure"
   );
   assert.doesNotMatch(
@@ -577,7 +602,7 @@ await test("renderLineReviewHtml inline script is valid JavaScript", async () =>
   assert.match(html, /customPreserveRules:\s*settings\.customPreserveRules/);
   assert.match(html, /Workflow prompt metadata customPreserveRules/);
   assert.ok(
-    html.indexOf("await writeStoredPromptSettings(settings)") < html.indexOf("generated = await bridge.buildPrompt"),
+    html.indexOf("await writeStoredPromptSettings(settings)") < html.indexOf("const prompt = await bridge.buildPrompt"),
     "custom preserve rules must reach durable project storage before prompt generation"
   );
   assert.match(
@@ -648,7 +673,7 @@ await test("prompt reset embeds product defaults without losing the current fold
     languagePair: "ja->zh-CN",
     style: "game",
     split: true,
-    splitSize: 1000,
+    splitSize: 500,
     glossaryCandidates: true,
     characterBible: true,
     reuseExistingTranslation: false,
@@ -939,8 +964,9 @@ await test("line-review Agent entry opens embedded HTML dock and same-state popo
   assert.equal(route.locale, "zh-CN");
   assert.equal(route.languagePair, "en->zh-CN");
   assert.equal(route.sourcePath, "G:/proj/source.txt");
-  assert.match(match[1], /workflowIntent:\s*activePromptKind === "proofread" \? "proofread" : "translation"/);
-  assert.match(match[1], /const settings = currentPromptSettings\(\);[\s\S]*languagePair:\s*settings\.languagePair/);
+  assert.match(match[1], /function workflowPromptMetadata\(settings, kind\)[\s\S]*workflowIntent:\s*kind === "proofread" \? "proofread" : "translation"/);
+  assert.match(match[1], /function workflowPromptMetadata\(settings, kind\)[\s\S]*languagePair:\s*settings\.languagePair/);
+  assert.match(match[1], /metadata: workflowPromptMetadata\(settings, kind\)/);
   assert.doesNotMatch(match[1], /dataset\.ynWorkflowIntent|querySelector\("#agentChatReactRoot textarea"\)/);
   assert.match(match[1], /isDocked\(\) && !document\.body\.classList\.contains\("agent-chat-popout"\)/);
   assert.match(match[1], /agentChatPopout"\)\?\.addEventListener\("click", \(\) => \{ void openEmbeddedPopout\(\); \}\)/);
@@ -997,6 +1023,10 @@ await test("proposal review upgrades old embed protocol but not the current loca
   const previousMarker = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION - 1}`;
   const previousProtocol = current.replace(PROPOSAL_REVIEW_PROTOCOL_MARKER, previousMarker);
   assert.equal(needsLegacyProposalReviewUpgrade(previousProtocol), true);
+  const upgradedSharedSafety = upgradeLegacyProposalReviewHtmlContent(previousProtocol, "proposal protocol round trip");
+  assert.match(upgradedSharedSafety, new RegExp(PROPOSAL_REVIEW_PROTOCOL_MARKER));
+  assert.match(upgradedSharedSafety, /const checkProposalSafety =/);
+  assert.match(upgradedSharedSafety, /return checkProposalSafety\(/);
   const previousProposalProtocol = current.replace(/<meta name="translation-workshop-proposal-review"[^>]*>\s*/, "");
   assert.equal(needsLegacyProposalReviewUpgrade(previousProposalProtocol), true);
   const oldV6 = current.replaceAll(agentChatFlowVersion, "pi-web-react-embedded-v6");

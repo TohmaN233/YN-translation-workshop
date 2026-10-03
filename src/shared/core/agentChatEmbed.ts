@@ -7,7 +7,7 @@
 
 import { agentChatRouteFromReviewData } from "./agentChatRoute.ts";
 
-export const agentChatFlowVersion = "pi-web-react-embedded-v13";
+export const agentChatFlowVersion = "pi-web-react-embedded-v14";
 
 export function agentChatEmbedCss(): string {
   return `
@@ -404,10 +404,22 @@ export function agentChatEmbedScript(): string {
         if (!id || !path) {
           throw new Error("Workflow prompt metadata folderSourceDocuments[" + index + "] requires id and path.");
         }
-        return { id, path };
+        let projection;
+        if (document.projection !== undefined) {
+          const proof = document.projection;
+          if (!proof || typeof proof !== "object" || Array.isArray(proof)
+            || (proof.kind !== "bilingual-pairs" && proof.kind !== "epub-text" && proof.kind !== "text-lines")
+            || typeof proof.originalHash !== "string" || !/^[a-f0-9]{64}$/.test(proof.originalHash)
+            || typeof proof.projectionHash !== "string" || !/^[a-f0-9]{64}$/.test(proof.projectionHash)) {
+            throw new Error("Invalid workflow source projection provenance.");
+          }
+          projection = { kind: proof.kind, originalHash: proof.originalHash, projectionHash: proof.projectionHash };
+        }
+        return { id, path, ...(projection ? { projection } : {}) };
       });
     }
     const proofreadSplitSize = positiveInteger(value.proofreadSplitSize, "proofreadSplitSize");
+    if (value.folderSourceSelection !== undefined && value.folderSourceSelection !== "prepared-inputs") throw new Error("Invalid workflow folderSourceSelection.");
     const proofreadMontecarloSize = positiveInteger(value.proofreadMontecarloSize, "proofreadMontecarloSize");
     const proofreadMontecarloRoundMin = positiveInteger(value.proofreadMontecarloRoundMin, "proofreadMontecarloRoundMin");
     const proofreadMontecarloRoundMax = positiveInteger(value.proofreadMontecarloRoundMax, "proofreadMontecarloRoundMax");
@@ -429,6 +441,7 @@ export function agentChatEmbedScript(): string {
       ...(translationSplitSize ? { translationSplitSize } : {}),
       ...(folderTranslationOrder ? { folderTranslationOrder } : {}),
       ...(folderSourceDocuments ? { folderSourceDocuments } : {}),
+      ...(value.folderSourceSelection ? { folderSourceSelection: value.folderSourceSelection } : {}),
       ...(proofreadMode ? { proofreadMode } : {}),
       ...(proofreadSplitSize ? { proofreadSplitSize } : {}),
       ...(proofreadMontecarloSize ? { proofreadMontecarloSize } : {}),

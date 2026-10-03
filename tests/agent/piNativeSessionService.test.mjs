@@ -1343,6 +1343,25 @@ await test("Stop never lets an old Session writer overwrite a continuation accep
   });
   const childShutdownEntered = deferred();
   const releaseChildShutdown = deferred();
+  const initializationEntered = deferred();
+  const releaseInitialization = deferred();
+  const lateAgentStart = deferred();
+  const originalLaunch = service.launchNativeInput.bind(service);
+  let holdFirstInitialization = true;
+  service.launchNativeInput = (active, ...input) => {
+    if (holdFirstInitialization) {
+      holdFirstInitialization = false;
+      // Install before native preflight starts, independent of IO scheduling.
+      const originalInitialize = active.runtime.initialize.bind(active.runtime);
+      active.runtime.initialize = async () => {
+        initializationEntered.resolve();
+        await releaseInitialization.promise;
+        await originalInitialize();
+      };
+      active.runtime.subscribe(event => { if (event.type === "agent_start") lateAgentStart.resolve(); });
+    }
+    originalLaunch(active, ...input);
+  };
   try {
     const session = await service.createSession(workspaceDir);
     const common = {
@@ -1355,6 +1374,10 @@ await test("Stop never lets an old Session writer overwrite a continuation accep
     };
     await service.prompt({ ...common, prompt: "Workflow: yn-translation-v1." });
     const firstOwner = [...service.active.values()][0];
+    // Hold the native prompt before Agent.prompt: Stop sees an idle Agent while
+    // the outer prompt still owns an asynchronous initialization preflight.
+    await initializationEntered.promise;
+    const stoppedPrompt = firstOwner.promptTask;
     const originalWaitForAll = firstOwner.subagents.waitForAll.bind(firstOwner.subagents);
     firstOwner.subagents.waitForAll = async () => {
       childShutdownEntered.resolve();
@@ -1364,6 +1387,8 @@ await test("Stop never lets an old Session writer overwrite a continuation accep
 
     const aborting = service.abort(workspaceDir, session.id);
     await childShutdownEntered.promise;
+    releaseInitialization.resolve();
+    await Promise.race([stoppedPrompt, lateAgentStart.promise]);
     await service.prompt({ ...common, prompt: "普通继续消息，不自动恢复工作流。" });
     const continuationVisible = await Promise.race([
       (async () => {
@@ -1387,6 +1412,7 @@ await test("Stop never lets an old Session writer overwrite a continuation accep
       "the stopped Session owner wrote after unlock and moved the cold branch behind the accepted continuation"
     );
   } finally {
+    releaseInitialization.resolve();
     releaseChildShutdown.resolve();
     await service.disposeWorkspace(workspaceDir);
     await rm(workspaceDir, { recursive: true, force: true });

@@ -1,4 +1,5 @@
 import { lstat, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import type { PiSessionPromptRequest, PiSourceSelection } from "../../../shared/agent/piSessionContract.ts";
@@ -187,6 +188,8 @@ async function explicitFolderDocuments(
   rootPath: string
 ): Promise<PiSourceDocument[]> {
   const entries = request.folderSourceDocuments;
+  const preparedSelection = request.folderSourceSelection === "prepared-inputs";
+  if (preparedSelection && !entries?.length) throw new Error("Prepared source selection requires its complete document list.");
   if (!entries) return [];
   const extractedTextRoot = path.join(projectRoot(request.outputDir), ".translation-workshop", "extracted-text");
   const seen = new Set<string>();
@@ -200,22 +203,44 @@ async function explicitFolderDocuments(
     if (seen.has(comparableId)) throw new Error(`Duplicate folder source document id: ${id}.`);
     seen.add(comparableId);
     const filePath = path.resolve(entry.path);
-    if (isInsidePath(rootPath, filePath)) {
+    if (isInsidePath(rootPath, filePath) && !preparedSelection) {
       // Current files are rediscovered from the authoritative project folder below.
       continue;
     }
-    if (!isInsidePath(extractedTextRoot, filePath)) {
+    if (!isInsidePath(extractedTextRoot, filePath) && !isInsidePath(rootPath, filePath)) {
       throw new Error(`Folder source document ${id} is outside the selected folder and extracted-text workspace.`);
     }
     const originalPath = path.resolve(rootPath, ...id.split("/"));
     if (!isInsidePath(rootPath, originalPath)) throw new Error(`Invalid folder source document id: ${entry.id}.`);
-    if (path.extname(originalPath).toLowerCase() !== ".epub") continue;
+    const originalExtension = path.extname(originalPath).toLowerCase();
+    if (originalExtension !== ".epub" && !(originalExtension === ".txt" && (entry.projection?.kind === "bilingual-pairs" || entry.projection?.kind === "text-lines"))) {
+      if (preparedSelection) throw new Error(`Invalid prepared source document type: ${id}.`);
+      continue;
+    }
+    if (preparedSelection && !entry.projection) throw new Error(`Prepared source document ${id} lacks hash-bound provenance.`);
     try {
       const originalInfo = await lstat(originalPath);
-      if (!originalInfo.isFile()) continue;
+      if (!originalInfo.isFile() || originalInfo.isSymbolicLink()) {
+        if (preparedSelection) throw new Error(`Prepared source input is not a regular file: ${originalPath}.`);
+        continue;
+      }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !preparedSelection) continue;
       throw error;
+    }
+    if (entry.projection) {
+      const proof = entry.projection;
+      if (!["bilingual-pairs", "epub-text", "text-lines"].includes(proof.kind)
+        || !/^[a-f0-9]{64}$/.test(proof.originalHash) || !/^[a-f0-9]{64}$/.test(proof.projectionHash)) {
+        throw new Error(`Invalid source projection provenance for ${id}.`);
+      }
+      if (proof.kind === "text-lines" && (originalExtension !== ".txt" || comparablePath(filePath) !== comparablePath(originalPath))) {
+        throw new Error(`Unprojected text source must use its original TXT path: ${id}.`);
+      }
+      const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+      if (digest(await readFile(originalPath)) !== proof.originalHash || digest(await readFile(filePath)) !== proof.projectionHash) {
+        throw new Error(`Source projection is stale for ${id}; prepare the task again.`);
+      }
     }
     const extension = path.extname(filePath).toLowerCase();
     if (!SUPPORTED_SOURCE_EXTENSIONS.has(extension)) {
@@ -248,8 +273,8 @@ export async function resolvePiSourceManifest(request: PiSessionPromptRequest): 
     };
   }
   if (!rootInfo.isDirectory()) throw new Error(`The selected source is not a folder: ${rootPath}`);
-  const discoveredFiles = await collectFolderFiles(rootPath);
   const extractedDocuments = await explicitFolderDocuments(request, rootPath);
+  const discoveredFiles = request.folderSourceSelection === "prepared-inputs" ? [] : await collectFolderFiles(rootPath);
   const documentsById = new Map<string, PiSourceDocument>();
   for (const file of discoveredFiles) {
     documentsById.set(file.id, await sourceDocument(file.id, file.path));

@@ -12,6 +12,8 @@ import {
   shouldCompact,
   type AfterToolCallContext,
   type AfterToolCallResult,
+  type BeforeToolCallContext,
+  type BeforeToolCallResult,
   type AgentEvent,
   type AgentMessage,
   type AgentTool,
@@ -70,6 +72,7 @@ export interface PiSessionAgentRuntimeOptions {
   providerStreamTimeouts?: PiProviderStreamTimeouts;
   retry?: Partial<PiAutoRetrySettings>;
   deferThresholdCompaction?: () => boolean;
+  beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
   afterToolCall?: (
     context: AfterToolCallContext,
     signal?: AbortSignal
@@ -423,6 +426,8 @@ export class PiSessionAgentRuntime {
   private sessionFailure?: unknown;
   private phase: "idle" | "running" | "settling" = "idle";
   private initialized = false;
+  private abortGeneration = 0;
+  private startingQueuedNextTurn?: AgentMessage[];
   private initializeTask?: Promise<void>;
   private lastAssistantMessage?: AssistantMessage;
   private overflowRecoveryAttempted = false;
@@ -458,6 +463,7 @@ export class PiSessionAgentRuntime {
       steeringMode: "one-at-a-time",
       followUpMode: "one-at-a-time",
       afterToolCall: options.afterToolCall,
+      beforeToolCall: options.beforeToolCall,
       streamFn: (model, context, streamOptions) => streamPiProviderWithTimeouts({
         models: this.models,
         model,
@@ -495,14 +501,25 @@ export class PiSessionAgentRuntime {
   }
 
   async prompt(input: string | AgentMessage | AgentMessage[], options?: { images?: ImageContent[] }): Promise<void> {
+    // Agent.waitForIdle() cannot cover these asynchronous preflight awaits:
+    // the Agent has not started yet. Stop/dispose must also revoke that pending
+    // native prompt before it can acquire the Agent after ownership is released.
+    const abortGeneration = this.abortGeneration;
+    const assertNotAborted = () => this.assertAbortGeneration(abortGeneration);
     await this.initialize();
+    assertNotAborted();
     await this.synchronizeSystemPrompt();
+    assertNotAborted();
     await this.compactBeforePromptIfNeeded();
+    assertNotAborted();
     const initial = typeof input === "string"
       ? [userMessage(input, options?.images)]
       : Array.isArray(input) ? input : [input];
     const queued = this.queuedNextTurn.splice(0);
+    this.startingQueuedNextTurn = queued;
     if (queued.length > 0) await this.emitQueueUpdate();
+    assertNotAborted();
+    this.startingQueuedNextTurn = undefined;
     this.phase = "running";
     try {
       await this.agent.prompt([...queued, ...initial]);
@@ -585,45 +602,59 @@ export class PiSessionAgentRuntime {
     details?: unknown;
   }> {
     if (this.agent.state.isStreaming) throw new Error("compact() requires an idle Pi Agent");
-    const fullBranchEntries = await this.runSessionOperation(() => readSessionEntries(this.session));
-    let branchEntries = fullBranchEntries;
-    if (this.resetContextActive) {
-      if (!this.resetContextStartEntryId) throw new Error("Nothing to compact");
-      const resetStartIndex = fullBranchEntries.findIndex((entry) => entry.id === this.resetContextStartEntryId);
-      if (resetStartIndex < 0) {
-        throw new Error(`Pi reset-context entry ${this.resetContextStartEntryId} is missing from the active branch.`);
-      }
-      branchEntries = fullBranchEntries.slice(resetStartIndex);
-    }
-    const preparationResult = prepareCompaction(branchEntries, DEFAULT_COMPACTION_SETTINGS);
-    if (!preparationResult.ok) throw preparationResult.error;
-    if (!preparationResult.value) throw new Error("Nothing to compact");
+    const abortGeneration = this.abortGeneration;
     const controller = new AbortController();
     this.compactionAbortController = controller;
-    let result;
+    const assertNotAborted = () => {
+      this.assertAbortGeneration(abortGeneration);
+      controller.signal.throwIfAborted();
+    };
     try {
-      result = await compactSession(
-        preparationResult.value,
-        this.models,
-        this.agent.state.model,
-        customInstructions,
-        this.agent.state.thinkingLevel,
-        undefined,
-        undefined,
-        withAbortSignal(controller.signal, BACKGROUND_CONTEXT)
-      );
+      const fullBranchEntries = await this.runSessionOperation(() => readSessionEntries(this.session));
+      assertNotAborted();
+      let branchEntries = fullBranchEntries;
+      if (this.resetContextActive) {
+        if (!this.resetContextStartEntryId) throw new Error("Nothing to compact");
+        const resetStartIndex = fullBranchEntries.findIndex((entry) => entry.id === this.resetContextStartEntryId);
+        if (resetStartIndex < 0) {
+          throw new Error(`Pi reset-context entry ${this.resetContextStartEntryId} is missing from the active branch.`);
+        }
+        branchEntries = fullBranchEntries.slice(resetStartIndex);
+      }
+      const preparationResult = prepareCompaction(branchEntries, DEFAULT_COMPACTION_SETTINGS);
+      if (!preparationResult.ok) throw preparationResult.error;
+      if (!preparationResult.value) throw new Error("Nothing to compact");
+      const result = await compactSession(
+          preparationResult.value,
+          this.models,
+          this.agent.state.model,
+          customInstructions,
+          this.agent.state.thinkingLevel,
+          undefined,
+          undefined,
+          withAbortSignal(controller.signal, BACKGROUND_CONTEXT)
+        );
+      assertNotAborted();
+      if (!result.ok) throw result.error;
+      const entryId = await this.runSessionOperation(() => {
+        // A previously scheduled Session operation may delay this commit. Stop
+        // revokes provider acquisition and any compaction not yet being appended.
+        if (this.abortGeneration !== abortGeneration || controller.signal.aborted) return Promise.resolve(undefined);
+        return appendSessionCompaction(this.session, result.value);
+      });
+      assertNotAborted();
+      if (!entryId) throw new Error("Native Pi compaction commit did not return its entry ID.");
+      const context = await this.runSessionOperation(() => readSessionContext(this.session, { includeFailedAssistant: false }));
+      assertNotAborted();
+      this.agent.state.messages = compactSubagentCards(context.messages);
+      await this.synchronizeSystemPrompt();
+      this.initialized = true;
+      // The v4 retained tail belongs to this native compaction entry. Keep the
+      // existing IPC field as a reference to that owner, without fabricating a v3 cut.
+      return { ...result.value, firstKeptEntryId: entryId };
     } finally {
       if (this.compactionAbortController === controller) this.compactionAbortController = undefined;
     }
-    if (!result.ok) throw result.error;
-    const entryId = await this.runSessionOperation(() => appendSessionCompaction(this.session, result.value));
-    const context = await this.runSessionOperation(() => readSessionContext(this.session, { includeFailedAssistant: false }));
-    this.agent.state.messages = compactSubagentCards(context.messages);
-    await this.synchronizeSystemPrompt();
-    this.initialized = true;
-    // The v4 retained tail belongs to this native compaction entry. Keep the
-    // existing IPC field as a reference to that owner, without fabricating a v3 cut.
-    return { ...result.value, firstKeptEntryId: entryId };
   }
 
   getModel(): Model<any> {
@@ -686,6 +717,8 @@ export class PiSessionAgentRuntime {
   }
 
   async abort(): Promise<{ clearedSteer: AgentMessage[]; clearedFollowUp: AgentMessage[] }> {
+    this.abortGeneration += 1;
+    this.restoreStartingQueuedNextTurn();
     const clearedSteer = this.queuedSteer.splice(0);
     const clearedFollowUp = this.queuedFollowUp.splice(0);
     this.agent.clearAllQueues();
@@ -717,6 +750,8 @@ export class PiSessionAgentRuntime {
   }
 
   dispose(): void {
+    this.abortGeneration += 1;
+    this.restoreStartingQueuedNextTurn();
     this.retryAbortController?.abort(new Error("Runtime disposed"));
     this.compactionAbortController?.abort(new Error("Runtime disposed"));
     // A runtime can be replaced after Pi emits `settled` but while its outer
@@ -726,6 +761,21 @@ export class PiSessionAgentRuntime {
     this.agent.abort();
     this.unsubscribeAgent();
     this.listeners.clear();
+  }
+
+  private assertAbortGeneration(generation: number): void {
+    if (this.abortGeneration !== generation) {
+      throw new DOMException("Pi operation was stopped during native preflight.", "AbortError");
+    }
+  }
+
+  private restoreStartingQueuedNextTurn(): void {
+    // Queue-update delivery also awaits listeners before Agent.prompt starts.
+    // Preserve accepted inputs if Stop revokes that last preflight boundary.
+    if (this.startingQueuedNextTurn) {
+      this.queuedNextTurn.unshift(...this.startingQueuedNextTurn);
+      this.startingQueuedNextTurn = undefined;
+    }
   }
 
   private async handleAgentEvent(event: AgentEvent, signal: AbortSignal): Promise<void> {
@@ -848,10 +898,12 @@ export class PiSessionAgentRuntime {
 
   /** Source-adapted from Pi AgentSession's pre-prompt threshold check. */
   private async compactBeforePromptIfNeeded(): Promise<void> {
+    const abortGeneration = this.abortGeneration;
     if (this.deferThresholdCompaction()) return;
     const messages = this.resetContextActive
       ? this.agent.state.messages
       : (await this.runSessionOperation(() => readSessionContext(this.session))).messages;
+    this.assertAbortGeneration(abortGeneration);
     const tokens = estimateContextTokens(messages).tokens;
     const model = this.agent.state.model;
     if (!shouldCompact(tokens, model.contextWindow, DEFAULT_COMPACTION_SETTINGS)) return;
@@ -907,8 +959,10 @@ export class PiSessionAgentRuntime {
     reason: "overflow" | "threshold",
     willRetry: boolean
   ): Promise<boolean> {
+    const abortGeneration = this.abortGeneration;
     await this.emit({ type: "compaction_start", reason });
     try {
+      this.assertAbortGeneration(abortGeneration);
       const nativeResult = await this.compact();
       if (willRetry) {
         const messages = this.agent.state.messages;

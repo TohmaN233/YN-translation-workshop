@@ -79,6 +79,7 @@ assert.deepEqual(parsePiSessionPromptRequest({
   providerId: "provider",
   modelId: "model",
   thinkingLevel: undefined,
+  taskPreparation: undefined,
   workflowIntent: "proofread",
   languagePair: undefined,
     style: undefined,
@@ -154,6 +155,16 @@ for (const folderSourceDocuments of [
     () => parsePiSessionPromptRequest({ ...base, folderSourceDocuments }),
     /folderSourceDocuments|EPUB|extracted UTF-8 text/i
   );
+}
+
+const projection = { kind: "bilingual-pairs", originalHash: "a".repeat(64), projectionHash: "b".repeat(64) };
+assert.deepEqual(parsePiSessionPromptRequest({ ...base, folderSourceDocuments: [
+  { id: "paired.txt", path: "C:/project/.translation-workshop/extracted-text/paired/source.txt", projection }
+] }).folderSourceDocuments[0].projection, projection);
+for (const proof of [null, {}, { ...projection, kind: "unknown" }, { ...projection, originalHash: "stale" }, { ...projection, projectionHash: 42 }]) {
+  assert.throws(() => parsePiSessionPromptRequest({ ...base, folderSourceDocuments: [
+    { id: "paired.txt", path: "C:/project/.translation-workshop/extracted-text/paired/source.txt", projection: proof }
+  ] }), /projection/i);
 }
 
 for (const request of [

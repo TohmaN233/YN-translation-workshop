@@ -1399,7 +1399,6 @@ async function run(): Promise<void> {
     setChecked("#promptGlossaryCandidates", false);
     setChecked("#promptCharacterBible", false);
     setChecked("#promptReuseExistingTranslation", true);
-    setChecked("#promptSplit", false);
     document.querySelector("#addPromptCustomPreserveRule")?.click();
     setValue(".prompt-preserve-pattern", "^prefix");
     setChecked("#promptSubagent", false);
@@ -1454,7 +1453,7 @@ async function run(): Promise<void> {
     workDescription: document.querySelector("#promptWorkDescription")?.value || "",
     translateOutputDir: document.querySelector("#promptTranslateOutputDir")?.value || "",
     proofreadOutputDir: document.querySelector("#promptProofreadOutputDir")?.value || "",
-    split: Boolean(document.querySelector("#promptSplit")?.checked),
+    splitControlAbsent: !document.querySelector("#promptSplit"),
     splitSize: document.querySelector("#promptSplitSize")?.value || "",
     glossaryCandidates: Boolean(document.querySelector("#promptGlossaryCandidates")?.checked),
     characterBible: Boolean(document.querySelector("#promptCharacterBible")?.checked),
@@ -1478,7 +1477,7 @@ async function run(): Promise<void> {
   assert(resetPromptUi.workDescription === "", "Prompt reset did not clear the work description");
   assert(resetPromptUi.translateOutputDir === path.join(workspace, "AI_translation"), "Prompt reset restored the wrong translation output folder");
   assert(resetPromptUi.proofreadOutputDir === path.join(workspace, "report"), "Prompt reset restored the wrong report output folder");
-  assert(resetPromptUi.split && resetPromptUi.splitSize === "1000", "Prompt reset did not restore split defaults");
+  assert(resetPromptUi.splitControlAbsent && resetPromptUi.splitSize === "500", "Prompt reset must retain line count without the obsolete split switch");
   assert(resetPromptUi.glossaryCandidates && resetPromptUi.characterBible && !resetPromptUi.reuseExistingTranslation, "Prompt reset did not restore translation toggles");
   assert(resetPromptUi.proofreadMode === "split" && resetPromptUi.candidateRatio === "1.5", "Prompt reset did not restore proofread defaults");
   assert(resetPromptUi.montecarloSize === "3000" && resetPromptUi.montecarloRoundMin === "2" && resetPromptUi.montecarloRoundMax === "5", "Prompt reset did not restore Monte Carlo defaults");

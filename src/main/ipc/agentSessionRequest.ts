@@ -8,6 +8,7 @@ import type {
   PiWorkflowIntent
 } from "../../shared/agent/piSessionContract.ts";
 import { normalizeCustomPreserveRules } from "../../shared/validation/customPreserveRules.ts";
+import { normalizeTaskPreparationRequest } from "../../shared/agent/taskPreparation.ts";
 
 const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_IMAGE_COUNT = 5;
@@ -152,12 +153,25 @@ function folderSourceDocuments(value: unknown): PiFolderSourceDocument[] | undef
       throw new Error(`folderSourceDocuments[${index}] must be an object.`);
     }
     const document = entry as Record<string, unknown>;
+    let projection: PiFolderSourceDocument["projection"];
+    if (document.projection !== undefined) {
+      const proof = document.projection;
+      if (!proof || typeof proof !== "object" || Array.isArray(proof)) throw new Error(`Invalid folder source projection at ${index}.`);
+      const value = proof as Record<string, unknown>;
+      if ((value.kind !== "bilingual-pairs" && value.kind !== "epub-text" && value.kind !== "text-lines")
+        || typeof value.originalHash !== "string" || !/^[a-f0-9]{64}$/.test(value.originalHash)
+        || typeof value.projectionHash !== "string" || !/^[a-f0-9]{64}$/.test(value.projectionHash)) {
+        throw new Error(`Invalid folder source projection provenance at ${index}.`);
+      }
+      projection = { kind: value.kind, originalHash: value.originalHash, projectionHash: value.projectionHash };
+    }
     return {
       id: requiredText(document.id, `folderSourceDocuments[${index}].id`),
       path: assertExtractedTextPath(
         requiredText(document.path, `folderSourceDocuments[${index}].path`),
         `folderSourceDocuments[${index}].path`
-      )!
+      )!,
+      ...(projection ? { projection } : {})
     };
   });
 }
@@ -165,6 +179,7 @@ function folderSourceDocuments(value: unknown): PiFolderSourceDocument[] | undef
 export function parsePiSessionPromptRequest(
   raw: Partial<PiSessionPromptRequest> | undefined
 ): PiSessionPromptRequest {
+  if (raw?.folderSourceSelection !== undefined && raw.folderSourceSelection !== "prepared-inputs") throw new Error("Invalid folderSourceSelection.");
   const subagentProviderId = optionalText(raw?.subagentProviderId);
   const subagentModelId = optionalText(raw?.subagentModelId);
   if (Boolean(subagentProviderId) !== Boolean(subagentModelId)) {
@@ -181,6 +196,7 @@ export function parsePiSessionPromptRequest(
     providerId: requiredText(raw?.providerId, "providerId"),
     modelId: requiredText(raw?.modelId, "modelId"),
     thinkingLevel: raw?.thinkingLevel,
+    taskPreparation: normalizeTaskPreparationRequest(raw?.taskPreparation),
     workflowIntent: workflowIntent(raw?.workflowIntent),
     languagePair: optionalText(raw?.languagePair),
     style: optionalText(raw?.style),
@@ -199,6 +215,7 @@ export function parsePiSessionPromptRequest(
     translationSplitSize: optionalPositiveInteger(raw?.translationSplitSize, "translationSplitSize"),
     folderTranslationOrder: optionalText(raw?.folderTranslationOrder),
     folderSourceDocuments: folderSourceDocuments(raw?.folderSourceDocuments),
+    ...(raw?.folderSourceSelection ? { folderSourceSelection: raw.folderSourceSelection } : {}),
     sourcePath: assertExtractedTextPath(optionalText(raw?.sourcePath), "sourcePath"),
     sourceSelection: sourceSelection(raw?.sourceSelection),
     translationPath: assertExtractedTextPath(optionalText(raw?.translationPath), "translationPath"),

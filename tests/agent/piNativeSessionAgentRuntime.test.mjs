@@ -1,4 +1,4 @@
-import { readSessionConversation } from "../helpers/pi-session.mjs";
+import { readSessionConversation, readSessionEntries } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 
 import {
@@ -278,3 +278,71 @@ try {
 }
 
 console.log("ok terminal-boundary child completion is consumed through a native Pi Follow-up continuation");
+
+{
+  const faux = fauxProvider({ tokensPerSecond: 1000 });
+  faux.setResponses([fauxAssistantMessage(fauxText("Accepted carryover reached the next native prompt."))]);
+  const models = createModels(); models.setProvider(faux.provider);
+  const session = await new MemorySessionRepo().create({ id: "pi_stop_queue_preflight" });
+  const runtime = new PiSessionAgentRuntime({ session, sessionId: "pi_stop_queue_preflight", models,
+    model: faux.getModel(), thinkingLevel: "medium", systemPrompt: "Preserve accepted native queue inputs.", tools: [] });
+  const entered = deferred(); const release = deferred(); let hold = true;
+  await runtime.nextTurn("accepted before Stop");
+  runtime.subscribe(async event => {
+    if (event.type !== "queue_update" || event.nextTurn.length !== 0 || !hold) return;
+    hold = false; entered.resolve(); await release.promise;
+  });
+  try {
+    const turn = runtime.prompt("cancel before Agent.prompt");
+    const rejection = assert.rejects(turn, error => error.name === "AbortError");
+    await entered.promise;
+    await runtime.abort();
+    assert.equal(faux.state.callCount, 0, "Stop before native Agent acquisition must prevent the provider call");
+    release.resolve(); await rejection;
+    await runtime.prompt("continue after Stop");
+    const messages = (await readSessionConversation(session)).messages;
+    assert.equal(messages.filter(message => JSON.stringify(message).includes("accepted before Stop")).length, 1);
+    assert.equal(messages.some(message => JSON.stringify(message).includes("cancel before Agent.prompt")), false);
+  } finally { release.resolve(); runtime.dispose(); }
+}
+console.log("ok Stop at native queue-update preflight preserves accepted next-turn input without starting the cancelled prompt");
+
+for (const boundary of ["threshold-read", "compaction-entry-read", "compaction-start-listener", "compaction-commit-queue"]) {
+  const faux = fauxProvider({ tokensPerSecond: 1_000_000, tokenSize: { min: 100000, max: 100000 } });
+  faux.setResponses([fauxAssistantMessage(fauxText("Summary of the completed conversation."))]);
+  const models = createModels(); models.setProvider(faux.provider);
+  const session = await new MemorySessionRepo().create({ id: `pi_compaction_stop_${boundary}` });
+  const runtime = new PiSessionAgentRuntime({ session, sessionId: session.id, models,
+    model: { ...faux.getModel(), contextWindow: 40000 }, thinkingLevel: "medium", systemPrompt: "Native compaction cancellation.", tools: [] });
+  for (let index = 0; index < 3; index++) {
+    await runtime.appendMessage({ role: "user", content: [{ type: "text", text: "long history ".repeat(20000) }], timestamp: index * 2 });
+    await runtime.appendMessage(fauxAssistantMessage(fauxText(`historical answer ${index}`)));
+  }
+  await runtime.initialize(); await runtime.synchronizeSystemPrompt();
+  const entered = deferred(); const release = deferred();
+  const originalBranch = session.branch.bind(session); let reads = 0;
+  if (boundary.endsWith("read")) session.branch = async (...args) => {
+    reads++;
+    if (reads === (boundary === "threshold-read" ? 1 : 2)) { entered.resolve(); await release.promise; }
+    return originalBranch(...args);
+  };
+  if (boundary === "compaction-start-listener") runtime.subscribe(async event => {
+    if (event.type === "compaction_start") { entered.resolve(); await release.promise; }
+  });
+  if (boundary === "compaction-commit-queue") {
+    const originalOperation = runtime.runSessionOperation.bind(runtime); let operations = 0;
+    runtime.runSessionOperation = operation => {
+      operations++;
+      if (operations === 2) { runtime.sessionOperationTail = release.promise; entered.resolve(); }
+      return originalOperation(operation);
+    };
+  }
+  try {
+    const turn = boundary === "compaction-commit-queue" ? runtime.compact() : runtime.prompt("Cancelled preflight must not compact");
+    const rejected = assert.rejects(turn, error => error.name === "AbortError");
+    await entered.promise; await runtime.abort(); release.resolve(); await rejected;
+    assert.equal(faux.state.callCount, boundary === "compaction-commit-queue" ? 1 : 0, `Stop at ${boundary} must prevent orphan provider acquisition`);
+    assert.equal((await readSessionEntries(session)).filter(entry => entry.type === "compaction").length, 0, `Stop at ${boundary} must prevent a revoked compaction commit`);
+  } finally { release.resolve(); runtime.dispose(); }
+  console.log(`ok Stop at ${boundary} prevents orphan native compaction acquisition/commit`);
+}

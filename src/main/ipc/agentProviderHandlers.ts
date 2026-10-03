@@ -1,4 +1,4 @@
-import { ipcMain, shell } from "electron";
+import { app, ipcMain, shell } from "electron";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
@@ -34,8 +34,7 @@ import {
   setProviderEnabled,
   updateProviderConfig
 } from "../agent/providerConfigStore.ts";
-import { getProviderPreset, isOAuthPresetAuth, PROVIDER_PRESETS } from "../../shared/agent/providerPresets.ts";
-import { listModelsForProvider } from "../../shared/agent/providerModels.ts";
+import { getProviderPreset, isOAuthPresetAuth } from "../../shared/agent/providerPresets.ts";
 import { importClaudeOAuthToProviderAuth } from "../agent/claudeOAuthAuth.ts";
 import type { OpenAiCompatibleProviderConfig, ProviderAuth, StoredProviderConfig } from "../../shared/agent/providerConfigTypes.ts";
 import { broadcastPiSession } from "../agent/piNative/broadcast.ts";
@@ -70,6 +69,12 @@ export function resolveProjectPaths(outputDir: string): { outputDir: string; wor
   };
 }
 
+// Provider settings are user-global; an empty project path is valid on the homepage.
+// Keep project path validation strict for all project-owned operations.
+function resolveProviderPaths(outputDir?: string) {
+  return resolveProjectPaths(outputDir || app.getPath("userData"));
+}
+
 function redactProviderConfig(provider: StoredProviderConfig): StoredProviderConfig {
   const copy: OpenAiCompatibleProviderConfig = { ...provider };
   if (copy.auth?.kind === "api_key" && copy.auth.key) {
@@ -96,12 +101,12 @@ export function providerConfigResponse(doc: Awaited<ReturnType<typeof readProvid
 }
 
 export async function getAgentProviderConfig(outputDir: string) {
-  const { workspaceDir } = resolveProjectPaths(outputDir);
+  const { workspaceDir } = resolveProviderPaths(outputDir);
   return providerConfigResponse(await readProviderConfig(workspaceDir));
 }
 
 export async function saveAgentProviderConfig(args: SaveProviderConfigArgs) {
-  const { workspaceDir } = resolveProjectPaths(args.outputDir);
+  const { workspaceDir } = resolveProviderPaths(args.outputDir);
   const current = await readProviderConfig(workspaceDir);
   let provider = args.provider;
   const existing = current.providers[provider.id];
@@ -121,7 +126,7 @@ export async function saveAgentProviderConfig(args: SaveProviderConfigArgs) {
 }
 
 export async function listAgentConfiguredModels(outputDir: string) {
-  const { outputDir: projectDir } = resolveProjectPaths(outputDir);
+  const { outputDir: projectDir } = resolveProviderPaths(outputDir);
   return (await listPiConfiguredModels(projectDir))
     .filter((entry) => entry.authenticated)
     .map((entry) => ({
@@ -167,16 +172,7 @@ async function persistOAuthSession(
 
 export function registerAgentProviderIpc(): void {
   ipcMain.handle("agent-provider:list", async (_event, args?: ProviderProjectArgs) => {
-    if (!args?.outputDir) {
-      return PROVIDER_PRESETS.map((preset) => ({
-        id: preset.id,
-        name: preset.name,
-        type: "openai_compatible" as const,
-        requiresAuth: true,
-        auth: preset.auth
-      }));
-    }
-    const { workspaceDir } = resolveProjectPaths(args.outputDir);
+    const { workspaceDir } = resolveProviderPaths(args?.outputDir);
     const doc = await readProviderConfig(workspaceDir);
     return listProviderDescriptors(doc).map((descriptor) => {
       const preset = getProviderPreset(descriptor.presetId ?? descriptor.id);
@@ -193,7 +189,7 @@ export function registerAgentProviderIpc(): void {
   });
 
   ipcMain.handle("agent-provider:setEnabled", async (_event, outputDir: string, providerId: string, enabled: boolean) => {
-    const { workspaceDir } = resolveProjectPaths(outputDir);
+    const { workspaceDir } = resolveProviderPaths(outputDir);
     const doc = await setProviderEnabled(workspaceDir, providerId, enabled);
     const response = providerConfigResponse(doc);
     broadcastPiSession("agent-provider:update", { scope: "global", workspaceDir, config: response });
@@ -201,7 +197,7 @@ export function registerAgentProviderIpc(): void {
   });
 
   ipcMain.handle("agent-provider:deleteProfile", async (_event, outputDir: string, providerId: string) => {
-    const { workspaceDir } = resolveProjectPaths(outputDir);
+    const { workspaceDir } = resolveProviderPaths(outputDir);
     const doc = await deleteProviderProfile(workspaceDir, providerId);
     const response = providerConfigResponse(doc);
     broadcastPiSession("agent-provider:update", { scope: "global", workspaceDir, config: response });
@@ -209,10 +205,7 @@ export function registerAgentProviderIpc(): void {
   });
 
   ipcMain.handle("agent-provider:validate", async (_event, args: { outputDir?: string; providerId: string }) => {
-    if (!args.outputDir) {
-      return { ok: false, detail: "An output directory is required." };
-    }
-    const { outputDir, workspaceDir } = resolveProjectPaths(args.outputDir);
+    const { outputDir, workspaceDir } = resolveProviderPaths(args.outputDir);
     const config = await readProviderConfig(workspaceDir);
     const stored = config.providers[args.providerId];
     if (!stored || stored.type !== "openai_compatible") {
@@ -231,16 +224,8 @@ export function registerAgentProviderIpc(): void {
   });
 
   ipcMain.handle("agent-provider:listModels", async (_event, args: { outputDir?: string; providerId: string }) => {
-    if (args.outputDir) {
-      const { outputDir } = resolveProjectPaths(args.outputDir);
-      return listPiProviderModels(outputDir, args.providerId);
-    }
-    const preset = getProviderPreset(args.providerId);
-    return listModelsForProvider(args.providerId, preset ? {
-      piProviderId: preset.config.piProviderId,
-      model: preset.config.model,
-      modelIds: preset.config.models
-    } : undefined);
+    const { outputDir } = resolveProviderPaths(args.outputDir);
+    return listPiProviderModels(outputDir, args.providerId);
   });
 
   ipcMain.handle("agent-provider:listConfiguredModels", async (_event, args: ProviderProjectArgs) => {
@@ -258,7 +243,7 @@ export function registerAgentProviderIpc(): void {
         label?: string;
       }
     ) => {
-      const { workspaceDir } = resolveProjectPaths(args.outputDir);
+      const { workspaceDir } = resolveProviderPaths(args.outputDir);
       const preset = getProviderPreset(args.providerId);
       if (!preset || !isOAuthPresetAuth(preset.auth)) {
         return { ok: false, message: "OAuth connect is only supported for ChatGPT, Claude, or Grok subscription providers." };
@@ -397,7 +382,7 @@ export function registerAgentProviderIpc(): void {
   );
 
   ipcMain.handle("agent-provider:listOAuthProfiles", async (_event, args: ProviderProjectArgs & { providerId: string }) => {
-    const { workspaceDir } = resolveProjectPaths(args.outputDir);
+    const { workspaceDir } = resolveProviderPaths(args.outputDir);
     const profiles = await listOAuthProfilesForProvider(workspaceDir, args.providerId);
     const doc = await readOAuthProfiles(workspaceDir);
     return {
@@ -411,7 +396,7 @@ export function registerAgentProviderIpc(): void {
   });
 
   ipcMain.handle("agent-provider:setOAuthProfile", async (_event, args: ProviderProjectArgs & { profileId: string }) => {
-    const { workspaceDir } = resolveProjectPaths(args.outputDir);
+    const { workspaceDir } = resolveProviderPaths(args.outputDir);
     const doc = await setActiveOAuthProfile(workspaceDir, args.profileId);
     const profile = doc.profiles[args.profileId];
     if (profile?.auth) {

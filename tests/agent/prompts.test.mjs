@@ -104,7 +104,7 @@ await test("proofread prompt does not send the parent to inspect glossary candid
 await test("existing translation reuse audit is explicit and defaults to direct retranslation", () => {
   const defaults = promptParameterDefaults("project");
   assert.equal(defaults.reuseExistingTranslation, false);
-  assert.equal(defaults.splitSize, 1000);
+  assert.equal(defaults.splitSize, 500);
 
   const direct = buildTranslatePrompt({
     sourcePath: "source.txt",

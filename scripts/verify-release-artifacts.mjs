@@ -48,6 +48,7 @@ const archiveEntries = new Set(listPackage(asarPath).map((entry) => entry.replac
 for (const requiredEntry of [
   "/dist/main/main.js",
   "/dist/main/proofreadPrescanWorker.js",
+  "/dist/main/sourcePreparationWorker.js",
   "/node_modules/cheerio/package.json",
   "/node_modules/electron-updater/package.json",
   "/node_modules/js-yaml/package.json",
@@ -78,7 +79,7 @@ const packedYaml = JSON.parse(
   extractFile(asarPath, path.join("node_modules", "js-yaml", "package.json")).toString("utf8"),
 );
 const packedMain = extractFile(asarPath, path.join("dist", "main", "main.js")).toString("utf8");
-for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js", "README.md", "README.en.md", "THIRD_PARTY_NOTICES.md"]) {
+for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js", "dist/main/sourcePreparationWorker.js", "README.md", "README.en.md", "THIRD_PARTY_NOTICES.md"]) {
   assert.equal(
     createHash("sha256").update(extractFile(asarPath, path.normalize(entry))).digest("hex"),
     createHash("sha256").update(readFileSync(path.join(rootDir, entry))).digest("hex"),

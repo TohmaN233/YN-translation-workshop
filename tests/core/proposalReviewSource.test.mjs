@@ -36,8 +36,10 @@ await test("proposal apply detects stale target text before overwriting line rev
   const source = await readFile("src/shared/core/html.ts", "utf8");
   assert.match(source, /function currentLineReviewText\(row, lineState, line\)/);
   assert.match(source, /const currentText = currentLineReviewText\(row, lineState, line\);/);
-  assert.match(source, /textSimilarity\(oldText, currentText\) < 0\.8/);
-  assert.match(source, /return \{ ok: false, reason: "patch-conflict" \};/);
+  const sharedSafety = await readFile("src/shared/core/proposalSafety.ts", "utf8");
+  assert.match(source, /return checkProposalSafety\(/);
+  assert.match(sharedSafety, /similarity\(args\.oldText, args\.currentText\) < 0\.8/);
+  assert.match(sharedSafety, /return \{ ok: false, reason: "patch-conflict" \};/);
   assert.match(source, /state\.decisions\[item\.id\] = \{[\s\S]*conflictCurrentText: currentProposalLineText\(item, target\.lineState, lineRows\),[\s\S]*conflictCurrentRevision: lineReviewRevision\(target\.lineState, line\),[\s\S]*conflictRevisionHistory: lineReviewRevisionHistory\(target\.lineState, line\)/);
 });
 
@@ -184,11 +186,10 @@ await test("cross-file one-click apply includes unreviewed suggestions and publi
 
 await test("proposal apply only treats the exact normalized suggestion as already applied", async () => {
   const source = await readFile("src/shared/core/html.ts", "utf8");
-  const safetyStart = source.indexOf("function proposalSafetyCheck(");
-  const safetyEnd = source.indexOf("function reconcileStoredProposalConflicts(", safetyStart);
-  const safetySource = source.slice(safetyStart, safetyEnd);
-  assert.match(safetySource, /comparableText\(intendedText\) === comparableText\(currentText\)/);
-  assert.doesNotMatch(safetySource, /textSimilarity\(intendedText, currentText\)\s*>?=/);
+  const safetySource = await readFile("src/shared/core/proposalSafety.ts", "utf8");
+  assert.match(source, /return checkProposalSafety\(/);
+  assert.match(safetySource, /comparable\(args\.intendedText\) === comparable\(args\.currentText\)/);
+  assert.doesNotMatch(safetySource, /similarity\(args\.intendedText, args\.currentText\)\s*>?=/);
 });
 
 await test("proposal review exposes conflict resolution actions without bypassing source checks", async () => {
@@ -211,11 +212,12 @@ await test("proposal review exposes conflict resolution actions without bypassin
   assert.match(source, /data-conflict-preview=/);
   assert.match(source, /function currentProposalLineText\(item, lineState, rows\)/);
   assert.match(source, /function proposalSafetyCheck\(item, lineState, rows, options = \{\}\)/);
-  assert.match(source, /reason: "manual-edit"/);
+  const safetySource = await readFile("src/shared/core/proposalSafety.ts", "utf8");
+  assert.match(safetySource, /reason: "manual-edit"/);
   assert.match(source, /intendedText: text/);
   assert.match(source, /decision\.status === "manual"/);
 
-  assert.match(source, /if \(sourceScore < 0\.8\) return \{ ok: false, reason: "source-mismatch" \};[\s\S]*if \(options\.allowStaleTarget === true\) return \{ ok: true, reason: "" \};/);
+  assert.match(safetySource, /reason: "source-mismatch"[\s\S]*if \(args\.allowStaleTarget === true\) return \{ ok: true, reason: "" \};/);
   assert.match(source, /allowStaleTarget: decision\.status === "manual" \|\| decision\.overrideConflict === true/);
   assert.match(source, /conflictCurrentText: currentProposalLineText\(item, target\.lineState, lineRows\)/);
   assert.match(source, /conflictRevisionHistory: lineReviewRevisionHistory\(target\.lineState, line\)/);

@@ -29,10 +29,18 @@ import { rankProofreadReportCandidates, type ProofreadReportCandidate } from "..
 import { parseProofreadReport, type ReviewProposal } from "../shared/core/reviewReport.ts";
 import { buildPrompt, type PromptAdvancedOptions, type PromptBuildOptions } from "../shared/core/prompts.ts";
 import { splitTextLines } from "../shared/validation/translationValidator.ts";
+import { normalizeCustomPreserveRules } from "../shared/validation/customPreserveRules.ts";
 import { formatFolderTranslationOrder } from "./agent/piNative/folderTranslationPlan.ts";
 import { setPiSessionHtmlViewerTabsRef, subscribePiSessionBroadcast } from "./agent/piNative/broadcast.ts";
 import { openAgentChatWindow } from "./agent/piNative/agentChatWindowHost.ts";
 import { piNativeSessionService } from "./agent/piNative/sessionService.ts";
+import type { PiSessionPromptRequest } from "../shared/agent/piSessionContract.ts";
+import type { BuiltinTaskSettings, StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
+import type { YnTaskPreparationContext } from "./agent/piNative/taskPreparation.ts";
+import { createBuiltinTaskPreparationHost, validateBuiltinTaskSettings } from "./builtinTaskPreparationHost.ts";
+import { generateBuiltinTaskReview, prepareBuiltinTaskDocuments } from "./builtinTaskDocuments.ts";
+import { resolveProofreadReportPath } from "./agent/writeProofreadFindings.ts";
+import { applyAutomationProofread } from "./automationProofread.ts";
 import { configureWebReferenceBrowserFetch } from "./agent/piNative/webReference.ts";
 import { configureGlobalAgentDataDir } from "./agent/agentDataDir.ts";
 import {
@@ -2978,9 +2986,15 @@ async function cancelHtmlViewerTabAgentRuns(tab: HtmlViewerTab): Promise<void> {
 async function flushHtmlViewerTabState(tab: HtmlViewerTab): Promise<void> {
   if (tab.view.webContents.isDestroyed()) return;
   await tab.view.webContents.executeJavaScript(`
-    typeof window.flushTranslationWorkshopLineReviewState === "function"
-      ? window.flushTranslationWorkshopLineReviewState()
-      : undefined
+    (async () => {
+      if (typeof window.flushTranslationWorkshopLineReviewState === "function") {
+        await window.flushTranslationWorkshopLineReviewState();
+      }
+      const child = document.getElementById("fileFrame")?.contentWindow;
+      if (typeof child?.flushTranslationWorkshopLineReviewState === "function") {
+        await child.flushTranslationWorkshopLineReviewState();
+      }
+    })()
   `);
 }
 
@@ -3379,7 +3393,7 @@ ipcMain.handle("prompts:build", async (_event, args: unknown) => {
   return buildPrompt(normalizePromptBuildArgs(args));
 });
 
-ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlArgs) => {
+async function generateLineReview(args: GenerateLineHtmlArgs) {
   if (!args.sourcePath || !args.outputDir) {
     throw new Error("Source path and output folder are required.");
   }
@@ -3703,9 +3717,10 @@ ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlA
   await writeFile(outputPath, html, "utf8");
   await writeFile(path.join(workspaceDir, "state.json"), JSON.stringify({ lastHtml: outputPath, generatedAt: new Date().toISOString() }, null, 2), "utf8");
   return { outputPath };
-});
+}
+ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlArgs) => generateLineReview(args));
 
-ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateReviewHtmlArgs) => {
+async function generateProposalReview(args: GenerateReviewHtmlArgs, allowEmpty = false) {
   if (!args.outputDir) {
     throw new Error("Output folder is required.");
   }
@@ -3720,7 +3735,7 @@ ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateRevie
   }
   const reportText = await readFile(reportPath, "utf8");
   const proposals = parseProofreadReport(reportText, reportPath);
-  if (proposals.length === 0) {
+  if (proposals.length === 0 && !allowEmpty) {
     return {
       fallbackPrompt: buildReportFormatRepairPrompt(reportPath, args.locale),
       reportPath,
@@ -3745,6 +3760,184 @@ ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateRevie
     generatedAt: new Date().toISOString()
   }, null, 2), "utf8");
   return { outputPath, proposalCount: proposals.length, reportPath, lineReviewPath };
+}
+ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateReviewHtmlArgs) => generateProposalReview(args));
+
+async function builtinSourceFiles(settings: BuiltinTaskSettings): Promise<string[]> {
+  return (await prepareBuiltinTaskDocuments(settings)).documents.map((document) => document.sourcePath);
+}
+
+async function builtinModelSelection(outputDir: string) {
+  const config = await getAgentProviderConfig(outputDir);
+  const provider = config.providers[config.activeProviderId];
+  if (!provider?.model || provider.enabled === false) throw new Error("Select and configure an Agent provider/model before starting a task.");
+  return { providerId: provider.id, modelId: provider.model, thinkingLevel: provider.thinkingLevel };
+}
+
+async function openBuiltinTaskHtml(outputPath: string, outputDir: string): Promise<void> {
+  await openHtmlWindow(outputPath, outputDir);
+  const tab = [...htmlViewerTabs.values()].find((item) => sameFilePath(item.filePath, outputPath));
+  if (!tab) throw new Error("Prepared task HTML did not open.");
+  if (tab.loadPromise) await tab.loadPromise;
+  await tab.view.webContents.executeJavaScript(`(async () => {
+    if (window.__ynAgentChatPiWebEmbedded?.open) { await window.__ynAgentChatPiWebEmbedded.open(); return; }
+    const frame = document.getElementById('fileFrame');
+    if (frame) {
+      if (!frame.contentWindow?.__ynAgentChatPiWebEmbedded) await new Promise((resolve) => frame.addEventListener('load', resolve, {once:true}));
+      if (frame.contentWindow?.__ynAgentChatPiWebEmbedded?.open) { await frame.contentWindow.__ynAgentChatPiWebEmbedded.open(); return; }
+    }
+    throw new Error('Prepared task Agent panel is unavailable.');
+  })()`);
+}
+
+async function builtinTaskParameterPage(context: YnTaskPreparationContext) {
+  if (!context.lineReviewPath) throw new Error("Task preparation has no bound HTML parameter form.");
+  await openBuiltinTaskHtml(context.lineReviewPath, context.outputDir);
+  const tab = [...htmlViewerTabs.values()].find(tab => sameFilePath(tab.filePath, context.lineReviewPath));
+  if (!tab || tab.view.webContents.isDestroyed()) throw new Error("Task HTML parameter form is unavailable.");
+  return tab;
+}
+const taskParameterPage = `(() => {
+  const page = window.translationWorkshopTaskParameters ? window : document.getElementById('fileFrame')?.contentWindow;
+  if (!page?.translationWorkshopTaskParameters) throw new Error('Current HTML task parameter protocol is unavailable.');
+  return page;
+})()`;
+async function synchronizeBuiltinTaskSettings(context: YnTaskPreparationContext): Promise<void> {
+  if (context.intent === "assets") return;
+  const tab = await builtinTaskParameterPage(context);
+  await tab.view.webContents.executeJavaScript(`(async () => { const page = ${taskParameterPage};
+    await page.translationWorkshopTaskParameters.synchronize();
+  })()`);
+}
+async function builtinWorkflowRequest(context: YnTaskPreparationContext, settings: BuiltinTaskSettings): Promise<PiSessionPromptRequest> {
+  if (context.intent === "assets") throw new Error("Asset preparation does not create a translation workflow.");
+  for (const tab of htmlViewerTabs.values()) if (sameFilePath(tab.workspaceDir, normalizeProjectFolder(context.outputDir).workspaceDir)) {
+    await flushHtmlViewerTabState(tab);
+  }
+  await drainHtmlSidecarStateWrites();
+  const tab = await builtinTaskParameterPage(context);
+  const kind = context.intent === "proofread" ? "proofread" : "translate";
+  // Execute the same parameter-form builder as the user's Generate prompt button.
+  // No second Host prompt/metadata mapping and no regenerated HTML at handoff.
+  const packet = await tab.view.webContents.executeJavaScript(`(async () => {
+    const page = ${taskParameterPage};
+    return page.translationWorkshopTaskParameters.prepare(${JSON.stringify(kind)});
+  })()`);
+  if (!packet?.prompt || packet.bindings?.outputDir !== context.outputDir
+    || packet.metadata?.workflowIntent !== context.intent) throw new Error("HTML workflow parameters do not match this preparation.");
+  const { sourcePath, sourceKind, translationPath } = packet.bindings;
+  const request: PiSessionPromptRequest = {
+    ...await builtinModelSelection(settings.outputDir), outputDir: settings.outputDir, sessionId: context.sessionId,
+    ...packet.metadata, prompt: packet.prompt,
+    sourcePath, sourceSelection: { kind: sourceKind, path: sourcePath }, translationPath,
+    translationBindingOrigin: "canonical", lineReviewPath: context.lineReviewPath
+  };
+  const evidenceDir = path.join(settings.outputDir, ".translation-workshop", "agent", "task-preparation");
+  await mkdir(evidenceDir, { recursive: true });
+  await writeTextFileAtomically(path.join(evidenceDir, `${context.preparationId}.json`), JSON.stringify({ ...request,
+    preparedSettings: { sourcePath: settings.sourcePath, translationPath, originalTranslationPath: settings.translationPath,
+      proofreadOutputDir: settings.proofreadOutputDir } }));
+  return request;
+}
+
+async function finishBuiltinWorkflow(context: YnTaskPreparationContext, settings: BuiltinTaskSettings, autoApply: boolean, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  if (context.intent !== "proofread") return;
+  const prepared = JSON.parse(await readFile(path.join(context.outputDir, ".translation-workshop", "agent", "task-preparation", `${context.preparationId}.json`), "utf8")) as PiSessionPromptRequest & {
+    preparedSettings: { sourcePath: string; translationPath?: string; proofreadOutputDir?: string }
+  };
+  const sourcePath = prepared.sourceSelection?.path ?? prepared.sourcePath!;
+  const reportPath = resolveProofreadReportPath({ outputDir: context.outputDir, sourcePaths: [sourcePath], documentId: path.basename(sourcePath),
+    proofreadOutputDir: prepared.preparedSettings.proofreadOutputDir, kind: "findings_json",
+    ...(prepared.sourceSelection?.kind === "folder" ? { reportScope: { kind: "folder" as const, sourcePath } } : {}) });
+  const generated = await generateProposalReview({ outputDir: context.outputDir, reportPath, lineReviewPath: prepared.lineReviewPath,
+    locale: settings.locale, pageSize: settings.pageSize }, true);
+  signal?.throwIfAborted();
+  if (!("outputPath" in generated) || !generated.outputPath) throw new Error("Final proofreading report HTML could not be generated.");
+  await patchProjectState(context.outputDir, { reportPath, lastProposalReviewHtml: generated.outputPath });
+  await openHtmlWindow(generated.outputPath, context.outputDir);
+  if (!autoApply) return;
+  const currentSettings = await readProjectState(context.outputDir);
+  if (typeof currentSettings.sourcePath !== "string" || !sameFilePath(currentSettings.sourcePath, prepared.preparedSettings.sourcePath)
+    || typeof currentSettings.translationPath !== "string" || !prepared.preparedSettings.translationPath
+    || !sameFilePath(currentSettings.translationPath, prepared.preparedSettings.translationPath)) {
+    throw new Error("Project source/translation bindings changed during proofreading. Review the report before applying suggestions.");
+  }
+  for (const tab of htmlViewerTabs.values()) if (sameFilePath(tab.workspaceDir, normalizeProjectFolder(context.outputDir).workspaceDir)) await flushHtmlViewerTabState(tab);
+  await drainHtmlSidecarStateWrites();
+  const result = await applyAutomationProofread({ outputDir: context.outputDir, reportPath, signal,
+    expectedReportHash: createHash("sha256").update(await readFile(reportPath)).digest("hex") }, {
+    withStateLocks: withHtmlStateWriteLocks,
+    async prepareDocuments({ proposals }) {
+      const documents = [...new Map(proposals.map((proposal) => [proposal.documentId!, proposal])).values()];
+      if (!prepared.lineReviewPath) throw new Error("Prepared workflow has no line-review binding.");
+      const batch = prepared.sourceSelection?.kind === "folder"
+        ? await readBatchLineReviewCurrentBindings(prepared.lineReviewPath) : undefined;
+      return Promise.all(documents.map(async (proposal) => {
+        const routing = { documentId: proposal.documentId!, sourcePath: proposal.sourcePath!, translationPath: proposal.translationPath! };
+        let lineReviewPath = prepared.lineReviewPath!;
+        if (batch) {
+          const child = batch.find((item) => normalizedProposalDocumentId(item.documentId) === normalizedProposalDocumentId(routing.documentId));
+          if (!child || !sameFilePath(child.translationPath, routing.translationPath)) throw new Error("Proofread report does not match current batch translation bindings.");
+          lineReviewPath = child.childPath;
+        }
+        await assertLineReviewMatchesProposalRouting(lineReviewPath, routing);
+        const live = await openLineReviewRouting(lineReviewPath);
+        if (live) assertLineReviewRoutingBinding(live, routing);
+        return { ...routing, lineReviewPath, statePath: await htmlSidecarStatePath(lineReviewPath, "line"),
+          validationOptions: { languagePair: settings.languagePair, customPreserveRules: settings.customPreserveRules } };
+      }));
+    }
+  });
+  for (const document of result.documents) broadcastLineReviewState({ ok: true, path: document.statePath, ...document });
+}
+
+piNativeSessionService.configureTaskPreparationHost(createBuiltinTaskPreparationHost({
+  sourceFiles: builtinSourceFiles, synchronizeSettings: synchronizeBuiltinTaskSettings, workflowRequest: builtinWorkflowRequest, finish: finishBuiltinWorkflow
+}));
+
+const startingBuiltinTasks = new Set<string>();
+ipcMain.handle("tasks:start", async (_event, args: StartBuiltinTaskRequest) => {
+  const settings = await validateBuiltinTaskSettings(args);
+  const key = path.resolve(settings.outputDir).toLowerCase();
+  if (startingBuiltinTasks.has(key)) throw new Error("A task is already being prepared for this project.");
+  startingBuiltinTasks.add(key);
+  try {
+    const model = await builtinModelSelection(settings.outputDir);
+    if (piNativeSessionService.hasActiveWork(settings.outputDir)) throw new Error("Finish or stop the current project Agent task before starting another.");
+    await patchProjectState(settings.outputDir, args.task === "assets"
+      ? { materials: settings.materials, locale: settings.locale }
+      : { ...settings, builtinTaskInputSettings: settings,
+        translationBindingOrigin: settings.translationPath ? "user" : null });
+    await writeRecentProjectDir(app.getPath("userData"), settings.outputDir);
+    const session = await piNativeSessionService.createSession(settings.outputDir);
+    let outputPath: string | undefined;
+    if (args.task !== "assets") {
+      const generated = await generateBuiltinTaskReview(settings, args.task, session.id);
+      outputPath = generated.outputPath;
+      await patchProjectState(settings.outputDir, { lastLineReviewHtml: outputPath, lineReviewPath: outputPath,
+        translationPath: generated.translationPath, translationBindingOrigin: "canonical", builtinTaskTranslationPath: generated.translationPath });
+      await openBuiltinTaskHtml(outputPath, settings.outputDir);
+    }
+    const prompt = args.task === "assets"
+      ? `Organize the project's reference materials into editable glossary and character drafts using importTaskAssets. Read the supplied references, finish all draft batches, read and review both draft collections, correct/delete inaccurate records, then checkTaskAssetDraft and commitTaskAssets. Retain established formal translations and resolve draft conflicts before committing. Do not claim completion before successful commit; do not start translation.\n${settings.materials || settings.workDescription || "Use the current project files and existing source as references."}`
+      : args.task === "translation"
+        ? "Check the confirmed parameters against representative source content and control-token examples. Use inspectTaskSettings to obtain the internal shared parameter path; updateTaskSettings only when content contradicts the settings. Inspect /n, backslash escapes, tags and code prefixes, and trial narrow preservation rules including existing rules. Then startPreparedWorkflow saves the same HTML parameter form and starts exactly its normal translation prompt. Do not translate during this preflight or create another translation entry."
+        : "Start proofreading the existing translation using the confirmed project settings. Auto-application, when selected, updates HTML review state only. Writing TXT remains a manual user action.";
+    await piNativeSessionService.prompt({ outputDir: settings.outputDir, sessionId: session.id, ...model, prompt,
+      languagePair: settings.languagePair, lineReviewPath: outputPath,
+      taskPreparation: { intent: args.task, autoApplyProofreadSuggestions: args.task === "proofread" ? args.autoApplyProofreadSuggestions === true : undefined } });
+    if (args.task === "assets") {
+      // Show the console only after the session accepts the task. Initialization
+      // failures remain visible in the homepage instead of leaving a blank window.
+      await openAgentChatWindow({ args: { outputDir: settings.outputDir, locale: settings.locale, languagePair: settings.languagePair },
+        preloadPath: preloadPath(), icon: appIconPath(), loadRendererRoute });
+    }
+    return { outputPath, sessionId: session.id };
+  } catch (error) {
+    console.error("[builtin-task:start] Failed", { task: args.task, outputDir: settings.outputDir }, error);
+    throw error;
+  } finally { startingBuiltinTasks.delete(key); }
 });
 
 ipcMain.handle("html:openReviewHtml", async (_event, args: OpenReviewHtmlArgs) => {
@@ -4481,6 +4674,23 @@ app.whenReady().then(async () => {
     if (!heartbeatTicks || prescanSignals.filter((signal) => signal.code === "H3").length !== 5000) {
       throw new Error("Packaged proofreading worker failed responsiveness/signal verification.");
     }
+    const { scanSourcePreparation } = await import("./agent/sourcePreparationScan.ts");
+    const sourcePreparationFixture = path.join(path.dirname(portableSmokeMarkerPath), `source-preparation-${process.pid}.txt`);
+    await writeFile(sourcePreparationFixture, Array.from({ length: 5000 }, () => "[VOICE:42]Hello {name} %s <WAIT>").join("\n"), { encoding: "utf8", flag: "wx" });
+    let sourcePreparationHeartbeatTicks = 0;
+    const sourcePreparationHeartbeat = setInterval(() => { sourcePreparationHeartbeatTicks += 1; }, 10);
+    try {
+      const preparation = await scanSourcePreparation({ files: [sourcePreparationFixture],
+        rules: [{ label: "fixture voice prefix", pattern: "^\\[VOICE:[0-9]+\\]", flags: "u" }] });
+      if (!sourcePreparationHeartbeatTicks || preparation.totalLines !== 5000
+        || preparation.existingRules[0]?.matchCount !== 5000
+        || !preparation.candidates.some((candidate) => candidate.examples.some((example) => example.match === "[VOICE:42]"))) {
+        throw new Error("Packaged source preparation worker failed responsiveness/preservation verification.");
+      }
+    } finally {
+      clearInterval(sourcePreparationHeartbeat);
+      await rm(sourcePreparationFixture);
+    }
     await writeFile(portableSmokeMarkerPath, `${JSON.stringify({
       version: app.getVersion(),
       pid: process.pid,
@@ -4488,7 +4698,9 @@ app.whenReady().then(async () => {
       rendererLoaded: !win.webContents.isLoadingMainFrame(),
       windowVisible: win.isVisible(),
       proofreadWorkerVerified: true,
-      proofreadHeartbeatTicks: heartbeatTicks
+      proofreadHeartbeatTicks: heartbeatTicks,
+      sourcePreparationWorkerVerified: true,
+      sourcePreparationHeartbeatTicks
     }, null, 2)}\n`, "utf8");
     app.quit();
     return;

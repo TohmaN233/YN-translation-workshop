@@ -6553,6 +6553,7 @@ await test("translation review context failures become repair debt and expand th
       "repair-only acceptance must retain earlier risk/sample evidence through the real commit path"
     );
     const committedStateSnapshot = JSON.stringify(translationAlignmentState);
+    const committedCanonicalText = await readFile(candidatePath, "utf8");
     candidateLines[0] = "这是尚未持久化的新候选。";
     await writeFile(stagingPath, `${candidateLines.join("\n")}\n`, "utf8");
     failPersistence = true;
@@ -6569,8 +6570,14 @@ await test("translation review context failures become repair debt and expand th
       /injected host-state append failure/
     );
     failPersistence = false;
-    assert.equal(JSON.stringify(translationAlignmentState), committedStateSnapshot,
-      "a failed checkpoint append must roll back only its in-memory review mutation");
+    const retainedScope = translationAlignmentState.ranges["source.txt"][0];
+    assert.equal(retainedScope.candidatePath, stagingPath,
+      "a failed checkpoint must retain ownership of its verified staging bytes");
+    assert.notEqual(retainedScope.inputHash, JSON.parse(committedStateSnapshot).ranges["source.txt"][0].inputHash);
+    assert.ok(retainedScope.checks.every((check) => check.verdict === undefined),
+      "changed staging bytes require pending review rather than inherited canonical acceptance");
+    assert.equal(await readFile(candidatePath, "utf8"), committedCanonicalText,
+      "retaining pending staging must preserve the accepted canonical text");
   } finally {
     await fx.close();
   }
@@ -6744,8 +6751,8 @@ await test("folder cold resume reopens malformed legacy rejection evidence in th
     assert.equal(started.tasks.length, 1);
     assert.equal(started.tasks[0].reviewOnly, true);
     assert.equal(started.tasks[0].reviewFeedback, undefined);
-    assert.equal(rejected.checks[0].verdict, undefined);
-    assert.equal(rejected.checks[0].reason, undefined);
+    assert.equal(translationAlignmentState.ranges["script.txt"][0].checks[0].verdict, undefined);
+    assert.equal(translationAlignmentState.ranges["script.txt"][0].checks[0].reason, undefined);
     assert.equal(persisted > 0, true, "reopened review debt must be durable before dispatch");
   } finally {
     await rm(outputDir, { recursive: true, force: true });

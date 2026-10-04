@@ -34,7 +34,7 @@ const heartbeat = setInterval(() => {
 let timeout: NodeJS.Timeout | undefined;
 try {
   const records = await Promise.race([
-    verifyLargeTranslationValidation({ observeUi }),
+    verifyLargeTranslationValidation({ observeUi, recovery: true }),
     new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Electron large-file acceptance exceeded 240 seconds.")), 240000); })
   ]);
   await ping;

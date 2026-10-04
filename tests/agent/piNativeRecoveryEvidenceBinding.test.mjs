@@ -17,7 +17,7 @@ const rejectedLine = 3;
 const sourceLines = Array.from({ length: 24 }, (_, index) => `Source sentence ${index + 1} has its own complete meaning.`);
 const candidateLines = sourceLines.map((_line, index) => `第${index + 1}行保留本行的完整含义。`);
 
-async function fixture({ takeover = true } = {}) {
+async function fixture({ takeover = true, beforeRestart } = {}) {
   const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-recovery-binding-"));
   const sourcePath = path.join(outputDir, "source.txt");
   await writeFile(sourcePath, `${sourceLines.join("\n")}\n`, "utf8");
@@ -95,14 +95,13 @@ async function fixture({ takeover = true } = {}) {
     domainRun.suspend();
     suspended = true;
     await execute("resumeYnWorkflow", { workflow: "translation" });
+    await beforeRestart?.({ sourcePath, canonicalPath, translationAlignmentState, failPersistence: (value) => { failPersistence = value; } });
     await execute("runTranslationSubagents");
     assert.equal(batch.tasks.length, 1);
     assert.deepEqual(batch.tasks[0].reviewFeedback.map((entry) => entry.line), [rejectedLine]);
-    assert.equal(batch.tasks[0].stagingCandidatePath, takeover ? undefined : originalStaging);
-    const stagingPath = takeover ? await prepareTranslationStagingCandidate({
-      outputDir, sourcePaths: [sourcePath], documentId: "source.txt", sessionId: request.sessionId,
-      subagentId: "resumed-worker", assignmentId: "source.txt:L1-L24"
-    }) : originalStaging;
+    if (!takeover) assert.equal(batch.tasks[0].stagingCandidatePath, originalStaging);
+    const stagingPath = batch.tasks[0].stagingCandidatePath;
+    assert.ok(stagingPath, "the entire recovery batch must already own its verified staging candidate");
     if (takeover) assert.equal(await readFile(stagingPath, "utf8"), await readFile(canonicalPath, "utf8"));
     return {
       outputDir, sourcePath, canonicalPath, stagingPath, translationAlignmentState, checkpoint,
@@ -144,35 +143,50 @@ test("parent takeover then resume binds fresh staging to exact rejected evidence
   } finally { await fx.close(); }
 });
 
-for (const stale of ["source", "canonical", "non-rejected staging row"]) {
+for (const stale of ["source", "canonical"]) {
   test(`recovery handoff rejects ${stale} changes without changing retained evidence`, async () => {
-    const fx = await fixture();
-    try {
-      const snapshot = structuredClone(fx.translationAlignmentState);
-      const changedPath = stale === "source" ? fx.sourcePath : stale === "canonical" ? fx.canonicalPath : fx.stagingPath;
+    let state;
+    let snapshot;
+    await assert.rejects(() => fixture({ beforeRestart: async (paths) => {
+      state = paths.translationAlignmentState;
+      snapshot = structuredClone(state);
+      const changedPath = stale === "source" ? paths.sourcePath : paths.canonicalPath;
       const lines = (await readFile(changedPath, "utf8")).split("\n");
       lines[0] += stale === "source" ? " Changed source content." : "新增加的内容。";
       await writeFile(changedPath, lines.join("\n"), "utf8");
-      await assert.rejects(() => fx.prepare(), /review evidence is stale|prepared staging candidate changed/);
-      assert.deepEqual(fx.translationAlignmentState, snapshot);
-    } finally { await fx.close(); }
+    } }), /Recovery preflight rejected stale or incompatible review evidence/);
+    assert.deepEqual(state, snapshot);
   });
 }
 
-test("failed recovery handoff persistence rolls back evidence and preserves the staged artifact for a safe retry", async () => {
+test("a non-rejected staging row changed after global preflight fails the worker verification without changing evidence", async () => {
   const fx = await fixture();
   try {
     const snapshot = structuredClone(fx.translationAlignmentState);
-    const stagingText = await readFile(fx.stagingPath, "utf8");
-    const canonicalText = await readFile(fx.canonicalPath, "utf8");
-    fx.failPersistence(true);
-    await assert.rejects(() => fx.prepare(), /injected checkpoint persistence failure/);
+    const lines = (await readFile(fx.stagingPath, "utf8")).split("\n");
+    lines[0] += "新增加的内容。";
+    await writeFile(fx.stagingPath, lines.join("\n"), "utf8");
+    await assert.rejects(() => fx.prepare(), /prior review evidence is stale/);
     assert.deepEqual(fx.translationAlignmentState, snapshot);
-    assert.equal(await readFile(fx.stagingPath, "utf8"), stagingText);
+  } finally { await fx.close(); }
+});
+
+test("failed recovery checkpoint persistence retains hash-current pending evidence and the staged artifact for a safe retry", async () => {
+  const fx = await fixture();
+  try {
+    const snapshot = structuredClone(fx.translationAlignmentState);
+    const canonicalText = await readFile(fx.canonicalPath, "utf8");
+    await fx.repair();
+    const repairedText = await readFile(fx.stagingPath, "utf8");
+    fx.failPersistence(true);
+    await assert.rejects(() => fx.checkpoint(fx.stagingPath), /injected checkpoint persistence failure/);
+    const retained = fx.translationAlignmentState.ranges["source.txt"][0];
+    assert.notEqual(retained.inputHash, snapshot.ranges["source.txt"][0].inputHash);
+    assert.deepEqual(retained.checks.filter((check) => check.line !== rejectedLine), snapshot.ranges["source.txt"][0].checks.filter((check) => check.line !== rejectedLine));
+    assert.deepEqual(retained.checks.filter((check) => check.verdict === undefined).map((check) => check.line), [rejectedLine]);
+    assert.equal(await readFile(fx.stagingPath, "utf8"), repairedText);
     assert.equal(await readFile(fx.canonicalPath, "utf8"), canonicalText);
     fx.failPersistence(false);
-    await fx.prepare();
-    await fx.repair();
     await fx.checkpoint(fx.stagingPath);
     assert.equal(fx.translationAlignmentState.ranges["source.txt"][0].candidatePath, fx.stagingPath);
   } finally { await fx.close(); }

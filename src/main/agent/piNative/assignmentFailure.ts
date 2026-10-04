@@ -7,6 +7,18 @@ export class NonRetryableAssignmentError extends Error {
   }
 }
 
+/** A reviewed staging promotion may have a durable canonical checkpoint already.
+ * Only its Host callback may require preserving that verified post-image when
+ * the forced old-checkpoint compensation cannot be confirmed. */
+export class TranslationPromotionCompensationError extends NonRetryableAssignmentError {
+  readonly preserveCanonicalPostImage = true;
+
+  constructor(message: string, cause: unknown) {
+    super(message, cause);
+    this.name = "TranslationPromotionCompensationError";
+  }
+}
+
 export interface ParentTakeoverAssignmentDetails {
   documentId?: string;
   fromLine: number;

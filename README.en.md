@@ -12,7 +12,7 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 
 - Fix large-file translation freezes with range-scoped chunk checks and background final validation, preserving structural checks, review and recovery.
 - Apply translation preservation rules and mechanical checks to proofreading suggestions to protect control codes, tags and placeholders.
-- Fix candidate/review bindings during recovery. Host checks retained artifacts before resuming; unretryable internal failures stop the entire workflow.
+- Fix concurrent recovery: Host verifies and reconciles translations, staging and review evidence before starting Workers. Failed commits preserve recoverable artifacts; unretryable internal errors stop the workflow.
 
 ## What's new in 2.1.4
 

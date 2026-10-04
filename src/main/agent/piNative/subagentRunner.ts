@@ -1,7 +1,8 @@
 import { readSessionContext } from "./sessionAccess.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { writeTextFileAtomically } from "../../atomicFile.ts";
 
 import {
   BACKGROUND_CONTEXT,
@@ -46,10 +47,12 @@ import {
   writeTranslationChunk,
   writeTranslationLines
 } from "../writeTranslationChunk.ts";
+import { captureTranslationReuseBaselineRollback } from "./translationReuseAudit.ts";
 import { resolveProofreadTranslationPath } from "../translationBindingResolve.ts";
 import { createPiModelSelection, type PiModelSelection } from "./providerRegistry.ts";
 import {
   NonRetryableAssignmentError,
+  TranslationPromotionCompensationError,
   ParentTakeoverAssignmentError,
   ProviderAuthExpiredError,
   SubagentTransportExhaustedError,
@@ -253,9 +256,16 @@ interface PiSubagentContext<TTask extends PiSubagentTaskBase> {
     documentId: string | undefined,
     range?: { fromLine: number; toLine: number; lines?: number[] }
   ) => Promise<void> | void;
+  /** Host project transaction; wraps artifact writes, evidence, and rollback together. */
+  runTranslationArtifactTransaction?: <T>(work: () => Promise<T>) => Promise<T>;
   signal?: AbortSignal;
   providerStreamTimeouts?: PiProviderStreamTimeouts;
 }
+
+const runTranslationArtifactTransaction = <T>(
+  context: PiSubagentContext<PiSubagentTaskBase>,
+  work: () => Promise<T>
+): Promise<T> => context.runTranslationArtifactTransaction?.(work) ?? work();
 
 export interface PiTranslationSubagentContext extends PiSubagentContext<PiTranslationSubagentTask> {
   executionMode?: "full_workflow" | "bounded_repair" | "chunk_review_repair";
@@ -2532,7 +2542,7 @@ export function createPiTranslationSubagentTools(
       description: `Merge the current model page of at most ${MAX_TRANSLATION_MODEL_PAGE_LINES} lines into the Host-owned logical assignment. The same worker retains assignment ownership and the Host retains every valid identified line.`,
       parameters: writeSchema,
       executionMode: "sequential",
-      execute: executeAssignedTranslationWrite = async (_toolCallId, params, signal) => {
+      execute: executeAssignedTranslationWrite = async (_toolCallId, params, signal) => runTranslationArtifactTransaction(context, async () => {
         throwIfAborted(context.signal, signal);
         const input = params as AssignedChunkInput & {
           blocks?: TranslationWireOutputBlock[];
@@ -2619,8 +2629,10 @@ export function createPiTranslationSubagentTools(
           return text.trim() !== "" && !progress.writtenLines!.has(line) && !translations.has(line) ? [line] : [];
         });
         let existing: string[] = [];
+        let previousCandidateText: string | undefined;
         try {
-	          existing = splitTextLines(await readFile(translationWorkingCandidatePath(context), "utf8"));
+          previousCandidateText = await readFile(translationWorkingCandidatePath(context), "utf8");
+          existing = splitTextLines(previousCandidateText);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
@@ -2671,7 +2683,12 @@ export function createPiTranslationSubagentTools(
                 text: persistedLines[line - range.fromLine] ?? existing[line - 1] ?? ""
               }))
           : [];
-	        const result = selectedRepairLines.length > 0
+        const rollbackReuseBaseline = context.workingCandidatePath ? async () => {} : await captureTranslationReuseBaselineRollback({
+          outputDir: context.request.outputDir, documentId: context.task.documentId || documentId(context.request), candidatePath: translationWorkingCandidatePath(context)
+        }).catch((error) => { throw new NonRetryableAssignmentError("Cannot capture the Host canonical reuse baseline before repair.", error); });
+        const result = await (async () => {
+          try {
+          const result = selectedRepairLines.length > 0
             ? sparseEntries.length > 0
               ? await writeTranslationLines({
                   outputDir: context.request.outputDir,
@@ -2708,9 +2725,25 @@ export function createPiTranslationSubagentTools(
                   ? { ...range, lines: sparseEntries.map((entry) => entry.line) }
                   : range
               );
+
 	          }
 	        }
         if (!result.ok) throw new Error(result.error || "Failed to write the assigned translation range.");
+            return result;
+          } catch (error) {
+              const rollbackErrors: unknown[] = [];
+              try { await rollbackReuseBaseline(); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+              try {
+                if (!context.workingCandidatePath) {
+                const canonical = translationWorkingCandidatePath(context);
+                if (previousCandidateText === undefined) await rm(canonical, { force: true });
+                else await writeTextFileAtomically(canonical, previousCandidateText);
+                }
+              } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+              if (rollbackErrors.length > 0) throw new NonRetryableAssignmentError("Host canonical repair commit failed and rollback was incomplete.", new AggregateError([error, ...rollbackErrors]));
+              throw new NonRetryableAssignmentError("Host canonical repair evidence commit failed; the prior candidate was restored.", error);
+            }
+        })();
         source.forEach((sourceText, index) => {
           const line = range.fromLine + index;
           if (sourceText.trim() === "" || (translations.has(line) && !structurallyRejectedLines.has(line))) {
@@ -2809,7 +2842,7 @@ export function createPiTranslationSubagentTools(
               repairIssues
             });
           } catch (error) {
-            throwIfAborted(context.signal);
+            if (error === context.signal?.reason || (error instanceof Error && error.name === "AbortError")) throw error;
             throw new NonRetryableAssignmentError(
               `Failed to persist the staging recovery checkpoint for ${context.task.documentId || documentId(context.request)} L${context.task.fromLine}-L${context.task.toLine}. Cause: ${compactErrorCause(error)}`,
               error
@@ -2846,7 +2879,7 @@ export function createPiTranslationSubagentTools(
             || (accepted && context.executionMode === "chunk_review_repair")
             || deferredSparseRepair
         };
-      }
+      })
     },
     {
       name: "repairAssignedTranslation",
@@ -5011,7 +5044,7 @@ export async function createPiTranslationSubagentWorker(
             candidatePath: stagingPath
           }, context.signal);
         } catch (error) {
-          throwIfAborted(context.signal);
+          if (error === context.signal?.reason || (error instanceof Error && error.name === "AbortError")) throw error;
           throw new NonRetryableAssignmentError(
             `Failed to prepare the staging recovery binding for ${assignmentDocumentId} L${context.task.fromLine}-L${context.task.toLine}. Cause: ${compactErrorCause(error)}`,
             error
@@ -5035,59 +5068,68 @@ export async function createPiTranslationSubagentWorker(
         chunkContext: PiTranslationSubagentContext,
         promotedDocumentId: string,
         promotedRange: { fromLine: number; toLine: number }
-      ) => {
+      ) => runTranslationArtifactTransaction(chunkContext, async () => {
         if (!stagingPath) throw new Error("A reviewed translation requires a Host staging candidate.");
         const canonical = candidatePath(chunkContext.request);
         const sourceLineCount = splitTextLines(await readFile(sourcePath(chunkContext.request), "utf8")).length;
-        let canonicalLines = Array.from({ length: sourceLineCount }, () => "");
-        try {
-          const current = splitTextLines(await readFile(canonical, "utf8"));
-          if (current.length > sourceLineCount) {
-            throw new Error(
-              `Cannot promote reviewed translation: canonical candidate has ${current.length} lines but source has ${sourceLineCount}.`
-            );
-          }
-          canonicalLines = current;
-          while (canonicalLines.length < sourceLineCount) canonicalLines.push("");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        let previousCanonicalText: string | undefined;
+        try { previousCanonicalText = await readFile(canonical, "utf8"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        if (previousCanonicalText !== undefined && splitTextLines(previousCanonicalText).length > sourceLineCount) {
+          throw new NonRetryableAssignmentError("Canonical candidate has more lines than the source before promotion.");
         }
-        const previousLines = canonicalLines.slice(promotedRange.fromLine - 1, promotedRange.toLine);
-        const promoted = await promoteTranslationStagingRange({
-          outputDir: chunkContext.request.outputDir,
-          sourcePaths: [sourcePath(chunkContext.request)],
-          documentId: promotedDocumentId,
-          stagingPath,
-          ...promotedRange
-        });
-        if (!promoted.ok) {
-          throw new Error(
-            promoted.error || `Failed to promote accepted range L${promotedRange.fromLine}-L${promotedRange.toLine}.`
-          );
-        }
+        const rollbackReuseBaseline = await captureTranslationReuseBaselineRollback({ outputDir: chunkContext.request.outputDir,
+          documentId: promotedDocumentId, candidatePath: canonical
+        }).catch((error) => { throw new NonRetryableAssignmentError("Cannot capture the Host canonical reuse baseline before promotion.", error); });
         try {
-          await context.onArtifactMutation?.(promotedDocumentId, promotedRange);
-        } catch (error) {
-          const rolledBack = await writeTranslationChunk({
+          const promoted = await promoteTranslationStagingRange({
             outputDir: chunkContext.request.outputDir,
             sourcePaths: [sourcePath(chunkContext.request)],
             documentId: promotedDocumentId,
-            ...promotedRange,
-            lines: previousLines
+            stagingPath,
+            ...promotedRange
           });
-          if (!rolledBack.ok) {
+          if (!promoted.ok) throw new Error(promoted.error || "Failed to promote the accepted translation range.");
+          await context.onArtifactMutation?.(promotedDocumentId, promotedRange);
+        } catch (error) {
+          if (error instanceof TranslationPromotionCompensationError) {
+            // The old Host checkpoint owns accepted staging and a possibly
+            // durable new checkpoint owns canonical. Both describe this same
+            // verified range, so retain the post-image and its reuse baseline.
+            const diagnosisDir = path.join(chunkContext.request.outputDir, ".translation-workshop", "agent", "recovery-transactions", `host-promotion-${randomUUID()}`);
+            try {
+              await mkdir(diagnosisDir, { recursive: true });
+              const backupPath = previousCanonicalText === undefined ? undefined : path.join(diagnosisDir, "previous-canonical.txt");
+              if (backupPath) await writeTextFileAtomically(backupPath, previousCanonicalText!);
+              await writeTextFileAtomically(path.join(diagnosisDir, "transaction.json"), `${JSON.stringify({ schemaVersion: 1,
+                phase: "compensation_unconfirmed", documentId: promotedDocumentId, ...promotedRange,
+                canonicalSnapshots: [{ candidatePath: canonical, previouslyAbsent: previousCanonicalText === undefined, backupPath,
+                  previousHash: previousCanonicalText === undefined ? undefined : createHash("sha256").update(previousCanonicalText).digest("hex") }],
+                retainedStagingCandidates: [stagingPath], originalError: error.message
+              }, null, 2)}\n`);
+            } catch (diagnosisError) {
+              throw new TranslationPromotionCompensationError("Accepted staging promotion artifacts were retained but recovery diagnosis could not be saved.", new AggregateError([error, diagnosisError]));
+            }
+            throw error;
+          }
+          const rollbackErrors: unknown[] = [];
+          try { await rollbackReuseBaseline(); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+          try {
+            if (previousCanonicalText === undefined) await rm(canonical, { force: true });
+            else await writeTextFileAtomically(canonical, previousCanonicalText);
+          } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+          if (rollbackErrors.length > 0) {
             throw new NonRetryableAssignmentError(
               `Accepted translation promotion failed and L${promotedRange.fromLine}-L${promotedRange.toLine} could not be rolled back.`,
-              new AggregateError([error, new Error(rolledBack.error || "Unknown canonical rollback failure.")])
+              new AggregateError([error, ...rollbackErrors])
             );
           }
-          const message = error instanceof Error ? error.message : String(error);
           throw new NonRetryableAssignmentError(
-            `Host evidence commit failed after accepting L${promotedRange.fromLine}-L${promotedRange.toLine}: ${message}`,
+            `Host evidence commit failed after accepting L${promotedRange.fromLine}-L${promotedRange.toLine}: ${error instanceof Error ? error.message : String(error)}`,
             error
           );
         }
-      };
+      });
       const requestChunkReview = async (
         review: PiTranslationChunkReviewRequest
       ): Promise<PiTranslationChunkReviewDecision> => {

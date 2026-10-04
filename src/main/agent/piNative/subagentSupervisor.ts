@@ -292,6 +292,7 @@ export class YnSubagentSupervisor {
     maxWorkers: number;
     requestForTask?: (task: PiGeneralSubagentTask) => PiSessionPromptRequest;
     signal?: AbortSignal;
+    runTranslationArtifactTransaction?: <T>(work: () => Promise<T>) => Promise<T>;
     onArtifactMutation?: (
       documentId: string | undefined,
       range?: { fromLine: number; toLine: number; lines?: number[] }
@@ -375,6 +376,7 @@ export class YnSubagentSupervisor {
             createModelSelection: this.options.createModelSelection,
             registerControl,
             onArtifactMutation: options.onArtifactMutation,
+            runTranslationArtifactTransaction: options.runTranslationArtifactTransaction,
             executionMode: "bounded_repair",
             signal
           })
@@ -402,6 +404,7 @@ export class YnSubagentSupervisor {
     taskStage?: (task: PiTranslationSubagentTask) => number;
     requestForTask?: (task: PiTranslationSubagentTask) => PiSessionPromptRequest;
     signal?: AbortSignal;
+    runTranslationArtifactTransaction?: <T>(work: () => Promise<T>) => Promise<T>;
     onArtifactMutation?: (
       documentId: string | undefined,
       range?: { fromLine: number; toLine: number; lines?: number[] }
@@ -472,6 +475,7 @@ export class YnSubagentSupervisor {
             createModelSelection: this.options.createModelSelection,
             registerControl: worker.registerControl,
             onArtifactMutation: options.onArtifactMutation,
+            runTranslationArtifactTransaction: options.runTranslationArtifactTransaction,
             onStagingCandidateCheckpoint: options.onStagingCandidateCheckpoint,
             onStagingCandidatePrepared: options.onStagingCandidatePrepared,
             onChunkReadyForReview: reviewPool?.enqueue ?? options.onChunkReadyForReview,
@@ -486,6 +490,7 @@ export class YnSubagentSupervisor {
               publishLiveCustomMessage: this.options.publishLiveCustomMessage,
               createModelSelection: this.options.createModelSelection,
               onArtifactMutation: options.onArtifactMutation,
+            runTranslationArtifactTransaction: options.runTranslationArtifactTransaction,
               onStagingCandidateCheckpoint: options.onStagingCandidateCheckpoint,
               onStagingCandidatePrepared: options.onStagingCandidatePrepared,
               onChunkReadyForReview: reviewPool?.enqueue ?? options.onChunkReadyForReview,
@@ -504,6 +509,7 @@ export class YnSubagentSupervisor {
           createModelSelection: this.options.createModelSelection,
           registerControl,
           onArtifactMutation: options.onArtifactMutation,
+            runTranslationArtifactTransaction: options.runTranslationArtifactTransaction,
           onStagingCandidateCheckpoint: options.onStagingCandidateCheckpoint,
           onStagingCandidatePrepared: options.onStagingCandidatePrepared,
           onChunkReadyForReview: reviewPool?.enqueue ?? options.onChunkReadyForReview,
@@ -560,25 +566,47 @@ export class YnSubagentSupervisor {
       request: options.request,
       workerCount: Math.min(options.maxWorkers, options.tasks.length),
       prepare: options.prepareChunkReview,
-      signal: options.signal
+      signal: options.signal,
+      deferActiveBatchRelease: true
     });
     const batch = this.batches.get(pool.batchId)! as YnSubagentBatchRecord<PiTranslationChunkReviewDecision>;
     const settle = async () => {
       const decisions: PiTranslationChunkReviewDecision[] = [];
       let failure: unknown;
+      const stopForTerminalFailure = async (error: Error) => {
+        failure = error;
+        batch.status = "failed";
+        batch.error = error.message;
+        try {
+          await this.stopForHostFailure(error);
+        } catch (stopError) {
+          failure = stopError;
+          batch.error = stopError instanceof Error ? stopError.message : String(stopError);
+        }
+      };
       try {
         const requests = await Promise.all(options.tasks.map((task, index) => (
           options.reviewRequestForTask(task, `resume-review-${index + 1}`, batch.abortController.signal)
         )));
         decisions.push(...await Promise.all(requests.map((review) => pool.enqueue(review))));
       } catch (error) {
-        failure = error;
-        pool.abort(error);
+        failure = isNonRetryableAssignmentError(error) || (error instanceof Error && error.name === "AbortError")
+          ? error
+          : new NonRetryableAssignmentError(
+            `Host resumed review preparation failed: ${error instanceof Error ? error.message : String(error)}`, error
+          );
+        if (failure instanceof Error && isWorkflowStoppingAssignmentError(failure)) await stopForTerminalFailure(failure);
+        pool.abort(failure);
       }
       try {
         await pool.close();
       } catch (error) {
         failure ??= error;
+      }
+      if (this.fatalHostFailure) failure = this.fatalHostFailure;
+      if (failure !== undefined) {
+        batch.status = batch.stopRequested ? "stopped" : "failed";
+        batch.error = failure instanceof Error ? failure.message : String(failure);
       }
       const snapshot = this.snapshot(batch);
       const outcome: YnSubagentBatchOutcome<PiTranslationChunkReviewDecision> = {
@@ -590,22 +618,29 @@ export class YnSubagentSupervisor {
       try {
         await options.onSettled?.(outcome);
       } catch (error) {
-        batch.status = "failed";
-        batch.error = error instanceof Error ? error.message : String(error);
-        failure ??= error;
-      }
-      if (!batch.stopRequested) {
-        await this.options.notifyParent?.(this.parentCompletionMessage(
-          this.snapshot(batch),
-          {
-            content: failure === undefined
-              ? `Translation review resumed for ${decisions.length} accepted assignment${decisions.length === 1 ? "" : "s"}. Continue the Host queue without retranslating accepted scopes.`
-              : `Translation review resume failed: ${failure instanceof Error ? failure.message : String(failure)}`
-          }
+        await stopForTerminalFailure(new NonRetryableAssignmentError(
+          `Host resumed review settlement failed: ${error instanceof Error ? error.message : String(error)}`, error
         ));
       }
+      if (!batch.stopRequested) {
+        try {
+          await this.options.notifyParent?.(this.parentCompletionMessage(
+            this.snapshot(batch),
+            {
+              content: failure === undefined
+                ? `Translation review resumed for ${decisions.length} accepted assignment${decisions.length === 1 ? "" : "s"}. Continue the Host queue without retranslating accepted scopes.`
+                : `Translation review resume failed: ${failure instanceof Error ? failure.message : String(failure)}`
+            }
+          ));
+        } catch (error) {
+          await stopForTerminalFailure(new NonRetryableAssignmentError(
+            `Host resumed review notification failed: ${error instanceof Error ? error.message : String(error)}`, error
+          ));
+          throw failure;
+        }
+      }
     };
-    batch.promise = settle();
+    batch.promise = settle().finally(() => { this.activeBatchIds.delete(batch.id); });
     void batch.promise.catch(() => undefined);
     return this.snapshot(batch);
   }
@@ -907,7 +942,9 @@ export class YnSubagentSupervisor {
     workerCount: number;
     prepare: (review: PiTranslationChunkReviewRequest) => Promise<PreparedTranslationReview>;
     signal?: AbortSignal;
+    deferActiveBatchRelease?: boolean;
   }): TranslationReviewPoolHandle {
+    if (this.fatalHostFailure) throw this.fatalHostFailure;
     if (!Number.isInteger(options.workerCount) || options.workerCount < 1) {
       throw new Error(`reviewWorkerCount must be a positive integer, received ${options.workerCount}.`);
     }
@@ -965,7 +1002,7 @@ export class YnSubagentSupervisor {
     };
     const abort = (reason: unknown = new DOMException("Translation review pool stopped.", "AbortError")): number => {
       if (abortController.signal.aborted) return 0;
-      batch.stopRequested = true;
+      if (!isWorkflowStoppingAssignmentError(reason)) batch.stopRequested = true;
       const count = batch.subagents.filter((record) => record.status === "running").length;
       abortController.abort(reason);
       rejectQueued(reason);
@@ -1145,7 +1182,7 @@ export class YnSubagentSupervisor {
       }
       options.signal?.removeEventListener("abort", abortFromParent);
       this.activeTranslationReviewPools.delete(batchId);
-      this.activeBatchIds.delete(batchId);
+      if (!options.deferActiveBatchRelease) this.activeBatchIds.delete(batchId);
       for (const record of batch.subagents) record.results = [];
       resolveCompletion();
       if (firstFailure !== undefined) throw firstFailure;

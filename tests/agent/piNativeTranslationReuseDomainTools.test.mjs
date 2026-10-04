@@ -415,11 +415,13 @@ try {
   const staleRun = await staleRunTool.execute("resume-after-user-edit", {});
   assert.deepEqual(
     staleRun.details.assignments,
-    [{ documentId: "source.txt", fromLine: 1, toLine: 1 }],
-    "a candidate edit after Stop must invalidate stale review feedback and return the rejected row to Host review debt"
+    [{ documentId: "source.txt", fromLine: 1, toLine: 2 }],
+    "a canonical pending-row edit after Stop must retain the verified staging review scope"
   );
-  assert.equal(persistedAlignmentState.ranges["source.txt"], undefined);
-  assert.equal(staleStatePersistCount > 0, true, "stale review evidence must be removed from durable Host state");
+  assert.equal(persistedAlignmentState.ranges["source.txt"].length, 1);
+  assert.notEqual(persistedAlignmentState.ranges["source.txt"][0].candidatePath, candidatePath);
+  assert.equal(persistedAlignmentState.ranges["source.txt"][0].checks[0].verdict, undefined);
+  assert.equal(staleStatePersistCount > 0, true, "the resumed batch must persist its retained review ownership");
   staleSupervisor.abortAll();
   await staleSupervisor.waitForAll();
 

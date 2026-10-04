@@ -167,6 +167,49 @@ export async function refreshAppliedReuseBaseline(input: {
   });
 }
 
+/** Capture only the applied audit's mutable baseline fields, under its own lock.
+ * Artifact transactions hold the project queue outside this module; the audit
+ * lock is released before writes call refreshAppliedReuseBaseline again. */
+export async function captureTranslationReuseBaselineRollback(input: {
+  outputDir: string;
+  documentId: string;
+  candidatePath: string;
+}): Promise<() => Promise<void>> {
+  const candidate = path.resolve(input.candidatePath);
+  const captured = await withAuditLock(input.outputDir, async () => {
+    const store = await readStore(input.outputDir);
+    const record = store.audits.filter((audit) => audit.document.documentId === input.documentId
+      && audit.status === "applied" && audit.resultCandidateHash && audit.appliedDecision)
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    if (!record) return undefined;
+    if (path.resolve((await validatedAuditPaths(input.outputDir, record)).candidatePath) !== candidate) return undefined;
+    return {
+      id: record.id, resultCandidateHash: record.resultCandidateHash, updatedAt: record.updatedAt,
+      authorityHash: sha256(JSON.stringify({ ownerSessionId: record.ownerSessionId, status: record.status,
+        document: record.document, appliedDecision: record.appliedDecision }))
+    };
+  });
+  return async () => {
+    if (!captured) return;
+    await withAuditLock(input.outputDir, async () => {
+      const store = await readStore(input.outputDir);
+      const record = store.audits.find((audit) => audit.id === captured.id);
+      if (!record || sha256(JSON.stringify({ ownerSessionId: record.ownerSessionId, status: record.status,
+        document: record.document, appliedDecision: record.appliedDecision })) !== captured.authorityHash) {
+        throw new Error("Applied reuse audit authority changed during artifact rollback.");
+      }
+      if (record.resultCandidateHash === captured.resultCandidateHash && record.updatedAt === captured.updatedAt) return;
+      const currentHash = appliedReuseBaselineHash(record, await readFile(candidate, "utf8"));
+      if (record.resultCandidateHash !== captured.resultCandidateHash && record.resultCandidateHash !== currentHash) {
+        throw new Error("Applied reuse baseline changed outside the artifact transaction.");
+      }
+      record.resultCandidateHash = captured.resultCandidateHash;
+      record.updatedAt = captured.updatedAt;
+      await writeStore(input.outputDir, store);
+    });
+  };
+}
+
 function auditStorePath(outputDir: string): string {
   return path.join(path.resolve(outputDir), AUDIT_STORE);
 }

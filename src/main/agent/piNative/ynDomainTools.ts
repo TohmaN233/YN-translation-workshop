@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { access, mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -38,6 +38,7 @@ import {
   readWorkspaceCharacterGlossaryConflicts,
   readWorkspaceAssetsStatus,
   runWorkspaceGlossaryCandidateTransaction,
+  type WorkspaceGlossaryCandidateTransaction,
   validateGeneratedCharacterBibleContent,
   validateGeneratedGlossaryContent,
   type WorkspaceGlossaryCandidateCommit
@@ -57,6 +58,7 @@ import {
 } from "../writeProofreadFindings.ts";
 import {
   isTranslationStagingCandidatePath,
+  prepareTranslationStagingCandidate,
   promoteTranslationStagingRange,
   resolveTranslationCandidatePath,
   writeTranslationChunk
@@ -116,7 +118,9 @@ import {
   createYnSubagentBatchId,
   type YnSubagentSupervisor
 } from "./subagentSupervisor.ts";
-import type { ParentTakeoverAssignmentDetails } from "./assignmentFailure.ts";
+import { NonRetryableAssignmentError, TranslationPromotionCompensationError, isNonRetryableAssignmentError, type ParentTakeoverAssignmentDetails } from "./assignmentFailure.ts";
+
+class TranslationPromotionCheckpointError extends NonRetryableAssignmentError {}
 import {
   bindPiSourceDocument,
   requestDocumentId,
@@ -158,6 +162,7 @@ import {
 } from "./folderTranslationPlan.ts";
 import {
   applyTranslationReuseAudits,
+  captureTranslationReuseBaselineRollback,
   discardTranslationCandidateForRetranslation,
   getTranslationReuseAuditSummary,
   listAppliedTranslationReuseAudits,
@@ -178,7 +183,7 @@ export interface YnDomainToolContext {
   webReferences?: WebReferenceService;
   proofreadState?: ProofreadHostState;
   translationAlignmentState?: TranslationAlignmentHostState;
-  persistHostState?: () => Promise<void>;
+  persistHostState?: (options?: { force?: boolean }) => Promise<void>;
   isWorkflowSuspended?: () => boolean;
   resumeWorkflow?: (kind?: "translation" | "proofread") => Promise<void>;
   parkedWorkflows?: () => Array<"translation" | "proofread">;
@@ -1172,6 +1177,14 @@ async function readOptional(filePath: string): Promise<string> {
   }
 }
 
+async function readOptionalCandidateText(filePath: string): Promise<string | undefined> {
+  try { return await readFile(filePath, "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 function normalizeRange(fromLine: number, toLine: number, totalLines: number) {
   const from = Math.floor(fromLine);
   const to = Math.floor(toLine);
@@ -1337,6 +1350,17 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
   let folderStages: Map<string, number> | undefined;
   const proofreadState = context.proofreadState ?? createProofreadHostState();
   const translationAlignmentState = context.translationAlignmentState ?? createTranslationAlignmentHostState();
+  const translationEvidenceTransaction = new AsyncLocalStorage<WorkspaceGlossaryCandidateTransaction>();
+  const withTranslationAssetTransaction = <T>(work: (transaction: WorkspaceGlossaryCandidateTransaction) => Promise<T>): Promise<T> => {
+    const active = translationEvidenceTransaction.getStore();
+    if (active) return work(active);
+    return runWorkspaceGlossaryCandidateTransaction(baseRequest.outputDir, (transaction) => (
+      translationEvidenceTransaction.run(transaction, () => work(transaction))
+    ));
+  };
+  const withTranslationEvidenceTransaction = <T>(work: () => Promise<T>): Promise<T> => (
+    withTranslationAssetTransaction(() => work())
+  );
   const sourceLinesRead = new Set<string>();
   const translationLinesRead = new Set<string>();
   let activeTranslationChunkReview: {
@@ -1554,39 +1578,12 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       if (!audit) continue;
       const bound = bindPiSourceDocument(baseRequest, document);
       const candidate = candidatePath(bound);
-      const [sourceText, candidateText] = await Promise.all([
-        readFile(sourcePath(bound), "utf8"),
-        readFile(candidate, "utf8")
-      ]);
-      const sourceLines = splitTextLines(sourceText);
-      const candidateLines = splitTextLines(candidateText);
       const existingScopes = [...(translationAlignmentState.ranges[document.id] ?? [])]
         .sort((left, right) => left.fromLine - right.fromLine || left.toLine - right.toLine);
-      const overlappingScopes = new Set<TranslationAlignmentRangeState>();
-      for (let index = 1; index < existingScopes.length; index += 1) {
-        if (existingScopes[index].fromLine <= existingScopes[index - 1].toLine) {
-          overlappingScopes.add(existingScopes[index - 1]);
-          overlappingScopes.add(existingScopes[index]);
-        }
-      }
-      const currentScopes = sourceLines.length === candidateLines.length
-        ? existingScopes.filter((scope) => (
-            !overlappingScopes.has(scope)
-            && scope.candidatePath === candidate
-            && scope.sourceLineCount === sourceLines.length
-            && scope.inputHash === currentTranslationAlignmentRangeHash(
-              scope,
-              sourceLines,
-              candidateLines,
-              bound.languagePair
-            )
-          ))
-        : [];
-      if (currentScopes.length !== existingScopes.length) {
-        prunedStaleReviewEvidence = true;
-        if (currentScopes.length > 0) translationAlignmentState.ranges[document.id] = currentScopes;
-        else delete translationAlignmentState.ranges[document.id];
-      }
+      // The whole-batch preflight already verified ownership, range hash and
+      // line count for every retained canonical/staging scope under the project
+      // transaction. Preserve that proof and its exact repair debt here.
+      const currentScopes = existingScopes;
       const relevantScopes = currentScopes.filter((scope) => (
         audit.retranslationLines.some((line) => line >= scope.fromLine && line <= scope.toLine)
       ));
@@ -1597,7 +1594,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         if (reopenMalformedTranslationReviewEvidence(scope)) {
           prunedStaleReviewEvidence = true;
         }
-        const pending = scope.checks.some((check) => !check.verdict);
+        const pending = scope.checks.length === 0 || scope.checks.some((check) => !check.verdict);
         const feedback = scope.checks
           .filter((check) => check.verdict === "misaligned")
           .map((check) => ({
@@ -1607,6 +1604,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         if (!pending && feedback.length === 0) return [];
         return [{
           documentId: document.id,
+          stagingCandidatePath: scope.candidatePath,
           fromLine: scope.fromLine,
           toLine: scope.toLine,
           label: pending
@@ -1669,7 +1667,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       throw new Error("Translation reuse audit requires the exact generated translation workflow contract.");
     }
   };
-  const prepareExistingTranslationForWrite = async (bound: PiBoundSourceRequest): Promise<void> => {
+  const prepareExistingTranslationForWrite = async (bound: PiBoundSourceRequest): Promise<void> => withTranslationEvidenceTransaction(async () => {
     if (context.domainRun?.fullWorkflow !== true) return;
     const currentDocumentId = documentId(bound);
     if (context.domainRun.ownsCurrentTranslationArtifact(currentDocumentId)) return;
@@ -1700,7 +1698,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     if (discarded.discarded) {
       context.domainRun.recordTranslationArtifactMutation(currentDocumentId);
     }
-  };
+  });
   const ensureManifest = () => {
     manifestPromise ??= resolvePiSourceManifest(baseRequest).then((resolvedManifest) => {
       const useWorkflowOrder = resolvedManifest.kind === "folder"
@@ -2041,7 +2039,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     if (!domainRun || records.length === 0) {
       return { committedDiscoveries: discoveries, conflicts: [] };
     }
-    return runWorkspaceGlossaryCandidateTransaction(request.outputDir, async (transaction) => {
+    return withTranslationAssetTransaction(async (transaction) => {
     const rollbacks: Array<() => void | Promise<void>> = [];
     let candidateCommit: WorkspaceGlossaryCandidateCommit | undefined;
     let hostStatePersisted = false;
@@ -2335,54 +2333,19 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       order: request.folderTranslationOrder
     });
     const ownedScopes = new Map<string, Array<{ fromLine: number; toLine: number }>>();
-    const currentScopesByDocument = new Map<string, TranslationAlignmentRangeState[]>();
     const reviewTasks: PiTranslationSubagentTask[] = [];
     let prunedStaleEvidence = false;
     for (const document of resolvedManifest.documents) {
       const bound = bindPiSourceDocument(baseRequest, document);
       const candidate = candidatePath(bound);
-      const sourceText = await readFile(sourcePath(bound), "utf8");
-      const sourceLines = splitTextLines(sourceText);
       const existing = [...(translationAlignmentState.ranges[document.id] ?? [])]
         .sort((left, right) => left.fromLine - right.fromLine || left.toLine - right.toLine);
-      const candidateLinesByPath = new Map<string, string[]>();
-      for (const candidateSource of new Set(existing.map((scope) => path.resolve(scope.candidatePath)))) {
-        if (
-          candidateSource !== path.resolve(candidate)
-          && !isTranslationStagingCandidatePath(bound.outputDir, candidateSource)
-        ) continue;
-        candidateLinesByPath.set(candidateSource, splitTextLines(await readOptional(candidateSource)));
-      }
-      const overlapping = new Set<TranslationAlignmentRangeState>();
-      for (let index = 1; index < existing.length; index += 1) {
-        if (existing[index].fromLine <= existing[index - 1].toLine) {
-          overlapping.add(existing[index - 1]);
-          overlapping.add(existing[index]);
-        }
-      }
-      const current = existing.filter((scope) => {
-        const candidateLines = candidateLinesByPath.get(path.resolve(scope.candidatePath));
-        return Boolean(
-          candidateLines
-          && sourceLines.length === candidateLines.length
-          && !overlapping.has(scope)
-          && scope.fromLine >= 1
-          && scope.toLine <= sourceLines.length
-          && scope.sourceLineCount === sourceLines.length
-          && scope.inputHash === currentTranslationAlignmentRangeHash(
-            scope,
-            sourceLines,
-            candidateLines,
-            bound.languagePair
-          )
-        );
-      });
+      const current = existing;
       if (current.length !== existing.length) {
         prunedStaleEvidence = true;
         if (current.length > 0) translationAlignmentState.ranges[document.id] = current;
         else delete translationAlignmentState.ranges[document.id];
       }
-      currentScopesByDocument.set(document.id, current);
       if (current.length > 0) {
         ownedScopes.set(document.id, current.map((scope) => ({
           fromLine: scope.fromLine,
@@ -2581,7 +2544,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       );
     }
   };
-  const bindPreparedTranslationStagingEvidence = async (
+  const bindPreparedTranslationStagingEvidenceUnlocked = async (
     prepared: { documentId: string; fromLine: number; toLine: number; candidatePath: string },
     signal?: AbortSignal
   ): Promise<void> => {
@@ -2653,7 +2616,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       acceptedCheckCount: rebound.checks.filter((check) => check.verdict === "aligned").length
     }));
   };
-  const registerTranslationChunkReview = async (
+  const bindPreparedTranslationStagingEvidence = (
+    ...args: Parameters<typeof bindPreparedTranslationStagingEvidenceUnlocked>
+  ) => withTranslationEvidenceTransaction(() => bindPreparedTranslationStagingEvidenceUnlocked(...args));
+  const registerTranslationChunkReviewUnlocked = async (
     bound: PiBoundSourceRequest,
     inputRange: {
       fromLine: number;
@@ -2834,6 +2800,30 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     try {
       await context.persistHostState?.();
     } catch (error) {
+      if (isTranslationStagingCandidatePath(baseRequest.outputDir, candidate)) {
+        // Staging writes remain available after a Host failure. Their verified
+        // pending evidence must describe those retained bytes, including prior
+        // accepted checks, rather than restore a hash for an older file version.
+        try {
+          await context.persistHostState?.({ force: true });
+        } catch (checkpointError) {
+          throw new AggregateError(
+            [error, checkpointError],
+            `Could not persist retained staging checkpoint for ${currentDocumentId} L${range.fromLine}-L${range.toLine}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        console.error(JSON.stringify({
+          event: "yn.translation.recovery.staging_checkpoint_retained",
+          documentId: currentDocumentId,
+          fromLine: range.fromLine,
+          toLine: range.toLine,
+          candidatePath: candidate,
+          auditId: scope.auditId,
+          pendingCheckCount: scope.checks.filter((check) => check.verdict === undefined).length,
+          rejectedLines: scope.checks.filter((check) => check.verdict === "misaligned").map((check) => check.line)
+        }));
+        throw error;
+      }
       const liveRanges = translationAlignmentState.ranges[currentDocumentId] ?? [];
       const liveExact = liveRanges.find((entry) => (
         entry.fromLine === range.fromLine && entry.toLine === range.toLine
@@ -2855,7 +2845,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     }
     return scope;
   };
-  const commitAcceptedTranslationChunkReview = async (
+  const registerTranslationChunkReview = (
+    ...args: Parameters<typeof registerTranslationChunkReviewUnlocked>
+  ) => withTranslationEvidenceTransaction(() => registerTranslationChunkReviewUnlocked(...args));
+  const commitAcceptedTranslationChunkReviewUnlocked = async (
     bound: PiBoundSourceRequest,
     inputRange: { fromLine: number; toLine: number }
   ): Promise<void> => {
@@ -2916,10 +2909,16 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       translationAlignmentState.ranges[currentDocumentId] = previousRanges;
       if (previousDocument) translationAlignmentState.documents[currentDocumentId] = previousDocument;
       else delete translationAlignmentState.documents[currentDocumentId];
-      throw error;
+      throw new TranslationPromotionCheckpointError(
+        `Host accepted staging promotion checkpoint failed: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
     }
   };
-  const prepareTranslationChunkReview = async (
+  const commitAcceptedTranslationChunkReview = (
+    ...args: Parameters<typeof commitAcceptedTranslationChunkReviewUnlocked>
+  ) => withTranslationEvidenceTransaction(() => commitAcceptedTranslationChunkReviewUnlocked(...args));
+  const prepareTranslationChunkReviewUnlocked = async (
     review: PiTranslationChunkReviewRequest
   ): Promise<
      | { decision: PiTranslationChunkReviewDecision }
@@ -2975,7 +2974,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       )).length,
       label: `Review ${review.documentId} L${audit.fromLine}-L${audit.toLine}`
     };
-    const currentScope = async (requested: PiTranslationReviewTask) => {
+    const currentScope = async (requested: PiTranslationReviewTask) => (async () => {
       if (requested.auditId !== audit.auditId || requested.documentId !== review.documentId) {
         throw new Error(`Translation review assignment ${requested.auditId} does not own ${review.documentId}.`);
       }
@@ -3001,7 +3000,13 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         throw new Error(`Translation review assignment ${requested.auditId} changed after Host mechanical scan.`);
       }
       return { currentBound, sourceLines, candidateLines, scope };
-    };
+    })().catch((error) => {
+      if (isNonRetryableAssignmentError(error)) throw error;
+      throw new NonRetryableAssignmentError(
+        `Host translation review evidence is unavailable or changed: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
+    });
     const reviewWindows = (
       scope: TranslationAlignmentRangeState,
       selectedChecks = scope.checks.filter((check) => !check.verdict)
@@ -3053,7 +3058,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           }))
         };
       },
-      submit: async (requested, failures, signal) => {
+      submit: async (requested, failures, signal) => withTranslationEvidenceTransaction(async () => {
         if (signal?.aborted) throw signal.reason;
         const { scope } = await currentScope(requested);
         const pending = scope.checks.filter((check) => !check.verdict);
@@ -3094,6 +3099,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               reason: `${codes}: ${notes}`.slice(0, 500)
             };
           });
+        const previousScope = structuredClone(scope);
+        const previousTaskCounts = { riskLineCount: requested.riskLineCount, sampledLineCount: requested.sampledLineCount };
         const byLine = new Map(scope.checks.map((check) => [check.line, check]));
         for (const check of pending) {
           check.verdict = "aligned";
@@ -3125,16 +3132,27 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         scope.riskLineCount = scope.checks.length - scope.sampledLineCount;
         requested.riskLineCount = scope.riskLineCount;
         requested.sampledLineCount = scope.sampledLineCount;
-        await context.persistHostState?.();
+        try {
+          await context.persistHostState?.();
+        } catch (error) {
+          Object.assign(scope, previousScope);
+          Object.assign(requested, previousTaskCounts);
+          try { await context.persistHostState?.({ force: true }); }
+          catch (rollbackError) { throw new NonRetryableAssignmentError("Host translation review evidence rollback persistence failed.", new AggregateError([error, rollbackError])); }
+          throw new NonRetryableAssignmentError("Host translation review evidence persistence failed; the prior evidence was restored.", error);
+        }
         return normalized.length === 0
           ? { accepted: true }
           : {
               accepted: false,
               feedback: normalized
             };
-      }
+      })
     };
   };
+  const prepareTranslationChunkReview = (
+    ...args: Parameters<typeof prepareTranslationChunkReviewUnlocked>
+  ) => withTranslationEvidenceTransaction(() => prepareTranslationChunkReviewUnlocked(...args));
   const resumedTranslationReviewRequest = async (
     task: PiTranslationSubagentTask,
     subagentId: string,
@@ -3163,7 +3181,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       signal
     };
   };
-  const registerBoundedTranslationAlignment = async (
+  const registerBoundedTranslationAlignmentUnlocked = async (
     bound: PiBoundSourceRequest,
     inputRange: { fromLine: number; toLine: number },
     options: { parentOwnedMutation?: boolean } = {}
@@ -3268,6 +3286,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     return scope;
   };
 
+  const registerBoundedTranslationAlignment = (
+    ...args: Parameters<typeof registerBoundedTranslationAlignmentUnlocked>
+  ) => withTranslationEvidenceTransaction(() => registerBoundedTranslationAlignmentUnlocked(...args));
   const canonicalizeBoundedTranslationAlignments = async (
     bound: PiBoundSourceRequest
   ): Promise<TranslationAlignmentRangeState[]> => {
@@ -3295,7 +3316,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     canonicalCandidatePath: string;
     auditId: string;
   };
-  const handoffParentTranslationTakeovers = async (
+  const handoffParentTranslationTakeoversUnlocked = async (
     takeovers: ParentTakeoverAssignmentDetails[]
   ): Promise<ParentTranslationTakeoverHandoff[]> => {
     const unique = [...new Map(takeovers.map((takeover) => [
@@ -3310,6 +3331,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     const handedOff: ParentTranslationTakeoverHandoff[] = [];
     const previousAlignmentState = structuredClone(translationAlignmentState);
     const previousCanonicalTexts = new Map<string, string | undefined>();
+    const rollbackReuseBaselines = new Map<string, () => Promise<void>>();
     const rollbackDomainMutations: Array<() => void> = [];
     try {
       for (const takeover of unique) {
@@ -3370,7 +3392,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         readFile(stagingCandidatePath, "utf8")
       ]);
       if (!previousCanonicalTexts.has(canonicalCandidatePath)) {
-        previousCanonicalTexts.set(canonicalCandidatePath, await readOptional(canonicalCandidatePath));
+        previousCanonicalTexts.set(canonicalCandidatePath, await readOptionalCandidateText(canonicalCandidatePath));
+        rollbackReuseBaselines.set(canonicalCandidatePath, await captureTranslationReuseBaselineRollback({ outputDir: bound.outputDir, documentId: currentDocumentId, candidatePath: canonicalCandidatePath }));
       }
       const sourceLines = splitTextLines(sourceText);
       const stagingLines = splitTextLines(stagingText);
@@ -3497,6 +3520,37 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       for (const rollback of rollbackDomainMutations.reverse()) rollback();
       restoreMutableObject(translationAlignmentState, previousAlignmentState);
       const rollbackFailures: unknown[] = [];
+      try {
+        await context.persistHostState?.({ force: true });
+      } catch (compensationError) {
+        // Both possible durable versions remain valid: the old scope owns the
+        // retained staging bytes, and the newly appended scope owns this
+        // canonical post-image. Do not invalidate either by reverting the file.
+        const diagnosisDir = path.join(baseRequest.outputDir, ".translation-workshop", "agent", "recovery-transactions", `host-takeover-${randomUUID()}`);
+        let diagnosisPath: string | undefined;
+        try {
+          await mkdir(diagnosisDir, { recursive: true });
+          const canonicalSnapshots: Array<{ candidatePath: string; previouslyAbsent: boolean; backupPath?: string; previousHash?: string }> = [];
+          for (const [canonical, previous] of previousCanonicalTexts) {
+            const backupPath = previous === undefined ? undefined : path.join(diagnosisDir, `${canonicalSnapshots.length + 1}-previous-canonical.txt`);
+            if (backupPath) await writeTextFileAtomically(backupPath, previous!);
+            canonicalSnapshots.push({ candidatePath: canonical, previouslyAbsent: previous === undefined, backupPath,
+              previousHash: previous === undefined ? undefined : createHash("sha256").update(previous).digest("hex") });
+          }
+          diagnosisPath = path.join(diagnosisDir, "transaction.json");
+          await writeTextFileAtomically(diagnosisPath, `${JSON.stringify({ schemaVersion: 1,
+            phase: "compensation_unconfirmed", canonicalSnapshots,
+            retainedStagingCandidates: takeovers.map((takeover) => takeover.stagingCandidatePath).filter(Boolean),
+            originalError: error instanceof Error ? error.message : String(error),
+            compensationError: compensationError instanceof Error ? compensationError.message : String(compensationError)
+          }, null, 2)}\n`);
+        } catch (diagnosisError) { rollbackFailures.push(diagnosisError); }
+        throw new AggregateError([error, compensationError, ...rollbackFailures],
+          `Parent translation takeover compensation could not be confirmed; canonical and staging artifacts were retained.${diagnosisPath ? ` Diagnosis: ${diagnosisPath}` : ""}`);
+      }
+      for (const rollback of [...rollbackReuseBaselines.values()].reverse()) {
+        try { await rollback(); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
+      }
       for (const [canonicalCandidatePath, previousCanonicalText] of previousCanonicalTexts) {
         try {
           if (previousCanonicalText === undefined) await rm(canonicalCandidatePath, { force: true });
@@ -3504,11 +3558,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         } catch (rollbackError) {
           rollbackFailures.push(rollbackError);
         }
-      }
-      try {
-        await context.persistHostState?.();
-      } catch (rollbackError) {
-        rollbackFailures.push(rollbackError);
       }
       if (rollbackFailures.length > 0) {
         throw new AggregateError(
@@ -3519,6 +3568,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       throw error;
     }
   };
+  const handoffParentTranslationTakeovers = (
+    ...args: Parameters<typeof handoffParentTranslationTakeoversUnlocked>
+  ) => withTranslationEvidenceTransaction(() => handoffParentTranslationTakeoversUnlocked(...args));
   const recoverPausedTranslationTakeovers = async (): Promise<ParentTranslationTakeoverHandoff[]> => {
     if (context.domainRun?.kind !== "translation") return [];
     const takeovers: ParentTakeoverAssignmentDetails[] = [];
@@ -3547,6 +3599,195 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     }
     return takeovers.length > 0 ? handoffParentTranslationTakeovers(takeovers) : [];
   };
+  const reconcileTranslationRecoveryArtifacts = (
+    resolvedManifest: PiSourceManifest,
+    signal?: AbortSignal
+  ): Promise<void> => withTranslationEvidenceTransaction(async () => {
+    signal?.throwIfAborted();
+    const verified: Array<{
+      bound: PiBoundSourceRequest;
+      scope: TranslationAlignmentRangeState;
+      canonical: string;
+    }> = [];
+    const rollbackReuseBaselines = new Map<string, () => Promise<void>>();
+    // Validate every retained scope before changing any artifact or launching a
+    // runtime. A later bad scope must not leave earlier scopes half-reconciled.
+    for (const document of resolvedManifest.documents) {
+      const scopes = [...(translationAlignmentState.ranges[document.id] ?? [])]
+        .sort((left, right) => left.fromLine - right.fromLine);
+      if (scopes.length === 0) continue;
+      const bound = bindPiSourceDocument(baseRequest, document);
+      const canonical = path.resolve(candidatePath(bound));
+      const sourceLines = splitTextLines(await readFile(sourcePath(bound), "utf8"));
+      const canonicalText = await readOptionalCandidateText(canonical);
+      if (canonicalText !== undefined && splitTextLines(canonicalText).length !== sourceLines.length) {
+        throw new Error(`Recovery preflight rejected canonical line count for ${document.id}.`);
+      }
+      rollbackReuseBaselines.set(canonical, await captureTranslationReuseBaselineRollback({ outputDir: bound.outputDir, documentId: document.id, candidatePath: canonical }));
+      const scopesByCandidate = new Map<string, TranslationAlignmentRangeState[]>();
+      for (const [index, original] of scopes.entries()) {
+        signal?.throwIfAborted();
+        const candidate = path.resolve(original.candidatePath);
+        if (
+          candidate !== canonical
+          && !isTranslationStagingCandidatePath(bound.outputDir, candidate)
+        ) {
+          throw new Error(`Recovery preflight rejected an unowned candidate for ${document.id} L${original.fromLine}-${original.toLine}.`);
+        }
+        if (
+          !Number.isInteger(original.fromLine) || !Number.isInteger(original.toLine)
+          || original.fromLine < 1 || original.toLine < original.fromLine || original.toLine > sourceLines.length
+          || (index > 0 && original.fromLine <= scopes[index - 1].toLine)
+          || original.sourceLineCount !== sourceLines.length
+        ) {
+          throw new Error(`Recovery preflight rejected stale or incompatible review evidence for ${document.id} L${original.fromLine}-${original.toLine}.`);
+        }
+        const candidateScopes = scopesByCandidate.get(candidate) ?? [];
+        candidateScopes.push(original);
+        scopesByCandidate.set(candidate, candidateScopes);
+      }
+      // Each full staging file exists only during its own validation. Retain
+      // hashes and scope identities, never all of the split staging files.
+      for (const [candidate, candidateScopes] of scopesByCandidate) {
+        const candidateLines = splitTextLines(await readFile(candidate, "utf8"));
+        for (const original of candidateScopes) {
+          if (candidateLines.length !== sourceLines.length || original.inputHash !== currentTranslationAlignmentRangeHash(original, sourceLines, candidateLines, bound.languagePair)) {
+            throw new Error(`Recovery preflight rejected stale or incompatible review evidence for ${document.id} L${original.fromLine}-${original.toLine}.`);
+          }
+          verified.push({ bound, scope: original, canonical });
+        }
+      }
+    }
+    if (verified.length === 0) return;
+    const previousAlignment = structuredClone(translationAlignmentState);
+    const previousCanonicalTexts = new Map<string, string | undefined>();
+    const createdStaging: string[] = [];
+    const rollbackDomainMutations: Array<() => void> = [];
+    const recoveryWorkerId = `host-recovery-${randomUUID()}`;
+    let changed = false;
+    let boundScopes = 0;
+    let promotedScopes = 0;
+    try {
+      let mutationSourcePath: string | undefined;
+      let mutationSourceLines: string[] = [];
+      for (const { bound, scope: original, canonical } of verified) {
+        signal?.throwIfAborted();
+        const scope = structuredClone(original);
+        changed = reopenMalformedTranslationReviewEvidence(scope) || changed;
+        const accepted = scope.checks.length > 0 && scope.checks.every((check) => check.verdict === "aligned");
+        const priorCandidate = path.resolve(scope.candidatePath);
+        if ((accepted && priorCandidate !== canonical) || (!accepted && priorCandidate === canonical)) {
+          if (mutationSourcePath !== sourcePath(bound)) {
+            mutationSourcePath = sourcePath(bound);
+            mutationSourceLines = splitTextLines(await readFile(mutationSourcePath, "utf8"));
+          }
+        }
+        if (accepted && priorCandidate !== canonical) {
+          if (!previousCanonicalTexts.has(canonical)) previousCanonicalTexts.set(canonical, await readOptionalCandidateText(canonical));
+          const promotion = await promoteTranslationStagingRange({
+            outputDir: bound.outputDir, sourcePaths: [sourcePath(bound)], documentId: scope.documentId,
+            stagingPath: priorCandidate, fromLine: scope.fromLine, toLine: scope.toLine
+          });
+          if (!promotion.ok) throw new Error(promotion.error || "Recovery preflight staging promotion failed.");
+          const canonicalLines = splitTextLines(await readFile(canonical, "utf8"));
+          if (canonicalLines.length !== mutationSourceLines.length || scope.inputHash !== currentTranslationAlignmentRangeHash(scope, mutationSourceLines, canonicalLines, bound.languagePair)) {
+            throw new Error(`Recovery preflight promotion changed the accepted candidate for ${scope.documentId} L${scope.fromLine}-${scope.toLine}.`);
+          }
+          scope.candidatePath = canonical;
+          const rollback = context.domainRun?.recordTranslationArtifactMutation(scope.documentId, scope);
+          if (rollback) rollbackDomainMutations.push(rollback);
+          promotedScopes += 1;
+          changed = true;
+        } else if (!accepted && priorCandidate === canonical) {
+          const staging = await prepareTranslationStagingCandidate({
+            outputDir: bound.outputDir, sourcePaths: [sourcePath(bound)], documentId: scope.documentId,
+            sessionId: baseRequest.sessionId, subagentId: recoveryWorkerId,
+            assignmentId: `${scope.documentId}:L${scope.fromLine}-L${scope.toLine}`
+          });
+          createdStaging.push(staging);
+          const stagingLines = splitTextLines(await readFile(staging, "utf8"));
+          if (stagingLines.length !== mutationSourceLines.length || scope.inputHash !== currentTranslationAlignmentRangeHash(scope, mutationSourceLines, stagingLines, bound.languagePair)) {
+            throw new Error(`Recovery preflight prepared candidate changed for ${scope.documentId} L${scope.fromLine}-${scope.toLine}.`);
+          }
+          scope.candidatePath = staging;
+          boundScopes += 1;
+          changed = true;
+        }
+        translationAlignmentState.ranges[scope.documentId] = (translationAlignmentState.ranges[scope.documentId] ?? [])
+          .map((entry) => entry === original ? scope : entry);
+      }
+      signal?.throwIfAborted();
+      if (changed) await context.persistHostState?.();
+    } catch (error) {
+      for (const rollback of rollbackDomainMutations.reverse()) rollback();
+      restoreMutableObject(translationAlignmentState, previousAlignment);
+      const rollbackErrors: unknown[] = [];
+      if (changed) {
+        try { await context.persistHostState?.({ force: true }); }
+        catch (compensationError) {
+          // The first append or the compensation itself may already be durable.
+          // Promoted ranges previously belonged to staging, and do not overlap
+          // any original canonical scope. Keeping the verified canonical
+          // post-image therefore satisfies either possible durable checkpoint.
+          // Reverting it here would invalidate an accepted canonical scope in
+          // the first checkpoint and strand the next cold recovery.
+          const diagnosisDir = path.join(baseRequest.outputDir, ".translation-workshop", "agent", "recovery-transactions", recoveryWorkerId);
+          let diagnosisPath: string | undefined;
+          try {
+            await mkdir(diagnosisDir, { recursive: true });
+            const canonicalSnapshots: Array<{ candidatePath: string; previouslyAbsent: boolean; backupPath?: string; previousHash?: string }> = [];
+            for (const [canonical, previous] of previousCanonicalTexts) {
+              const backupPath = previous === undefined ? undefined : path.join(diagnosisDir, `${canonicalSnapshots.length + 1}-previous-canonical.txt`);
+              if (backupPath) await writeTextFileAtomically(backupPath, previous!);
+              canonicalSnapshots.push({ candidatePath: canonical, previouslyAbsent: previous === undefined, backupPath,
+                previousHash: previous === undefined ? undefined : createHash("sha256").update(previous).digest("hex") });
+            }
+            diagnosisPath = path.join(diagnosisDir, "transaction.json");
+            await writeTextFileAtomically(diagnosisPath, `${JSON.stringify({ schemaVersion: 1,
+              phase: "compensation_unconfirmed", canonicalSnapshots, retainedStagingCandidates: createdStaging,
+              originalError: error instanceof Error ? error.message : String(error),
+              compensationError: compensationError instanceof Error ? compensationError.message : String(compensationError)
+            }, null, 2)}\n`);
+          } catch (diagnosisError) { rollbackErrors.push(diagnosisError); }
+          throw new AggregateError([error, compensationError, ...rollbackErrors],
+            `Recovery preflight compensation could not be confirmed; verified canonical and staging artifacts were retained.${diagnosisPath ? ` Diagnosis: ${diagnosisPath}` : ""}`);
+        }
+      }
+      for (const rollback of [...rollbackReuseBaselines.values()].reverse()) {
+        try { await rollback(); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      }
+      for (const [canonical, previous] of previousCanonicalTexts) {
+        try {
+          if (previous === undefined) await rm(canonical, { force: true });
+          else await writeTextFileAtomically(canonical, previous);
+        } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      }
+      // A failed compensation may leave durable entries referring to these
+      // candidates. Keep them readable until the Host can reconcile again.
+      if (rollbackErrors.length === 0) {
+        for (const staging of createdStaging) {
+          try { await rm(staging, { force: true }); }
+          catch (rollbackError) { rollbackErrors.push(rollbackError); }
+        }
+      }
+      if (rollbackErrors.length > 0) throw new AggregateError([error, ...rollbackErrors], "Recovery preflight rollback failed.");
+      throw error;
+    }
+    console.info(JSON.stringify({
+      event: "yn.translation.recovery.preflight", scopeCount: verified.length,
+      documentCount: new Set(verified.map((entry) => entry.scope.documentId)).size,
+      boundScopes, promotedScopes,
+      acceptedScopeCount: verified.filter((entry) => entry.scope.checks.length > 0 && entry.scope.checks.every((check) => check.verdict === "aligned")).length
+    }));
+  }).catch((error) => {
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    if (signal?.aborted && error === signal.reason) throw error;
+    if (isNonRetryableAssignmentError(error)) throw error;
+    throw new NonRetryableAssignmentError(
+      `Host recovery preflight failed: ${error instanceof Error ? error.message : String(error)}`,
+      error
+    );
+  });
   const requireCurrentBoundedTranslationAlignment = async (
     bound: PiBoundSourceRequest,
     sourceText: string,
@@ -4988,6 +5229,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               };
             },
             onSettled: async ({ batch: settledBatch, results, error }) => {
+              return withTranslationEvidenceTransaction(async () => {
               if (error !== undefined) {
                 context.domainRun?.recordGeneralSubagentBatchFailure(
                   settledBatch.id,
@@ -5015,6 +5257,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               markTranslationReuseAuditsReady();
               context.domainRun?.recordGeneralSubagentBatch(settledBatch.id, results.length);
               await context.persistHostState?.();
+              });
             }
           });
           return textResult({
@@ -5044,6 +5287,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       }, { additionalProperties: false }),
       executionMode: "sequential",
       async execute(_toolCallId, params) {
+        return withTranslationEvidenceTransaction(async () => {
         if (
           context.isWorkflowSuspended?.() === true
           || context.parkedWorkflows?.().includes("translation") === true
@@ -5126,6 +5370,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             : "Translate only the blanked/rejected lines through the existing validated Pi worker flow, then run whole-artifact validation."
         };
         return textResult(result);
+        });
       }
     },
     {
@@ -6248,6 +6493,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       }, { additionalProperties: false }),
       executionMode: "sequential",
       async execute(_toolCallId, params) {
+        return withTranslationEvidenceTransaction(async () => {
+        const previousAlignment = structuredClone(translationAlignmentState);
+        const persistAlignment = async () => {
+          try { await context.persistHostState?.(); }
+          catch (error) { restoreMutableObject(translationAlignmentState, previousAlignment);
+            try { await context.persistHostState?.({ force: true }); } catch (rollbackError) { throw new NonRetryableAssignmentError("Host alignment rollback persistence failed.", new AggregateError([error, rollbackError])); }
+            throw new NonRetryableAssignmentError("Host alignment evidence persistence failed; the prior evidence was restored.", error); }
+        };
         assertParentOwnsAlignmentReview();
         const input = params as {
           auditId: string;
@@ -6302,7 +6555,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             if (reason) target.check.reason = reason;
             else delete target.check.reason;
           }
-          await context.persistHostState?.();
+          await persistAlignment();
           const remaining = mutationAlignmentAssignments(translationAlignmentState.ranges[active.documentId] ?? []);
           const misalignedLines = (translationAlignmentState.ranges[active.documentId] ?? [])
             .filter((scope) => scope.auditId.startsWith("alignment-mutation-"))
@@ -6352,7 +6605,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           } else {
             delete translationAlignmentState.documents[currentDocumentId];
           }
-          await context.persistHostState?.();
+          await persistAlignment();
           if (activeTranslationChunkReview?.auditId === input.auditId) {
             activeTranslationChunkReview = undefined;
           }
@@ -6396,7 +6649,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           if (reason) target.reason = reason;
           else delete target.reason;
         }
-        await context.persistHostState?.();
+        await persistAlignment();
         const pendingChecks = audit.checks.filter((check) => !check.verdict);
         const misalignedChecks = audit.checks.filter((check) => check.verdict === "misaligned");
         let decision: "pending" | "accepted" | "rejected" = "pending";
@@ -6418,6 +6671,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           decision,
           misalignedLines: misalignedChecks.map((check) => check.line)
         });
+        });
       }
     },
     {
@@ -6433,6 +6687,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       }),
       executionMode: "sequential",
       async execute(_toolCallId, params) {
+        return withTranslationEvidenceTransaction(async () => {
         const input = params as { documentId?: string; fromLine: number; toLine: number; lines: string[] };
         const bound = input.documentId?.trim()
           ? await boundForDocument(input.documentId.trim())
@@ -6475,10 +6730,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           await prepareExistingTranslationForWrite(bound);
         }
         const targetCandidatePath = candidatePath(bound);
-        const previousCandidateText = await readOptional(targetCandidatePath);
+        const previousCandidateText = await readOptionalCandidateText(targetCandidatePath);
         const previousAlignmentState = structuredClone(translationAlignmentState);
         const previousProofreadState = structuredClone(proofreadState);
-        const result = await writeTranslationChunk({
+        const rollbackReuseBaseline = await captureTranslationReuseBaselineRollback({ outputDir: bound.outputDir, documentId: documentId(bound), candidatePath: targetCandidatePath })
+          .catch((error) => { throw new NonRetryableAssignmentError("Cannot capture the Host canonical reuse baseline before writing.", error); });
+        let result: Awaited<ReturnType<typeof writeTranslationChunk>>;
+        let rollbackDomainMutation: (() => void) | undefined;
+        try {
+        result = await writeTranslationChunk({
           outputDir: bound.outputDir,
           sourcePaths: [sourcePath(bound)],
           documentId: documentId(bound),
@@ -6486,8 +6746,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           lines: input.lines
         });
         if (!result.ok) throw new Error(result.error || "Translation chunk write failed.");
-        let rollbackDomainMutation: (() => void) | undefined;
-        try {
           if (boundedArtifactRepair) {
             rollbackDomainMutation = context.domainRun?.recordTranslationArtifactMutation(documentId(bound), range);
             if (context.domainRun?.kind === "proofread") {
@@ -6504,6 +6762,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           restoreMutableObject(translationAlignmentState, previousAlignmentState);
           restoreMutableObject(proofreadState, previousProofreadState);
           const rollbackFailures: unknown[] = [];
+          try { await rollbackReuseBaseline(); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
           try {
             if (previousCandidateText === undefined) await rm(targetCandidatePath, { force: true });
             else await writeTextFileAtomically(targetCandidatePath, previousCandidateText);
@@ -6511,17 +6770,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             rollbackFailures.push(rollbackError);
           }
           try {
-            await context.persistHostState?.();
+            await context.persistHostState?.({ force: true });
           } catch (rollbackError) {
             rollbackFailures.push(rollbackError);
           }
           if (rollbackFailures.length > 0) {
-            throw new AggregateError(
-              [error, ...rollbackFailures],
-              `Translation write L${range.fromLine}-L${range.toLine} failed and its rollback was incomplete.`
-            );
+            throw new NonRetryableAssignmentError(`Translation write L${range.fromLine}-L${range.toLine} failed and its rollback was incomplete.`, new AggregateError([error, ...rollbackFailures]));
           }
-          throw error;
+          throw new NonRetryableAssignmentError(`Host translation write L${range.fromLine}-L${range.toLine} failed; the prior artifact and evidence were restored.`, error);
         }
         return textResult({
           result,
@@ -6529,6 +6785,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             validation,
             boundedArtifactRepair ? "chunk" : "artifact"
           )
+        });
         });
       }
     },
@@ -6539,6 +6796,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       description: "Run blocking artifact validation for the bound file, every file in a generated folder workflow, or only mutated documents in a bounded repair. Warnings remain non-blocking telemetry but unreviewed warning signals become the final post-translation review step; use inspectTranslationWarnings rather than treating them as validation failures.",
       parameters: Type.Object({}),
       async execute() {
+        return withTranslationEvidenceTransaction(async () => {
         const boundedArtifactValidation = context.domainRun?.fullWorkflow !== true
           || context.domainRun.kind === "proofread"
           || context.domainRun.suspended;
@@ -6667,8 +6925,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         }
         if (failures.length > 0) throw new Error(`Final translation validation failed:\n${failures.join("\n")}`);
         if (boundedArtifactValidation) {
+          const previousAlignment = structuredClone(translationAlignmentState);
           for (const document of documents) delete translationAlignmentState.ranges[document.id];
-          await context.persistHostState?.();
+          try { await context.persistHostState?.(); }
+          catch (error) {
+            restoreMutableObject(translationAlignmentState, previousAlignment);
+            try { await context.persistHostState?.({ force: true }); }
+            catch (rollbackError) { throw new NonRetryableAssignmentError("Host bounded validation rollback persistence failed.", new AggregateError([error, rollbackError])); }
+            throw new NonRetryableAssignmentError("Host bounded validation evidence persistence failed; review debt was restored.", error);
+          }
         }
         const pendingWarningCount = results.reduce((count, result) => (
           count + Number(result.validation.warningReviewDebtCount ?? result.validation.qualityDebtCount ?? 0)
@@ -6712,6 +6977,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             remainingReasonCount: context.domainRun?.incompleteReasons().length ?? 0
           },
           ...(warningReviewNextAction ? { nextAction: warningReviewNextAction } : {})
+        });
         });
       }
     },
@@ -7514,6 +7780,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               })
             : undefined,
           onSettled: async ({ batch: settledBatch, results, failures = [], error }) => {
+            return withTranslationEvidenceTransaction(async () => {
             if (error !== undefined) {
               if (montecarloSnapshot) await restoreProofreadFindings(montecarloSnapshot);
               if (folderPrescans) {
@@ -7606,6 +7873,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               );
             }
             await context.persistHostState?.();
+            });
           }
         });
         if (proofreadArtifactsReset) {
@@ -7796,17 +8064,24 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             if (!document) throw new Error(`Source document ${task.documentId} is not in the immutable host source manifest.`);
             return bindPiSourceDocument(baseRequest, document);
           },
-          onArtifactMutation: async (mutationDocumentId, mutationRange) => {
+          runTranslationArtifactTransaction: withTranslationEvidenceTransaction,
+          onArtifactMutation: async (mutationDocumentId, mutationRange) => withTranslationEvidenceTransaction(async () => {
+            const previousAlignment = structuredClone(translationAlignmentState);
+            const previousProofread = structuredClone(proofreadState);
+            const rollbacks: Array<() => void> = [];
+            try {
             const mutationRanges = mutationRange?.lines?.length
               ? exactLineRanges(mutationRange.lines)
               : mutationRange
                 ? [{ fromLine: mutationRange.fromLine, toLine: mutationRange.toLine }]
                 : [];
             if (mutationRanges.length === 0) {
-              context.domainRun?.recordTranslationArtifactMutation(mutationDocumentId, mutationRange);
+              const rollback = context.domainRun?.recordTranslationArtifactMutation(mutationDocumentId, mutationRange);
+              if (rollback) rollbacks.push(rollback);
             } else {
               for (const exactRange of mutationRanges) {
-                context.domainRun?.recordTranslationArtifactMutation(mutationDocumentId, exactRange);
+                const rollback = context.domainRun?.recordTranslationArtifactMutation(mutationDocumentId, exactRange);
+                if (rollback) rollbacks.push(rollback);
               }
             }
             if (mutationRange) {
@@ -7826,8 +8101,19 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               }
             }
             await context.persistHostState?.();
-          },
+            } catch (error) {
+              for (const rollback of rollbacks.reverse()) rollback();
+              restoreMutableObject(translationAlignmentState, previousAlignment);
+              restoreMutableObject(proofreadState, previousProofread);
+              try { await context.persistHostState?.({ force: true }); }
+              catch (rollbackError) {
+                throw new NonRetryableAssignmentError("Host bounded repair evidence rollback persistence failed.", new AggregateError([error, rollbackError]));
+              }
+              throw new NonRetryableAssignmentError("Host bounded repair evidence commit failed; the prior Host state was restored.", error);
+            }
+          }),
           onSettled: async ({ batch: settledBatch, results, error }) => {
+            return withTranslationEvidenceTransaction(async () => {
             if (error !== undefined) {
               context.domainRun?.recordGeneralSubagentBatchFailure(
                 settledBatch.id,
@@ -7838,6 +8124,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             }
             context.domainRun?.recordGeneralSubagentBatch(settledBatch.id, results.length);
             await context.persistHostState?.();
+            });
           }
         });
         return textResult({
@@ -7888,6 +8175,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           );
         }
         await assertWorkspaceCharacterGlossaryConsistency();
+        await reconcileTranslationRecoveryArtifacts(resolvedManifest, signal);
         const currentDiscoveryConflicts = await prepareCurrentTranslationDiscoveryConflicts(resolvedManifest);
         const appliedReuseTasks = await planAppliedReuseAssignments(resolvedManifest);
         const ordinaryTasks = appliedReuseTasks
@@ -7968,6 +8256,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             reviewRequestForTask: resumedTranslationReviewRequest,
             prepareChunkReview: prepareTranslationChunkReview,
             onSettled: async ({ batch: settledBatch, error }) => {
+              return withTranslationEvidenceTransaction(async () => {
               const documentIds = [...new Set(pendingReviewTasks.map((task) => task.documentId ?? documentId(request)))];
               if (error !== undefined) {
                 context.domainRun?.recordSubagentBatchFailure("translation", settledBatch.id, documentIds);
@@ -7975,6 +8264,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
                 context.domainRun?.recordSubagentBatchProgress("translation", settledBatch.id, documentIds);
               }
               await context.persistHostState?.();
+              });
             }
           });
           return textResult({
@@ -8088,7 +8378,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               }
             }
           } : {}),
-          onTaskCompleted: async (result, task) => {
+          onTaskCompleted: async (result, task) => withTranslationEvidenceTransaction(async () => {
             const completedDocumentId = task.documentId ?? documentId(request);
             const completedDocument = manifest?.documents.find((candidate) => candidate.id === completedDocumentId);
             const bound = completedDocument ? bindPiSourceDocument(baseRequest, completedDocument) : request;
@@ -8142,7 +8432,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
                 );
               }
             }
-          },
+          }),
           reviewWorkerCount,
           prepareChunkReview: prepareTranslationChunkReview,
           onStagingCandidatePrepared: bindPreparedTranslationStagingEvidence,
@@ -8176,7 +8466,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               })
             }, checkpoint.candidatePath, signal);
           },
-          onArtifactMutation: async (mutationDocumentId, mutationRange) => {
+          runTranslationArtifactTransaction: withTranslationEvidenceTransaction,
+          onArtifactMutation: async (mutationDocumentId, mutationRange) => withTranslationEvidenceTransaction(async () => {
             const rollbackDomainMutation = context.domainRun
               ?.recordTranslationArtifactMutation(mutationDocumentId, mutationRange);
             try {
@@ -8199,9 +8490,17 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               await context.persistHostState?.();
             } catch (error) {
               rollbackDomainMutation?.();
+              try { await context.persistHostState?.({ force: true }); }
+              catch (rollbackError) {
+                const cause = new AggregateError([error, rollbackError]);
+                if (context.domainRun?.fullWorkflow === true && error instanceof TranslationPromotionCheckpointError) {
+                  throw new TranslationPromotionCompensationError("Host accepted staging promotion compensation could not be confirmed.", cause);
+                }
+                throw new NonRetryableAssignmentError("Host accepted review evidence rollback persistence failed.", cause);
+              }
               throw error;
             }
-          },
+          }),
           parentCompletionContext: () => {
             const discovery = translationDiscoveryCompletionContextFromRecords(
               context.domainRun?.pendingTranslationDiscoveries() ?? []
@@ -8230,6 +8529,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             completedParentTakeoverHandoffs.push(...handed);
           },
           onSettled: async ({ batch: settledBatch, results, failures, error }) => {
+            return withTranslationEvidenceTransaction(async () => {
             const takeovers = settledBatch.subagents.flatMap((subagent) => subagent.parentTakeovers ?? []);
             const pending = takeovers.filter((takeover) => !completedParentTakeoverHandoffs.some((handed) => (
               handed.documentId === takeover.documentId?.trim()
@@ -8265,6 +8565,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             if ((context.domainRun?.incompleteReasons().length ?? 1) === 0) {
               await publishCompletedTranslationBinding(request);
             }
+            });
           }
         });
         const assignmentSummary = tasks.slice(0, MAX_TOOL_RESULT_COLLECTION_ITEMS).map((task) => ({

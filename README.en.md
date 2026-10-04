@@ -12,6 +12,7 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 
 - Fix large-file translation freezes with range-scoped chunk checks and background final validation, preserving structural checks, review and recovery.
 - Apply translation preservation rules and mechanical checks to proofreading suggestions to protect control codes, tags and placeholders.
+- Fix candidate/review bindings during recovery. Host checks retained artifacts before resuming; unretryable internal failures stop the entire workflow.
 
 ## What's new in 2.1.4
 
@@ -182,7 +183,7 @@ Local 2.1.5 artifacts are under `release/`; the releases page lists only version
 - Complete batches reserve atomically before Workers start. Duplicate active batches fail before model runtime creation.
 - Parent and Child may read required references, but only Host-granted document, range, or exact-line ownership can write artifacts.
 - Staging promotion, domain revision, alignment evidence, and Host JSONL persistence form one rollback-capable transaction boundary.
-- Function failure returns to the same Pi turn or becomes explicit Parent repair / resume state. It is not swallowed or reported as success.
+- Correctable Function input errors stay in the same Pi turn. Unretryable internal or persistence failures stop the entire workflow, retain artifacts and review evidence, and report the error.
 - A workflow completes only when the Host settles tasks, repair debt, evidence, artifacts, and final validation.
 - Critical phases, Workers, assignments, Provider errors, staging, and hashes remain observable and durable.
 

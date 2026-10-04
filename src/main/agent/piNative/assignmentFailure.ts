@@ -75,3 +75,15 @@ export function isSubagentTransportExhaustedError(
 ): error is SubagentTransportExhaustedError {
   return error instanceof SubagentTransportExhaustedError;
 }
+
+/** Internal failures cannot be repaired by another model submission. */
+export function isFatalHostAssignmentError(error: unknown): boolean {
+  return isNonRetryableAssignmentError(error)
+    && !isParentTakeoverAssignmentError(error)
+    && !isProviderAuthExpiredError(error)
+    && !isSubagentTransportExhaustedError(error);
+}
+
+export function isWorkflowStoppingAssignmentError(error: unknown): boolean {
+  return isFatalHostAssignmentError(error) || isSubagentTransportExhaustedError(error);
+}

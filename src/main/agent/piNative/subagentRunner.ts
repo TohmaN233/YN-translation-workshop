@@ -262,6 +262,10 @@ export interface PiTranslationSubagentContext extends PiSubagentContext<PiTransl
   terminateOnAcceptedWrite?: boolean;
   deferSparseRepair?: boolean;
   workingCandidatePath?: string;
+  onStagingCandidatePrepared?: (
+    prepared: { documentId: string; fromLine: number; toLine: number; candidatePath: string },
+    signal?: AbortSignal
+  ) => Promise<void> | void;
   onChunkReadyForReview?: (
     review: PiTranslationChunkReviewRequest
   ) => Promise<PiTranslationChunkReviewDecision>;
@@ -2805,6 +2809,7 @@ export function createPiTranslationSubagentTools(
               repairIssues
             });
           } catch (error) {
+            throwIfAborted(context.signal);
             throw new NonRetryableAssignmentError(
               `Failed to persist the staging recovery checkpoint for ${context.task.documentId || documentId(context.request)} L${context.task.fromLine}-L${context.task.toLine}. Cause: ${compactErrorCause(error)}`,
               error
@@ -4989,15 +4994,29 @@ export async function createPiTranslationSubagentWorker(
       let retainStagingAfterRun = Boolean(context.task.stagingCandidatePath?.trim());
       const assignmentDocumentId = context.task.documentId || documentId(context.request);
       if (context.onChunkReadyForReview) {
-        stagingPath = await prepareTranslationStagingCandidate({
-          outputDir: context.request.outputDir,
-          sourcePaths: [sourcePath(context.request)],
-          documentId: assignmentDocumentId,
-          sessionId: context.request.sessionId,
-          subagentId,
-          assignmentId: `${assignmentDocumentId}:L${context.task.fromLine}-L${context.task.toLine}`,
-          resumeStagingPath: context.task.stagingCandidatePath
-        });
+        try {
+          stagingPath = await prepareTranslationStagingCandidate({
+            outputDir: context.request.outputDir,
+            sourcePaths: [sourcePath(context.request)],
+            documentId: assignmentDocumentId,
+            sessionId: context.request.sessionId,
+            subagentId,
+            assignmentId: `${assignmentDocumentId}:L${context.task.fromLine}-L${context.task.toLine}`,
+            resumeStagingPath: context.task.stagingCandidatePath
+          });
+          await context.onStagingCandidatePrepared?.({
+            documentId: assignmentDocumentId,
+            fromLine: context.task.fromLine,
+            toLine: context.task.toLine,
+            candidatePath: stagingPath
+          }, context.signal);
+        } catch (error) {
+          throwIfAborted(context.signal);
+          throw new NonRetryableAssignmentError(
+            `Failed to prepare the staging recovery binding for ${assignmentDocumentId} L${context.task.fromLine}-L${context.task.toLine}. Cause: ${compactErrorCause(error)}`,
+            error
+          );
+        }
       }
       const assignmentContext: PiTranslationSubagentContext = stagingPath
         ? {
@@ -5494,7 +5513,9 @@ export async function createPiTranslationSubagentWorker(
         try {
           await publishCard({ status: "running", live: true, error: message });
         } catch (publishError) {
-          throw new AggregateError([error, publishError], `${message}; publishing worker failure also failed.`);
+          throw new NonRetryableAssignmentError(
+            `${message}; publishing worker failure also failed.`, new AggregateError([error, publishError])
+          );
         }
         throw error;
       } finally {

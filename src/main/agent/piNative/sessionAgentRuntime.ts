@@ -35,7 +35,7 @@ import {
   type Models,
   type SimpleStreamOptions
 } from "@earendil-works/pi-ai";
-import { isExpiredProviderAuthError } from "./assignmentFailure.ts";
+import { isExpiredProviderAuthError, isNonRetryableAssignmentError, isFatalHostAssignmentError, NonRetryableAssignmentError } from "./assignmentFailure.ts";
 import { runWithProviderFetchDiagnostics } from "../providers/proxyFetch.ts";
 
 import type {
@@ -78,6 +78,7 @@ export interface PiSessionAgentRuntimeOptions {
     signal?: AbortSignal
   ) => Promise<AfterToolCallResult | undefined>;
   refreshExpiredProviderAuth?: (model: Model<any>) => Promise<Model<any> | undefined>;
+  onFatalToolError?: (error: Error) => Promise<void> | void;
 }
 
 export interface PiProviderStreamTimeouts {
@@ -424,6 +425,9 @@ export class PiSessionAgentRuntime {
   private readonly unsubscribeAgent: () => void;
   private sessionOperationTail: Promise<void> = Promise.resolve();
   private sessionFailure?: unknown;
+  private terminalToolFailure?: Error;
+  private reportOnly = false;
+  private readonly onFatalToolError?: PiSessionAgentRuntimeOptions["onFatalToolError"];
   private phase: "idle" | "running" | "settling" = "idle";
   private initialized = false;
   private abortGeneration = 0;
@@ -450,21 +454,29 @@ export class PiSessionAgentRuntime {
     this.retrySettings = { ...DEFAULT_PI_AUTO_RETRY_SETTINGS, ...options.retry };
     this.deferThresholdCompaction = options.deferThresholdCompaction ?? (() => false);
     this.refreshExpiredProviderAuth = options.refreshExpiredProviderAuth;
+    this.onFatalToolError = options.onFatalToolError;
     this.agent = new Agent({
       initialState: {
         systemPrompt: options.systemPrompt,
         model: options.model,
         thinkingLevel: options.thinkingLevel,
-        tools: options.tools,
+        tools: this.guardTools(options.tools),
         messages: []
       },
       sessionId: options.sessionId,
       convertToLlm,
       steeringMode: "one-at-a-time",
       followUpMode: "one-at-a-time",
-      afterToolCall: options.afterToolCall,
+      finishTurn: () => this.reportOnly ? { action: "end" } : undefined,
+      afterToolCall: async (context, signal) => {
+        if (this.terminalToolFailure || this.reportOnly) return { terminate: true };
+        const result = await options.afterToolCall?.(context, signal);
+        return this.terminalToolFailure ? { ...result, terminate: true } : result;
+      },
       beforeToolCall: options.beforeToolCall,
-      streamFn: (model, context, streamOptions) => streamPiProviderWithTimeouts({
+      streamFn: (model, context, streamOptions) => {
+        if (this.terminalToolFailure) throw this.terminalToolFailure;
+        return streamPiProviderWithTimeouts({
         models: this.models,
         model,
         context,
@@ -477,7 +489,8 @@ export class PiSessionAgentRuntime {
             ...diagnostic
           });
         }
-      })
+      });
+      }
     });
     this.unsubscribeAgent = this.agent.subscribe((event, signal) => this.handleAgentEvent(event, signal));
   }
@@ -500,7 +513,51 @@ export class PiSessionAgentRuntime {
     return () => this.listeners.delete(listener);
   }
 
-  async prompt(input: string | AgentMessage | AgentMessage[], options?: { images?: ImageContent[] }): Promise<void> {
+  private guardTools(tools: AgentTool[]): AgentTool[] {
+    return tools.map((tool) => ({
+      ...tool,
+      execute: async (...args: Parameters<AgentTool["execute"]>) => {
+        try {
+          if (this.terminalToolFailure) throw this.terminalToolFailure;
+          return await tool.execute(...args);
+        } catch (error) {
+          if (!(error instanceof Error) || !isNonRetryableAssignmentError(error)) throw error;
+          if (!this.terminalToolFailure) {
+            this.terminalToolFailure = error;
+            // Pi normally turns thrown tool errors into text-only results. Keep
+            // the terminal classification before that conversion and persist it.
+            this.agent.clearAllQueues();
+            this.queuedSteer.splice(0);
+            this.queuedFollowUp.splice(0);
+            this.queuedNextTurn.splice(0);
+            try {
+              await this.appendCustomEntry("yn_host_tool_failure", {
+                timestamp: Date.now(), sessionId: this.sessionId, tool: tool.name,
+                error: error.message, retryable: false,
+                failureDisposition: isFatalHostAssignmentError(error) ? "host_integrity_failure" : error.name
+              });
+            } catch (persistenceError) {
+              this.terminalToolFailure = new NonRetryableAssignmentError(
+                `${error.message} Fatal error persistence also failed: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`,
+                new AggregateError([error, persistenceError])
+              );
+            }
+            if (isFatalHostAssignmentError(this.terminalToolFailure)) {
+              await this.onFatalToolError?.(this.terminalToolFailure);
+            }
+          }
+          return {
+            content: [{ type: "text" as const, text: error.message }],
+            details: { retryable: false, failureDisposition: isFatalHostAssignmentError(error) ? "host_integrity_failure" : error.name },
+            isError: true,
+            terminate: true
+          };
+        }
+      }
+    }));
+  }
+
+  async prompt(input: string | AgentMessage | AgentMessage[], options?: { images?: ImageContent[]; reportOnly?: boolean }): Promise<void> {
     // Agent.waitForIdle() cannot cover these asynchronous preflight awaits:
     // the Agent has not started yet. Stop/dispose must also revoke that pending
     // native prompt before it can acquire the Agent after ownership is released.
@@ -520,19 +577,30 @@ export class PiSessionAgentRuntime {
     if (queued.length > 0) await this.emitQueueUpdate();
     assertNotAborted();
     this.startingQueuedNextTurn = undefined;
+    this.terminalToolFailure = undefined;
+    const savedTools = this.agent.state.tools;
+    this.reportOnly = options?.reportOnly === true;
+    if (this.reportOnly) this.agent.state.tools = [];
     this.phase = "running";
     try {
       await this.agent.prompt([...queued, ...initial]);
+      if (this.terminalToolFailure) throw this.terminalToolFailure;
       while (await this.handlePostAgentRun()) {
         await this.agent.continue();
+        if (this.terminalToolFailure) throw this.terminalToolFailure;
       }
       await this.drainPendingQueueConsumptions();
     } finally {
       this.phase = "settling";
       try {
         await this.flushPendingSessionMessages();
+      } catch (error) {
+        if (this.terminalToolFailure) throw this.terminalToolFailure;
+        throw error;
       } finally {
         this.phase = "idle";
+        if (this.reportOnly) this.agent.state.tools = savedTools;
+        this.reportOnly = false;
         await this.rejectUnconsumedQueueMessages(
           new PiQueuedInputNotConsumedError("Pi turn finished before a queued Steer or Follow-up message could be consumed.")
         );
@@ -678,7 +746,7 @@ export class PiSessionAgentRuntime {
       throw new Error("Pi runtime can only be reconfigured while idle.");
     }
     this.configuredSystemPrompt = options.systemPrompt;
-    this.agent.state.tools = options.tools;
+    this.agent.state.tools = this.guardTools(options.tools);
     if (this.resetBaselinePending) {
       this.agent.state.messages = [{
         role: "system", content: "", sections: { yn: this.configuredSystemPrompt },
@@ -717,7 +785,7 @@ export class PiSessionAgentRuntime {
   }
 
   async abort(): Promise<{ clearedSteer: AgentMessage[]; clearedFollowUp: AgentMessage[] }> {
-    this.abortGeneration += 1;
+    this.requestAbort();
     this.restoreStartingQueuedNextTurn();
     const clearedSteer = this.queuedSteer.splice(0);
     const clearedFollowUp = this.queuedFollowUp.splice(0);
@@ -739,6 +807,14 @@ export class PiSessionAgentRuntime {
       clearedSteer: clearedSteer.filter((message) => message.role === "user"),
       clearedFollowUp: clearedFollowUp.filter((message) => message.role === "user")
     };
+  }
+
+  /** Signal all in-flight native work without waiting on its tool callbacks. */
+  requestAbort(): void {
+    this.abortGeneration += 1;
+    this.retryAbortController?.abort(new Error("Retry cancelled"));
+    this.compactionAbortController?.abort(new Error("Compaction cancelled"));
+    this.agent.abort();
   }
 
   waitForIdle(): Promise<void> {
@@ -1055,7 +1131,14 @@ export class PiSessionAgentRuntime {
   private runSessionOperation<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.sessionOperationTail.then(async () => {
       if (this.sessionFailure !== undefined) throw this.sessionFailure;
-      return operation();
+      try {
+        return await operation();
+      } catch (error) {
+        if (isNonRetryableAssignmentError(error)) throw error;
+        throw new NonRetryableAssignmentError(
+          `Pi session persistence failed: ${error instanceof Error ? error.message : String(error)}`, error
+        );
+      }
     });
     this.sessionOperationTail = result.then(
       () => undefined,

@@ -311,7 +311,7 @@ await test("slimmed pi-web input exposes only product-backed controls and comman
   assert.match(input, /data-agent-attach-image/);
   assert.match(sessionContract, /images\?:\s*PiSessionImageAttachment\[\]/);
   assert.match(sessionRequest, /function imageAttachments/);
-  assert.match(sessionService, /runtime\.prompt\([^,]+,\s*\{ images \}\)/);
+  assert.match(sessionService, /runtime\.prompt\([^,]+,\s*\{ images(?:, reportOnly)? \}\)/);
   assert.match(preload, /sendInput:\s*\(args:\s*unknown\)\s*=>\s*ipcRenderer\.invoke\("agent-session:input",\s*args\)/);
   assert.match(input, /data-agent-slash-menu/);
   assert.match(input, /onBuiltinCommand/);

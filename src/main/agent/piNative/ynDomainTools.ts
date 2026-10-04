@@ -503,7 +503,7 @@ function translationBatchSettlements(args: {
   failures?: Array<{
     documentId?: string;
     error: string;
-    failureDisposition?: "parent_takeover_required" | "transport_retry_exhausted";
+    failureDisposition?: "parent_takeover_required" | "transport_retry_exhausted" | "host_integrity_failure";
   }>;
   error?: unknown;
 }) {
@@ -2581,6 +2581,78 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       );
     }
   };
+  const bindPreparedTranslationStagingEvidence = async (
+    prepared: { documentId: string; fromLine: number; toLine: number; candidatePath: string },
+    signal?: AbortSignal
+  ): Promise<void> => {
+    signal?.throwIfAborted();
+    const bound = await boundForDocument(prepared.documentId);
+    const candidate = path.resolve(prepared.candidatePath);
+    if (!isTranslationStagingCandidatePath(bound.outputDir, candidate)) {
+      throw new Error(`Prepared translation candidate is outside the project staging directory: ${candidate}`);
+    }
+    const existing = translationAlignmentState.ranges[prepared.documentId] ?? [];
+    const exact = existing.find((scope) => (
+      scope.fromLine === prepared.fromLine && scope.toLine === prepared.toLine
+    ));
+    if (!exact) return;
+    assertTranslationChunkReviewRangeAvailable(prepared.documentId, prepared);
+    const previousCandidate = path.resolve(exact.candidatePath);
+    if (previousCandidate !== candidate && previousCandidate !== path.resolve(candidatePath(bound))) {
+      throw new Error(
+        `Cannot replace retained staging review evidence for ${prepared.documentId} L${prepared.fromLine}-L${prepared.toLine}.`
+      );
+    }
+    const [sourceText, previousText, stagingText] = await Promise.all([
+      readFile(sourcePath(bound), "utf8"),
+      readFile(previousCandidate, "utf8"),
+      previousCandidate === candidate ? Promise.resolve(undefined) : readFile(candidate, "utf8")
+    ]);
+    signal?.throwIfAborted();
+    const sourceLines = splitTextLines(sourceText);
+    const previousLines = splitTextLines(previousText);
+    const stagingLines = stagingText === undefined ? previousLines : splitTextLines(stagingText);
+    if (
+      exact.sourceLineCount !== sourceLines.length
+      || previousLines.length !== sourceLines.length
+      || exact.inputHash !== currentTranslationAlignmentRangeHash(exact, sourceLines, previousLines, bound.languagePair)
+    ) {
+      throw new Error(
+        `Cannot prepare recovery for ${prepared.documentId} L${prepared.fromLine}-L${prepared.toLine}: prior review evidence is stale.`
+      );
+    }
+    if (
+      stagingLines.length !== sourceLines.length
+      || exact.inputHash !== currentTranslationAlignmentRangeHash(exact, sourceLines, stagingLines, bound.languagePair)
+    ) {
+      throw new Error(
+        `Recovery prepared staging candidate changed for ${prepared.documentId} L${prepared.fromLine}-L${prepared.toLine}.`
+      );
+    }
+    if (previousCandidate === candidate) return;
+    // A fresh worker inherits the verified candidate and every accepted/rejected check
+    // before its first provider call. Subsequent writes reopen only the rejected rows.
+    const rebound = { ...structuredClone(exact), candidatePath: candidate };
+    translationAlignmentState.ranges[prepared.documentId] = existing.map((scope) => scope === exact ? rebound : scope);
+    try {
+      await context.persistHostState?.();
+    } catch (error) {
+      const liveRanges = translationAlignmentState.ranges[prepared.documentId] ?? [];
+      translationAlignmentState.ranges[prepared.documentId] = liveRanges.map((scope) => scope === rebound ? exact : scope);
+      throw error;
+    }
+    console.info(JSON.stringify({
+      event: "yn.translation.recovery.staging_bound",
+      documentId: prepared.documentId,
+      fromLine: prepared.fromLine,
+      toLine: prepared.toLine,
+      auditId: rebound.auditId,
+      previousCandidatePath: previousCandidate,
+      stagingCandidatePath: candidate,
+      rejectedLines: rebound.checks.filter((check) => check.verdict === "misaligned").map((check) => check.line),
+      acceptedCheckCount: rebound.checks.filter((check) => check.verdict === "aligned").length
+    }));
+  };
   const registerTranslationChunkReview = async (
     bound: PiBoundSourceRequest,
     inputRange: {
@@ -3930,7 +4002,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const requested = (params as { workflow?: "translation" | "proofread" }).workflow;
         const parked = context.parkedWorkflows?.() ?? [];
         const currentRecoveryPauseId = context.domainRun?.recoveryPauseId;
+        const workflowSuspended = context.isWorkflowSuspended?.() === true;
         if (currentRecoveryPauseId && (!requested || requested === context.domainRun?.kind)) {
+          if (workflowSuspended) {
+            if (!context.resumeWorkflow) {
+              throw new Error("The Pi session reported a suspended YN workflow without a Host resume capability.");
+            }
+            await context.resumeWorkflow(requested ?? context.domainRun?.kind);
+          }
           context.domainRun?.resumeAfterExplicitContinuation(currentRecoveryPauseId);
           const parentTakeovers = await recoverPausedTranslationTakeovers();
           await context.persistHostState?.();
@@ -3942,7 +4021,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             parentTakeovers
           });
         }
-        const workflowSuspended = context.isWorkflowSuspended?.() === true;
         if (!requested && !workflowSuspended) {
           return context.domainRun?.fullWorkflow
             ? translationResumeReport({
@@ -8067,6 +8145,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           },
           reviewWorkerCount,
           prepareChunkReview: prepareTranslationChunkReview,
+          onStagingCandidatePrepared: bindPreparedTranslationStagingEvidence,
           onStagingCandidateCheckpoint: async (checkpoint) => {
             const document = manifest?.documents.find((candidate) => candidate.id === checkpoint.documentId);
             const bound = document ? bindPiSourceDocument(baseRequest, document) : request;

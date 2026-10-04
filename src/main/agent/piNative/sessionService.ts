@@ -48,6 +48,7 @@ import {
 import type { TranslationAlignmentHostState } from "./translationAlignmentState.ts";
 import { PiSessionRepository } from "./sessionRepository.ts";
 import { PiQueuedInputNotConsumedError, PiSessionAgentRuntime } from "./sessionAgentRuntime.ts";
+import { NonRetryableAssignmentError, isWorkflowStoppingAssignmentError } from "./assignmentFailure.ts";
 import { compactSubagentCards, interruptedSubagentCards } from "./subagentMessages.ts";
 import { YnSubagentSupervisor } from "./subagentSupervisor.ts";
 import { buildYnSystemPrompt } from "./systemPrompt.ts";
@@ -266,6 +267,13 @@ interface PreparedRuntime {
   active: ActiveSession;
   previous?: ActiveSession;
   retirePreviousSubagents: boolean;
+}
+
+function isWorkflowFailureReport(message: AgentMessage): boolean {
+  if (message.role !== "custom" || message.customType !== "subagent-completion") return false;
+  const details = message.details as { failureDisposition?: unknown } | undefined;
+  return details?.failureDisposition === "host_integrity_failure"
+    || details?.failureDisposition === "transport_retry_exhausted";
 }
 
 function ownedSubagentIds(active: ActiveSession | undefined): Set<string> {
@@ -1047,7 +1055,25 @@ export class PiNativeSessionService {
             message,
             childCompletionGeneration
           ),
-          createModelSelection: this.options.createModelSelection ?? createPiModelSelection
+          createModelSelection: this.options.createModelSelection ?? createPiModelSelection,
+          onFatalHostFailure: async (error) => {
+            const current = this.active.get(sessionKey(request.outputDir, request.sessionId));
+            if (!current) throw error;
+            current.error = error.message;
+            // Settlement still owns the active batch contract. Fence model work
+            // now, but let onSettled record accepted results and remaining debt.
+            current.hostState.workflowSuspended = true;
+            if (current.domainRun) current.hostState.domainRun = current.domainRun;
+            current.runtime.requestAbort();
+            try {
+              await current.persistHostState({ force: true });
+            } catch (persistenceError) {
+              current.error = `${error.message} Host failure persistence also failed: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`;
+              throw persistenceError;
+            } finally {
+              this.emitActiveState(current);
+            }
+          }
         });
     const appendHostState = this.options.appendHostState ?? appendYnSessionHostState;
     let runtime: PiSessionAgentRuntime | undefined;
@@ -1214,6 +1240,7 @@ export class PiNativeSessionService {
             hostState.taskPreparation.stopped = false;
           }
           await persistHostState();
+          subagents.resumeAfterHostFailure();
         } catch (error) {
           if (hostState.taskPreparation) hostState.taskPreparation.stopped = previousPreparationStopped;
           suspendedRun.suspend();
@@ -1267,7 +1294,14 @@ export class PiNativeSessionService {
           try {
             return await execute(...args);
           } finally {
-            await persistHostState();
+            try {
+              await persistHostState();
+            } catch (error) {
+              throw new NonRetryableAssignmentError(
+                `Failed to persist Host state after ${tool.name}: ${error instanceof Error ? error.message : String(error)}`,
+                error
+              );
+            }
           }
         }) as typeof tool.execute
       };
@@ -1292,6 +1326,7 @@ export class PiNativeSessionService {
       model: selection.model,
       thinkingLevel: normalizeThinkingLevel(selection.model, request.thinkingLevel),
       systemPrompt,
+      onFatalToolError: (error) => subagents.stopForHostFailure(error),
       tools,
       beforeToolCall: async () => hostState.taskPreparation?.pendingRequest && !hostState.taskPreparation.stopped
         ? { block: true, reason: "Preparation is complete; Host is handing off to the full workflow.", terminate: true }
@@ -1599,7 +1634,7 @@ export class PiNativeSessionService {
         if (active.compacting) throw new Error("Cannot deliver child completion while Pi compaction is still active.");
         if (active.running) {
           currentPromptTask = active.promptTask;
-          if (active.runtime.acceptsQueuedInput()) {
+          if (!isWorkflowFailureReport(message) && active.runtime.acceptsQueuedInput()) {
             consumptionTask = active.runtime.followUpMessageAndWaitForConsumption(message);
           }
           return;
@@ -1612,7 +1647,7 @@ export class PiNativeSessionService {
         active.promptOperation = operation;
         active.running = true;
         active.phase = "turn";
-        active.error = undefined;
+        if (!isWorkflowFailureReport(message)) active.error = undefined;
         this.emitActiveState(active);
         this.launchNativeInput(active, message, operation);
         startedTurn = true;
@@ -1710,7 +1745,8 @@ export class PiNativeSessionService {
       active.phase = "turn";
       this.emitActiveState(active);
       this.assertPromptOperation(active, operation);
-      await active.runtime.prompt(input, { images });
+      const reportOnly = typeof input !== "string" && isWorkflowFailureReport(input);
+      await active.runtime.prompt(input, { images, reportOnly });
       this.assertPromptOperation(active, operation);
       const incomplete = active.hostState.workflowSuspended || active.subagents.hasRunning()
         ? []
@@ -1726,6 +1762,9 @@ export class PiNativeSessionService {
     } catch (error) {
       if (this.isCurrentPromptOperation(active, operation) && !operation.cancelled) {
         active.error = error instanceof Error ? error.message : String(error);
+        if (error instanceof Error && isWorkflowStoppingAssignmentError(error)) {
+          await active.subagents.stopForHostFailure(error);
+        }
       }
     } finally {
       if (!this.isCurrentPromptOperation(active, operation) || operation.cancelled) return;

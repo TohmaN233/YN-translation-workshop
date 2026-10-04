@@ -241,10 +241,10 @@ const malformedRun = await runSupervisorScenario({
   review: async () => ({ accepted: false, feedback: [] })
 });
 assert.equal(malformedRun.batch.status, "failed");
-assert.equal(malformedRun.batch.subagents[0].failureDisposition, undefined);
+assert.equal(malformedRun.batch.subagents[0].failureDisposition, "host_integrity_failure");
 assert.equal(malformedRun.batch.subagents[0].parentTakeovers, undefined);
 assert.doesNotMatch(malformedRun.parentMessages[0].content, /parent Agent now owns the exact rejected lines/i);
-assert.match(malformedRun.parentMessages[0].content, /wait for an explicit user continuation/i);
+assert.match(malformedRun.parentMessages[0].content, /explicit resume/i);
 
 const accumulatedParentMessages = [];
 const accumulatedSupervisor = new YnSubagentSupervisor({

@@ -12,6 +12,7 @@
 
 - 修复大文件翻译卡死：分块检查只扫描当前范围，全文终检在后台执行，保留全部结构要求、审阅与中断恢复。
 - 校对建议复用翻译的格式保留要求与机械检查，防止丢失控制符、标签和占位符。
+- 修复中断恢复的候选文件与审阅记录绑定；恢复前由 Host 核查已有产物，不可重试的内部错误会停止整个工作流。
 
 ## 2.1.4 更新
 
@@ -182,7 +183,7 @@
 - 完整批次在创建 Worker 前原子预留；重复活动批次会在模型 runtime 创建前被拒绝。
 - Parent 和 Child 可以按需读取参考，但只有 Host 授予的 document / range / exact lines 能写产物。
 - staging 提升、domain revision、alignment evidence 与 Host JSONL 持久化是一个可回滚提交边界。
-- Function 失败会回到同一个 Pi turn，或形成明确的 Parent repair / resume 状态，不会静默吞错或伪装完成。
+- 可纠正的 Function 输入错误留在同一个 Pi turn；不可重试的内部或持久化错误立即停止整个工作流，保留产物和审阅证据并明确报错。
 - 完成不是模型说“完成了”，而是 Host 确认所有任务、修复债务、证据、产物和最终校验都结清。
 - 关键阶段、Worker、assignment、provider 错误、staging 与 hash 都有持久记录，便于停止、恢复和排查。
 

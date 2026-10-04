@@ -11,6 +11,9 @@ import {
   isNonRetryableAssignmentError,
   isParentTakeoverAssignmentError,
   isSubagentTransportExhaustedError,
+  isFatalHostAssignmentError,
+  isWorkflowStoppingAssignmentError,
+  NonRetryableAssignmentError,
   type ParentTakeoverAssignmentDetails
 } from "./assignmentFailure.ts";
 import { PiSessionRepository } from "./sessionRepository.ts";
@@ -66,7 +69,7 @@ export interface YnSubagentSnapshot {
   documentIds?: string[];
   assignmentCount?: number;
   completedAssignments?: number;
-  failureDisposition?: "parent_takeover_required" | "transport_retry_exhausted";
+  failureDisposition?: "parent_takeover_required" | "transport_retry_exhausted" | "host_integrity_failure";
   parentTakeovers?: ParentTakeoverAssignmentDetails[];
   assignmentFailures?: YnSubagentAssignmentFailure[];
 }
@@ -77,7 +80,7 @@ export interface YnSubagentAssignmentFailure {
   fromLine?: number;
   toLine?: number;
   error: string;
-  failureDisposition?: "parent_takeover_required" | "transport_retry_exhausted";
+  failureDisposition?: "parent_takeover_required" | "transport_retry_exhausted" | "host_integrity_failure";
 }
 
 export interface YnSubagentBatchSnapshot {
@@ -256,6 +259,7 @@ export interface YnSubagentSupervisorOptions {
   publishLiveCustomMessage?: (message: AgentMessage) => Promise<void>;
   notifyParent?: (message: AgentMessage) => Promise<void>;
   createModelSelection?: typeof createPiModelSelection;
+  onFatalHostFailure?: (error: Error) => Promise<void> | void;
 }
 
 /**
@@ -266,6 +270,7 @@ export interface YnSubagentSupervisorOptions {
  * read-only project tools; artifact mutations remain behind YN host validators.
  */
 export class YnSubagentSupervisor {
+  private fatalHostFailure?: Error;
   private readonly batches = new Map<string, YnSubagentBatchRecord<unknown>>();
   private readonly options: YnSubagentSupervisorOptions;
   private readonly activeBatchIds = new Set<string>();
@@ -404,6 +409,10 @@ export class YnSubagentSupervisor {
     onStagingCandidateCheckpoint?: (
       checkpoint: PiTranslationStagingCheckpoint
     ) => Promise<void> | void;
+    onStagingCandidatePrepared?: (
+      prepared: { documentId: string; fromLine: number; toLine: number; candidatePath: string },
+      signal?: AbortSignal
+    ) => Promise<void> | void;
     onTaskCompleted?: (result: PiTranslationSubagentResult, task: PiTranslationSubagentTask) => Promise<void> | void;
     claimGate?: {
       isBlocked: () => boolean;
@@ -464,6 +473,7 @@ export class YnSubagentSupervisor {
             registerControl: worker.registerControl,
             onArtifactMutation: options.onArtifactMutation,
             onStagingCandidateCheckpoint: options.onStagingCandidateCheckpoint,
+            onStagingCandidatePrepared: options.onStagingCandidatePrepared,
             onChunkReadyForReview: reviewPool?.enqueue ?? options.onChunkReadyForReview,
             signal: worker.signal
           });
@@ -477,6 +487,7 @@ export class YnSubagentSupervisor {
               createModelSelection: this.options.createModelSelection,
               onArtifactMutation: options.onArtifactMutation,
               onStagingCandidateCheckpoint: options.onStagingCandidateCheckpoint,
+              onStagingCandidatePrepared: options.onStagingCandidatePrepared,
               onChunkReadyForReview: reviewPool?.enqueue ?? options.onChunkReadyForReview,
               signal
             }),
@@ -494,6 +505,7 @@ export class YnSubagentSupervisor {
           registerControl,
           onArtifactMutation: options.onArtifactMutation,
           onStagingCandidateCheckpoint: options.onStagingCandidateCheckpoint,
+          onStagingCandidatePrepared: options.onStagingCandidatePrepared,
           onChunkReadyForReview: reviewPool?.enqueue ?? options.onChunkReadyForReview,
           signal
         }),
@@ -853,6 +865,32 @@ export class YnSubagentSupervisor {
     return count;
   }
 
+  resumeAfterHostFailure(): void {
+    if (this.hasRunning()) throw new Error("Cannot resume a Host failure while child pools still run.");
+    this.fatalHostFailure = undefined;
+  }
+
+  async stopForHostFailure(error: Error): Promise<void> {
+    if (this.fatalHostFailure) return;
+    this.fatalHostFailure = error;
+    // Unlike a user Stop, preserve failure completion so the parent reports the
+    // exact error. No worker may claim another assignment or retry this failure.
+    for (const pool of this.activeTranslationReviewPools.values()) pool.abort(error);
+    for (const batchId of this.activeBatchIds) {
+      const batch = this.batches.get(batchId);
+      if (batch && !batch.abortController.signal.aborted) batch.abortController.abort(error);
+    }
+    try {
+      await this.options.onFatalHostFailure?.(error);
+    } catch (persistenceError) {
+      this.fatalHostFailure = new NonRetryableAssignmentError(
+        `${error.message} Host failure persistence also failed: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`,
+        new AggregateError([error, persistenceError])
+      );
+      throw this.fatalHostFailure;
+    }
+  }
+
   async waitForAll(): Promise<void> {
     while (this.activeBatchIds.size > 0) {
       const active = [...this.activeBatchIds]
@@ -998,7 +1036,12 @@ export class YnSubagentSupervisor {
               record.completedAssignments = (record.completedAssignments ?? 0) + 1;
               item.resolve(result.decision);
             } catch (error) {
-              if (!abortController.signal.aborted && item.attempts < 2) {
+              if (error instanceof Error && isWorkflowStoppingAssignmentError(error)) {
+                record.failureDisposition = isFatalHostAssignmentError(error) ? "host_integrity_failure" : "transport_retry_exhausted";
+                item.reject(error);
+                await this.stopForHostFailure(error);
+              }
+              if (!abortController.signal.aborted && !isNonRetryableAssignmentError(error) && item.attempts < 2) {
                 item.attempts += 1;
                 queue.unshift(item);
                 wakeWorkers();
@@ -1027,22 +1070,35 @@ export class YnSubagentSupervisor {
             ? undefined
             : workerFailure instanceof Error ? workerFailure.message : String(workerFailure);
           if (persistent) {
-            await persistent.finish({
-              status: record.status,
-              assignmentCount: record.assignmentCount ?? 0,
-              completedAssignments: record.completedAssignments ?? 0,
-              documentIds: [...(record.documentIds ?? [])],
-              ...(record.error ? { error: record.error } : {})
-            }).catch((error) => {
-              firstFailure ??= error;
-              record.status = "failed";
-              record.error = error instanceof Error ? error.message : String(error);
-            });
-            await persistent.dispose().catch((error) => {
-              firstFailure ??= error;
-              record.status = "failed";
-              record.error = error instanceof Error ? error.message : String(error);
-            });
+            try {
+              await persistent.finish({
+                status: record.status,
+                assignmentCount: record.assignmentCount ?? 0,
+                completedAssignments: record.completedAssignments ?? 0,
+                documentIds: [...(record.documentIds ?? [])],
+                ...(record.error ? { error: record.error } : {})
+              }).catch(async (error) => {
+                const terminalError = new NonRetryableAssignmentError(
+                  `Review worker finalization failed: ${error instanceof Error ? error.message : String(error)}`, error
+                );
+                firstFailure ??= terminalError;
+                record.status = "failed";
+                record.error = terminalError.message;
+                record.failureDisposition = "host_integrity_failure";
+                await this.stopForHostFailure(terminalError);
+              });
+            } finally {
+              await persistent.dispose().catch(async (error) => {
+                const terminalError = new NonRetryableAssignmentError(
+                  `Review worker disposal failed: ${error instanceof Error ? error.message : String(error)}`, error
+                );
+                firstFailure ??= terminalError;
+                record.status = "failed";
+                record.error = terminalError.message;
+                record.failureDisposition = "host_integrity_failure";
+                await this.stopForHostFailure(terminalError);
+              });
+            }
           }
           record.control = undefined;
         }
@@ -1064,6 +1120,9 @@ export class YnSubagentSupervisor {
         throw abortController.signal.reason ?? new Error("Translation review pool is closed.");
       }
       const prepared = await options.prepare(review);
+      if (closed || abortController.signal.aborted) {
+        throw abortController.signal.reason ?? new Error("Translation review pool is closed.");
+      }
       if ("decision" in prepared) return prepared.decision;
       const decision = new Promise<PiTranslationChunkReviewDecision>((resolve, reject) => {
         queue.push({ prepared, attempts: 1, resolve, reject });
@@ -1097,6 +1156,7 @@ export class YnSubagentSupervisor {
   }
 
   private startBatch<TTask, TResult>(options: StartBatchOptions<TTask, TResult>): YnSubagentBatchSnapshot {
+    if (this.fatalHostFailure) throw this.fatalHostFailure;
     if (options.signal?.aborted) {
       throw new DOMException("Subagent delegation was aborted.", "AbortError");
     }
@@ -1468,9 +1528,20 @@ export class YnSubagentSupervisor {
                 record.result = result;
                 record.results.push(result);
                 record.completedAssignments = (record.completedAssignments ?? 0) + 1;
-                await options.onTaskCompleted?.(result, task);
+                try {
+                  await options.onTaskCompleted?.(result, task);
+                } catch (error) {
+                  throw new NonRetryableAssignmentError(
+                    `Host assignment commit failed: ${error instanceof Error ? error.message : String(error)}`, error
+                  );
+                }
               } catch (error) {
                 const nonRetryable = isNonRetryableAssignmentError(error);
+                if (error instanceof Error && isWorkflowStoppingAssignmentError(error)) {
+                  record.failureDisposition = isFatalHostAssignmentError(error) ? "host_integrity_failure" : "transport_retry_exhausted";
+                  rememberFailure(error);
+                  await this.stopForHostFailure(error);
+                }
                 if (
                   !abortController.signal.aborted
                   && !nonRetryable
@@ -1506,7 +1577,12 @@ export class YnSubagentSupervisor {
                           rejectedLines: error.details.rejectedLines,
                           error: handoffMessage
                         }));
-                        rememberFailure(handoffError);
+                        const terminalHandoffError = new NonRetryableAssignmentError(
+                          `Parent translation takeover handoff failed: ${handoffMessage}`, handoffError
+                        );
+                        record.failureDisposition = "host_integrity_failure";
+                        rememberFailure(terminalHandoffError);
+                        await this.stopForHostFailure(terminalHandoffError);
                       }
                     }
                   }
@@ -1567,6 +1643,10 @@ export class YnSubagentSupervisor {
             }
           } catch (error) {
             rememberFailure(error);
+            if (error instanceof Error && isWorkflowStoppingAssignmentError(error)) {
+              record.failureDisposition = isFatalHostAssignmentError(error) ? "host_integrity_failure" : "transport_retry_exhausted";
+              await this.stopForHostFailure(error);
+            }
           } finally {
             record.status = abortController.signal.aborted
               ? "stopped"
@@ -1582,14 +1662,25 @@ export class YnSubagentSupervisor {
                   ...(record.error ? { error: record.error } : {})
                 });
               } catch (error) {
-                rememberFailure(error);
+                const terminalError = new NonRetryableAssignmentError(
+                  `Worker finalization failed: ${error instanceof Error ? error.message : String(error)}`, error
+                );
+                rememberFailure(terminalError);
+                record.failureDisposition = "host_integrity_failure";
                 record.status = "failed";
-              }
-              try {
-                await persistentWorker.dispose();
-              } catch (error) {
-                rememberFailure(error);
-                record.status = "failed";
+                await this.stopForHostFailure(terminalError);
+              } finally {
+                try {
+                  await persistentWorker.dispose();
+                } catch (error) {
+                  const terminalError = new NonRetryableAssignmentError(
+                    `Worker disposal failed: ${error instanceof Error ? error.message : String(error)}`, error
+                  );
+                  rememberFailure(terminalError);
+                  record.failureDisposition = "host_integrity_failure";
+                  record.status = "failed";
+                  await this.stopForHostFailure(terminalError);
+                }
               }
             }
             record.control = undefined;
@@ -1625,6 +1716,9 @@ export class YnSubagentSupervisor {
     batch.promise = Promise.allSettled(records.map((record) => record.promise))
       .then(async () => {
         batch.completedAt = Date.now();
+        if (this.fatalHostFailure && firstFailure !== undefined) {
+          firstFailure = this.fatalHostFailure;
+        }
         if (firstFailure !== undefined) {
           batch.status = batch.stopRequested || stopRequestedByParent ? "stopped" : "failed";
           batch.error = firstFailure instanceof Error ? firstFailure.message : String(firstFailure);
@@ -1641,14 +1735,23 @@ export class YnSubagentSupervisor {
         try {
           await options.onSettled?.(outcome);
         } catch (error) {
+          let terminalError: Error = new NonRetryableAssignmentError(
+            `Host batch settlement failed: ${error instanceof Error ? error.message : String(error)}`, error
+          );
           batch.status = "failed";
-          batch.error = error instanceof Error ? error.message : String(error);
+          batch.error = terminalError.message;
+          try {
+            await this.stopForHostFailure(terminalError);
+          } catch (stopError) {
+            terminalError = stopError instanceof Error ? stopError : new NonRetryableAssignmentError(String(stopError));
+            batch.error = terminalError.message;
+          }
           snapshot = this.snapshot(batch);
           outcome = {
             batch: snapshot,
             results: records.flatMap((record) => record.results),
             failures: records.flatMap((record) => record.assignmentFailures ?? []),
-            error
+            error: terminalError
           };
         }
         if (!batch.stopRequested && !stopRequestedByParent) {
@@ -1741,7 +1844,9 @@ export class YnSubagentSupervisor {
     );
     const transportRetryExhausted = batch.subagents.some(
       (child) => child.failureDisposition === "transport_retry_exhausted"
-    );
+    ) || isSubagentTransportExhaustedError(this.fatalHostFailure);
+    const fatalHostFailure = batch.subagents.some((child) => child.failureDisposition === "host_integrity_failure")
+      || isFatalHostAssignmentError(this.fatalHostFailure);
     const parentTakeovers = batch.subagents.flatMap((child) => (
       (child.parentTakeovers ?? []).map((takeover) => ({ subagentId: child.id, ...takeover }))
     ));
@@ -1756,6 +1861,8 @@ export class YnSubagentSupervisor {
         context?.content?.trim() || "",
         batch.status === "completed"
           ? "The background wait is over. Do not keep waiting or repeat a prior status response. Resume the parent workflow now: inspect the child artifacts, merge as needed, run the final host validation, and report the result."
+          : fatalHostFailure
+            ? "An unretryable Host integrity or persistence failure stopped the entire workflow and both child pools. Report the exact error to the user. Do not retry tools, start another batch, or resume automatically. Existing artifacts and review evidence are retained; an explicit resume must reconcile them before any model call."
           : transportRetryExhausted
             ? "The provider transport remained unavailable after the bounded native Pi retry budget. Do not automatically start another child batch or drain more assignments. Report this recoverable pause to the user and wait for an explicit continuation after connectivity is available; accepted artifacts and outstanding Host debt remain intact."
             : parentTakeoverRequired && parentTakeoverReady
@@ -1772,6 +1879,7 @@ export class YnSubagentSupervisor {
         subagents: completionSubagents,
         ...(parentTakeoverRequired ? { failureDisposition: "parent_takeover_required" } : {}),
         ...(transportRetryExhausted ? { failureDisposition: "transport_retry_exhausted" } : {}),
+        ...(fatalHostFailure ? { failureDisposition: "host_integrity_failure" } : {}),
         ...(parentTakeovers.length > 0 ? { parentTakeovers } : {}),
         ...(assignmentFailures.length > 0 ? { assignmentFailures } : {}),
         ...(context?.details ? { completionContext: context.details } : {}),

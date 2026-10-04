@@ -24,6 +24,7 @@ async function buildVerifier(entryPoint, outputName) {
   // Bundled verifiers resolve the prescan worker relative to their own bundle,
   // just as the packaged main process resolves dist/main/proofreadPrescanWorker.js.
   await copyFile(path.join(root, "dist/main/proofreadPrescanWorker.js"), path.join(tempDir, "proofreadPrescanWorker.js"));
+  await copyFile(path.join(root, "dist/main/translationValidationWorker.js"), path.join(tempDir, "translationValidationWorker.js"));
   const outfile = path.join(tempDir, outputName);
   await build({
     absWorkingDir: root,

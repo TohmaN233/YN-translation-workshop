@@ -4674,6 +4674,18 @@ app.whenReady().then(async () => {
     if (!heartbeatTicks || prescanSignals.filter((signal) => signal.code === "H3").length !== 5000) {
       throw new Error("Packaged proofreading worker failed responsiveness/signal verification.");
     }
+    const { runTranslationValidation } = await import("./agent/piNative/translationValidationService.ts");
+    let translationValidationHeartbeatTicks = 0;
+    const translationHeartbeat = setInterval(() => { translationValidationHeartbeatTicks += 1; }, 10);
+    try {
+      const validation = await runTranslationValidation({
+        sourceText: "魔術師 {name}\n".repeat(5000), candidateText: "法师\n".repeat(5000),
+        validationOptions: { languagePair: "ja->zh-CN" }
+      });
+      if (!translationValidationHeartbeatTicks || validation.blocking.filter((finding) => finding.code === "placeholder_mismatch").length !== 5000) {
+        throw new Error("Packaged translation validation worker failed responsiveness/structure verification.");
+      }
+    } finally { clearInterval(translationHeartbeat); }
     const { scanSourcePreparation } = await import("./agent/sourcePreparationScan.ts");
     const sourcePreparationFixture = path.join(path.dirname(portableSmokeMarkerPath), `source-preparation-${process.pid}.txt`);
     await writeFile(sourcePreparationFixture, Array.from({ length: 5000 }, () => "[VOICE:42]Hello {name} %s <WAIT>").join("\n"), { encoding: "utf8", flag: "wx" });
@@ -4700,7 +4712,9 @@ app.whenReady().then(async () => {
       proofreadWorkerVerified: true,
       proofreadHeartbeatTicks: heartbeatTicks,
       sourcePreparationWorkerVerified: true,
-      sourcePreparationHeartbeatTicks
+      sourcePreparationHeartbeatTicks,
+      translationValidationWorkerVerified: true,
+      translationValidationHeartbeatTicks
     }, null, 2)}\n`, "utf8");
     app.quit();
     return;

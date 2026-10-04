@@ -204,6 +204,9 @@ async function run() {
     fauxAssistantMessage(fauxToolCall("completeFixtureWorkflow", {}, { id: "proof-finish" }), { stopReason: "toolUse" }), fauxAssistantMessage(fauxText("Fixture proofread."))]);
   const proofread = await start(main!, "proofread", { ...settings, translationPath: translatedPath, splitSize: 37 }, true); await terminal(proofread.sessionId);
   assert(requests.at(-1).proofreadSplitSize === 37, "Edited settings must reach native proofreading");
+  assert(requests.at(-1).prompt.includes("same structural preservation requirements as translation"), "Built-in proofreading must receive structural preservation instructions");
+  assert(requests.at(-1).prompt.includes("required structure, not prose errors"), "Control symbols must not be diagnosed as prose errors");
+  assert(requests.at(-1).customPreserveRules?.[0].pattern === rules[0].pattern && requests.at(-1).prompt.includes(rules[0].pattern), "The actual preservation rule must reach proofreading metadata and prompt");
   assert(await readFile(translatedPath, "utf8") === initialTranslation, "Auto-application must never write TXT");
   const state = await readProjectState(fixture); assert(state.lastProposalReviewHtml, "Completion must open final report");
   const stateDir = path.join(fixture, ".translation-workshop", "state");

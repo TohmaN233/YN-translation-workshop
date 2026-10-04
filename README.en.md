@@ -1,4 +1,4 @@
-# YN Translation Workshop 2.1.4
+# YN Translation Workshop 2.1.5
 
 New to YN? Start with the [project introduction (Chinese)](https://tgy233.top/tgypage/yn/), then follow the guide below to begin using the workshop.
 
@@ -7,6 +7,11 @@ A local workbench that brings human line editing, project assets, full AI transl
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
 [中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## What's new in 2.1.5
+
+- Fix large-file translation freezes with range-scoped chunk checks and background final validation, preserving structural checks, review and recovery.
+- Apply translation preservation rules and mechanical checks to proofreading suggestions to protect control codes, tags and placeholders.
 
 ## What's new in 2.1.4
 
@@ -60,13 +65,13 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.1.4-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.1.4-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.1.5-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.1.5-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.
 
-Local 2.1.4 artifacts are under `release/`; the releases page lists only versions actually uploaded.
+Local 2.1.5 artifacts are under `release/`; the releases page lists only versions actually uploaded.
 
 ## Complete feature list
 
@@ -164,6 +169,7 @@ Local 2.1.4 artifacts are under `release/`; the releases page lists only version
 - Proofread Workers are read-only and may submit only evidence-bound structured findings and proper-name candidates.
 - Folder mode prescans all files before entering one cross-file staged assignment queue.
 - Findings replace their scope atomically and deduplicate. Each requires a global row, category, evidence, and complete replacement line.
+- Proofreading prompts include project preservation rules and treat control codes, tags, and placeholders as required structure. Submission uses translation's structural checks to reject missing or changed symbols, count changes, and physical newlines.
 - No-op fixes, out-of-range rows, routine target-language punctuation differences, and malformed submissions are rejected.
 - Single-file and folder runs persist exactly one Findings JSON. The product renders human review HTML from that JSON.
 

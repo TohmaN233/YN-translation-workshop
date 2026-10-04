@@ -1,4 +1,5 @@
 import { YN_DEFAULT_SPLIT_SIZE, type PiFolderSourceDocument } from "../agent/piSessionContract.ts";
+import { PROOFREAD_STRUCTURE_INSTRUCTIONS } from "../agent/proofreadInstructions.ts";
 import {
   normalizeCustomPreserveRules,
   type CustomPreserveRule
@@ -282,7 +283,9 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
       "File order (removed names are skipped; braces remove relative ordering only):",
       defaults.folderTranslationOrder || "{\n(all manifest files in filename order)\n}"
     ] : []),
-    `- Report output: ${outputPath(defaults.outputDir, folderBatch ? "folder.proofread.json" : `${defaults.basename}.proofread.json`)}`
+    `- Report output: ${outputPath(defaults.outputDir, folderBatch ? "folder.proofread.json" : `${defaults.basename}.proofread.json`)}`,
+    "",
+    PROOFREAD_STRUCTURE_INSTRUCTIONS
   ].join("\n");
 }
 

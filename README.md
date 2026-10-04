@@ -1,4 +1,4 @@
-# YN Translation Workshop 2.1.4
+# YN Translation Workshop 2.1.5
 
 第一次了解 YN？可以先读[项目介绍 · YN Translation Workshop](https://tgy233.top/tgypage/yn/)，再按下面的教程开始使用。
 
@@ -7,6 +7,11 @@
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
 [English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [发布下载](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## 2.1.5 更新
+
+- 修复大文件翻译卡死：分块检查只扫描当前范围，全文终检在后台执行，保留全部结构要求、审阅与中断恢复。
+- 校对建议复用翻译的格式保留要求与机械检查，防止丢失控制符、标签和占位符。
 
 ## 2.1.4 更新
 
@@ -60,13 +65,13 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.1.4-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.1.4-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.1.5-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.1.5-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。
 
-本地 2.1.4 构建位于 `release/`；公开包以[发布页面](https://github.com/TohmaN233/YN-translation-workshop/releases)实际上传的版本为准。
+本地 2.1.5 构建位于 `release/`；公开包以[发布页面](https://github.com/TohmaN233/YN-translation-workshop/releases)实际上传的版本为准。
 
 ## 完整功能清单
 
@@ -164,6 +169,7 @@
 - 校对 Worker 只读原文、译文和项目资产，只能提交带证据的结构化 findings 与专名候选。
 - 文件夹模式先预扫描全部文件，再把所有文档放进同一个跨文件 staged assignment 队列。
 - findings 按 scope 原子替换和去重，必须包含全局行号、问题类型、证据和完整可替换建议。
+- 校对提示词携带项目保留规则，控制符、标签和占位符本身不作为正文错误；建议译文提交时复用翻译的结构校验，拒绝符号丢失、改动、数量变化和实际换行。
 - 无变化修正、越界行、普通目标语言标点差异和格式不合格的提交会被拒绝。
 - 单文件和文件夹都只持久化一份 findings JSON；人类审阅 HTML 由产品从该 JSON 生成。
 

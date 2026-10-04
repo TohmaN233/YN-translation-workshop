@@ -388,6 +388,10 @@ await test("folder proofreading runs every file through real persistent workers 
       assert.match(prompt, /both.*source.*current.*(?:have|contain).*no.*prefix.*do not.*(?:invent|diagnose)/i);
       assert.match(prompt, /suggestedFix.*(?:must change|no-op|identical)/i);
       assert.match(prompt, /readAssignedProofreadContext.*complete owned rows.*do not.*listProjectDir/i);
+      const system = getCurrentSystemPrompt(context.messages);
+      assert.match(system, /same structural preservation requirements as translation/);
+      assert.match(system, /required structure, not prose errors/);
+      assert.match(prompt, /test control.*\/test-control\//);
       return fauxAssistantMessage(fauxToolCall("readAssignedProofreadContext", {}), { stopReason: "toolUse" });
     }
     if (toolResults === 1) {
@@ -434,6 +438,7 @@ await test("folder proofreading runs every file through real persistent workers 
       languagePair: "en->zh-CN",
       proofreadMode: "split",
       proofreadSplitSize: 2,
+      customPreserveRules: [{ label: "test control", pattern: "test-control", flags: "u" }],
       subagentEnabled: true,
       subagentCount: 1
     };

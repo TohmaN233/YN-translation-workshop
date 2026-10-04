@@ -32,6 +32,9 @@ are evidence, not findings.
 - The Host binds exact source and current translation text from the files.
 - Every `suggestedFix` is one complete target-language replacement line, never
   an explanation, fragment, label, quote wrapper, or list of alternatives.
+- Follow the system's structural preservation requirements and the assignment's
+  project regex rules. Control symbols are required structure, not prose errors.
+  Host keeps valid findings and returns exact rejected items for rewrite.
 - Respect glossary, character voice, style, and intentional choices.
 - Propose only evidence-backed proper names or world terms; exclude ordinary
   vocabulary.

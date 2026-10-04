@@ -33,6 +33,8 @@ console.log(JSON.stringify({browserViewBaseline:true,electron:process.versions.e
     banner: { js: 'import { createRequire as __ynCreateRequire } from "node:module"; const require = __ynCreateRequire(import.meta.url);' }, external });
   await build({ absWorkingDir: root, entryPoints: ["src/main/agent/sourcePreparationWorker.ts"], bundle: true,
     platform: "node", format: "esm", outfile: path.join(tempDir, "sourcePreparationWorker.js") });
+  await build({ absWorkingDir: root, entryPoints: ["src/main/agent/piNative/translationValidationWorker.ts"], bundle: true,
+    platform: "node", format: "esm", outfile: path.join(tempDir, "translationValidationWorker.js") });
   const result = await new Promise(resolve => {
     const child = spawn(electronPath, ["--disable-gpu", "--disable-gpu-compositing", "--in-process-gpu", "--no-sandbox", `--user-data-dir=${userDataDir}`, path.join(tempDir, "main.mjs")], {
       cwd: root, windowsHide: true, env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "true", YN_ELECTRON_VERIFY_HEADLESS: "1", YN_ELECTRON_VERIFY_OFFSCREEN: "1" }, stdio: ["ignore", "pipe", "pipe"]
@@ -60,7 +62,7 @@ console.log(JSON.stringify({browserViewBaseline:true,electron:process.versions.e
   });
   if (smokeCode !== 0) throw new Error("Actual bundled hidden worker smoke failed.");
   const smoke = JSON.parse(await readFile(smokeMarker, "utf8"));
-  if (!smoke.sourcePreparationWorkerVerified || !smoke.sourcePreparationHeartbeatTicks || !smoke.proofreadWorkerVerified || smoke.windowVisible) throw new Error("Hidden bundled worker smoke did not prove responsiveness and invisible startup.");
+  if (!smoke.sourcePreparationWorkerVerified || !smoke.sourcePreparationHeartbeatTicks || !smoke.proofreadWorkerVerified || !smoke.translationValidationWorkerVerified || !smoke.translationValidationHeartbeatTicks || smoke.windowVisible) throw new Error("Hidden bundled worker smoke did not prove responsiveness and invisible startup.");
   console.log(JSON.stringify({ bundledWorkerSmoke: true, sourcePreparationWorkerVerified: true, sourcePreparationHeartbeatTicks: smoke.sourcePreparationHeartbeatTicks }));
 } finally {
   // Both resolved targets are explicit fixture directories allocated beneath root.

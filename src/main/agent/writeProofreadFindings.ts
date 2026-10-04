@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { normalizeProofreadFindingRecord } from "../../shared/core/reviewReport.ts";
 import { splitTextLines } from "../../shared/validation/translationValidator.ts";
+import { validateProofreadReplacement } from "../../shared/validation/proofreadReplacement.ts";
+import type { CustomPreserveRule } from "../../shared/validation/customPreserveRules.ts";
 import { resolveProjectPath } from "./projectPathGuard.ts";
 import { resolveTranslationCandidatePath } from "./writeTranslationChunk.ts";
 
@@ -23,6 +25,8 @@ export interface WriteProofreadFindingsArgs {
   reportScope?: ProofreadReportScope;
   kind: ProofreadReportKind;
   content: string;
+  /** Host-owned rules shared with translation; never authored by the model. */
+  customPreserveRules?: CustomPreserveRule[];
   /** Subagent chunk label e.g. "Chunk 001" for split mode headings */
   chunkLabel?: string;
   mode?: "split" | "montecarlo" | "agent";
@@ -361,7 +365,7 @@ function parseFindingsContent(content: string, chunkLabel?: string): ProofreadFi
         translationLine: finding.translationLine ?? sourceLine,
         sourceText: exactSourceText ?? finding.sourceText ?? "",
         currentTranslation: exactCurrentTranslation ?? finding.currentTranslation ?? "",
-        suggestedFix: finding.suggestedFix,
+        suggestedFix: exactRecordString(record, ["suggestedFix", "suggestion", "suggestedTranslation", "replacement", "newText", "fix"]) ?? finding.suggestedFix,
         rationale: finding.rationale
       };
       if (finding.agentId) normalized.agentId = finding.agentId;
@@ -895,6 +899,13 @@ async function writeFindingsJson(filePath: string, args: WriteProofreadFindingsA
     const mechanicalScan = normalizeMechanicalScan(args.mechanicalScan, sourceLines, translationLines);
     assertSuggestedFixControlPrefixes(incoming);
     assertSuggestedFixChangesTranslation(incoming);
+    for (const finding of incoming) {
+      const failures = validateProofreadReplacement(finding.sourceText, finding.suggestedFix,
+        { customPreserveRules: args.customPreserveRules }, finding.sourceLine);
+      if (failures.length) {
+        throw new Error(`Finding ${finding.id}: ${failures.map(failure => `${failure.code}: ${failure.detail}`).join("; ")}`);
+      }
+    }
     const existingFindings: ProofreadFinding[] = folderScope
       ? existing?.schemaVersion === "2.0"
         ? existing.findings.filter((finding) => finding.documentId === args.documentId)

@@ -5,6 +5,7 @@ import {
   type PiSessionPromptRequest
 } from "../../../shared/agent/piSessionContract.ts";
 import { CHARACTER_BIBLE_BUILD_INSTRUCTIONS } from "../../../shared/agent/workspaceAssetContract.ts";
+import { PROOFREAD_STRUCTURE_INSTRUCTIONS } from "../../../shared/agent/proofreadInstructions.ts";
 
 export interface BuildYnSystemPromptOptions {
   approvedStyleGuide?: string;
@@ -164,6 +165,7 @@ export function buildYnSystemPrompt(
     ] : []),
     ...(approvedStyleGuide ? ["APPROVED PROJECT STYLE GUIDE:", approvedStyleGuide, ""] : []),
     ...customPreserveRuleContext(request),
+    ...(request.workflowIntent === "proofread" ? [PROOFREAD_STRUCTURE_INSTRUCTIONS, ""] : []),
     "YN INTERFACE:",
     "When the user refers to the visible page, selection, or current line, call readYnInterfaceContext. File tools remain authoritative for reads and writes.",
     "",

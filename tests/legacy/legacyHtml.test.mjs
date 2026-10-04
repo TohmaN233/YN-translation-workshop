@@ -386,6 +386,7 @@ await test("v16 line-review upgrade preserves advanced proofreading and subagent
 
 await test("line-review upgrades an old Agent embed even when its page marker is current", async () => {
   const { renderLineReviewHtml } = await import("../../src/shared/core/html.ts");
+  const { PROOFREAD_STRUCTURE_INSTRUCTIONS } = await import("../../src/shared/agent/proofreadInstructions.ts");
   const { agentChatFlowVersion } = await import("../../src/shared/core/agentChatEmbed.ts");
   const current = renderLineReviewHtml({
     title: "line-review Agent protocol round trip",
@@ -397,11 +398,13 @@ await test("line-review upgrades an old Agent embed even when its page marker is
   assert.equal(needsLegacyLineReviewUpgrade(current), false);
   const oldEmbed = current.replaceAll(agentChatFlowVersion, "pi-web-react-embedded-v3");
   assert.equal(needsLegacyLineReviewUpgrade(oldEmbed), true);
-  const oldPromptSettings = current.replace(
+  const oldPromptSettings = current.replaceAll(PROOFREAD_STRUCTURE_INSTRUCTIONS, "Old proofreading instructions.").replace(
     `name="translation-workshop-prompt-settings" content="${PROMPT_SETTINGS_VERSION}"`,
     `name="translation-workshop-prompt-settings" content="${PROMPT_SETTINGS_VERSION - 1}"`
   );
   assert.equal(needsLegacyLineReviewUpgrade(oldPromptSettings), true);
+  const upgradedPromptSettings = upgradeLegacyLineReviewHtmlContent(oldPromptSettings, "line-review-test.html", "G:/proj/html/line-review-test.html");
+  assert.ok(upgradedPromptSettings.includes(PROOFREAD_STRUCTURE_INSTRUCTIONS), "Old HTML must receive the current proofreading instructions");
 });
 
 await test("line-review upgrades the previous v6 embed after EPUB route hardening", async () => {

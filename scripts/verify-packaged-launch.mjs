@@ -117,6 +117,8 @@ try {
   assert.equal(marker.windowVisible, false, "Packaged smoke verification displayed a product window");
   assert.equal(marker.proofreadWorkerVerified, true, "Packaged proofreading worker did not finish its background scan");
   assert.ok(marker.proofreadHeartbeatTicks > 0, "Packaged proofreading blocked the main event loop");
+  assert.equal(marker.translationValidationWorkerVerified, true, "Packaged translation validation worker did not complete");
+  assert.ok(marker.translationValidationHeartbeatTicks > 0, "Packaged translation validation blocked the main event loop");
   assert.equal(marker.sourcePreparationWorkerVerified, true, "Packaged source preparation worker did not finish its background scan");
   assert.ok(marker.sourcePreparationHeartbeatTicks > 0, "Packaged source preparation blocked the main event loop");
   assert.match(String(marker.rendererUrl), /dist\/renderer\/index\.html/i, "Packaged smoke marker did not report the packaged renderer");
@@ -140,6 +142,8 @@ try {
     windowVisible: marker.windowVisible,
     proofreadWorkerVerified: marker.proofreadWorkerVerified,
     proofreadHeartbeatTicks: marker.proofreadHeartbeatTicks,
+    translationValidationWorkerVerified: marker.translationValidationWorkerVerified,
+    translationValidationHeartbeatTicks: marker.translationValidationHeartbeatTicks,
     sourcePreparationWorkerVerified: marker.sourcePreparationWorkerVerified,
     sourcePreparationHeartbeatTicks: marker.sourcePreparationHeartbeatTicks,
     cleanExit: true

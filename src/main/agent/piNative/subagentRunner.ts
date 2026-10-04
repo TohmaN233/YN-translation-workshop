@@ -26,6 +26,8 @@ import {
   type TranslationValidationResult
 } from "../../../shared/validation/translationValidator.ts";
 import type { PiSessionPromptRequest } from "../../../shared/agent/piSessionContract.ts";
+import { PROOFREAD_STRUCTURE_INSTRUCTIONS } from "../../../shared/agent/proofreadInstructions.ts";
+import { validateProofreadReplacement } from "../../../shared/validation/proofreadReplacement.ts";
 import { resolveThinkingLevelForModel } from "../../../shared/agent/thinkingLevels.ts";
 import { readProjectAssets, readWorkflowProjectAssets } from "../projectAssets.ts";
 import { listProjectDir, readProjectFile, searchProjectText } from "../projectFileTools.ts";
@@ -65,6 +67,7 @@ import {
   ynTranslationStructuralWarnings
 } from "./translationArtifactValidation.ts";
 import { createYnTranslationValidationOptions } from "./translationValidationContext.ts";
+import { runTranslationValidation } from "./translationValidationService.ts";
 import {
   requestDocumentId,
   resolvePiReadablePath,
@@ -1537,11 +1540,19 @@ async function validateAssignedRange(context: PiTranslationSubagentContext, tool
   const from = context.task.fromLine - 1;
   const sourceSlice = source.slice(from, context.task.toLine);
   const candidateSlice = candidate.slice(from, context.task.toLine);
-  const validation = validateTranslationCandidate(
-    sourceSlice.join("\n"),
-    candidateSlice.join("\n"),
-    await createYnTranslationValidationOptions(context.request)
-  );
+  const sourceText = sourceSlice.length ? sourceSlice.join("\n") + "\n" : "";
+  const candidateText = candidateSlice.length ? candidateSlice.join("\n") + "\n" : "";
+  const validationOptions = await createYnTranslationValidationOptions(context.request);
+  // A single model page is bounded by the existing 500-row contract. Larger
+  // logical assignments must not run a document-sized scan on the main thread.
+  const validation = sourceSlice.length <= MAX_TRANSLATION_MODEL_PAGE_LINES
+    ? validateTranslationCandidate(sourceText, candidateText, validationOptions)
+    : await runTranslationValidation({
+        sourceText, candidateText, validationOptions,
+        signal: toolSignal && context.signal ? AbortSignal.any([toolSignal, context.signal]) : toolSignal ?? context.signal,
+        diagnostics: { outputDir: context.request.outputDir, documentId: documentId(context.request),
+          phase: "assignment", fromLine: context.task.fromLine, toLine: context.task.toLine }
+      });
   return {
     candidatePath,
     sourceSlice,
@@ -2965,7 +2976,8 @@ function inspectAssignedFinding(
   finding: PiProofreadFindingInput,
   task: PiProofreadSubagentTask,
   sourceLines: string[],
-  translationLines: string[]
+  translationLines: string[],
+  customPreserveRules: PiSessionPromptRequest["customPreserveRules"]
 ): { ok: true; prepared: Record<string, unknown> } | { ok: false; id: string; sourceLine: number; reason: string } {
   const sourceLine = Number(finding.sourceLine);
   const id = finding.id || "(missing id)";
@@ -3012,6 +3024,12 @@ function inspectAssignedFinding(
       sourceLine,
       reason: `Finding ${id} suggestedFix must preserve the exact leading control prefix on aligned line ${sourceLine}.`
     };
+  }
+  const failures = validateProofreadReplacement(sourceText, finding.suggestedFix,
+    { customPreserveRules }, sourceLine);
+  if (failures.length) {
+    return { ok: false, id, sourceLine,
+      reason: failures.map(failure => `${failure.code}: ${failure.detail}`).join("; ") };
   }
   return { ok: true, prepared };
 }
@@ -3297,8 +3315,8 @@ export function createPiProofreadSubagentTools(
       name: "writeAssignedFindings",
       label: "writeAssignedFindings",
       description: glossaryCandidatesEnabled
-        ? "Write zero or more strictly bound findings for the assigned range through the YN findings host contract. Every suggestedFix must be a changed, complete replacement line and must preserve the exact leading bracket control prefix from the bound source/current row. When both bound rows have no prefix, do not invent or diagnose one. Valid findings are kept even if other items fail; only rejected items are returned for rewrite. Identical no-op fixes are rejected without discarding the rest of the batch."
-        : "Write zero or more strictly bound findings for the assigned range through the YN findings host contract. Glossary-candidate collection is disabled, so do not submit terminology candidates. Every suggestedFix must be a changed, complete replacement line and must preserve the exact leading bracket control prefix from the bound source/current row. Valid findings are kept even if other items fail.",
+        ? "Write zero or more strictly bound findings for the assigned range through the YN findings host contract. Every suggestedFix must be a changed, complete replacement line and must preserve the exact leading bracket control prefix from the bound source/current row, source placeholders, tags, and configured custom-preservation matches. When both bound rows have no prefix, do not invent or diagnose one. Valid findings are kept even if other items fail; only rejected items are returned for rewrite. Identical no-op fixes are rejected without discarding the rest of the batch."
+        : "Write zero or more strictly bound findings for the assigned range through the YN findings host contract. Glossary-candidate collection is disabled, so do not submit terminology candidates. Every suggestedFix must be a changed, complete replacement line and must preserve the exact leading bracket control prefix from the bound source/current row, source placeholders, tags, and configured custom-preservation matches. Valid findings are kept even if other items fail.",
       parameters: Type.Object({
         findings: Type.Array(findingSchema),
         ...(glossaryCandidatesEnabled ? {
@@ -3364,7 +3382,7 @@ export function createPiProofreadSubagentTools(
         const rejected: Array<{ id: string; sourceLine: number; reason: string }> = [];
         for (const finding of input.findings) {
           if (excludedLines.has(Number(finding.sourceLine))) continue;
-          const inspected = inspectAssignedFinding(finding, context.task, sourceLines, translationLines);
+          const inspected = inspectAssignedFinding(finding, context.task, sourceLines, translationLines, context.request.customPreserveRules);
           if (!inspected.ok) {
             rejected.push({ id: inspected.id, sourceLine: inspected.sourceLine, reason: inspected.reason });
             continue;
@@ -3396,6 +3414,7 @@ export function createPiProofreadSubagentTools(
             reportScope: proofreadReportScope(context.request),
             translationPath: proofreadTranslationPath(context.request),
             kind: "findings_json",
+            customPreserveRules: context.request.customPreserveRules,
             content: JSON.stringify(findings),
             chunkLabel: context.task.label || `L${context.task.fromLine}-L${context.task.toLine}`,
             mode: context.task.mode ?? "split",
@@ -5582,11 +5601,12 @@ function createPiProofreadRuntimeSpec(
           : `Proofread the aligned ${assignmentDescription(context.task)}.`,
       ...(context.request.style?.trim() ? [`Project style: ${context.request.style.trim()}`] : []),
       ...(context.request.workDescription?.trim() ? [`Work description: ${context.request.workDescription.trim()}`] : []),
-      "FIRST TOOL: call readAssignedProofreadContext. It returns complete structured glossary/character records, unresolved non-canonical candidates, and prior exact-search evidence directly matched to this assignment. Reuse those results. Use one exact searchProjectText lookup only for a still-missing ambiguous term. Reference manifest entries with complete=true are already fully read; call readProofreadReference only for complete=false, starting at offset 0 and continuing exactly from nextOffset. Optional web references are only for relevant ambiguity.",
-      "readAssignedProofreadContext already contains the complete owned rows for source/current translation and the exact boundary rows. Do not call listProjectDir to rediscover them, do not reread the bound source/current translation through general file reads, and do not browse raw assets or preceding files for context already supplied by Host.",
+      ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
+      "FIRST TOOL: call readAssignedProofreadContext for structured glossary/character records, unresolved candidates, and matched prior search evidence. Reuse supplied evidence; searchProjectText only for a still-ambiguous term. References with complete=true are fully read; page complete=false through readProofreadReference from offset 0 and nextOffset. Web references only for relevant ambiguity.",
+      "readAssignedProofreadContext supplies complete owned rows and exact boundary rows. Do not call listProjectDir or reread bound source/translation, raw assets, or preceding files for context already supplied by Host.",
       "Confirm or reject Host signals and semantically review every assigned row. Signals are evidence, not automatic findings.",
       glossaryCandidatesEnabled
-        ? "Call writeAssignedFindings with exact one-based lines, complete replacement-ready fixes, rationales, and evidence-backed proper-term candidates. Every suggestedFix must change the current translation and preserve the exact leading control prefix from the bound source/current row. If both the source and current translation contain no leading prefix, do not invent one or diagnose its absence. Host keeps valid findings and returns only rejected items; rewrite those items instead of resubmitting the whole batch. glossaryCandidates.category must be one of proper_noun, character, organization, place, title, or setting_term; aliases contains alternate target-language renderings only, never source-language nicknames. [] is valid when clean."
+        ? "Call writeAssignedFindings with exact global one-based lines, complete replacement-ready fixes, rationales, and evidence-backed proper-term candidates. suggestedFix must change current translation and preserve the exact leading control prefix from bound source/current row. If both source and current translation contain no leading prefix, do not invent one or diagnose its absence. Host keeps valid findings; rewrite only rejected items. glossaryCandidates.category: proper_noun, character, organization, place, title, setting_term. aliases: target-language variants, never source-language nicknames. [] is valid when clean."
         : "Call writeAssignedFindings with exact one-based lines, complete replacement-ready fixes, and rationales. Glossary-candidate collection is disabled; do not submit terminology candidates. Every suggestedFix must change the current translation and preserve the exact leading control prefix from the bound source/current row. Host keeps valid findings and returns only rejected items. [] is valid when clean.",
       "Never edit source, translation, or shared assets. A successful writeAssignedFindings call is terminal; do not spend another model turn summarizing it."
     ].join("\n"),
@@ -5598,7 +5618,8 @@ function createPiProofreadRuntimeSpec(
     ),
     systemPrompt: [
       "You are a Pi proofreading subagent for YN Translation Workshop.",
-      "Use only the host-owned proofreading tools. Never modify source or translation artifacts."
+      "Use only the host-owned proofreading tools. Never modify source or translation artifacts.",
+      PROOFREAD_STRUCTURE_INSTRUCTIONS
     ],
     async execute(runtime, session, taskPrompt, onRetry) {
       await assertProofreadAssignmentFiles(context.request);

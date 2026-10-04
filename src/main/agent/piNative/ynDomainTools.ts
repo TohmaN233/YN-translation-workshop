@@ -5,6 +5,7 @@ import path from "node:path";
 
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core/node";
 import { Type } from "typebox";
+import { validateProofreadReplacement } from "../../../shared/validation/proofreadReplacement.ts";
 
 import {
   YN_DEFAULT_SPLIT_SIZE,
@@ -84,6 +85,7 @@ import {
   ynTranslationValidationDebt
 } from "./translationArtifactValidation.ts";
 import { createYnTranslationValidationOptions } from "./translationValidationContext.ts";
+import { runTranslationValidation } from "./translationValidationService.ts";
 import {
   summarizeProofreadDeterministicSignals,
   type ProofreadDeterministicSignal,
@@ -763,6 +765,7 @@ async function hostTranslationValidation(args: {
   candidateText: string;
   resolvedTerms: YnResolvedTranslationTerm[];
   includeGlossaryCandidates: boolean;
+  signal?: AbortSignal;
 }) {
   const baseOptions = await createYnTranslationValidationOptions(args.bound);
   const workspaceEntries = args.includeGlossaryCandidates
@@ -772,7 +775,10 @@ async function hostTranslationValidation(args: {
     ...baseOptions,
     glossaryEntries: [...(baseOptions.glossaryEntries ?? []), ...workspaceEntries]
   };
-  const validation = validateTranslationCandidate(args.sourceText, args.candidateText, validationOptions);
+  const validation = await runTranslationValidation({
+    sourceText: args.sourceText, candidateText: args.candidateText, validationOptions, signal: args.signal,
+    diagnostics: { outputDir: args.bound.outputDir, documentId: args.documentId, phase: "artifact" }
+  });
   if (!args.includeGlossaryCandidates) {
     return { validation, validationOptions, terminologyDebt: [] as YnTranslationTerminologyDebt[] };
   }
@@ -1419,6 +1425,25 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     signal?: AbortSignal;
     onUpdate?: Parameters<AgentTool["execute"]>[3];
   }>();
+  const validateTranslationRange = async (
+    bound: PiBoundSourceRequest,
+    sourceLines: string[],
+    candidateLines: string[],
+    range: { fromLine: number; toLine: number },
+    phase: string,
+    signal = toolExecution.getStore()?.signal
+  ) => {
+    if (candidateLines.length !== sourceLines.length) {
+      throw new Error(`Translation range validation requires equal line counts; source has ${sourceLines.length} and candidate has ${candidateLines.length}.`);
+    }
+    return runTranslationValidation({
+      sourceText: sourceLines.slice(range.fromLine - 1, range.toLine).join("\n") + "\n",
+      candidateText: candidateLines.slice(range.fromLine - 1, range.toLine).join("\n") + "\n",
+      validationOptions: { ...await createYnTranslationValidationOptions(bound), lineOffset: range.fromLine - 1 },
+      signal,
+      diagnostics: { outputDir: bound.outputDir, documentId: documentId(bound), phase, ...range }
+    });
+  };
   const sampledLinesFor = (currentDocumentId: string): Set<number> => {
     let sampled = proofreadSampledLines.get(currentDocumentId);
     if (!sampled) {
@@ -2565,7 +2590,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       requiredLineReasons?: Array<{ line: number; reason: string }>;
       terminologyRepairLines?: number[];
     },
-    candidateOverride?: string
+    candidateOverride?: string,
+    signal?: AbortSignal
   ): Promise<TranslationAlignmentRangeState> => {
     const currentDocumentId = documentId(bound);
     const sourceText = await readFile(sourcePath(bound), "utf8");
@@ -2580,11 +2606,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         `Translation chunk review requires equal line counts; source has ${sourceLines.length} and candidate has ${candidateLines.length}.`
       );
     }
-    const validation = validateTranslationCandidate(
-      sourceText,
-      candidateText,
-      await createYnTranslationValidationOptions(bound)
-    );
+    const validation = await validateTranslationRange(bound, sourceLines, candidateLines, range, "checkpoint", signal);
     const created = createTranslationChunkReviewAudit({
       documentId: currentDocumentId,
       sourceLines: sourceLines.slice(range.fromLine - 1, range.toLine),
@@ -2780,11 +2802,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         `Cannot commit L${range.fromLine}-L${range.toLine}: the review worker has not accepted the complete Host-selected scope.`
       );
     }
-    const validation = validateTranslationCandidate(
-      sourceText,
-      candidateText,
-      await createYnTranslationValidationOptions(bound)
-    );
+    const validation = await validateTranslationRange(bound, sourceLines, candidateLines, range, "commit");
     const committed = createTranslationChunkReviewAudit({
       documentId: currentDocumentId,
       sourceLines: sourceLines.slice(range.fromLine - 1, range.toLine),
@@ -2846,7 +2864,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
   > => {
     const bound = await boundForDocument(review.documentId);
     const reviewCandidatePath = review.candidatePath?.trim() || candidatePath(bound);
-    const audit = await registerTranslationChunkReview(bound, review, reviewCandidatePath);
+    const audit = await registerTranslationChunkReview(bound, review, reviewCandidatePath, review.signal);
     const malformedRejectedChecks = audit.checks.filter((check) => (
       check.verdict === "misaligned" && !isActionableTranslationAlignmentReason(check.reason)
     ));
@@ -3065,11 +3083,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       fromLine: task.fromLine,
       toLine: task.toLine,
       candidatePath: candidate,
-      validation: validateTranslationCandidate(
-        sourceText,
-        candidateText,
-        await createYnTranslationValidationOptions(bound)
-      ),
+      validation: await validateTranslationRange(bound, splitTextLines(sourceText), splitTextLines(candidateText), task, "resume", signal),
       discoveries: {
         glossaryCandidates: [],
         characterFacts: []
@@ -3106,11 +3120,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       fromLine = Math.min(fromLine, scope.fromLine);
       toLine = Math.max(toLine, scope.toLine);
     }
-    const validation = validateTranslationCandidate(
-      sourceText,
-      candidateText,
-      await createYnTranslationValidationOptions(bound)
-    );
+    const validation = await validateTranslationRange(bound, sourceLines, candidateLines, { fromLine, toLine }, "mutation");
     const inheritedSignals = new Map<number, Set<string>>();
     for (const entry of translationMechanicalSignals(validation, fromLine, toLine)) {
       inheritedSignals.set(entry.line, new Set(entry.signals));
@@ -5658,7 +5668,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             sourceText,
             candidateText,
             resolvedTerms: context.domainRun?.resolvedTranslationTerms() ?? [],
-            includeGlossaryCandidates: glossaryCandidateCollectionEnabled
+            includeGlossaryCandidates: glossaryCandidateCollectionEnabled,
+            signal: toolExecution.getStore()?.signal
           });
           if (!validation.ok) {
             throw new Error(
@@ -5859,7 +5870,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           sourceText,
           candidateText,
           resolvedTerms: context.domainRun?.resolvedTranslationTerms() ?? [],
-          includeGlossaryCandidates: glossaryCandidateCollectionEnabled
+          includeGlossaryCandidates: glossaryCandidateCollectionEnabled,
+            signal: toolExecution.getStore()?.signal
         });
         const sourceLines = splitTextLines(sourceText);
         const candidateLines = splitTextLines(candidateText);
@@ -6368,11 +6380,13 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         if (input.lines.length !== expected) {
           throw new Error(`Range ${range.fromLine}-${range.toLine} requires exactly ${expected} lines; received ${input.lines.length}.`);
         }
-        const validation = validateTranslationCandidate(
-          sourceLines.slice(range.fromLine - 1, range.toLine).join("\n"),
-          input.lines.join("\n"),
-          await createYnTranslationValidationOptions(bound)
-        );
+        const validation = await runTranslationValidation({
+          sourceText: sourceLines.slice(range.fromLine - 1, range.toLine).join("\n") + "\n",
+          candidateText: input.lines.join("\n") + "\n",
+          validationOptions: { ...await createYnTranslationValidationOptions(bound), lineOffset: range.fromLine - 1 },
+          signal: toolExecution.getStore()?.signal,
+          diagnostics: { outputDir: bound.outputDir, documentId: documentId(bound), phase: "parent-write", ...range }
+        });
         if (!boundedArtifactRepair) {
           assertYnTranslationArtifactAccepted(validation, `Chunk L${range.fromLine}-L${range.toLine}`);
         } else {
@@ -6499,7 +6513,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             sourceText,
             candidateText,
             resolvedTerms: context.domainRun?.resolvedTranslationTerms() ?? [],
-            includeGlossaryCandidates: glossaryCandidateCollectionEnabled && !boundedArtifactValidation
+            includeGlossaryCandidates: glossaryCandidateCollectionEnabled && !boundedArtifactValidation,
+            signal: toolExecution.getStore()?.signal
           });
           const validationHash = createHash("sha256")
             .update(sourceText)
@@ -6626,7 +6641,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       requiresSourceManifest: true,
       name: "writeProofreadFindings",
       label: "Write proofread findings",
-      description: "Write extra proofread findings or drop false positives. Host fills sourceText and currentTranslation from the bound aligned line; send only line numbers, suggestedFix, and rationale. After Host-planned children finish, do not resubmit or clear their artifact — call finalizeProofreadReport. An empty findings list cannot replace existing child findings.",
+      description: "Write extra proofread findings or drop false positives. Host fills sourceText and currentTranslation from the bound aligned line; send only line numbers, suggestedFix, and rationale. suggestedFix must preserve source placeholders, tags/control codes, and configured custom-preservation matches on one physical row. Invalid replacements are returned with exact reasons; follow nextAction to retry. After Host-planned children finish, do not resubmit or clear their artifact — call finalizeProofreadReport. An empty findings list cannot replace existing child findings.",
       parameters: Type.Object({
         findings: Type.Optional(Type.Array(Type.Object({
           id: Type.String(),
@@ -6654,7 +6669,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           mode?: "split" | "montecarlo";
           scopeId?: string;
         };
-        const incomingFindings = input.findings ?? [];
+        const submittedFindings = input.findings ?? [];
         const localScope = input.scopeId ? await requireCurrentProofreadScope(input.scopeId) : undefined;
         if (!localScope && context.isWorkflowSuspended?.()) {
           throw new Error(
@@ -6688,12 +6703,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             })).map((signal) => ({ ...signal, line: signal.line + localScope.fromLine - 1 }))
           };
         }
-        const currentDocumentState = proofreadDocumentHostState(proofreadState, documentId(request));
-        const replaceDocument = !localScope
-          && !currentDocumentState.reportInitialized
-          && incomingFindings.length > 0;
+        const boundSourceLines = splitTextLines(await readFile(sourcePath(request), "utf8"));
         if (localScope) {
-          for (const finding of incomingFindings) {
+          for (const finding of submittedFindings) {
             const sourceLine = Number(finding.sourceLine);
             const translationLine = Number(finding.translationLine || finding.sourceLine);
             if (
@@ -6706,6 +6718,31 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             }
           }
         }
+        const rejectedFindings: Array<{ id: string; sourceLine: number; reason: string }> = [];
+        const excludedLines = new Set(request.auditWhitelistLines ?? []);
+        const incomingFindings = submittedFindings.filter(finding => {
+          const line = Number(finding.sourceLine);
+          if (excludedLines.has(line)) return false;
+          if (!Number.isInteger(line) || line < 1 || line > boundSourceLines.length || typeof finding.suggestedFix !== "string") return true;
+          const failures = validateProofreadReplacement(boundSourceLines[line - 1], finding.suggestedFix,
+            { customPreserveRules: request.customPreserveRules }, line);
+          if (!failures.length) return true;
+          rejectedFindings.push({ id: String(finding.id), sourceLine: line,
+            reason: failures.map(failure => `${failure.code}: ${failure.detail}`).join("; ") });
+          return false;
+        });
+        // A local submission replaces its entire range. Keep that transaction atomic
+        // so retrying rejected rows cannot accidentally delete valid siblings.
+        if (rejectedFindings.length && (localScope || (!incomingFindings.length && !input.dropFindingIds?.length))) {
+          return textResult({ ok: false, acceptedCount: 0, rejectedCount: rejectedFindings.length, rejectedFindings,
+            nextAction: localScope
+              ? "No findings were written or dropped. Fix the rejected replacement rows, then resubmit the complete findings list for this scopeId."
+              : "No findings were written. Rewrite only the rejected replacement rows and resubmit." });
+        }
+        const currentDocumentState = proofreadDocumentHostState(proofreadState, documentId(request));
+        const replaceDocument = !localScope
+          && !currentDocumentState.reportInitialized
+          && incomingFindings.length > 0;
         const writeArgs: Parameters<typeof writeProofreadFindings>[0] = {
           outputDir: request.outputDir,
           sourcePaths: [sourcePath(request)],
@@ -6713,6 +6750,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           reportScope: proofreadReportScope(request),
           translationPath: proofreadTranslationPath(request, manifest?.kind === "folder"),
           kind: "findings_json",
+          customPreserveRules: request.customPreserveRules,
           content: JSON.stringify(incomingFindings),
           chunkLabel: input.chunkLabel,
           mode: input.mode ?? "split",
@@ -6732,7 +6770,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             currentDocumentState.reportInitialized = true;
           }
           context.domainRun?.recordFindingsWrite("proofread", result.appended);
-        } else {
+        } else if (!rejectedFindings.length) {
           context.domainRun?.recordProofreadRangeValidated(
             localScope.documentId,
             localScope.fromLine,
@@ -6740,7 +6778,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           );
           await context.persistHostState?.();
         }
-        return textResult(result);
+        return textResult({ ...result, acceptedCount: incomingFindings.length,
+          rejectedCount: rejectedFindings.length, rejectedFindings,
+          ...(rejectedFindings.length ? { nextAction: "Valid findings were kept. Rewrite only the rejected replacement rows and resubmit." } : {}) });
       }
     },
     {
@@ -8055,7 +8095,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
                     .slice(0, 500)
                 };
               })
-            }, checkpoint.candidatePath);
+            }, checkpoint.candidatePath, signal);
           },
           onArtifactMutation: async (mutationDocumentId, mutationRange) => {
             const rollbackDomainMutation = context.domainRun

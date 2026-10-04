@@ -57,6 +57,8 @@ export interface TranslationValidationResult {
 export type SourceLanguageKey = "ja" | "ko" | "en" | "zh";
 
 export interface ValidationOptions {
+  /** Absolute-line offset for a validated document range; counts remain range-local. */
+  lineOffset?: number;
   /** UI locale for human-readable finding details. Defaults to zh-CN. */
   locale?: "zh-CN" | "en-US";
   /**
@@ -1066,6 +1068,14 @@ export function validateTranslationCandidate(
   const characterEntries = (options.characterEntries ?? []).filter((entry) =>
     Boolean(entry.name?.trim())
   );
+  const characterMatchers = characterEntries.map((entry) => ({
+    entry,
+    names: uniqueComparableTerms([entry.name, ...(entry.aliases ?? [])]).map(comparableTerm),
+    targets: uniqueComparableTerms([entry.target?.trim() || entry.name, entry.name, ...(entry.aliases ?? [])])
+      .map(comparableTerm)
+  }));
+  const lineOffset = options.lineOffset ?? 0;
+  if (!Number.isInteger(lineOffset) || lineOffset < 0) throw new Error("Validation lineOffset must be a non-negative integer.");
   const styleForbiddenTerms = (options.styleForbiddenTerms ?? [])
     .map((term) => term.trim())
     .filter(Boolean);
@@ -1133,15 +1143,16 @@ export function validateTranslationCandidate(
 
   for (let i = 0; i < lineCount; i += 1) {
     if (i % 1000 === 0) onProgress?.(i, lineCount);
-    const lineNo = i + 1;
+    const localLineNo = i + 1;
+    const lineNo = localLineNo + lineOffset;
     const src = sourceLines[i];
     const cand = candidateLines[i];
-    const sourceCharacters = characterEntries.filter((entry) => {
-      const names = [entry.name, ...(entry.aliases ?? [])]
-        .map((name) => name?.trim() ?? "")
-        .filter(Boolean);
-      return names.some((name) => textContainsTerm(src, name));
-    });
+    const normalizedSource = characterMatchers.length > 0 ? comparableTerm(src) : "";
+    const normalizedCandidate = glossaryEntries.length > 0 || characterMatchers.length > 0 ? comparableTerm(cand) : "";
+    const sourceCharacters = characterMatchers
+      .filter(({ names }) => names.some((name) => normalizedSource.includes(name)))
+      .map(({ entry }) => entry);
+    const sourceCharacterSet = new Set(sourceCharacters);
 
     const srcPh = comparePlaceholders(src).slice().sort();
     const candPh = comparePlaceholders(cand).slice().sort();
@@ -1228,7 +1239,7 @@ export function validateTranslationCandidate(
     if (
       !isProbablyEmpty(src)
       && !isGenericTranslationPlaceholder(cand)
-      && repeatedShortCandidateLines.has(lineNo)
+      && repeatedShortCandidateLines.has(localLineNo)
     ) {
       blocking.push({
         code: "repeated_short_candidate",
@@ -1241,8 +1252,8 @@ export function validateTranslationCandidate(
     if (
       !isProbablyEmpty(src)
       && !isGenericTranslationPlaceholder(cand)
-      && !repeatedShortCandidateLines.has(lineNo)
-      && repeatedCandidateRunLines.has(lineNo)
+      && !repeatedShortCandidateLines.has(localLineNo)
+      && repeatedCandidateRunLines.has(localLineNo)
     ) {
       blocking.push({
         code: "repeated_candidate_run",
@@ -1276,7 +1287,6 @@ export function validateTranslationCandidate(
       (copiedSource ? blocking : warnings).push(finding);
     }
 
-    const normalizedCandidate = glossaryEntries.length > 0 ? comparableTerm(cand) : "";
     for (const entry of matchGlossarySources(src)) {
       const sourceTerm = entry.source?.trim() ?? "";
       const targetTerm = entry.target?.trim() ?? "";
@@ -1299,15 +1309,13 @@ export function validateTranslationCandidate(
       }
     }
 
-    for (const entry of characterEntries) {
+    for (const { entry, targets } of characterMatchers) {
       const sourceName = entry.name?.trim() ?? "";
       const targetName = entry.target?.trim() || sourceName;
-      const targetCandidates = [targetName, sourceName, ...(entry.aliases ?? [])].filter((term) => term.trim());
-      const characterAppears = sourceName
-        && [sourceName, ...(entry.aliases ?? [])].some((term) => textContainsTerm(src, term));
+      const characterAppears = sourceCharacterSet.has(entry);
       if (
         characterAppears
-        && !targetCandidates.some((term) => textContainsTerm(cand, term))
+        && !targets.some((term) => normalizedCandidate.includes(term))
       ) {
         warnings.push({
           code: "character_name_missing",

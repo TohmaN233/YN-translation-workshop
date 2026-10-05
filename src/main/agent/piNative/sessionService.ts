@@ -255,6 +255,7 @@ interface OrderedQueuedMessage {
 
 interface SessionOperationReservation {
   cancelled: boolean;
+  stopSettlement?: Promise<void>;
 }
 
 interface PromptOperation {
@@ -591,6 +592,7 @@ export class PiNativeSessionService {
     if (handoffCancelled?.()) throw new DOMException("Task preparation handoff was stopped.", "AbortError");
     const key = sessionKey(request.outputDir, request.sessionId);
     if (this.closingSessions.has(key)) throw new Error(`Pi session ${request.sessionId} is closing.`);
+    await this.sessionOperationReservations.get(key)?.stopSettlement;
     if (this.sessionOperationReservations.has(key)) {
       throw new Error("Pi session is already running. Use Steer or Follow-up.");
     }
@@ -715,24 +717,79 @@ export class PiNativeSessionService {
   }
 
   async abort(workspaceDir: string, sessionId: string): Promise<void> {
+    const stopStartedAt = Date.now();
     const key = sessionKey(workspaceDir, sessionId);
     const reservation = this.sessionOperationReservations.get(key);
+    if (reservation?.stopSettlement) return reservation.stopSettlement;
     if (reservation) reservation.cancelled = true;
-    let subagents: YnSubagentSupervisor | undefined;
-    await this.withSessionTransition(workspaceDir, sessionId, async () => {
-      const active = this.active.get(key);
-      if (active?.compacting) throw new Error("Native Pi compaction is already in progress and cannot be stopped.");
-      subagents = active?.subagents;
-      if (active) {
-        active.childCompletionGeneration += 1;
-        this.suspendDomainRun(active);
-        await active.persistHostState();
+    let settleStop!: () => void;
+    let failStop!: (error: unknown) => void;
+    const stopReservation: SessionOperationReservation = {
+      cancelled: true, stopSettlement: new Promise<void>((resolve, reject) => { settleStop = resolve; failStop = reject; })
+    };
+    // The initiating abort call reports failure; concurrent waiters receive the
+    // same failure without creating an unhandled detached promise.
+    void stopReservation.stopSettlement!.catch(() => undefined);
+    this.sessionOperationReservations.set(key, stopReservation);
+    let active = this.active.get(key);
+    const signalStop = (current: ActiveSession) => {
+      current.childCompletionGeneration += 1;
+      if (current.promptOperation) {
+        current.promptOperation.cancelled = true;
+        current.promptOperation.abortController.abort(new DOMException("Pi operation was stopped.", "AbortError"));
       }
-      subagents?.abortAll();
-      if (active?.running) await this.abortActiveSession(active);
-      if (active) await active.persistHostState({ force: true });
-    });
-    await subagents?.waitForAll();
+      current.runtime.requestAbort();
+      current.subagents.abortAll();
+    };
+    // Cancellation cannot wait for a Host disk write or session transition.
+    if (active) signalStop(active);
+    try {
+      await this.withSessionTransition(workspaceDir, sessionId, async () => {
+        const current = this.active.get(key);
+        if (current && current !== active) signalStop(current);
+        active = current;
+        if (active) this.suspendDomainRun(active);
+      });
+      if (!active) return;
+      const hadActiveWork = active.running || active.compacting || active.subagents.hasRunning();
+      // An exiting Host tool may publish through the session transition. Holding
+      // that transition while waiting for native idle deadlocks both operations.
+      const outcomes = await Promise.allSettled([
+        active.running || active.promptOperation ? this.abortActiveSession(active) : Promise.resolve(),
+        active.subagents.waitForAll(),
+        ...(active.compactionTask ? [active.compactionTask] : []),
+        active.runtime.appendCustomEntry("yn_workflow_stop", { phase: "requested", timestamp: stopStartedAt })
+      ]);
+      const errors = outcomes.flatMap((outcome) => outcome.status === "rejected"
+        && !(outcome.reason instanceof Error && outcome.reason.name === "AbortError") ? [outcome.reason] : []);
+      try {
+        await active.persistHostState({ force: true });
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await active.runtime.appendCustomEntry("yn_workflow_stop", {
+          phase: "settled", timestamp: Date.now(), durationMs: Date.now() - stopStartedAt,
+          running: active.running, childrenRunning: active.subagents.hasRunning(),
+          errors: errors.map((error) => error instanceof Error ? error.message : String(error))
+        });
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length > 0) {
+        const error = new AggregateError(errors, `Pi Stop failed to finish cleanly: ${errors.map((item) => item instanceof Error ? item.message : String(item)).join("; ")}`);
+        active.error = error.message;
+        this.emitActiveState(active);
+        throw error;
+      }
+      if (hadActiveWork) this.emitActiveState(active);
+    } catch (error) {
+      failStop(error);
+      throw error;
+    } finally {
+      if (this.sessionOperationReservations.get(key) === stopReservation) this.sessionOperationReservations.delete(key);
+      settleStop();
+    }
   }
 
   private async abortActiveSession(active: ActiveSession): Promise<void> {
@@ -792,22 +849,13 @@ export class PiNativeSessionService {
   async suspendWorkspace(workspaceDir: string): Promise<void> {
     this.cancelWorkspaceOperationReservations(workspaceDir);
     const sessionIds = this.workspaceSessionIds(workspaceDir);
-    let supervisors: YnSubagentSupervisor[] = [];
-    await this.withTransitions(
-      this.workspaceSessionResources(workspaceDir, sessionIds),
-      async () => { supervisors = await this.abortWorkspaceSessions(workspaceDir, sessionIds); }
-    );
-    await Promise.all(supervisors.map((supervisor) => supervisor.waitForAll()));
+    await Promise.all(sessionIds.map((sessionId) => this.abort(workspaceDir, sessionId)));
   }
 
   async disposeWorkspace(workspaceDir: string): Promise<void> {
     this.cancelWorkspaceOperationReservations(workspaceDir);
     const sessionIds = this.workspaceSessionIds(workspaceDir);
-    let supervisors: YnSubagentSupervisor[] = [];
-    await this.withTransitions(this.workspaceSessionResources(workspaceDir, sessionIds), async () => {
-      supervisors = await this.abortWorkspaceSessions(workspaceDir, sessionIds);
-    });
-    await Promise.all(supervisors.map((supervisor) => supervisor.waitForAll()));
+    await Promise.all(sessionIds.map((sessionId) => this.abort(workspaceDir, sessionId)));
     await this.withTransitions(this.workspaceSessionResources(workspaceDir, sessionIds), async () => {
       const prefix = `${workspaceKey(workspaceDir)}::`;
       const sessions = [...this.active.entries()].filter(([key]) => key.startsWith(prefix));
@@ -2023,29 +2071,6 @@ export class PiNativeSessionService {
       this.workspaceTransitionResource(workspaceDir),
       ...sessionIds.map((sessionId) => this.sessionTransitionResource(workspaceDir, sessionId))
     ];
-  }
-
-  private async abortWorkspaceSessions(
-    workspaceDir: string,
-    sessionIds: string[]
-  ): Promise<YnSubagentSupervisor[]> {
-    const supervisors = new Set<YnSubagentSupervisor>();
-    await Promise.all(sessionIds.map(async (sessionId) => {
-      const active = this.active.get(sessionKey(workspaceDir, sessionId));
-      if (active?.compactionTask) await active.compactionTask;
-      if (active) {
-        active.childCompletionGeneration += 1;
-        this.suspendDomainRun(active);
-        await active.persistHostState();
-      }
-      if (active?.subagents) {
-        supervisors.add(active.subagents);
-        active.subagents.abortAll();
-      }
-      if (active?.running) await this.abortActiveSession(active);
-      if (active) await active.persistHostState({ force: true });
-    }));
-    return [...supervisors];
   }
 
   private suspendDomainRun(active: ActiveSession): void {

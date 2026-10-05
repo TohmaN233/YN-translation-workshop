@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { access, mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { readRequiredWorkflowText, withRequiredWorkflowFile } from "../requiredWorkflowFile.ts";
 
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core/node";
 import { Type } from "typebox";
@@ -29,7 +30,7 @@ import {
 } from "../projectFileTools.ts";
 import {
   readProjectAssets,
-  readWorkflowProjectAssets,
+  createWorkflowProjectAssetReader,
   serializeCharacterBibleMarkdown,
   type ProjectAssets
 } from "../projectAssets.ts";
@@ -770,9 +771,10 @@ async function hostTranslationValidation(args: {
   candidateText: string;
   resolvedTerms: YnResolvedTranslationTerm[];
   includeGlossaryCandidates: boolean;
+  createValidationOptions: typeof createYnTranslationValidationOptions;
   signal?: AbortSignal;
 }) {
-  const baseOptions = await createYnTranslationValidationOptions(args.bound);
+  const baseOptions = await args.createValidationOptions(args.bound);
   const workspaceEntries = args.includeGlossaryCandidates
     ? (await readWorkspaceAgentContext(args.bound.outputDir)).glossaryCandidates ?? []
     : [];
@@ -1341,6 +1343,14 @@ function applySubagentModelDefaults<T extends { providerId?: string; modelId?: s
 
 export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
   const baseRequest = context.request;
+  const readWorkflowAssets = createWorkflowProjectAssetReader();
+  const createValidationOptions = (bound: PiSessionPromptRequest) => createYnTranslationValidationOptions(bound, readWorkflowAssets);
+  const readCurrentCandidateText = (bound: PiSessionPromptRequest, candidate: string) => {
+    const document = context.domainRun?.snapshot().documents.find((entry) => entry.id === documentId(bound));
+    return document && document.artifactRevision > 0
+      ? readRequiredWorkflowText(candidate)
+      : readOptionalCandidateText(candidate);
+  };
   const glossaryCandidateCollectionEnabled = baseRequest.glossaryCandidates !== false;
   const characterFactCollectionEnabled = baseRequest.characterBible !== false;
   const webReferences = context.webReferences ?? webReferenceService;
@@ -1463,7 +1473,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     return runTranslationValidation({
       sourceText: sourceLines.slice(range.fromLine - 1, range.toLine).join("\n") + "\n",
       candidateText: candidateLines.slice(range.fromLine - 1, range.toLine).join("\n") + "\n",
-      validationOptions: { ...await createYnTranslationValidationOptions(bound), lineOffset: range.fromLine - 1 },
+      validationOptions: { ...await createValidationOptions(bound), lineOffset: range.fromLine - 1 },
       signal,
       diagnostics: { outputDir: bound.outputDir, documentId: documentId(bound), phase, ...range }
     });
@@ -1516,7 +1526,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       const bound = bindPiSourceDocument(baseRequest, document);
       const candidate = candidatePath(bound);
       if (!await exists(candidate)) continue;
-      const candidateText = await readFile(candidate, "utf8");
+      const candidateText = await readRequiredWorkflowText(candidate);
       if (!splitTextLines(candidateText).some((line) => line.trim())) continue;
       preparedDocuments.push({
         document,
@@ -1527,7 +1537,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           candidatePath: candidate,
           documentId: document.id,
           languagePair: bound.languagePair,
-          validationOptions: await createYnTranslationValidationOptions(bound)
+          validationOptions: await createValidationOptions(bound)
         }
       });
     }
@@ -1667,14 +1677,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       throw new Error("Translation reuse audit requires the exact generated translation workflow contract.");
     }
   };
-  const prepareExistingTranslationForWrite = async (bound: PiBoundSourceRequest): Promise<void> => withTranslationEvidenceTransaction(async () => {
-    if (context.domainRun?.fullWorkflow !== true) return;
+  const prepareExistingTranslationForWrite = async (bound: PiBoundSourceRequest): Promise<boolean> => withTranslationEvidenceTransaction(async () => {
+    if (context.domainRun?.fullWorkflow !== true) return false;
     const currentDocumentId = documentId(bound);
-    if (context.domainRun.ownsCurrentTranslationArtifact(currentDocumentId)) return;
+    if (context.domainRun.ownsCurrentTranslationArtifact(currentDocumentId)) return false;
     const candidate = candidatePath(bound);
-    if (!await exists(candidate)) return;
-    const candidateText = await readFile(candidate, "utf8");
-    if (!splitTextLines(candidateText).some((line) => line.trim())) return;
+    if (!await exists(candidate)) return false;
+    const candidateText = await readRequiredWorkflowText(candidate);
+    if (!splitTextLines(candidateText).some((line) => line.trim())) return false;
     if (baseRequest.reuseExistingTranslation === true) {
       const audit = translationReuseAudits.get(currentDocumentId);
       if (!audit) {
@@ -1687,7 +1697,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           `Existing translation work in ${currentDocumentId} is awaiting semantic audit or the user's reuse decision; do not change it yet.`
         );
       }
-      return;
+      return false;
     }
     const discarded = await discardTranslationCandidateForRetranslation({
       outputDir: bound.outputDir,
@@ -1698,6 +1708,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     if (discarded.discarded) {
       context.domainRun.recordTranslationArtifactMutation(currentDocumentId);
     }
+    return discarded.discarded;
   });
   const ensureManifest = () => {
     manifestPromise ??= resolvePiSourceManifest(baseRequest).then((resolvedManifest) => {
@@ -1865,8 +1876,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       if (!lines) {
         const bound = bindPiSourceDocument(baseRequest, document);
         lines = {
-          sourceLines: splitTextLines(await readFile(sourcePath(bound), "utf8")),
-          candidateLines: splitTextLines(await readOptional(candidatePath(bound)))
+          sourceLines: splitTextLines(await readRequiredWorkflowText(sourcePath(bound))),
+          candidateLines: splitTextLines((await readCurrentCandidateText(bound, candidatePath(bound))) ?? "")
         };
         lineCache.set(range.documentId, lines);
       }
@@ -1982,8 +1993,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     for (const document of resolvedManifest.documents) {
       const bound = bindPiSourceDocument(baseRequest, document);
       const [sourceText, candidateText] = await Promise.all([
-        readFile(sourcePath(bound), "utf8"),
-        readOptional(candidatePath(bound))
+        readRequiredWorkflowText(sourcePath(bound)),
+        readCurrentCandidateText(bound, candidatePath(bound)).then((text) => text ?? "")
       ]);
       debt.push(...scanResolvedTerminologyDebt({
         documentId: document.id,
@@ -2055,7 +2066,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         characterGroups.set(source, current);
       }
       const [assets, workspaceAssets] = await Promise.all([
-        readWorkflowProjectAssets(request),
+        readWorkflowAssets(request),
         readWorkspaceAgentContext(request.outputDir)
       ]);
       const formalBySource = new Map(assets.glossary.entries.flatMap((entry) => {
@@ -2405,8 +2416,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     for (const document of resolvedManifest.documents) {
       const bound = bindPiSourceDocument(baseRequest, document);
       const [sourceText, candidateText] = await Promise.all([
-        readFile(sourcePath(bound), "utf8"),
-        readOptional(candidatePath(bound))
+        readRequiredWorkflowText(sourcePath(bound)),
+        readCurrentCandidateText(bound, candidatePath(bound)).then((text) => text ?? "")
       ]);
       currentDebt.push(...scanResolvedTerminologyDebt({
         documentId: document.id,
@@ -2567,9 +2578,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       );
     }
     const [sourceText, previousText, stagingText] = await Promise.all([
-      readFile(sourcePath(bound), "utf8"),
-      readFile(previousCandidate, "utf8"),
-      previousCandidate === candidate ? Promise.resolve(undefined) : readFile(candidate, "utf8")
+      readRequiredWorkflowText(sourcePath(bound)),
+      readRequiredWorkflowText(previousCandidate),
+      previousCandidate === candidate ? Promise.resolve(undefined) : readRequiredWorkflowText(candidate)
     ]);
     signal?.throwIfAborted();
     const sourceLines = splitTextLines(sourceText);
@@ -2632,9 +2643,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     signal?: AbortSignal
   ): Promise<TranslationAlignmentRangeState> => {
     const currentDocumentId = documentId(bound);
-    const sourceText = await readFile(sourcePath(bound), "utf8");
+    const sourceText = await readRequiredWorkflowText(sourcePath(bound));
     const candidate = candidateOverride ? path.resolve(candidateOverride) : candidatePath(bound);
-    const candidateText = await readFile(candidate, "utf8");
+    const candidateText = await readRequiredWorkflowText(candidate);
     const sourceLines = splitTextLines(sourceText);
     const candidateLines = splitTextLines(candidateText);
     const range = normalizeRange(inputRange.fromLine, inputRange.toLine, sourceLines.length);
@@ -2683,7 +2694,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       && terminologyRepairLines.size > 0
       && exact.checks.every((check) => check.verdict === "aligned")
     ) {
-      const previousCandidateLines = splitTextLines(await readFile(exact.candidatePath, "utf8"));
+      const previousCandidateLines = splitTextLines(await readRequiredWorkflowText(exact.candidatePath));
       if (
         previousCandidateLines.length !== sourceLines.length
         || exact.sourceLineCount !== sourceLines.length
@@ -2853,10 +2864,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     inputRange: { fromLine: number; toLine: number }
   ): Promise<void> => {
     const currentDocumentId = documentId(bound);
-    const sourceText = await readFile(sourcePath(bound), "utf8");
+    const sourceText = await readRequiredWorkflowText(sourcePath(bound));
     const sourceLines = splitTextLines(sourceText);
     const candidate = candidatePath(bound);
-    const candidateText = await readFile(candidate, "utf8");
+    const candidateText = await readRequiredWorkflowText(candidate);
     const candidateLines = splitTextLines(candidateText);
     const range = normalizeRange(inputRange.fromLine, inputRange.toLine, sourceLines.length);
     const reviewed = (translationAlignmentState.ranges[currentDocumentId] ?? []).find((scope) => (
@@ -2979,9 +2990,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         throw new Error(`Translation review assignment ${requested.auditId} does not own ${review.documentId}.`);
       }
       const currentBound = await boundForDocument(review.documentId);
-      const sourceLines = splitTextLines(await readFile(sourcePath(currentBound), "utf8"));
+      const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(currentBound)));
       const candidate = path.resolve(reviewCandidatePath);
-      const candidateLines = splitTextLines(await readFile(candidate, "utf8"));
+      const candidateLines = splitTextLines(await readRequiredWorkflowText(candidate));
       const scope = (translationAlignmentState.ranges[review.documentId] ?? [])
         .find((entry) => entry.auditId === requested.auditId);
       if (!scope) throw new Error(`Translation review assignment ${requested.auditId} is stale or missing.`);
@@ -3166,8 +3177,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     const bound = await boundForDocument(task.documentId);
     const candidate = task.stagingCandidatePath?.trim() || candidatePath(bound);
     const [sourceText, candidateText] = await Promise.all([
-      readFile(sourcePath(bound), "utf8"),
-      readFile(candidate, "utf8")
+      readRequiredWorkflowText(sourcePath(bound)),
+      readRequiredWorkflowText(candidate)
     ]);
     return {
       subagentId,
@@ -3190,11 +3201,11 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     options: { parentOwnedMutation?: boolean } = {}
   ): Promise<TranslationAlignmentRangeState> => {
     const currentDocumentId = documentId(bound);
-    const sourceText = await readFile(sourcePath(bound), "utf8");
+    const sourceText = await readRequiredWorkflowText(sourcePath(bound));
     const sourceLines = splitTextLines(sourceText);
     const requested = normalizeRange(inputRange.fromLine, inputRange.toLine, sourceLines.length);
     const candidate = candidatePath(bound);
-    const candidateText = await readFile(candidate, "utf8");
+    const candidateText = await readRequiredWorkflowText(candidate);
     const candidateLines = splitTextLines(candidateText);
     if (candidateLines.length !== sourceLines.length) {
       throw new Error(
@@ -3391,8 +3402,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         throw new Error(`Parent translation takeover staging path is outside the project staging directory: ${stagingCandidatePath}`);
       }
       const [sourceText, stagingText] = await Promise.all([
-        readFile(sourcePath(bound), "utf8"),
-        readFile(stagingCandidatePath, "utf8")
+        readRequiredWorkflowText(sourcePath(bound)),
+        readRequiredWorkflowText(stagingCandidatePath)
       ]);
       if (!previousCanonicalTexts.has(canonicalCandidatePath)) {
         previousCanonicalTexts.set(canonicalCandidatePath, await readOptionalCandidateText(canonicalCandidatePath));
@@ -3456,7 +3467,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         ...range
       });
       if (!promoted.ok) throw new Error(promoted.error || "Parent translation takeover promotion failed.");
-      const canonicalLines = splitTextLines(await readFile(canonicalCandidatePath, "utf8"));
+      const canonicalLines = splitTextLines(await readRequiredWorkflowText(canonicalCandidatePath));
       if (
         canonicalLines.length !== sourceLines.length
         || currentCandidateHash !== createHash("sha256")
@@ -3582,7 +3593,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         if (!isTranslationStagingCandidatePath(baseRequest.outputDir, scope.candidatePath)) continue;
         const rejectedChecks = scope.checks.filter((check) => check.verdict === "misaligned");
         if (rejectedChecks.length === 0) continue;
-        const stagingLines = splitTextLines(await readFile(scope.candidatePath, "utf8"));
+        const stagingLines = splitTextLines(await readRequiredWorkflowText(scope.candidatePath));
         takeovers.push({
           documentId: currentDocumentId,
           fromLine: scope.fromLine,
@@ -3621,7 +3632,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       if (scopes.length === 0) continue;
       const bound = bindPiSourceDocument(baseRequest, document);
       const canonical = path.resolve(candidatePath(bound));
-      const sourceLines = splitTextLines(await readFile(sourcePath(bound), "utf8"));
+      const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(bound)));
       const canonicalText = await readOptionalCandidateText(canonical);
       if (canonicalText !== undefined && splitTextLines(canonicalText).length !== sourceLines.length) {
         throw new Error(`Recovery preflight rejected canonical line count for ${document.id}.`);
@@ -3652,7 +3663,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       // Each full staging file exists only during its own validation. Retain
       // hashes and scope identities, never all of the split staging files.
       for (const [candidate, candidateScopes] of scopesByCandidate) {
-        const candidateLines = splitTextLines(await readFile(candidate, "utf8"));
+        const candidateLines = splitTextLines(await readRequiredWorkflowText(candidate));
         for (const original of candidateScopes) {
           if (candidateLines.length !== sourceLines.length || original.inputHash !== currentTranslationAlignmentRangeHash(original, sourceLines, candidateLines, bound.languagePair)) {
             throw new Error(`Recovery preflight rejected stale or incompatible review evidence for ${document.id} L${original.fromLine}-${original.toLine}.`);
@@ -3682,7 +3693,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         if ((accepted && priorCandidate !== canonical) || (!accepted && priorCandidate === canonical)) {
           if (mutationSourcePath !== sourcePath(bound)) {
             mutationSourcePath = sourcePath(bound);
-            mutationSourceLines = splitTextLines(await readFile(mutationSourcePath, "utf8"));
+            mutationSourceLines = splitTextLines(await readRequiredWorkflowText(mutationSourcePath));
           }
         }
         if (accepted && priorCandidate !== canonical) {
@@ -3692,7 +3703,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             stagingPath: priorCandidate, fromLine: scope.fromLine, toLine: scope.toLine
           });
           if (!promotion.ok) throw new Error(promotion.error || "Recovery preflight staging promotion failed.");
-          const canonicalLines = splitTextLines(await readFile(canonical, "utf8"));
+          const canonicalLines = splitTextLines(await readRequiredWorkflowText(canonical));
           if (canonicalLines.length !== mutationSourceLines.length || scope.inputHash !== currentTranslationAlignmentRangeHash(scope, mutationSourceLines, canonicalLines, bound.languagePair)) {
             throw new Error(`Recovery preflight promotion changed the accepted candidate for ${scope.documentId} L${scope.fromLine}-${scope.toLine}.`);
           }
@@ -3708,7 +3719,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             assignmentId: `${scope.documentId}:L${scope.fromLine}-L${scope.toLine}`
           });
           createdStaging.push(staging);
-          const stagingLines = splitTextLines(await readFile(staging, "utf8"));
+          const stagingLines = splitTextLines(await readRequiredWorkflowText(staging));
           if (stagingLines.length !== mutationSourceLines.length || scope.inputHash !== currentTranslationAlignmentRangeHash(scope, mutationSourceLines, stagingLines, bound.languagePair)) {
             throw new Error(`Recovery preflight prepared candidate changed for ${scope.documentId} L${scope.fromLine}-${scope.toLine}.`);
           }
@@ -3844,13 +3855,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     translationPath: string;
     prescan: ProofreadPrescanSnapshot;
   }> => {
-    const sourceText = await readFile(sourcePath(bound), "utf8");
+    const sourceText = await readRequiredWorkflowText(sourcePath(bound));
     const sourceLines = splitTextLines(sourceText);
     const translationPath = proofreadTranslationPath(bound, manifest?.kind === "folder");
-    if (!await exists(translationPath)) {
-      throw new Error(`Proofreading requires an existing translation candidate at ${translationPath}.`);
-    }
-    const translationText = await readFile(translationPath, "utf8");
+    const translationText = await readRequiredWorkflowText(translationPath);
     const translationLines = splitTextLines(translationText);
     if (sourceLines.length !== translationLines.length) {
       throw new Error(
@@ -3858,9 +3866,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       );
     }
     const validationOptions = prepared?.validationOptions
-      ?? await createYnTranslationValidationOptions(bound);
+      ?? await createValidationOptions(bound);
     const assets = prepared?.assets
-      ?? await readWorkflowProjectAssets(bound);
+      ?? await readWorkflowAssets(bound);
     const normalizedSource = sourceLines.join("\n");
     const normalizedTranslation = translationLines.join("\n");
     const currentInputHash = proofreadInputHash(
@@ -4001,15 +4009,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     if (!scope || scope.documentId !== documentId(request)) {
       throw new Error(`Unknown proofread range scope: ${scopeId}. Run inspectProofreadRange again.`);
     }
-    const sourceLines = splitTextLines(await readFile(sourcePath(request), "utf8"));
+    const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(request)));
     const translationPath = proofreadTranslationPath(request, manifest?.kind === "folder");
-    const translationLines = splitTextLines(await readFile(translationPath, "utf8"));
+    const translationLines = splitTextLines(await readRequiredWorkflowText(translationPath));
     const range = normalizeRange(scope.fromLine, scope.toLine, sourceLines.length);
     if (translationLines.length !== sourceLines.length) {
       throw new Error("The aligned files changed after the bounded proofread range was inspected.");
     }
-    const validationOptions = await createYnTranslationValidationOptions(request);
-    const assets = await readWorkflowProjectAssets(request);
+    const validationOptions = await createValidationOptions(request);
+    const assets = await readWorkflowAssets(request);
     const inputHash = proofreadInputHash(
       sourceLines.slice(range.fromLine - 1, range.toLine).join("\n"),
       translationLines.slice(range.fromLine - 1, range.toLine).join("\n"),
@@ -4065,7 +4073,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       && warningAudit.candidatePath === candidate
       && warningAudit.sourceLineCount === sourceLines.length
     ) {
-      const assets = await readWorkflowProjectAssets(bound);
+      const assets = await readWorkflowAssets(bound);
       const currentEvidence = new Set(translationWarningEvidence({
         documentId: currentDocumentId,
         sourceLines,
@@ -4455,7 +4463,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           groups.set(key, current as never);
         }
         const [workflowAssets, workspaceAssets] = await Promise.all([
-          readWorkflowProjectAssets(request),
+          readWorkflowAssets(request),
           readWorkspaceAgentContext(request.outputDir)
         ]);
         const formalTargets = new Map(workflowAssets.glossary.entries.flatMap((entry) => {
@@ -4792,17 +4800,17 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       executionMode: "sequential",
       async execute(_toolCallId, params) {
         const input = params as { fromLine: number; toLine: number };
-        const sourceLines = splitTextLines(await readFile(sourcePath(request), "utf8"));
+        const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(request)));
         const translationPath = proofreadTranslationPath(request, manifest?.kind === "folder");
-        const translationLines = splitTextLines(await readFile(translationPath, "utf8"));
+        const translationLines = splitTextLines(await readRequiredWorkflowText(translationPath));
         if (sourceLines.length !== translationLines.length) {
           throw new Error(
             `Bounded proofreading requires aligned files; source has ${sourceLines.length} lines and translation has ${translationLines.length}.`
           );
         }
         const range = normalizeRange(input.fromLine, input.toLine, sourceLines.length);
-        const validationOptions = await createYnTranslationValidationOptions(request);
-        const assets = await readWorkflowProjectAssets(request);
+        const validationOptions = await createValidationOptions(request);
+        const assets = await readWorkflowAssets(request);
         const scopedSource = sourceLines.slice(range.fromLine - 1, range.toLine).join("\n");
         const scopedTranslation = translationLines.slice(range.fromLine - 1, range.toLine).join("\n");
         const inputHash = proofreadInputHash(
@@ -4865,10 +4873,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           : context.domainRun?.kind ?? "inspect_only";
         if (workflow !== "inspect_only") context.domainRun?.activate(workflow);
         const source = sourcePath(request);
-        const sourceInfo = await stat(source);
+        const sourceInfo = await withRequiredWorkflowFile(source, () => stat(source));
         if (!sourceInfo.isFile()) throw new Error("The bound source path is not a file.");
-        const sourceLines = splitTextLines(await readFile(source, "utf8"));
-        const assets = await readWorkflowProjectAssets(request);
+        const sourceLines = splitTextLines(await readRequiredWorkflowText(source));
+        const assets = await readWorkflowAssets(request);
         const candidate = candidatePath(request);
         const workspaceStatus = await readWorkspaceAssetsStatus(request.outputDir);
         const glossaryCandidateExists = workspaceStatus.available.glossaryCandidates;
@@ -4889,7 +4897,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         let proofreadPrescan: (ProofreadPrescanSummary & { documentCount?: number }) | undefined;
         let boundProofreadTranslationPath: string | undefined;
         if (workflow === "proofread") {
-          const validationOptions = await createYnTranslationValidationOptions(request);
+          const validationOptions = await createValidationOptions(request);
           const prepared = { validationOptions, assets };
           if (manifest?.kind === "folder") {
             const scans = [];
@@ -5036,7 +5044,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       async execute(_toolCallId, params) {
         const input = params as { documentId: string };
         const selected = selectDocument(input.documentId.trim());
-        const sourceLines = splitTextLines(await readFile(sourcePath(selected), "utf8"));
+        const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(selected)));
         return textResult({
           documentId: documentId(selected),
           sourcePath: sourcePath(selected),
@@ -5470,7 +5478,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       async execute(_toolCallId, params) {
         const input = params as { fromLine: number; toLine: number };
         const readRequest = activeTranslationChunkReview?.bound ?? request;
-        const lines = splitTextLines(await readFile(sourcePath(readRequest), "utf8"));
+        const lines = splitTextLines(await readRequiredWorkflowText(sourcePath(readRequest)));
         const range = parentLineReadRange(input.fromLine, input.toLine, lines.length);
         if (
           activeTranslationChunkReview
@@ -5510,7 +5518,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           || canonicalCandidateIsHostBound(readRequest)
           ? candidatePath(readRequest)
           : proofreadTranslationPath(readRequest, manifest?.kind === "folder");
-        const text = await readOptional(translation);
+        const text = context.domainRun?.kind === "proofread" || baseRequest.workflowIntent === "proofread"
+          ? await readRequiredWorkflowText(translation)
+          : await readCurrentCandidateText(readRequest, translation);
         if (!text) return textResult({ exists: false, path: translation, lines: [] });
         const lines = splitTextLines(text);
         const range = parentLineReadRange(input.fromLine, input.toLine, lines.length);
@@ -5546,7 +5556,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           throw new Error("No active parent translation alignment review. Call inspectTranslationAlignment first.");
         }
         const scopes = translationAlignmentState.ranges[active.documentId] ?? [];
-        const sourceLines = splitTextLines(await readFile(sourcePath(active.bound), "utf8"));
+        const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(active.bound)));
         const resolveScope = async (auditId: string) => {
           const scope = scopes.find((candidate) => candidate.auditId === auditId);
           if (!scope) {
@@ -5554,7 +5564,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             throw new Error("The active translation alignment review is stale. Call inspectTranslationAlignment again.");
           }
           const candidatePathValue = path.resolve(scope.candidatePath);
-          const candidateLines = splitTextLines(await readFile(candidatePathValue, "utf8"));
+          const candidateLines = splitTextLines(await readRequiredWorkflowText(candidatePathValue));
           const currentHash = currentRangeAlignmentHash(
             scope,
             sourceLines,
@@ -5732,7 +5742,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           characters?: Array<Record<string, unknown>>;
         };
         const [assets, workspaceStatus, workspaceContext] = await Promise.all([
-          readWorkflowProjectAssets(request),
+          readWorkflowAssets(request),
           readWorkspaceAssetsStatus(request.outputDir),
           readWorkspaceAgentContext(request.outputDir)
         ]);
@@ -5984,11 +5994,12 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           const document = resolvePiSourceDocument(resolvedManifest, currentDocumentId);
           if (!document) continue;
           const bound = bindPiSourceDocument(baseRequest, document);
-          const sourceText = await readFile(sourcePath(bound), "utf8");
+          const sourceText = await readRequiredWorkflowText(sourcePath(bound));
           const candidate = candidatePath(bound);
-          const candidateText = await readOptional(candidate);
+          const candidateText = await readCurrentCandidateText(bound, candidate);
           if (!candidateText) continue;
           const { validation, validationOptions } = await hostTranslationValidation({
+            createValidationOptions,
             bound,
             documentId: currentDocumentId,
             sourceText,
@@ -6030,7 +6041,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           const candidateLines = splitTextLines(candidateText);
           const inputHash = translationAlignmentInputHash(sourceText, candidateText, bound.languagePair);
           const auditId = finalTranslationWarningAuditId(currentDocumentId, candidate, bound.languagePair);
-          const assets = await readWorkflowProjectAssets(bound);
+          const assets = await readWorkflowAssets(bound);
           const evidence = translationWarningEvidence({
             documentId: currentDocumentId,
             sourceLines,
@@ -6187,10 +6198,11 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           activeTranslationWarningReview = undefined;
           throw new Error("The final translation warning audit is missing or stale. Call inspectTranslationWarnings again.");
         }
-        const sourceText = await readFile(sourcePath(active.bound), "utf8");
+        const sourceText = await readRequiredWorkflowText(sourcePath(active.bound));
         const candidate = candidatePath(active.bound);
-        const candidateText = await readFile(candidate, "utf8");
+        const candidateText = await readRequiredWorkflowText(candidate);
         const { validation, validationOptions } = await hostTranslationValidation({
+            createValidationOptions,
           bound: active.bound,
           documentId: active.documentId,
           sourceText,
@@ -6211,7 +6223,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           activeTranslationWarningReview = undefined;
           throw new Error("The source, canonical candidate, or warning inputs changed. Call inspectTranslationWarnings again.");
         }
-        const assets = await readWorkflowProjectAssets(active.bound);
+        const assets = await readWorkflowAssets(active.bound);
         const currentEvidence = translationWarningEvidence({
           documentId: active.documentId,
           sourceLines,
@@ -6347,7 +6359,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           const currentDocumentId = documentId(request);
           let scopes = await canonicalizeBoundedTranslationAlignments(request);
           if (scopes.length === 0) {
-            const sourceLineCount = splitTextLines(await readFile(sourcePath(request), "utf8")).length;
+            const sourceLineCount = splitTextLines(await readRequiredWorkflowText(sourcePath(request))).length;
             scopes = [await registerBoundedTranslationAlignment(request, {
               fromLine: 1,
               toLine: sourceLineCount
@@ -6437,9 +6449,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const selectedDocument = resolvedManifest.documents.find((document) => document.id === selected!.ownerDocumentId);
         if (!selectedDocument) throw new Error(`Source document ${selected.ownerDocumentId} is no longer available.`);
         const selectedBound = bindPiSourceDocument(baseRequest, selectedDocument);
-        const selectedSourceLines = splitTextLines(await readFile(sourcePath(selectedBound), "utf8"));
+        const selectedSourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(selectedBound)));
         const selectedCandidatePath = path.resolve(selected.scope.candidatePath);
-        const selectedCandidateLines = splitTextLines(await readFile(selectedCandidatePath, "utf8"));
+        const selectedCandidateLines = splitTextLines(await readRequiredWorkflowText(selectedCandidatePath));
         if (
           selected.scope.sourceLineCount !== selectedSourceLines.length
           || selected.scope.inputHash !== currentRangeAlignmentHash(
@@ -6517,12 +6529,12 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           const active = activeTranslationChunkReview;
           const reviewAssignments = active.reviewAssignments ?? [];
           const scopes = translationAlignmentState.ranges[active.documentId] ?? [];
-          const sourceLines = splitTextLines(await readFile(sourcePath(active.bound), "utf8"));
+          const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(active.bound)));
           const pendingTargets: Array<{ scope: TranslationAlignmentRangeState; check: TranslationAlignmentRangeState["checks"][number] }> = [];
           for (const assignment of reviewAssignments) {
             const scope = scopes.find((candidate) => candidate.auditId === assignment.auditId);
             if (!scope) throw new Error("The translation alignment audit is missing or stale. Run inspectTranslationAlignment again.");
-            const candidateLines = splitTextLines(await readFile(scope.candidatePath, "utf8"));
+            const candidateLines = splitTextLines(await readRequiredWorkflowText(scope.candidatePath));
             const currentHash = currentRangeAlignmentHash(scope, sourceLines, candidateLines, active.bound.languagePair);
             if (scope.inputHash !== currentHash) {
               throw new Error("The translation candidate changed after alignment inspection. Run inspectTranslationAlignment again.");
@@ -6594,8 +6606,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const reviewBound = activeTranslationChunkReview?.auditId === input.auditId
           ? activeTranslationChunkReview.bound
           : await boundForDocument(currentDocumentId);
-        const sourceText = await readFile(sourcePath(reviewBound), "utf8");
-        const candidateText = await readFile(audit.candidatePath, "utf8");
+        const sourceText = await readRequiredWorkflowText(sourcePath(reviewBound));
+        const candidateText = await readRequiredWorkflowText(audit.candidatePath);
         const sourceLines = splitTextLines(sourceText);
         const candidateLines = splitTextLines(candidateText);
         const currentHash = boundedAudit
@@ -6702,7 +6714,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           || parentOwnedMutation
           || context.domainRun.maximumSubagentsForActiveDocument > 0;
         if (!boundedArtifactRepair) context.domainRun?.activate("translation");
-        const sourceLines = splitTextLines(await readFile(sourcePath(bound), "utf8"));
+        const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(bound)));
         const range = normalizeRange(input.fromLine, input.toLine, sourceLines.length);
         if (context.subagents.hasWriteConflict?.({
           documentId: documentId(bound),
@@ -6719,7 +6731,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const validation = await runTranslationValidation({
           sourceText: sourceLines.slice(range.fromLine - 1, range.toLine).join("\n") + "\n",
           candidateText: input.lines.join("\n") + "\n",
-          validationOptions: { ...await createYnTranslationValidationOptions(bound), lineOffset: range.fromLine - 1 },
+          validationOptions: { ...await createValidationOptions(bound), lineOffset: range.fromLine - 1 },
           signal: toolExecution.getStore()?.signal,
           diagnostics: { outputDir: bound.outputDir, documentId: documentId(bound), phase: "parent-write", ...range }
         });
@@ -6728,12 +6740,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         } else {
           assertYnTranslationChunkWritable(validation, `Chunk L${range.fromLine}-L${range.toLine}`);
         }
+        let candidateWasReset = false;
         if (!boundedArtifactRepair) {
           assertTranslationChunkReviewRangeAvailable(documentId(bound), range);
-          await prepareExistingTranslationForWrite(bound);
+          candidateWasReset = await prepareExistingTranslationForWrite(bound);
         }
         const targetCandidatePath = candidatePath(bound);
-        const previousCandidateText = await readOptionalCandidateText(targetCandidatePath);
+        const previousCandidateText = candidateWasReset
+          ? await readOptionalCandidateText(targetCandidatePath)
+          : await readCurrentCandidateText(bound, targetCandidatePath);
         const previousAlignmentState = structuredClone(translationAlignmentState);
         const previousProofreadState = structuredClone(proofreadState);
         const rollbackReuseBaseline = await captureTranslationReuseBaselineRollback({ outputDir: bound.outputDir, documentId: documentId(bound), candidatePath: targetCandidatePath })
@@ -6839,14 +6854,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           const bound = manifest?.kind === "folder"
             ? bindPiSourceDocument(baseRequest, document)
             : request;
-          const sourceText = await readFile(sourcePath(bound), "utf8");
+          const sourceText = await readRequiredWorkflowText(sourcePath(bound));
           const candidate = candidatePath(bound);
-          const candidateText = await readOptional(candidate);
+          const candidateText = await readCurrentCandidateText(bound, candidate);
           if (!candidateText) {
             failures.push(`${document.id}: candidate does not exist at ${candidate}`);
             continue;
           }
           const { validation, validationOptions } = await hostTranslationValidation({
+            createValidationOptions,
             bound,
             documentId: document.id,
             sourceText,
@@ -7033,10 +7049,10 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           };
           context.domainRun?.assertCanRecordFindingsWrite("proofread");
         } else {
-          const sourceLines = splitTextLines(await readFile(sourcePath(request), "utf8"));
+          const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(request)));
           const translationPath = proofreadTranslationPath(request, manifest?.kind === "folder");
-          const translationLines = splitTextLines(await readFile(translationPath, "utf8"));
-          const validationOptions = await createYnTranslationValidationOptions(request);
+          const translationLines = splitTextLines(await readRequiredWorkflowText(translationPath));
+          const validationOptions = await createValidationOptions(request);
           mechanicalScan = {
             scopeLines: Array.from(
               { length: localScope.toLine - localScope.fromLine + 1 },
@@ -7050,7 +7066,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             })).map((signal) => ({ ...signal, line: signal.line + localScope.fromLine - 1 }))
           };
         }
-        const boundSourceLines = splitTextLines(await readFile(sourcePath(request), "utf8"));
+        const boundSourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(request)));
         if (localScope) {
           for (const finding of submittedFindings) {
             const sourceLine = Number(finding.sourceLine);
@@ -7276,7 +7292,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           reportScope: proofreadReportScope(request),
           kind: "findings_json"
         });
-        const document = JSON.parse(await readFile(findingsPath, "utf8")) as {
+        const document = JSON.parse(await readRequiredWorkflowText(findingsPath)) as {
           findings?: Array<{
             id?: unknown;
             severity?: unknown;
@@ -7481,8 +7497,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             kind: "findings_json"
           });
           try {
-            existingReport = JSON.parse(await readFile(findingsPath, "utf8"));
+            existingReport = JSON.parse(await readRequiredWorkflowText(findingsPath));
           } catch (error) {
+            if (isNonRetryableAssignmentError(error)) throw error;
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
               throw new Error(
                 `Unable to validate completed proofreading scopes from ${findingsPath}: ${error instanceof Error ? error.message : String(error)}`
@@ -8026,7 +8043,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           }
           const range = value.fromLine === undefined
             ? {}
-            : normalizeRange(value.fromLine, value.toLine!, selectedDocument?.lineCount ?? splitTextLines(await readFile(sourcePath(request), "utf8")).length);
+            : normalizeRange(value.fromLine, value.toLine!, selectedDocument?.lineCount ?? splitTextLines(await readRequiredWorkflowText(sourcePath(request))).length);
           normalized.push({
             ...value,
             ...range,
@@ -8386,8 +8403,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             const completedDocument = manifest?.documents.find((candidate) => candidate.id === completedDocumentId);
             const bound = completedDocument ? bindPiSourceDocument(baseRequest, completedDocument) : request;
             const [sourceLines, candidateLines] = await Promise.all([
-              readFile(sourcePath(bound), "utf8").then(splitTextLines),
-              readFile(candidatePath(bound), "utf8").then(splitTextLines)
+              readRequiredWorkflowText(sourcePath(bound)).then(splitTextLines),
+              readRequiredWorkflowText(candidatePath(bound)).then(splitTextLines)
             ]);
             const records = translationDiscoveryRecords({
               task,

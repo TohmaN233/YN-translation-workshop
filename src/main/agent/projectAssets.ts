@@ -7,6 +7,7 @@ import { normalizeHandwrittenCharacterRequiredTerms, parseCharacterVoiceRequired
 import { writeTextFileAtomically, writeTextFilesAtomically, type TextFileTransactionUpdate } from "../atomicFile.ts";
 import { patchProjectStateIfUnchanged, readProjectState, transactProjectState } from "../projectState.ts";
 import { readTranslationMemoryStats, type TranslationMemoryStats, translationMemoryPath } from "./translationMemory.ts";
+import { RequiredWorkflowFileError, readRequiredWorkflowText } from "./requiredWorkflowFile.ts";
 
 export type AssetProposalKind = "glossary" | "character_bible";
 
@@ -816,22 +817,45 @@ async function writeCanonicalGlossaryAndBindUnlocked(args: {
 }
 
 /** Read the canonical glossary plus any selected external authority without mutating either file. */
+export function createWorkflowProjectAssetReader() {
+  const loadedPaths = new Map<"glossary" | "characterBible" | "styleGuide", string>();
+  return async (args: Parameters<typeof readWorkflowProjectAssets>[0]): Promise<ProjectAssets> => {
+    const assets = await readWorkflowProjectAssets(args);
+    for (const kind of ["glossary", "characterBible", "styleGuide"] as const) {
+      const currentPath = assets.paths[kind];
+      if (loadedPaths.get(kind) === currentPath && !assets.available[kind]) {
+        throw new RequiredWorkflowFileError(currentPath);
+      }
+      if (assets.available[kind]) loadedPaths.set(kind, currentPath);
+      else loadedPaths.delete(kind);
+    }
+    return assets;
+  };
+}
+
 export async function readWorkflowProjectAssets(args: {
   outputDir: string;
   glossaryPath?: string;
 }): Promise<ProjectAssets> {
   const assets = await readProjectAssets({ outputDir: args.outputDir });
-  const selectedPath = args.glossaryPath?.trim();
+  const state = await readProjectState(args.outputDir);
+  const selectedPath = args.glossaryPath?.trim() || (typeof state.glossaryPath === "string" ? state.glossaryPath.trim() : "");
   if (!selectedPath) return assets;
   if (!path.isAbsolute(selectedPath)) {
     throw new Error(`Selected glossary path must be absolute: ${selectedPath}`);
   }
   const glossaryPath = path.resolve(selectedPath);
-  if (sameAssetPath(glossaryPath, assets.paths.glossary)) return assets;
+  if (sameAssetPath(glossaryPath, assets.paths.glossary)) {
+    if (!assets.available.glossary) throw new RequiredWorkflowFileError(glossaryPath);
+    return assets;
+  }
   let source: string;
   try {
-    source = await readFile(glossaryPath, "utf8");
+    source = await readRequiredWorkflowText(glossaryPath);
   } catch (error) {
+    if (error instanceof RequiredWorkflowFileError) {
+      throw new RequiredWorkflowFileError(glossaryPath, error.cause, "Failed to read selected glossary");
+    }
     throw new Error(`Failed to read selected glossary: ${glossaryPath}`, { cause: error });
   }
   const selectedEntries = parseGlossaryText(source).map((entry) => ({ ...entry }));
@@ -942,8 +966,8 @@ export async function readProjectTranslationValidationAssets(
 export async function readWorkflowTranslationValidationAssets(args: {
   outputDir: string;
   glossaryPath?: string;
-}): Promise<ProjectTranslationValidationAssets> {
-  const assets = await readWorkflowProjectAssets(args);
+}, readAssets = readWorkflowProjectAssets): Promise<ProjectTranslationValidationAssets> {
+  const assets = await readAssets(args);
   return {
     glossaryEntries: projectGlossaryEntries(assets),
     characterEntries: projectCharacterEntries(assets),

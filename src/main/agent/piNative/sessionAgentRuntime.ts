@@ -534,6 +534,8 @@ export class PiSessionAgentRuntime {
               await this.appendCustomEntry("yn_host_tool_failure", {
                 timestamp: Date.now(), sessionId: this.sessionId, tool: tool.name,
                 error: error.message, retryable: false,
+                ...(typeof (error as Error & { filePath?: unknown }).filePath === "string"
+                  ? { requiredFilePath: (error as Error & { filePath: string }).filePath } : {}),
                 failureDisposition: isFatalHostAssignmentError(error) ? "host_integrity_failure" : error.name
               });
             } catch (persistenceError) {
@@ -648,6 +650,12 @@ export class PiSessionAgentRuntime {
   }
 
   async appendMessage(message: AgentMessage): Promise<void> {
+    // Host progress is not queued user input. A tool may await its own status
+    // publication, so deferring custom entries until that tool ends self-locks.
+    if (message.role === "custom") {
+      await this.persistExternalMessage(message);
+      return;
+    }
     if (this.phase !== "idle") {
       await new Promise<void>((resolve, reject) => {
         this.pendingSessionMessages.push({ message, resolve, reject });

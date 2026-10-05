@@ -1,6 +1,6 @@
 import type { PiSessionPromptRequest } from "../../../shared/agent/piSessionContract.ts";
 import type { ValidationOptions } from "../../../shared/validation/translationValidator.ts";
-import { readWorkflowTranslationValidationAssets } from "../projectAssets.ts";
+import { readWorkflowTranslationValidationAssets, type readWorkflowProjectAssets } from "../projectAssets.ts";
 
 function requiredLanguagePair(request: PiSessionPromptRequest): string {
   const languagePair = request.languagePair?.trim();
@@ -11,12 +11,13 @@ function requiredLanguagePair(request: PiSessionPromptRequest): string {
 }
 
 export async function createYnTranslationValidationOptions(
-  request: PiSessionPromptRequest
+  request: PiSessionPromptRequest,
+  readAssets?: typeof readWorkflowProjectAssets
 ): Promise<ValidationOptions> {
   const assets = await readWorkflowTranslationValidationAssets({
     outputDir: request.outputDir,
     glossaryPath: request.glossaryPath
-  });
+  }, readAssets);
   return {
     locale: "zh-CN",
     languagePair: requiredLanguagePair(request),

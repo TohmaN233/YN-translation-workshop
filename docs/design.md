@@ -5,8 +5,9 @@ The 2.x application uses an embedded Pi runtime and Host-owned workflow contract
 not external CLI or skill-driven execution.
 
 - [Product overview and artifacts](../README.en.md)
-- [Host workflow boundary audit](agent-workflow-boundary-audit.md)
+- [Current workflow and ownership boundaries](workflow.md)
 - [Runtime code map](agent-runtime-codegraph.md)
+- [Pi and pi-web implementation map](pi-web-migration-map.md)
 
-Audits describe the revision and date they inspected. Current code and tests are
-the authority when a historical audit differs from the implementation.
+This page is an index, not a runtime specification. Current code and tests define
+implementation details.

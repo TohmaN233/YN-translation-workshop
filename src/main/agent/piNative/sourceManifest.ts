@@ -5,6 +5,7 @@ import path from "node:path";
 import type { PiSessionPromptRequest, PiSourceSelection } from "../../../shared/agent/piSessionContract.ts";
 import { splitTextLines } from "../../../shared/validation/translationValidator.ts";
 import { collectSourceTreeFiles, IGNORED_SOURCE_DIRECTORIES } from "../../sourceFileTree.ts";
+import { readRequiredWorkflowText, withRequiredWorkflowFile } from "../requiredWorkflowFile.ts";
 
 export interface PiSourceDocument {
   id: string;
@@ -168,10 +169,10 @@ export function resolvePiReadablePath(
 }
 
 async function sourceDocument(id: string, filePath: string): Promise<PiSourceDocument> {
-  const info = await lstat(filePath);
+  const info = await withRequiredWorkflowFile(filePath, () => lstat(filePath));
   if (info.isSymbolicLink()) throw new Error(`Source manifest entries cannot be symbolic links: ${filePath}`);
   if (!info.isFile()) throw new Error(`Source manifest entry is not a file: ${filePath}`);
-  const text = await readFile(filePath, "utf8");
+  const text = await readRequiredWorkflowText(filePath);
   return { id, path: path.resolve(filePath), lineCount: splitTextLines(text).length };
 }
 
@@ -219,7 +220,9 @@ async function explicitFolderDocuments(
     }
     if (preparedSelection && !entry.projection) throw new Error(`Prepared source document ${id} lacks hash-bound provenance.`);
     try {
-      const originalInfo = await lstat(originalPath);
+      const originalInfo = preparedSelection
+        ? await withRequiredWorkflowFile(originalPath, () => lstat(originalPath))
+        : await lstat(originalPath);
       if (!originalInfo.isFile() || originalInfo.isSymbolicLink()) {
         if (preparedSelection) throw new Error(`Prepared source input is not a regular file: ${originalPath}.`);
         continue;
@@ -238,7 +241,8 @@ async function explicitFolderDocuments(
         throw new Error(`Unprojected text source must use its original TXT path: ${id}.`);
       }
       const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-      if (digest(await readFile(originalPath)) !== proof.originalHash || digest(await readFile(filePath)) !== proof.projectionHash) {
+      if (digest(await withRequiredWorkflowFile(originalPath, () => readFile(originalPath))) !== proof.originalHash
+        || digest(await withRequiredWorkflowFile(filePath, () => readFile(filePath))) !== proof.projectionHash) {
         throw new Error(`Source projection is stale for ${id}; prepare the task again.`);
       }
     }
@@ -255,7 +259,7 @@ export async function resolvePiSourceManifest(request: PiSessionPromptRequest): 
   const selection = selectionFrom(request);
   const rootPath = path.resolve(selection.path);
   assertSourceOutsideGeneratedRoots(request.outputDir, rootPath);
-  const rootInfo = await lstat(rootPath);
+  const rootInfo = await withRequiredWorkflowFile(rootPath, () => lstat(rootPath));
   if (rootInfo.isSymbolicLink()) throw new Error(`Source selections cannot be symbolic links: ${rootPath}`);
   if (selection.kind === "file") {
     if (!rootInfo.isFile()) throw new Error(`The selected source is not a file: ${rootPath}`);

@@ -16,6 +16,7 @@ import {
 import { Type } from "typebox";
 
 import { PiNativeSessionService } from "../src/main/agent/piNative/sessionService.ts";
+import { readRequiredWorkflowText } from "../src/main/agent/requiredWorkflowFile.ts";
 import { PiSessionRepository } from "../src/main/agent/piNative/sessionRepository.ts";
 import { listPiConfiguredModels } from "../src/main/agent/piNative/providerRegistry.ts";
 import { openAgentChatWindow } from "../src/main/agent/piNative/agentChatWindowHost.ts";
@@ -655,6 +656,23 @@ const service = new PiNativeSessionService({
     }
     toolContext.readInterfaceContext = () => ynInterfaceContextStore.read(request.outputDir);
     return [
+    {
+      name: "verifyRequiredFileLoss", label: "Required file", description: "Verify a task dependency read.",
+      parameters: Type.Object({}),
+      async execute() {
+        await readRequiredWorkflowText(path.join(workspace, "lost-task-dependency.txt"));
+        return { content: [{ type: "text", text: "read" }] };
+      }
+    },
+    {
+      name: "verifyStopPublication", label: "Stop publication", description: "Verify the final Host publication during Stop.",
+      parameters: Type.Object({}),
+      async execute(_id, _params, signal) {
+        if (!signal?.aborted) await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }));
+        await toolContext.publishCustomMessage({ role: "custom", customType: "yn-stop-probe", content: "Host stop publication completed", display: false, timestamp: Date.now() });
+        return { content: [{ type: "text", text: "stopped" }] };
+      }
+    },
     {
       name: "echo",
       label: "echo",
@@ -1425,7 +1443,7 @@ async function run(): Promise<void> {
     && state.translateOutputDir === path.join(workspace, "AI_translation")
     && state.proofreadOutputDir === path.join(workspace, "report")
     && state.split === true
-    && state.splitSize === 1000
+    && state.splitSize === 500
     && state.glossaryCandidates === true
     && state.characterBible === true
     && state.reuseExistingTranslation === false
@@ -2084,6 +2102,30 @@ async function run(): Promise<void> {
   );
   assert(!cancelledRetryContinued, "Stop allowed the provider retry to continue after backoff cancellation");
   mark("provider-auto-retry-aborted");
+
+  let continuedAfterFileLoss = false;
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("verifyRequiredFileLoss", {}), { stopReason: "toolUse" }),
+    () => { continuedAfterFileLoss = true; return fauxAssistantMessage("Must never retry a missing task file."); }
+  ]);
+  await sendMessage(win, "测试任务必需文件缺失后的停止");
+  await waitFor(win, 'document.body.innerText.includes("lost-task-dependency.txt") && document.body.innerText.includes("Restore this file")', 3_000);
+  await waitFor(win, '!document.querySelector(".ynAgentInputStop, .ynAgentSubagentStop")', 2_000);
+  assert(!continuedAfterFileLoss, "Required file loss bought a retry provider turn");
+  await capturePaintedWindow(win, path.join(root, "artifacts", "glossary-stop-2026-10-04", "electron-required-file.png"));
+  mark("required-file-loss-stopped");
+
+  faux.setResponses([fauxAssistantMessage(fauxToolCall("verifyStopPublication", {}), { stopReason: "toolUse" })]);
+  await sendMessage(win, "测试立即中止时工具发布最后状态");
+  await waitFor(win, 'document.body.innerText.includes("verifyStopPublication")', 3_000);
+  const publicationStopStartedAt = performance.now();
+  const publicationStopClicked = await win.webContents.executeJavaScript(`(() => {
+    const button = [...document.querySelectorAll('.ynAgentInputStop')].find((node) => !node.disabled && node.getClientRects().length > 0);
+    button?.click(); return Boolean(button);
+  })()`);
+  assert(publicationStopClicked, "Cannot click Stop during the Host publication tool");
+  await waitFor(win, '!document.querySelector(".ynAgentInputStop, .ynAgentSubagentStop")', 3_000);
+  mark("host-publication-stop-complete", { durationMs: performance.now() - publicationStopStartedAt });
 
   faux.setResponses([
     fauxAssistantMessage(fauxText("当前新会话保留。")),

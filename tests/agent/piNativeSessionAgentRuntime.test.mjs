@@ -135,7 +135,7 @@ const activeRuntime = new PiSessionAgentRuntime({
   models: slowModels,
   model: slowProvider.getModel(),
   thinkingLevel: "medium",
-  systemPrompt: "Queue external session messages until the native Pi turn boundary.",
+  systemPrompt: "Persist Host status in the native session operation queue.",
   tools: []
 });
 try {
@@ -150,12 +150,12 @@ try {
     timestamp: 3
   }).then(() => { externalPersisted = true; });
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(externalPersisted, false, "external message bypassed the active Pi turn write queue");
+  assert.equal(externalPersisted, true, "Host status must not wait for its own active tool turn to end");
   releaseProvider.resolve();
   await Promise.all([parentTurn, externalWrite]);
   assert.deepEqual(
     (await readSessionConversation(activeSession)).messages.map((message) => message.role),
-    ["user", "assistant", "custom"],
+    ["user", "custom", "assistant"],
     "parent messages and terminal child transcript did not share one linear Pi branch"
   );
 } finally {
@@ -163,7 +163,7 @@ try {
   activeRuntime.dispose();
 }
 
-console.log("ok external child messages wait for the active Pi turn boundary and remain reachable");
+console.log("ok Host child status persists during the active Pi turn and remains on one native branch");
 
 const terminalPollEntered = deferred();
 const releaseTerminalPoll = deferred();

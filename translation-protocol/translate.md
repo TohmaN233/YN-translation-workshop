@@ -4,7 +4,7 @@ The standalone 1.x translation guide has been retired. This file is a documentat
 pointer, not a prompt loaded by the 2.x runtime.
 
 - [Product workflow and artifact overview](../README.en.md)
-- [Host workflow boundary audit](../docs/agent-workflow-boundary-audit.md)
+- [Current workflow and ownership boundaries](../docs/workflow.md)
 - [Active translation child protocol](translation-child.md)
 
 The built-in system prompt, DomainRun contract, Host tools, and validators define

@@ -30,7 +30,8 @@ import type { PiSessionPromptRequest } from "../../../shared/agent/piSessionCont
 import { PROOFREAD_STRUCTURE_INSTRUCTIONS } from "../../../shared/agent/proofreadInstructions.ts";
 import { validateProofreadReplacement } from "../../../shared/validation/proofreadReplacement.ts";
 import { resolveThinkingLevelForModel } from "../../../shared/agent/thinkingLevels.ts";
-import { readProjectAssets, readWorkflowProjectAssets } from "../projectAssets.ts";
+import { readProjectAssets, readWorkflowProjectAssets, createWorkflowProjectAssetReader } from "../projectAssets.ts";
+import { RequiredWorkflowFileError, readRequiredWorkflowText } from "../requiredWorkflowFile.ts";
 import { listProjectDir, readProjectFile, searchProjectText } from "../projectFileTools.ts";
 import { resolveReadablePath } from "../projectPathGuard.ts";
 import { readWorkspaceAgentContext } from "../workspaceAssets.ts";
@@ -56,6 +57,7 @@ import {
   ParentTakeoverAssignmentError,
   ProviderAuthExpiredError,
   SubagentTransportExhaustedError,
+  isFatalHostAssignmentError,
   isExpiredProviderAuthError
 } from "./assignmentFailure.ts";
 import {
@@ -1072,7 +1074,7 @@ async function boundedPriorDiscoveryContext(
   const prior = (request as PiBoundSourceRequest).priorTranslationDiscoveries as PiTranslationDiscoveries | undefined;
   if (!prior || (prior.glossaryCandidates.length === 0 && prior.characterFacts.length === 0)) return "";
 
-  const sourceLines = splitTextLines(await readFile(sourcePath(request), "utf8"));
+  const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(request)));
   const assignedSource = sourceLines.slice(task.fromLine - 1, task.toLine).join("\n");
   const entries = [
     ...prior.glossaryCandidates.map((value) => ({
@@ -1317,9 +1319,9 @@ function directReferenceMatches(
   return { entries: selected, omitted: matched.length - selected.length };
 }
 
-async function translationProjectReferences(request: PiSessionPromptRequest, sourceText: string) {
+async function translationProjectReferences(request: PiSessionPromptRequest, sourceText: string, readAssets = readWorkflowProjectAssets) {
   const [assets, workspaceAssets] = await Promise.all([
-    readWorkflowProjectAssets({ outputDir: request.outputDir, glossaryPath: request.glossaryPath }),
+    readAssets({ outputDir: request.outputDir, glossaryPath: request.glossaryPath }),
     readWorkspaceAgentContext(request.outputDir)
   ]);
   const reference = (absolutePath: string, available: boolean) => {
@@ -1449,6 +1451,9 @@ async function fingerprints(paths: string[]): Promise<Map<string, string>> {
 async function fingerprintsMatch(previous: Map<string, string> | undefined): Promise<boolean> {
   if (!previous) return false;
   const current = await fingerprints([...previous.keys()]);
+  for (const [filePath, fingerprint] of previous) {
+    if (fingerprint !== "missing" && current.get(filePath) === "missing") throw new RequiredWorkflowFileError(filePath);
+  }
   return [...previous].every(([filePath, fingerprint]) => current.get(filePath) === fingerprint);
 }
 
@@ -1555,15 +1560,11 @@ async function proofreadReferenceBundle(
 
 async function validateAssignedRange(context: PiTranslationSubagentContext, toolSignal?: AbortSignal) {
   throwIfAborted(context.signal, toolSignal);
-  const source = splitTextLines(await readFile(sourcePath(context.request), "utf8"));
+  const ioSignal = toolSignal && context.signal ? AbortSignal.any([toolSignal, context.signal]) : toolSignal ?? context.signal;
+  const source = splitTextLines(await readRequiredWorkflowText(sourcePath(context.request), ioSignal));
   throwIfAborted(context.signal, toolSignal);
   const candidatePath = translationWorkingCandidatePath(context);
-  let candidate: string[] = [];
-  try {
-    candidate = splitTextLines(await readFile(candidatePath, "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  const candidate = splitTextLines(await readRequiredWorkflowText(candidatePath, ioSignal));
   throwIfAborted(context.signal, toolSignal);
   const from = context.task.fromLine - 1;
   const sourceSlice = source.slice(from, context.task.toLine);
@@ -1695,7 +1696,8 @@ async function validateExistingAssignedRange(
   toolSignal?: AbortSignal
 ) {
   try {
-    await readFile(translationWorkingCandidatePath(context), "utf8");
+    if (context.workingCandidatePath) await readRequiredWorkflowText(translationWorkingCandidatePath(context), toolSignal ?? context.signal);
+    else await readFile(translationWorkingCandidatePath(context), "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -2288,6 +2290,7 @@ export function createPiTranslationSubagentTools(
     translationValidated: false
   }
 ): PiTranslationSubagentTool[] {
+  const readWorkflowAssets = createWorkflowProjectAssetReader();
   progress.readLines ??= new Set<number>();
   progress.writtenLines ??= new Set<number>();
   progress.mutatedLines ??= new Set<number>();
@@ -2414,7 +2417,7 @@ export function createPiTranslationSubagentTools(
       async execute(_toolCallId, params, signal) {
         throwIfAborted(context.signal, signal);
         const input = params as { fromLine: number; toLine: number };
-        const sourceLines = splitTextLines(await readFile(sourcePath(context.request), "utf8"));
+        const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(context.request)));
         if (input.toLine < input.fromLine || input.toLine > sourceLines.length) {
           throw new Error(
             `Translation context range L${input.fromLine}-L${input.toLine} is outside the bound source with ${sourceLines.length} lines.`
@@ -2423,7 +2426,9 @@ export function createPiTranslationSubagentTools(
         const toLine = Math.min(input.toLine, input.fromLine + MAX_TRANSLATION_CONTEXT_LINES - 1);
         let translationLines: string[] = [];
         try {
-	          translationLines = splitTextLines(await readFile(translationWorkingCandidatePath(context), "utf8"));
+          translationLines = splitTextLines(await (context.workingCandidatePath || progress.translationWritten
+            ? readRequiredWorkflowText(translationWorkingCandidatePath(context), signal ?? context.signal)
+            : readFile(translationWorkingCandidatePath(context), "utf8")));
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
@@ -2462,7 +2467,7 @@ export function createPiTranslationSubagentTools(
         throwIfAborted(context.signal, signal);
         const input = params as AssignedChunkInput;
         const firstReferenceRead = !progress.referenceRead;
-        const lines = splitTextLines(await readFile(sourcePath(context.request), "utf8"));
+        const lines = splitTextLines(await readRequiredWorkflowText(sourcePath(context.request), signal ?? context.signal));
         const sourcePage = selectedRepairLines.length > 0
           ? { range: { fromLine: selectedRepairLines[0], toLine: selectedRepairLines.at(-1)! } }
           : assignedSourcePageRange(context.task, input, progress.readLines!);
@@ -2489,12 +2494,14 @@ export function createPiTranslationSubagentTools(
           firstReferenceRead
             ? translationReferenceContext(context.request, context.executionMode, context.task)
             : Promise.resolve(undefined),
-          translationProjectReferences(context.request, assignedSourceText)
+          translationProjectReferences(context.request, assignedSourceText, readWorkflowAssets)
         ]);
         let currentTranslation: string[] = [];
         if (context.executionMode === "bounded_repair" || context.executionMode === "chunk_review_repair") {
           try {
-	            currentTranslation = splitTextLines(await readFile(translationWorkingCandidatePath(context), "utf8"));
+            currentTranslation = splitTextLines(await (context.workingCandidatePath || progress.translationWritten
+              ? readRequiredWorkflowText(translationWorkingCandidatePath(context), signal ?? context.signal)
+              : readFile(translationWorkingCandidatePath(context), "utf8")));
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
           }
@@ -2588,7 +2595,7 @@ export function createPiTranslationSubagentTools(
             : `L${range.fromLine}-L${range.toLine}`;
           throw new Error(`Call readAssignedSource successfully for ${requiredRead} before writing that chunk.`);
         }
-        const sourceLines = splitTextLines(await readFile(sourcePath(context.request), "utf8"));
+        const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(context.request)));
         const source = sourceLines.slice(range.fromLine - 1, range.toLine);
         const wireBlocks = translationWireBlocks(source, range.fromLine);
         let translations = new Map<number, string>();
@@ -2645,7 +2652,9 @@ export function createPiTranslationSubagentTools(
         let existing: string[] = [];
         let previousCandidateText: string | undefined;
         try {
-          previousCandidateText = await readFile(translationWorkingCandidatePath(context), "utf8");
+          previousCandidateText = context.workingCandidatePath || progress.translationWritten || progress.writtenLines!.size > 0
+            ? await readRequiredWorkflowText(translationWorkingCandidatePath(context), signal ?? context.signal)
+            : await readFile(translationWorkingCandidatePath(context), "utf8");
           existing = splitTextLines(previousCandidateText);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -2658,6 +2667,7 @@ export function createPiTranslationSubagentTools(
           return translated ?? (existing[line - 1] || sourceText);
         });
         throwIfAborted(context.signal, signal);
+        await readWorkflowAssets(context.request);
         const proposedValidation = validateTranslationCandidate(
           source.join("\n"),
           proposedLines.join("\n"),
@@ -2932,6 +2942,7 @@ export function createPiTranslationSubagentTools(
             `The assigned translation is incomplete; write the remaining range L${missing?.fromLine ?? context.task.fromLine}-L${missing?.toLine ?? context.task.toLine} before validation.`
           );
         }
+        await readWorkflowAssets(context.request);
         const result = await validateAssignedRange(context, signal);
         throwIfAborted(context.signal, signal);
         if (!result.accepted) {
@@ -2945,8 +2956,8 @@ export function createPiTranslationSubagentTools(
         );
         const submittedDiscoveries = params as Partial<PiTranslationDiscoveries>;
         const [discoverySourceLines, discoveryCandidateLines] = await Promise.all([
-          readFile(sourcePath(context.request), "utf8").then(splitTextLines),
-          readFile(result.candidatePath, "utf8").then(splitTextLines)
+          readRequiredWorkflowText(sourcePath(context.request)).then(splitTextLines),
+          readRequiredWorkflowText(result.candidatePath).then(splitTextLines)
         ]);
         const discoveryReport = normalizeTranslationDiscoveries(
           {
@@ -3154,8 +3165,8 @@ export function createPiProofreadSubagentTools(
       async execute(_toolCallId, _params, signal) {
         throwIfAborted(context.signal, signal);
         const [sourceContent, translationContent, bundle] = await Promise.all([
-          readFile(sourcePath(context.request), "utf8"),
-          readFile(proofreadTranslationPath(context.request), "utf8"),
+          readRequiredWorkflowText(sourcePath(context.request)),
+          readRequiredWorkflowText(proofreadTranslationPath(context.request)),
           referenceBundle()
         ]);
         const references = bundle.references;
@@ -3395,8 +3406,8 @@ export function createPiProofreadSubagentTools(
           glossaryCandidates?: PiTranslationGlossaryDiscovery[];
         };
         const [sourceContent, translationContent] = await Promise.all([
-          readFile(sourcePath(context.request), "utf8"),
-          readFile(proofreadTranslationPath(context.request), "utf8")
+          readRequiredWorkflowText(sourcePath(context.request)),
+          readRequiredWorkflowText(proofreadTranslationPath(context.request))
         ]);
         const sourceLines = splitTextLines(sourceContent);
         const translationLines = splitTextLines(translationContent);
@@ -3554,7 +3565,7 @@ function createPiGeneralSubagentTools(context: PiGeneralSubagentContext): AgentT
       }, { additionalProperties: false }),
       async execute(_toolCallId, params) {
         const input = params as { fromLine: number; toLine: number };
-        const lines = splitTextLines(await readFile(sourcePath(context.request as PiBoundSourceRequest), "utf8"));
+        const lines = splitTextLines(await readRequiredWorkflowText(sourcePath(context.request as PiBoundSourceRequest)));
         if (input.fromLine < 1 || input.toLine > lines.length || input.toLine < input.fromLine) {
           throw new Error(`Requested source range L${input.fromLine}-L${input.toLine} is outside source L1-L${lines.length}.`);
         }
@@ -3578,7 +3589,7 @@ function createPiGeneralSubagentTools(context: PiGeneralSubagentContext): AgentT
       async execute(_toolCallId, params) {
         const input = params as { fromLine: number; toLine: number };
         const candidate = candidatePath(context.request);
-        const lines = splitTextLines(await readFile(candidate, "utf8"));
+        const lines = splitTextLines(await readRequiredWorkflowText(candidate));
         if (input.fromLine < 1 || input.toLine > lines.length || input.toLine < input.fromLine) {
           throw new Error(`Requested translation range L${input.fromLine}-L${input.toLine} is outside translation L1-L${lines.length}.`);
         }
@@ -5085,7 +5096,7 @@ export async function createPiTranslationSubagentWorker(
       ) => runTranslationArtifactTransaction(chunkContext, async () => {
         if (!stagingPath) throw new Error("A reviewed translation requires a Host staging candidate.");
         const canonical = candidatePath(chunkContext.request);
-        const sourceLineCount = splitTextLines(await readFile(sourcePath(chunkContext.request), "utf8")).length;
+        const sourceLineCount = splitTextLines(await readRequiredWorkflowText(sourcePath(chunkContext.request))).length;
         let previousCanonicalText: string | undefined;
         try { previousCanonicalText = await readFile(canonical, "utf8"); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -5564,6 +5575,7 @@ export async function createPiTranslationSubagentWorker(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const failedDocumentId = context.task.documentId || documentId(context.request);
+        if (isFatalHostAssignmentError(error)) retainStagingAfterRun = true;
         if (!failedDocumentIds.includes(failedDocumentId)) failedDocumentIds.push(failedDocumentId);
         lastError = message;
         try {

@@ -567,6 +567,9 @@ await test("current project settings override stale HTML parameters without repl
     const manifest = await resolvePiSourceManifest(toolRequest);
     assert.deepEqual(manifest.documents.map((document) => document.id), ["tips.txt"]);
     const bound = bindPiSourceDocument(toolRequest, manifest.documents[0]);
+    await writeFile(path.join(workspaceDir, ".translation-workshop", "glossary.json"), '{"entries":[]}');
+    await mkdir(path.join(workspaceDir, "AI_translation", "_workspace"), { recursive: true });
+    await writeFile(path.join(workspaceDir, "AI_translation", "_workspace", "character_bible.md"), "# Character Bible\n\n## Reader / 读者\n- Gender/pronouns: unknown; unknown; unknown\n- Terms of address: Reader\n");
     const childTools = createPiTranslationSubagentTools({
       request: bound,
       task: { documentId: "tips.txt", fromLine: 1, toLine: 1 },
@@ -1389,7 +1392,10 @@ await test("Stop never lets an old Session writer overwrite a continuation accep
     await childShutdownEntered.promise;
     releaseInitialization.resolve();
     await Promise.race([stoppedPrompt, lateAgentStart.promise]);
-    await service.prompt({ ...common, prompt: "普通继续消息，不自动恢复工作流。" });
+    const continuing = service.prompt({ ...common, prompt: "普通继续消息，不自动恢复工作流。" });
+    releaseChildShutdown.resolve();
+    await aborting;
+    await continuing;
     const continuationVisible = await Promise.race([
       (async () => {
         for (;;) {
@@ -1400,7 +1406,7 @@ await test("Stop never lets an old Session writer overwrite a continuation accep
       })(),
       new Promise((resolve) => setTimeout(() => resolve(false), 5000))
     ]);
-    assert.equal(continuationVisible, true, "the continuation did not settle while old child shutdown was pending");
+    assert.equal(continuationVisible, true, "the continuation did not settle after the old child shutdown completed");
 
     releaseChildShutdown.resolve();
     await aborting;

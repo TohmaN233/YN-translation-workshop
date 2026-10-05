@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -430,6 +430,8 @@ const checkpointFailureCandidatePath = path.join(
   "checkpoint.txt"
 );
 await writeFile(checkpointFailureSourcePath, "Complete source sentence.\n", "utf8");
+await mkdir(path.dirname(checkpointFailureCandidatePath), { recursive: true });
+await writeFile(checkpointFailureCandidatePath, "\n", "utf8");
 try {
   const tools = createPiTranslationSubagentTools({
     request: {

@@ -159,6 +159,17 @@ export async function prepareTranslationStagingCandidate(args: {
   assertStagingPath(args.outputDir, stagingPath);
   const sourceLineCount = await countSourceLines(args.sourcePaths);
   await withTranslationCandidateLock(canonicalPath, async () => {
+    // Retries of one durable assignment own the same staging identity. Never
+    // replace its written bytes with the (possibly still blank) canonical file.
+    try {
+      const existing = splitTextLines(await readFile(stagingPath, "utf8"));
+      if (existing.length !== sourceLineCount) {
+        throw new Error(`Cannot resume ${args.documentId}: staging candidate has ${existing.length} lines but source has ${sourceLineCount}.`);
+      }
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     let lines: string[];
     try {
       lines = splitTextLines(await readFile(canonicalPath, "utf8"));

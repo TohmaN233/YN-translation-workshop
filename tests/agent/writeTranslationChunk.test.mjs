@@ -207,6 +207,22 @@ await test("review staging keeps rejected text out of the canonical candidate un
   }
 });
 
+await test("preparing the same assignment twice preserves its written staging bytes", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-idempotent-stage-"));
+  const sourcePath = path.join(outputDir, "source.txt");
+  const args = { outputDir, sourcePaths: [sourcePath], documentId: "source.txt", sessionId: "parent", subagentId: "child", assignmentId: "source.txt:L1-L2" };
+  try {
+    await writeFile(sourcePath, "First sentence.\nSecond sentence.\n");
+    const stagingPath = await prepareTranslationStagingCandidate(args);
+    await writeFile(stagingPath, "第一句话。\n第二句话。\n");
+    assert.equal(await prepareTranslationStagingCandidate(args), stagingPath);
+    assert.equal(await readFile(stagingPath, "utf8"), "第一句话。\n第二句话。\n");
+    await writeFile(stagingPath, "malformed\n");
+    await assert.rejects(() => prepareTranslationStagingCandidate(args), /staging.*lines/);
+    assert.equal(await readFile(stagingPath, "utf8"), "malformed\n", "invalid existing staging must be exposed and retained");
+  } finally { await rm(outputDir, { recursive: true, force: true }); }
+});
+
 console.log("");
 console.log(`# tests ${passed + failed}`);
 console.log(`# pass ${passed}`);

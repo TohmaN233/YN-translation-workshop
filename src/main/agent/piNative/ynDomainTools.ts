@@ -65,6 +65,7 @@ import {
   writeTranslationChunk
 } from "../writeTranslationChunk.ts";
 import { publishCanonicalTranslationBinding, resolveProofreadTranslationPath } from "../translationBindingResolve.ts";
+import { recoverErasedTranslationStaging } from "./translationStagingRecovery.ts";
 import { writeTextFileAtomically } from "../../atomicFile.ts";
 import {
   listPiConfiguredModels,
@@ -3622,6 +3623,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       bound: PiBoundSourceRequest;
       scope: TranslationAlignmentRangeState;
       canonical: string;
+      recovery?: Awaited<ReturnType<typeof recoverErasedTranslationStaging>>;
+      displacedRangeHash?: string;
     }> = [];
     const rollbackReuseBaselines = new Map<string, () => Promise<void>>();
     // Validate every retained scope before changing any artifact or launching a
@@ -3665,31 +3668,74 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       for (const [candidate, candidateScopes] of scopesByCandidate) {
         const candidateLines = splitTextLines(await readRequiredWorkflowText(candidate));
         for (const original of candidateScopes) {
-          if (candidateLines.length !== sourceLines.length || original.inputHash !== currentTranslationAlignmentRangeHash(original, sourceLines, candidateLines, bound.languagePair)) {
-            throw new Error(`Recovery preflight rejected stale or incompatible review evidence for ${document.id} L${original.fromLine}-${original.toLine}.`);
+          const actualHash = currentTranslationAlignmentRangeHash(original, sourceLines, candidateLines, bound.languagePair);
+          if (candidateLines.length !== sourceLines.length) {
+            throw new Error(`Recovery preflight rejected candidate line count for ${document.id} L${original.fromLine}-${original.toLine}: expected ${sourceLines.length}, actual ${candidateLines.length}.`);
           }
-          verified.push({ bound, scope: original, canonical });
+          let recovery: Awaited<ReturnType<typeof recoverErasedTranslationStaging>>;
+          if (original.inputHash !== actualHash) {
+            const erased = candidate !== canonical && candidateLines.slice(original.fromLine - 1, original.toLine).every((line) => line === "");
+            if (erased) recovery = await recoverErasedTranslationStaging({
+              outputDir: bound.outputDir, parentSessionId: baseRequest.sessionId, scope: original,
+              sourceLines, languagePair: bound.languagePair, signal
+            });
+            if (!recovery) {
+              throw new Error(`Recovery preflight rejected stale or incompatible review evidence for ${document.id} L${original.fromLine}-${original.toLine}: candidate=${candidate}; expectedHash=${original.inputHash}; actualHash=${actualHash}; erased=${erased}; no matching owned durable write receipt.`);
+            }
+          }
+          verified.push({ bound, scope: original, canonical, recovery, displacedRangeHash: recovery ? actualHash : undefined });
         }
       }
     }
     if (verified.length === 0) return;
     const previousAlignment = structuredClone(translationAlignmentState);
     const previousCanonicalTexts = new Map<string, string | undefined>();
+    const previousStagingTexts = new Map<string, string>();
+    const stagingRecoveryReceipts = new Map<string, Record<string, unknown>>();
     const createdStaging: string[] = [];
     const rollbackDomainMutations: Array<() => void> = [];
     const recoveryWorkerId = `host-recovery-${randomUUID()}`;
     let changed = false;
     let boundScopes = 0;
     let promotedScopes = 0;
+    let restoredScopes = 0;
     try {
       let mutationSourcePath: string | undefined;
       let mutationSourceLines: string[] = [];
-      for (const { bound, scope: original, canonical } of verified) {
+      for (const { bound, scope: original, canonical, recovery, displacedRangeHash } of verified) {
         signal?.throwIfAborted();
         const scope = structuredClone(original);
         changed = reopenMalformedTranslationReviewEvidence(scope) || changed;
         const accepted = scope.checks.length > 0 && scope.checks.every((check) => check.verdict === "aligned");
         const priorCandidate = path.resolve(scope.candidatePath);
+        if (recovery) {
+          const previousText = await readRequiredWorkflowText(priorCandidate);
+          const lines = splitTextLines(previousText);
+          const sources = splitTextLines(await readRequiredWorkflowText(sourcePath(bound)));
+          if (lines.length !== sources.length || currentTranslationAlignmentRangeHash(scope, sources, lines, bound.languagePair) !== displacedRangeHash) {
+            throw new Error(`Recovery staging changed during preflight for ${scope.documentId} L${scope.fromLine}-${scope.toLine}.`);
+          }
+          if (!previousStagingTexts.has(priorCandidate)) previousStagingTexts.set(priorCandidate, previousText);
+          const diagnosisDir = path.join(bound.outputDir, ".translation-workshop", "agent", "recovery-transactions", recoveryWorkerId);
+          await mkdir(diagnosisDir, { recursive: true });
+          const backupPath = path.join(diagnosisDir, `${restoredScopes + 1}-displaced-staging.txt`);
+          await writeTextFileAtomically(backupPath, previousText);
+          const receipt = { schemaVersion: 1, phase: "restore_prepared", documentId: scope.documentId, fromLine: scope.fromLine, toLine: scope.toLine,
+            candidatePath: priorCandidate, backupPath, expectedHash: scope.inputHash, displacedRangeHash,
+            childSessionId: recovery.childSessionId, receiptEntryId: recovery.receiptEntryId };
+          const receiptPath = path.join(diagnosisDir, `${restoredScopes + 1}-restore.json`);
+          await writeTextFileAtomically(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+          stagingRecoveryReceipts.set(receiptPath, receipt);
+          lines.splice(scope.fromLine - 1, scope.toLine - scope.fromLine + 1, ...recovery.lines);
+          if (currentTranslationAlignmentRangeHash(scope, sources, lines, bound.languagePair) !== scope.inputHash) throw new Error("Native staging recovery no longer matches its original review evidence.");
+          await writeTextFileAtomically(priorCandidate, `${lines.join("\n")}\n`);
+          await writeTextFileAtomically(receiptPath, `${JSON.stringify({ ...receipt, phase: "restored" }, null, 2)}\n`);
+          restoredScopes += 1;
+          changed = true;
+          console.info(JSON.stringify({ event: "yn.translation.recovery.staging_restored", documentId: scope.documentId,
+            fromLine: scope.fromLine, toLine: scope.toLine, candidatePath: priorCandidate, inputHash: scope.inputHash,
+            childSessionId: recovery.childSessionId, receiptEntryId: recovery.receiptEntryId, diagnosisPath: receiptPath }));
+        }
         if ((accepted && priorCandidate !== canonical) || (!accepted && priorCandidate === canonical)) {
           if (mutationSourcePath !== sourcePath(bound)) {
             mutationSourcePath = sourcePath(bound);
@@ -3758,11 +3804,16 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             }
             diagnosisPath = path.join(diagnosisDir, "transaction.json");
             await writeTextFileAtomically(diagnosisPath, `${JSON.stringify({ schemaVersion: 1,
-              phase: "compensation_unconfirmed", canonicalSnapshots, retainedStagingCandidates: createdStaging,
+              phase: "compensation_unconfirmed", canonicalSnapshots, retainedStagingCandidates: [...createdStaging, ...previousStagingTexts.keys()],
+              restoredStagingReceipts: [...stagingRecoveryReceipts.keys()],
               originalError: error instanceof Error ? error.message : String(error),
               compensationError: compensationError instanceof Error ? compensationError.message : String(compensationError)
             }, null, 2)}\n`);
           } catch (diagnosisError) { rollbackErrors.push(diagnosisError); }
+          for (const [receiptPath, receipt] of stagingRecoveryReceipts) {
+            try { await writeTextFileAtomically(receiptPath, `${JSON.stringify({ ...receipt, phase: "compensation_unconfirmed" }, null, 2)}\n`); }
+            catch (diagnosisError) { rollbackErrors.push(diagnosisError); }
+          }
           throw new AggregateError([error, compensationError, ...rollbackErrors],
             `Recovery preflight compensation could not be confirmed; verified canonical and staging artifacts were retained.${diagnosisPath ? ` Diagnosis: ${diagnosisPath}` : ""}`);
         }
@@ -3775,6 +3826,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           if (previous === undefined) await rm(canonical, { force: true });
           else await writeTextFileAtomically(canonical, previous);
         } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      }
+      for (const [staging, previous] of previousStagingTexts) {
+        try { await writeTextFileAtomically(staging, previous); }
+        catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      }
+      for (const [receiptPath, receipt] of stagingRecoveryReceipts) {
+        try { await writeTextFileAtomically(receiptPath, `${JSON.stringify({ ...receipt, phase: rollbackErrors.length ? "rollback_incomplete" : "rolled_back" }, null, 2)}\n`); }
+        catch (rollbackError) { rollbackErrors.push(rollbackError); }
       }
       // A failed compensation may leave durable entries referring to these
       // candidates. Keep them readable until the Host can reconcile again.
@@ -3790,7 +3849,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     console.info(JSON.stringify({
       event: "yn.translation.recovery.preflight", scopeCount: verified.length,
       documentCount: new Set(verified.map((entry) => entry.scope.documentId)).size,
-      boundScopes, promotedScopes,
+      boundScopes, promotedScopes, restoredScopes,
       acceptedScopeCount: verified.filter((entry) => entry.scope.checks.length > 0 && entry.scope.checks.every((check) => check.verdict === "aligned")).length
     }));
   }).catch((error) => {

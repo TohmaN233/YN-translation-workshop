@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog } from "electron";
 import { mkdir, mkdtemp, writeFile, readFile, cp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { spawn } from "node:child_process";
 import { renderLineReviewHtml, renderProposalReviewHtml, renderBatchLineReviewIndexHtml } from "../src/shared/core/html.ts";
 import { PiSessionRepository } from "../src/main/agent/piNative/sessionRepository.ts";
 import { piNativeSessionService } from "../src/main/agent/piNative/sessionService.ts";
@@ -110,6 +111,38 @@ async function run() {
   await rm(original, { recursive: true });
   ({ viewer } = await open(linePath)); viewer.close();
   await waitFor(() => viewer.isDestroyed(), "closure without original project");
+  if (process.env.YN_HTML_CLOSE_FIXTURE) {
+    const fixtureRoot = path.join(temp, "large-pages");
+    const fixtureHtmlDir = path.join(fixtureRoot, ".translation-workshop", "html");
+    await mkdir(fixtureHtmlDir, { recursive: true });
+    const inputs = JSON.parse(process.env.YN_HTML_CLOSE_FIXTURE) as string[];
+    for (const input of inputs) {
+      const copiedHtml = path.join(fixtureHtmlDir, path.basename(input));
+      await cp(input, copiedHtml);
+      const opened = await open(copiedHtml);
+      viewer = opened.viewer;
+      opened.view.webContents.setBackgroundThrottling(true);
+      viewer.webContents.setBackgroundThrottling(true);
+      viewer.on("close", () => console.log("[native-close] close event", inputs.length));
+      const evaluate = opened.view.webContents.executeJavaScript.bind(opened.view.webContents);
+      opened.view.webContents.executeJavaScript = (async (code: string, ...args: any[]) => {
+        console.log("[native-close] evaluation requested", code.includes("flushTranslationWorkshop"));
+        const value = await evaluate(code, ...args);
+        console.log("[native-close] evaluation settled", code.includes("flushTranslationWorkshop"));
+        return value;
+      }) as typeof evaluate;
+    }
+    const started = Date.now();
+    const handle = viewer.getNativeWindowHandle().readBigUInt64LE().toString();
+    const command = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class YnNativeCloseFixture { [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam); }'; if (-not [YnNativeCloseFixture]::PostMessage([IntPtr]::new(${handle}), 0x112, [IntPtr]::new(0xF060), [IntPtr]::Zero)) { exit 1 }`;
+    await new Promise<void>((resolve, reject) => {
+      const sender = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { windowsHide: true, stdio: "ignore" });
+      sender.on("error", reject);
+      sender.on("close", code => code === 0 ? resolve() : reject(new Error(`Fixture native close message failed: ${code}`)));
+    });
+    await waitFor(() => viewer.isDestroyed(), "native close with real large inactive/active pages and production throttling");
+    console.log(JSON.stringify({ realHtmlNativeClose: true, elapsedMs: Date.now() - started }));
+  }
   assert(BrowserWindow.getAllWindows().every(win => !win.isVisible()), "Verifier opened a visible window");
   console.log(JSON.stringify({ ok: true, portableHtml: true, queuedEditPreserved: true, nativeTabAndWindowClose: true, stopIndependentOfSave: true, activeNativeRuntimeStopped: true, errorsVisible: true, nativeHistoriesRetained: true }));
 }

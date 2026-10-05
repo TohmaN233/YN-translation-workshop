@@ -1,4 +1,4 @@
-import { readSessionContext } from "./sessionAccess.ts";
+import { readSessionContext, readSessionEntries, appendSessionCustomEntry } from "./sessionAccess.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -900,10 +900,6 @@ async function latestAssistantMessage(session: Session): Promise<PiAssistantMess
   return assistant;
 }
 
-async function assistantMessageCount(session: Session): Promise<number> {
-  return (await readSessionContext(session)).messages.filter((message) => message.role === "assistant").length;
-}
-
 // Pi continues the same native turn so retries do not append the complete assignment prompt again.
 const CHILD_RUNTIME_RETRY = { enabled: true, maxRetries: 2, baseDelayMs: 500 } as const;
 const NO_FRESH_ASSISTANT_RETRY_DELAYS_MS = [250] as const;
@@ -982,11 +978,29 @@ export async function promptSubagentTurn(args: {
   try {
     for (let noFreshAttempt = 0; ; noFreshAttempt += 1) {
       throwIfAborted(args.signal);
-      const assistantCountBeforePrompt = await assistantMessageCount(args.session);
+      const lastEntryBeforePrompt = (await readSessionEntries(args.session)).at(-1)?.id;
       await args.runtime.prompt(args.prompt);
-      const assistantCountAfterPrompt = await assistantMessageCount(args.session);
-      if (assistantCountAfterPrompt <= assistantCountBeforePrompt) {
+      // Native compaction changes projected message counts and can retain old
+      // assistants more than once. Only entries appended after this prompt's
+      // durable branch cursor prove that the Host received a fresh response.
+      const entries = await readSessionEntries(args.session);
+      const cursor = lastEntryBeforePrompt === undefined
+        ? -1 : entries.findIndex((entry) => entry.id === lastEntryBeforePrompt);
+      if (lastEntryBeforePrompt !== undefined && cursor < 0) {
+        throw new NonRetryableAssignmentError("Pi child session branch changed during its Host-owned prompt.");
+      }
+      const response = entries.slice(cursor + 1).reverse().find((entry) => (
+        entry.type === "message" && entry.message.role === "assistant"
+      ));
+      if (!response || response.type !== "message" || response.message.role !== "assistant") {
         const error = "Pi child turn completed without a fresh assistant message.";
+        await appendSessionCustomEntry(args.session, "yn_child_prompt_no_fresh_assistant", {
+          timestamp: Date.now(), lastEntryBeforePrompt,
+          newestEntryId: entries.at(-1)?.id,
+          compactionEntryIds: entries.slice(cursor + 1).filter((entry) => entry.type === "compaction").map((entry) => entry.id),
+          retryAttempt: noFreshAttempt + 1,
+          retryable: noFreshAttempt < NO_FRESH_ASSISTANT_RETRY_DELAYS_MS.length
+        }).catch((cause) => { throw new NonRetryableAssignmentError("Cannot persist Pi child no-fresh-response diagnostics.", cause); });
         if (noFreshAttempt >= NO_FRESH_ASSISTANT_RETRY_DELAYS_MS.length) throw new Error(error);
         const retryAttempt = noFreshAttempt + 1;
         console.warn("[pi-subagent-retry]", JSON.stringify({ retryAttempt, error }));
@@ -994,21 +1008,21 @@ export async function promptSubagentTurn(args: {
         await waitForSubagentRetry(NO_FRESH_ASSISTANT_RETRY_DELAYS_MS[noFreshAttempt], args.signal);
         continue;
       }
-      const response = await latestAssistantMessage(args.session);
+      const message = response.message;
       throwIfAborted(args.signal);
-      if (response.stopReason !== "error" && response.stopReason !== "aborted") return response;
-      if (response.stopReason === "error" && isExpiredProviderAuthError(response.errorMessage)) {
+      if (message.stopReason !== "error" && message.stopReason !== "aborted") return message;
+      if (message.stopReason === "error" && isExpiredProviderAuthError(message.errorMessage)) {
         throw new ProviderAuthExpiredError(
-          response.errorMessage || "Provider OAuth access token is no longer valid."
+          message.errorMessage || "Provider OAuth access token is no longer valid."
         );
       }
-      if (response.stopReason === "error" && isRetryableAssistantError(response)) {
+      if (message.stopReason === "error" && isRetryableAssistantError(message)) {
         throw new SubagentTransportExhaustedError(
-          response.errorMessage || "Pi child provider transport retry budget was exhausted."
+          message.errorMessage || "Pi child provider transport retry budget was exhausted."
         );
       }
-      assertRuntimeResponse(response);
-      return response;
+      assertRuntimeResponse(message);
+      return message;
     }
   } finally {
     unsubscribe();

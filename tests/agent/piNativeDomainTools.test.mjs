@@ -6439,6 +6439,10 @@ await test("translation review context failures become repair debt and expand th
       "line_identity+semantic_mistranslation: the same shifted pattern continues into this context row | the candidate carries the neighboring source meaning"
     );
     const [rejectedScope] = translationAlignmentState.ranges["source.txt"];
+    const rejectedSnapshot = structuredClone(rejectedScope);
+    assert.deepEqual(await prepared.submit(prepared.task, []), rejected,
+      "an empty repeated submission must report retained rejection debt, never claim acceptance");
+    assert.deepEqual(rejectedScope, rejectedSnapshot, "an empty repeated receipt must preserve all accepted and rejected evidence");
     const propagatedCheck = rejectedScope.checks.find((check) => check.line === propagatedLine);
     assert.equal(propagatedCheck?.verdict, "misaligned");
     assert.ok(propagatedCheck?.signals.includes("review_context_failure"));

@@ -3141,11 +3141,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           catch (rollbackError) { throw new NonRetryableAssignmentError("Host translation review evidence rollback persistence failed.", new AggregateError([error, rollbackError])); }
           throw new NonRetryableAssignmentError("Host translation review evidence persistence failed; the prior evidence was restored.", error);
         }
-        return normalized.length === 0
+        // The receipt describes the complete authoritative scope. A repeated
+        // empty submission cannot turn previously rejected rows into acceptance.
+        const rejected = scope.checks.filter((check) => check.verdict === "misaligned");
+        return rejected.length === 0
           ? { accepted: true }
           : {
               accepted: false,
-              feedback: normalized
+              feedback: rejected.map((check) => ({ line: check.line, reason: check.reason!.trim() }))
             };
       })
     };

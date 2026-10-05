@@ -43,6 +43,8 @@ import {
   createProofreadHostState,
   createTranslationAlignmentHostState,
   loadYnSessionHostState,
+  getYnHostStateLoadDiagnostics,
+  type YnSessionHostState,
   type ProofreadHostState
 } from "./proofreadSessionState.ts";
 import type { TranslationAlignmentHostState } from "./translationAlignmentState.ts";
@@ -231,6 +233,7 @@ interface ActiveSession {
     translationAlignment: TranslationAlignmentHostState;
   };
   persistHostState: (options?: { force?: boolean }) => Promise<void>;
+  hostPersistence: { tail: Promise<void> };
   subagents: YnSubagentSupervisor;
   promptOperation?: PromptOperation;
   promptTask?: Promise<void>;
@@ -586,6 +589,7 @@ export class PiNativeSessionService {
   }
 
   private async acceptPrompt(request: PiSessionPromptRequest, preparationHandoff?: YnTaskPreparationState, handoffCancelled?: () => boolean): Promise<PiSessionPromptAcceptance> {
+    const preparationStarted = performance.now();
     request = await resolveCurrentProjectPromptRequest(request);
     assertWorkflowPromptMetadata(request);
     if (request.workflowIntent) await ensureYnWorkflowWorkspace(request.outputDir);
@@ -598,6 +602,7 @@ export class PiNativeSessionService {
     }
     const reservation: SessionOperationReservation = { cancelled: false };
     this.sessionOperationReservations.set(key, reservation);
+    let preparationFailureActive: ActiveSession | undefined;
     try {
       await this.active.get(key)?.subagents.waitForTerminalSettlements();
       return await this.withWorkspaceSessionTransition(request.outputDir, request.sessionId, async () => {
@@ -622,13 +627,45 @@ export class PiNativeSessionService {
         active.running = true;
         active.phase = "turn";
         active.error = undefined;
-        await active.persistHostState();
+        try {
+          await active.persistHostState();
+          await active.runtime.appendCustomEntry("yn_prompt_preparation", {
+            timestamp: Date.now(),
+            hostStateSource: prepared.previous ? "owned" : "replayed",
+            elapsedMs: performance.now() - preparationStarted,
+            ...(!prepared.previous ? { hostReplay: getYnHostStateLoadDiagnostics(active.session) } : {})
+          });
+        } catch (error) {
+          preparationFailureActive = active;
+          operation.cancelled = true;
+          operation.abortController.abort();
+          active.runtime.requestAbort();
+          active.subagents.abortAll();
+          this.suspendDomainRun(active);
+          active.running = false;
+          active.phase = "idle";
+          active.error = error instanceof Error ? error.message : String(error);
+          this.emitActiveState(active);
+          throw error;
+        }
         this.emitActiveState(active);
 
         this.launchNativeInput(active, request.prompt, operation, request.images);
 
         return { accepted: true, sessionId: active.sessionId };
       });
+    } catch (error) {
+      if (preparationFailureActive) {
+        // Child settlement can publish through the session transition. Stop
+        // signals above are immediate; await the real terminal state only
+        // after releasing that transition, preserving the original failure.
+        try {
+          await this.abort(request.outputDir, request.sessionId);
+        } catch (stopError) {
+          throw new AggregateError([error, stopError], `Pi prompt preparation failed: ${error instanceof Error ? error.message : String(error)}; stopping the workflow also failed: ${stopError instanceof Error ? stopError.message : String(stopError)}`);
+        }
+      }
+      throw error;
     } finally {
       if (this.sessionOperationReservations.get(key) === reservation) this.sessionOperationReservations.delete(key);
     }
@@ -900,7 +937,16 @@ export class PiNativeSessionService {
     queuedCarryover: AgentMessage[],
     preparationHandoff?: YnTaskPreparationState
   ): Promise<PreparedRuntime> {
-    const persistedHostState = await loadYnSessionHostState(session, request.sessionId, { projectRoot: request.outputDir });
+    // The current owner already holds the live Host state and its durable Pi
+    // cursor. Replaying every historical checkpoint here blocks each message
+    // for the lifetime of the project; only a cold owner needs that replay.
+    const reservation = this.sessionOperationReservations.get(sessionKey(request.outputDir, request.sessionId));
+    const persistedHostState = previous ? undefined : await loadYnSessionHostState(session, request.sessionId, {
+      projectRoot: request.outputDir,
+      throwIfCancelled: () => {
+        if (reservation?.cancelled) throw new DOMException("Pi Host replay was stopped.", "AbortError");
+      }
+    });
     const selection = await (this.options.createModelSelection ?? createPiModelSelection)({
       workspaceDir: request.outputDir,
       providerId: request.providerId,
@@ -1127,7 +1173,10 @@ export class PiNativeSessionService {
     let runtime: PiSessionAgentRuntime | undefined;
     let activeRuntime: ActiveSession | undefined;
     let lastPersisted = persistedHostState ? JSON.stringify(persistedHostState) : undefined;
-    let persistenceTail = Promise.resolve();
+    // Child callbacks can still use the old owner's writer while an ordinary
+    // parent turn replaces its runtime. Both writers must share one ordered
+    // delta chain on the same native Session.
+    const hostPersistence = previous?.hostPersistence ?? { tail: Promise.resolve() };
     const persistHostState = (options: { force?: boolean } = {}): Promise<void> => {
       const state = {
         schemaVersion: 1 as const,
@@ -1142,12 +1191,13 @@ export class PiNativeSessionService {
         translationAlignment: hostState.translationAlignment
       };
       const serialized = JSON.stringify(state);
-      if (!options.force && serialized === lastPersisted) return persistenceTail;
-      const write = persistenceTail
+      if (!options.force && serialized === lastPersisted) return hostPersistence.tail;
+      const snapshot = JSON.parse(serialized) as YnSessionHostState;
+      const write = hostPersistence.tail
         .catch(() => undefined)
         .then(async () => {
           if (!options.force && serialized === lastPersisted) return;
-          await appendHostState(session, state, {
+          await appendHostState(session, snapshot, {
             ...options,
               projectRoot: request.outputDir,
             ...(runtime ? {
@@ -1156,7 +1206,7 @@ export class PiNativeSessionService {
           });
           lastPersisted = serialized;
         });
-      persistenceTail = write;
+      hostPersistence.tail = write;
       return write;
     };
     let deferredTranslationReuseAuditIds: string[] = [];
@@ -1440,6 +1490,7 @@ export class PiNativeSessionService {
       domainRun,
       hostState,
       persistHostState,
+      hostPersistence,
       subagents,
       childCompletionGeneration
     };

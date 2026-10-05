@@ -1,5 +1,6 @@
 import { readSessionEntries, appendSessionCustomEntry } from "./sessionAccess.ts";
 import { createHash } from "node:crypto";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { decodeProjectPaths, encodeProjectPaths } from "../../projectPaths.ts";
 
 import type { Session } from "@earendil-works/pi-agent-core/node";
@@ -45,6 +46,8 @@ export interface YnHostStateLoadDiagnostics {
   peakRetainedStateCount: number;
   skippedStaleWorkflowRevivalCount: number;
   migratedRuntimeContractFromVersion?: number;
+  elapsedMs: number;
+  maxReplayStepMs: number;
 }
 
 export function getYnHostStateLoadDiagnostics(session: Session): YnHostStateLoadDiagnostics | undefined {
@@ -384,8 +387,10 @@ const isEmptyHostState = (state: YnSessionHostState) => (
 export async function loadYnSessionHostState(
   session: Session,
   ownerSessionId: string,
-  options: { projectRoot?: string } = {}
+  options: { projectRoot?: string; throwIfCancelled?: () => void } = {}
 ): Promise<YnSessionHostState | undefined> {
+  const started = performance.now();
+  options.throwIfCancelled?.();
   const branch = await readSessionEntries(session);
   let current: YnSessionHostState | undefined;
   let previous: YnSessionHostState | undefined;
@@ -400,6 +405,8 @@ export async function loadYnSessionHostState(
   let latestAlignmentRelativePaths = false;
   let deltasSinceCheckpoint = 0;
   let currentRuntimeContractVersion = 1;
+  let replayStepStarted = performance.now();
+  let maxReplayStepMs = 0;
   const retain = (next: YnSessionHostState): void => {
     beforePrevious = previous;
     previous = current;
@@ -417,6 +424,13 @@ export async function loadYnSessionHostState(
   };
   for (const entry of branch) {
     if (entry.type !== "custom") continue;
+    if (entry.customType !== YN_HOST_STATE_CUSTOM_TYPE && entry.customType !== YN_HOST_STATE_DELTA_CUSTOM_TYPE) continue;
+    // A cold replay must verify every durable state, but the historical chain
+    // must not monopolize Electron's IPC/UI thread for its entire duration.
+    maxReplayStepMs = Math.max(maxReplayStepMs, performance.now() - replayStepStarted);
+    await yieldToEventLoop();
+    options.throwIfCancelled?.();
+    replayStepStarted = performance.now();
     if (entry.customType === YN_HOST_STATE_CUSTOM_TYPE) {
       relativePaths = false;
       if (current && currentRuntimeContractVersion >= YN_RUNTIME_CONTRACT_VERSION) {
@@ -485,10 +499,13 @@ export async function loadYnSessionHostState(
   const migratedRuntimeContractFromVersion = current && currentRuntimeContractVersion < YN_RUNTIME_CONTRACT_VERSION
     ? currentRuntimeContractVersion
     : undefined;
+  options.throwIfCancelled?.();
   hostStateLoadDiagnostics.set(session as object, {
     reconstructedStateCount,
     peakRetainedStateCount,
     skippedStaleWorkflowRevivalCount,
+    elapsedMs: performance.now() - started,
+    maxReplayStepMs: Math.max(maxReplayStepMs, performance.now() - replayStepStarted),
     ...(migratedRuntimeContractFromVersion
       ? { migratedRuntimeContractFromVersion }
       : {})

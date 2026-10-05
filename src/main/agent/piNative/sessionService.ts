@@ -900,7 +900,7 @@ export class PiNativeSessionService {
     queuedCarryover: AgentMessage[],
     preparationHandoff?: YnTaskPreparationState
   ): Promise<PreparedRuntime> {
-    const persistedHostState = await loadYnSessionHostState(session, request.sessionId);
+    const persistedHostState = await loadYnSessionHostState(session, request.sessionId, { projectRoot: request.outputDir });
     const selection = await (this.options.createModelSelection ?? createPiModelSelection)({
       workspaceDir: request.outputDir,
       providerId: request.providerId,
@@ -1149,6 +1149,7 @@ export class PiNativeSessionService {
           if (!options.force && serialized === lastPersisted) return;
           await appendHostState(session, state, {
             ...options,
+              projectRoot: request.outputDir,
             ...(runtime ? {
               appendCustomEntry: (customType, data) => runtime!.appendCustomEntry(customType, data)
             } : {})

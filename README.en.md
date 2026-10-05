@@ -12,6 +12,8 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 
 - Stop when bound required files disappear, preserving drafts and reporting the missing path. Unbound glossary and character tables remain optional.
 - Fix Stop and project shutdown deadlocks.
+- Fix Electron HTML closing and task cancellation bindings; failed saves report the error and preserve edits.
+- Use relative bindings for project settings, HTML and recovery artifacts. Copying a complete project retains parent/child Agent history, drafts and review evidence. External source/reference files must be transferred and selected again.
 
 ## What's new in 2.1.5
 

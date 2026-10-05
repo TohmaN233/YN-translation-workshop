@@ -12,7 +12,7 @@ import { patchProjectState, readProjectState } from "./projectState.ts";
 
 export interface BuiltinTaskNavigation {
   synchronizeSettings?(context: YnTaskPreparationContext): Promise<void>;
-  sourceFiles(settings: BuiltinTaskSettings): Promise<string[]>;
+  sourceFiles(settings: BuiltinTaskSettings, context: YnTaskPreparationContext): Promise<string[]>;
   workflowRequest(context: YnTaskPreparationContext, settings: BuiltinTaskSettings): Promise<PiSessionPromptRequest>;
   finish(context: YnTaskPreparationContext, settings: BuiltinTaskSettings, autoApply: boolean, signal?: AbortSignal): Promise<void>;
 }
@@ -123,7 +123,7 @@ export function createBuiltinTaskPreparationHost(navigation: BuiltinTaskNavigati
       await navigation.synchronizeSettings?.(context);
       const settings = await settingsFor(context);
       const rules = mergedRules(settings.customPreserveRules, input.rules);
-      const report = await scanSourcePreparation({ files: await navigation.sourceFiles(settings), rules, signal });
+      const report = await scanSourcePreparation({ files: await navigation.sourceFiles(settings, context), rules, signal });
       signal?.throwIfAborted();
       if (!report.totalFiles || !report.totalLines) throw new Error("No source lines were found to prepare.");
       const filePath = evidencePath(context);
@@ -150,7 +150,7 @@ export function createBuiltinTaskPreparationHost(navigation: BuiltinTaskNavigati
         const rules = mergedRules(settings.customPreserveRules, input.customPreserveRules ?? evidence.rules);
         if (!evidence.trial || evidence.schemaVersion !== 1 || evidence.settingsHash !== scanSettingsHash(settings)
           || hash(rules) !== hash(evidence.rules)) throw new Error("Trial the selected preservation rules against the current settings before starting translation.");
-        const current = await scanSourcePreparation({ files: await navigation.sourceFiles(settings), rules, signal });
+        const current = await scanSourcePreparation({ files: await navigation.sourceFiles(settings, context), rules, signal });
         if (hash(current.files) !== hash(evidence.report.files)) throw new Error("Sources changed after the preservation preview. Inspect and trial the rules again.");
         const existing = normalizeCustomPreserveRules(settings.customPreserveRules);
         for (const rule of current.existingRules) {

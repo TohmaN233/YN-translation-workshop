@@ -11,10 +11,11 @@ import {
   upgradeLegacyLineReviewHtmlContent,
   upgradeLegacyProposalReviewHtmlContent
 } from "../shared/core/legacyHtml.ts";
-import type { HtmlWorkflowOptions } from "../shared/core/html.ts";
+import { BATCH_LINE_REVIEW_PROTOCOL_VERSION, type HtmlWorkflowOptions } from "../shared/core/html.ts";
 import { writeTextFileAtomically, writeTextFilesAtomically } from "./atomicFile.ts";
 import { resolveBatchReviewChildForUpgrade } from "./batchReviewUpgradePaths.ts";
 import { formatFolderTranslationOrder } from "./agent/piNative/folderTranslationPlan.ts";
+import { portableReviewHtml, resolveReviewHtmlPaths } from "./reviewHtmlPortability.ts";
 
 function prepareLegacyReviewHtmlFile(
   targetPath: string,
@@ -46,8 +47,9 @@ function prepareLegacyReviewHtmlFile(
 
 async function upgradeLegacyReviewHtmlFile(targetPath: string, html?: string): Promise<boolean> {
   const currentHtml = html ?? await readFile(targetPath, "utf8");
-  const upgraded = prepareLegacyReviewHtmlFile(targetPath, currentHtml);
-  if (!upgraded) return false;
+  const resolved = resolveReviewHtmlPaths(currentHtml, targetPath);
+  const upgraded = portableReviewHtml(prepareLegacyReviewHtmlFile(targetPath, resolved) ?? resolved, targetPath);
+  if (upgraded === currentHtml) return false;
   await writeTextFileAtomically(targetPath, upgraded);
   return true;
 }
@@ -117,10 +119,15 @@ function folderPromptWorkflowOverride(
 
 export async function upgradeLegacyReviewHtmlTree(targetPath: string): Promise<boolean> {
   const absoluteTargetPath = path.resolve(targetPath);
-  const html = await readFile(absoluteTargetPath, "utf8");
+  const rawHtml = await readFile(absoluteTargetPath, "utf8");
+  const rawBatchVersion = batchLineReviewProtocolVersion(rawHtml);
+  if (rawBatchVersion !== undefined && rawBatchVersion > BATCH_LINE_REVIEW_PROTOCOL_VERSION) {
+    throw new Error(`Cannot open newer batch review protocol v${rawBatchVersion}; this app supports v${BATCH_LINE_REVIEW_PROTOCOL_VERSION}.`);
+  }
+  const html = resolveReviewHtmlPaths(rawHtml, absoluteTargetPath);
   const batchProtocolVersion = batchLineReviewProtocolVersion(html);
   if (batchProtocolVersion === undefined) {
-    return upgradeLegacyReviewHtmlFile(absoluteTargetPath, html);
+    return upgradeLegacyReviewHtmlFile(absoluteTargetPath, rawHtml);
   }
 
   const batchUpgrade = upgradeLegacyBatchLineReviewHtmlContent(
@@ -146,19 +153,21 @@ export async function upgradeLegacyReviewHtmlTree(targetPath: string): Promise<b
     throw new Error(`Batch review data references the same child HTML more than once: ${absoluteTargetPath}`);
   }
 
-  const childHtml = await Promise.all(childPaths.map((childPath) => readFile(childPath, "utf8")));
+  const rawChildHtml = await Promise.all(childPaths.map((childPath) => readFile(childPath, "utf8")));
+  const childHtml = rawChildHtml.map((html, index) => resolveReviewHtmlPaths(html, childPaths[index]));
   const childUpgrades = childPaths.map((childPath, index) => {
-    return prepareLegacyReviewHtmlFile(
+    return portableReviewHtml(prepareLegacyReviewHtmlFile(
       childPath,
       childHtml[index],
       folderWorkflow ? folderPromptWorkflowOverride(folderWorkflow, childReferences, childHtml) : undefined
-    );
+    ) ?? childHtml[index], childPath);
   });
   const updates = [
-    ...(batchUpgrade ? [{ targetPath: absoluteTargetPath, text: batchUpgrade }] : []),
+    ...((portableReviewHtml(batchUpgrade ?? html, absoluteTargetPath) !== rawHtml)
+      ? [{ targetPath: absoluteTargetPath, text: portableReviewHtml(batchUpgrade ?? html, absoluteTargetPath) }] : []),
     ...childPaths.flatMap((childPath, index) => {
       const upgraded = childUpgrades[index];
-      return upgraded ? [{ targetPath: childPath, text: upgraded }] : [];
+      return upgraded !== rawChildHtml[index] ? [{ targetPath: childPath, text: upgraded }] : [];
     })
   ];
   if (updates.length === 0) return false;

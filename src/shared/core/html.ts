@@ -969,7 +969,7 @@ const batchLabels: Record<UiLocale, Record<string, string>> = {
 // v3 removed the obsolete outer batch prompt sidebar. v4 added the compact,
 // Host-backed batch TXT action. v5 flushes the active child before Host preflight.
 // v6 keeps match state internal instead of presenting stale same-name-file status.
-export const BATCH_LINE_REVIEW_PROTOCOL_VERSION = 8;
+export const BATCH_LINE_REVIEW_PROTOCOL_VERSION = 9;
 export const BATCH_LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-batch-review-v${BATCH_LINE_REVIEW_PROTOCOL_VERSION}`;
 
 export function renderBatchLineReviewIndexHtml(options: BatchLineReviewIndexOptions): string {
@@ -1094,9 +1094,9 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 43;
+export const LINE_REVIEW_PROTOCOL_VERSION = 44;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
-export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 17;
+export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 18;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
 export const PROMPT_SETTINGS_VERSION = 41;
 

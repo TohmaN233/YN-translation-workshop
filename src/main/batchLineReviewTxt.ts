@@ -1,3 +1,4 @@
+import { readReviewHtml } from "./reviewHtmlPortability.ts";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -144,7 +145,7 @@ export async function resolveLineReviewSidecarStatePath(lineReviewPath: string):
   const directPath = lineReviewSidecarStatePath(lineReviewPath);
   if (directPath) return directPath;
   const review = normalizeLineReviewData(
-    parseJsonScript<LineReviewData>(await readFile(lineReviewPath, "utf8"), "reviewData"),
+    parseJsonScript<LineReviewData>(await readReviewHtml(lineReviewPath), "reviewData"),
     lineReviewPath
   );
   return lineReviewSidecarStatePath(
@@ -178,7 +179,7 @@ export async function readBatchLineReviewChildren(batchIndexPath: string): Promi
     throw new Error("An absolute batch review HTML path is required.");
   }
   const batch = normalizeBatchData(
-    parseJsonScript<BatchIndexData>(await readFile(batchIndexPath, "utf8"), "batchData")
+    parseJsonScript<BatchIndexData>(await readReviewHtml(batchIndexPath), "batchData")
   );
   const outputDir = typeof batch.folderAgentRoute?.outputDir === "string"
     && path.isAbsolute(batch.folderAgentRoute.outputDir)
@@ -206,7 +207,7 @@ export async function canonicalBatchLineReviewIndexPath(candidatePath: string): 
   const batchChildren = async (indexPath: string): Promise<BatchLineReviewChild[] | undefined> => {
     let html: string;
     try {
-      html = await readFile(indexPath, "utf8");
+      html = await readReviewHtml(indexPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
@@ -326,12 +327,12 @@ export async function readBatchLineReviewCurrentBindings(
     throw new Error("An absolute batch review HTML path is required.");
   }
   const batch = normalizeBatchData(
-    parseJsonScript<BatchIndexData>(await readFile(batchIndexPath, "utf8"), "batchData")
+    parseJsonScript<BatchIndexData>(await readReviewHtml(batchIndexPath), "batchData")
   );
   return Promise.all(batch.files.map(async (file) => {
     const childPath = await resolveBatchReviewChildForUpgrade(batchIndexPath, file.outputPath);
     const review = normalizeLineReviewData(
-      parseJsonScript<LineReviewData>(await readFile(childPath, "utf8"), "reviewData"),
+      parseJsonScript<LineReviewData>(await readReviewHtml(childPath), "reviewData"),
       childPath
     );
     const outputDir = outputDirFor(batch, review);
@@ -371,14 +372,14 @@ export async function prepareBatchLineReviewTxtWrites(batchIndexPath: string): P
   if (!path.isAbsolute(batchIndexPath) || path.extname(batchIndexPath).toLowerCase() !== ".html") {
     throw new Error("An absolute batch review HTML path is required.");
   }
-  const batch = normalizeBatchData(parseJsonScript<BatchIndexData>(await readFile(batchIndexPath, "utf8"), "batchData"));
+  const batch = normalizeBatchData(parseJsonScript<BatchIndexData>(await readReviewHtml(batchIndexPath), "batchData"));
   const plans: BatchLineReviewTxtWrite[] = [];
   const seenTargets = new Set<string>();
 
   for (const file of batch.files) {
     const childPath = await resolveBatchReviewChildForUpgrade(batchIndexPath, file.outputPath);
     const review = normalizeLineReviewData(
-      parseJsonScript<LineReviewData>(await readFile(childPath, "utf8"), "reviewData"),
+      parseJsonScript<LineReviewData>(await readReviewHtml(childPath), "reviewData"),
       childPath
     );
     const outputDir = outputDirFor(batch, review);

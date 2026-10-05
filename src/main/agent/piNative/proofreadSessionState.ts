@@ -1,5 +1,6 @@
 import { readSessionEntries, appendSessionCustomEntry } from "./sessionAccess.ts";
 import { createHash } from "node:crypto";
+import { decodeProjectPaths, encodeProjectPaths } from "../../projectPaths.ts";
 
 import type { Session } from "@earendil-works/pi-agent-core/node";
 
@@ -112,6 +113,7 @@ export interface YnSessionHostState {
 
 export interface AppendYnSessionHostStateOptions {
   force?: boolean;
+  projectRoot?: string;
   appendCustomEntry?: (customType: string, data: unknown) => Promise<void>;
 }
 
@@ -381,7 +383,8 @@ const isEmptyHostState = (state: YnSessionHostState) => (
 
 export async function loadYnSessionHostState(
   session: Session,
-  ownerSessionId: string
+  ownerSessionId: string,
+  options: { projectRoot?: string } = {}
 ): Promise<YnSessionHostState | undefined> {
   const branch = await readSessionEntries(session);
   let current: YnSessionHostState | undefined;
@@ -392,14 +395,17 @@ export async function loadYnSessionHostState(
   let reconstructedStateCount = 0;
   let peakRetainedStateCount = 0;
   let currentHash = "";
+  let relativePaths = false;
+  let latestProofreadRelativePaths = false;
+  let latestAlignmentRelativePaths = false;
   let deltasSinceCheckpoint = 0;
   let currentRuntimeContractVersion = 1;
   const retain = (next: YnSessionHostState): void => {
     beforePrevious = previous;
     previous = current;
     current = next;
-    if (!isEmptyProofreadState(next.proofread)) latestProofread = next.proofread;
-    if (!isEmptyAlignmentState(next.translationAlignment)) latestAlignment = next.translationAlignment;
+    if (!isEmptyProofreadState(next.proofread)) { latestProofread = next.proofread; latestProofreadRelativePaths = relativePaths; }
+    if (!isEmptyAlignmentState(next.translationAlignment)) { latestAlignment = next.translationAlignment; latestAlignmentRelativePaths = relativePaths; }
     reconstructedStateCount += 1;
     peakRetainedStateCount = Math.max(peakRetainedStateCount, new Set([
       current,
@@ -412,6 +418,7 @@ export async function loadYnSessionHostState(
   for (const entry of branch) {
     if (entry.type !== "custom") continue;
     if (entry.customType === YN_HOST_STATE_CUSTOM_TYPE) {
+      relativePaths = false;
       if (current && currentRuntimeContractVersion >= YN_RUNTIME_CONTRACT_VERSION) {
         throw new Error("The persisted YN Host-state runtime contract version moved backwards.");
       }
@@ -433,6 +440,7 @@ export async function loadYnSessionHostState(
     if (entryRuntimeContractVersion < currentRuntimeContractVersion) {
       throw new Error("The persisted YN Host-state runtime contract version moved backwards.");
     }
+    relativePaths = entry.data.projectPathsVersion === 1;
     if (entry.data.mode === "checkpoint") {
       const next = normalizeYnSessionHostState(entry.data.state, ownerSessionId);
       currentHash = hostStateHash(next);
@@ -508,10 +516,17 @@ export async function loadYnSessionHostState(
         proofread: latestProofread ?? current.proofread,
         translationAlignment: latestAlignment ?? current.translationAlignment
       };
-  if (!migratedRuntimeContractFromVersion) return loaded;
+  const historicalRoot = (session.metadata as { cwd?: string }).cwd;
+  const projectRoot = options.projectRoot ?? historicalRoot;
+  const rebound = projectRoot ? {
+    ...decodeProjectPaths(loaded, projectRoot, relativePaths ? undefined : historicalRoot),
+    proofread: decodeProjectPaths(loaded.proofread, projectRoot, (loaded.proofread === latestProofread ? latestProofreadRelativePaths : relativePaths) ? undefined : historicalRoot),
+    translationAlignment: decodeProjectPaths(loaded.translationAlignment, projectRoot, (loaded.translationAlignment === latestAlignment ? latestAlignmentRelativePaths : relativePaths) ? undefined : historicalRoot)
+  } : loaded;
+  if (!migratedRuntimeContractFromVersion) return rebound;
 
-  const migrated = migrateLegacyRuntimeContract(loaded);
-  await appendYnSessionHostState(session, migrated, { force: true });
+  const migrated = migrateLegacyRuntimeContract(rebound);
+  await appendYnSessionHostState(session, migrated, { force: true, projectRoot });
   return migrated;
 }
 
@@ -520,7 +535,8 @@ export async function appendYnSessionHostState(
   state: YnSessionHostState,
   options: AppendYnSessionHostStateOptions = {}
 ): Promise<void> {
-  const normalized = normalizeYnSessionHostState(cloneJson(state), state.ownerSessionId);
+  const projectRoot = options.projectRoot ?? (session.metadata as { cwd?: string }).cwd;
+  const normalized = normalizeYnSessionHostState(projectRoot ? encodeProjectPaths(cloneJson(state), projectRoot) : cloneJson(state), state.ownerSessionId);
   const stateHash = hostStateHash(normalized);
   const cursor = hostStatePersistenceCursors.get(session as object);
   if (cursor && cursor.ownerSessionId !== normalized.ownerSessionId) {
@@ -532,6 +548,7 @@ export async function appendYnSessionHostState(
     runtimeContractVersion: YN_RUNTIME_CONTRACT_VERSION,
     ownerSessionId: normalized.ownerSessionId,
     mode: "checkpoint" as const,
+    ...(projectRoot ? { projectPathsVersion: 1 } : {}),
     stateHash,
     state: normalized
   };
@@ -544,6 +561,7 @@ export async function appendYnSessionHostState(
       runtimeContractVersion: YN_RUNTIME_CONTRACT_VERSION,
       ownerSessionId: normalized.ownerSessionId,
       mode: "delta" as const,
+      ...(projectRoot ? { projectPathsVersion: 1 } : {}),
       baseHash: cursor.stateHash,
       stateHash,
       operations

@@ -1,3 +1,4 @@
+import { portableReviewHtml, resolveReviewHtmlPaths } from "../../src/main/reviewHtmlPortability.ts";
 import { strict as assert } from "node:assert";
 import { lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -211,7 +212,7 @@ await test("legacy EPUB folder upgrade binds the extracted validation text in Ag
     ]);
 
     assert.equal(await upgradeLegacyReviewHtmlTree(indexPath), true);
-    const upgraded = await readFile(childPath, "utf8");
+    const upgraded = resolveReviewHtmlPaths(await readFile(childPath, "utf8"), childPath);
     const payload = upgraded.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
     assert.ok(payload, "upgraded EPUB child lost reviewData");
     const reviewData = JSON.parse(payload);
@@ -277,7 +278,7 @@ await test("legacy EPUB folder upgrade replaces an already persisted binary mani
     ]);
 
     assert.equal(await upgradeLegacyReviewHtmlTree(indexPath), true);
-    const upgraded = await readFile(childPath, "utf8");
+    const upgraded = resolveReviewHtmlPaths(await readFile(childPath, "utf8"), childPath);
     const payload = upgraded.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
     assert.ok(payload, "upgraded EPUB child lost reviewData");
     const reviewData = JSON.parse(payload);
@@ -340,12 +341,12 @@ await test("current folder index upgrades a stale v7 child to the folder-bound A
     ]);
 
     assert.equal(await upgradeLegacyReviewHtmlTree(indexPath), true);
-    assert.equal(await readFile(indexPath, "utf8"), currentIndex);
+    assert.equal(await readFile(indexPath, "utf8"), portableReviewHtml(currentIndex, indexPath));
     const upgradedChild = await readFile(childPath, "utf8");
     assert.match(upgradedChild, new RegExp(agentChatFlowVersion));
     assert.match(upgradedChild, /paths\.promptSourceKind === "folder"/);
     assert.match(upgradedChild, /"promptSourceKind":"folder"/);
-    const reviewDataMatch = upgradedChild.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/);
+    const reviewDataMatch = resolveReviewHtmlPaths(upgradedChild, childPath).match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/);
     assert.ok(reviewDataMatch, "upgraded child is missing reviewData");
     const reviewData = JSON.parse(reviewDataMatch[1]);
     assert.equal(reviewData.workflow.paths.promptSourcePath, sourceDir);

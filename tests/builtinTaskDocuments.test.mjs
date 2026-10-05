@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+import { decodeProjectPaths } from "../src/main/projectPaths.ts";
+import { readReviewHtml } from "../src/main/reviewHtmlPortability.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, cp, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -62,7 +65,7 @@ for (const kind of ["txt", "epub"]) for (const folder of [false, true]) {
     assert.notEqual(doc.sourcePath, doc.translationPath);
     assert.match(doc.translationPath, /物語_translated\.txt$/);
     const htmlPath = await childPath(prepared);
-    const data = reviewData(await readFile(htmlPath, "utf8"));
+    const data = reviewData(await readReviewHtml(htmlPath));
     assert.equal(data.workflow.paths.sourcePath, f.original);
     assert.equal(data.workflow.paths.validationSourcePath, doc.sourcePath);
     assert.equal(data.workflow.paths.translationPath, doc.translationPath);
@@ -184,3 +187,93 @@ test("prepared folder selects exactly scanner/HTML inputs and verifies original 
   const manual = await resolvePiSourceManifest({ ...request, folderSourceSelection: undefined, folderSourceDocuments: undefined });
   assert.deepEqual(manual.documents.map((doc) => doc.id), ["chapter/物語.txt", "notes.md"]);
 }));
+
+for (const legacy of [false, true]) test(`copied folder preparation retains ${legacy ? "legacy" : "relative"} receipts, child identity and sidecar edits`, () => fixture({ kind: "txt", folder: true, bilingual: false }, async f => {
+  const prepared = await generateBuiltinTaskReview(f.settings, "proofread", "same-session");
+  let originalChild = await childPath(prepared);
+  await writeFile(prepared.documents[0].translationPath, targetLines.map(line => line + "修改").join("\n"));
+  if (legacy) {
+    const receiptDir = path.join(f.root, ".translation-workshop", "agent", "builtin-targets");
+    for (const name of await readdir(receiptDir)) {
+      const file = path.join(receiptDir, name);
+      const receipt = decodeProjectPaths(JSON.parse(await readFile(file, "utf8")), f.root);
+      delete receipt.projectPathsVersion;
+      const oldKey = createHash("sha256").update(path.resolve(prepared.documents[0].translationPath)).digest("hex");
+      await rm(file);
+      await writeFile(path.join(receiptDir, oldKey + ".json"), JSON.stringify(receipt));
+    }
+    const legacyChild = path.join(path.dirname(originalChild), "builtin-legacy-absolute-binding.html");
+    await rename(originalChild, legacyChild); originalChild = legacyChild;
+    const index = await readFile(prepared.outputPath, "utf8");
+    const match = index.match(/<script id="batchData" type="application\/json">([\s\S]*?)<\/script>/);
+    const data = JSON.parse(match[1]);
+    data.files[0].outputPath = path.relative(path.dirname(prepared.outputPath), legacyChild).replace(/\\/g, "/");
+    await writeFile(prepared.outputPath, index.replace(match[1], JSON.stringify(data)));
+  }
+  const originalSidecar = await resolveLineReviewSidecarStatePath(originalChild);
+  await mkdir(path.dirname(originalSidecar), { recursive: true });
+  await writeFile(originalSidecar, JSON.stringify({ edits: { 1: "保留草稿" }, documentRevision: 7 }));
+  const copyRoot = await mkdtemp(path.join(os.tmpdir(), "yn-builtin-copy-"));
+  try {
+    await cp(f.root, copyRoot, { recursive: true });
+    const rebound = decodeProjectPaths(f.settings, copyRoot, f.root);
+    const regenerated = await generateBuiltinTaskReview(rebound, "proofread", "same-session");
+    const copiedChild = await childPath(regenerated);
+    assert.equal(path.relative(copyRoot, copiedChild), path.relative(f.root, originalChild));
+    assert.deepEqual(JSON.parse(await readFile(await resolveLineReviewSidecarStatePath(copiedChild), "utf8")), { edits: { 1: "保留草稿" }, documentRevision: 7 });
+    assert.match(await readFile(regenerated.documents[0].translationPath, "utf8"), /修改/);
+  } finally { await rm(copyRoot, { recursive: true, force: true }); }
+}));
+
+for (const kind of ["txt", "epub"]) for (const folder of [false, true]) for (const legacy of [false, true]) {
+  test(`copied bilingual ${folder ? "folder" : "single"} ${kind} retains ${legacy ? "legacy" : "relative"} projection and review identity`, () => fixture({ kind, folder, bilingual: true }, async f => {
+    const first = await generateBuiltinTaskReview(f.settings, "proofread", "projection-session");
+    const document = first.documents[0];
+    const originalChild = await childPath(first);
+    let projectionPath = document.sourcePath;
+    if (legacy) {
+      const digest = createHash("sha1").update(path.resolve(f.original).toLowerCase()).digest("hex").slice(0, 10);
+      const legacyPath = path.join(f.root, ".translation-workshop", "extracted-text", digest, "source", path.basename(projectionPath));
+      if (legacyPath !== projectionPath) {
+        await mkdir(path.dirname(legacyPath), { recursive: true });
+        await rename(projectionPath, legacyPath);
+      }
+      for (const htmlPath of new Set([first.outputPath, originalChild])) {
+        const html = await readReviewHtml(htmlPath);
+        // Model the pre-portability absolute binding, without altering source rows.
+        const legacyHtml = html.split(projectionPath.replace(/\\/g, "\\\\")).join(legacyPath.replace(/\\/g, "\\\\"));
+        await writeFile(htmlPath, legacyHtml.replace(/(<script id="(?:reviewData|batchData)" type="application\/json">)([\s\S]*?)(<\/script>)/, (_all, open, json, close) => {
+          const data = JSON.parse(json); delete data.projectPaths;
+          return open + JSON.stringify(data) + close;
+        }).replace(/<script id="yn-project-paths">[\s\S]*?<\/script>/, ""));
+      }
+      projectionPath = legacyPath;
+    }
+    await writeFile(document.translationPath, targetLines.map(line => line + "修改").join("\n"));
+    const sidecar = await resolveLineReviewSidecarStatePath(originalChild);
+    await mkdir(path.dirname(sidecar), { recursive: true });
+    await writeFile(sidecar, JSON.stringify({ edits: { 1: "保留投影草稿" }, documentRevision: 9 }));
+    const copyRoot = await mkdtemp(path.join(os.tmpdir(), "yn-projection-copy-"));
+    try {
+      await cp(f.root, copyRoot, { recursive: true });
+      const settings = decodeProjectPaths(f.settings, copyRoot, f.root);
+      const next = await generateBuiltinTaskReview(settings, "proofread", "projection-session");
+      assert.equal(path.relative(copyRoot, next.documents[0].sourcePath), path.relative(f.root, projectionPath));
+      const child = await childPath(next);
+      assert.equal(path.relative(copyRoot, child), path.relative(f.root, originalChild));
+      assert.deepEqual(JSON.parse(await readFile(await resolveLineReviewSidecarStatePath(child), "utf8")), { edits: { 1: "保留投影草稿" }, documentRevision: 9 });
+      assert.match(await readFile(next.documents[0].translationPath, "utf8"), /修改/);
+      const scanned = await prepareBuiltinTaskDocuments(settings, next.outputPath);
+      assert.equal(scanned.documents[0].sourcePath, next.documents[0].sourcePath);
+      if (!legacy) assert.equal((await prepareBuiltinTaskDocuments(settings)).documents[0].sourcePath, next.documents[0].sourcePath, "a fresh extraction has the same portable identity");
+      const manifest = await resolvePiSourceManifest({ outputDir: copyRoot, sourceSelection: { kind: next.sourceKind, path: next.sourcePath },
+        folderSourceDocuments: next.advanced.folderSourceDocuments, folderSourceSelection: next.advanced.folderSourceSelection });
+      assert.equal(manifest.documents[0].path, next.documents[0].sourcePath);
+      assert.deepEqual(next.documents[0].projection, document.projection);
+      const oldWorkspace = path.resolve(f.root, ".translation-workshop");
+      assert.ok(oldWorkspace.startsWith(path.resolve(f.root) + path.sep));
+      await rm(oldWorkspace, { recursive: true, force: true });
+      assert.equal((await generateBuiltinTaskReview(settings, "proofread", "projection-session")).documents[0].sourcePath, next.documents[0].sourcePath, "original extracted files are not consulted");
+    } finally { await rm(copyRoot, { recursive: true, force: true }); }
+  }));
+}

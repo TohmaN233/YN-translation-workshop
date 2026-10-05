@@ -1,3 +1,4 @@
+import { readProjectState } from "../../src/main/projectState.ts";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, mkdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -218,7 +219,7 @@ await test("candidate import consolidates the selected glossary into canonical b
       { source: "外部术语", target: "外部译名" },
       { source: "候选术语", target: "候选译名", status: "confirmed" }
     ]);
-    const state = JSON.parse(await readFile(path.join(projectDir, "project.json"), "utf8"));
+    const state = await readProjectState(fx.outputDir);
     assert.equal(path.resolve(state.glossaryPath), path.resolve(canonicalPath));
   } finally {
     await cleanup(fx.outputDir);
@@ -250,7 +251,7 @@ await test("candidate consolidation leaves canonical and the external binding un
       /glossary conflict/i
     );
     assert.equal(await readFile(canonicalPath, "utf8"), originalCanonical);
-    const state = JSON.parse(await readFile(path.join(projectDir, "project.json"), "utf8"));
+    const state = await readProjectState(fx.outputDir);
     assert.equal(path.resolve(state.glossaryPath), path.resolve(selectedPath));
   } finally {
     await cleanup(fx.outputDir);

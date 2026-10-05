@@ -240,7 +240,7 @@ await test("a shared Agent popout does not own or abort the workspace session", 
   assert.match(host, /params\.set\("lineReviewPath",\s*lineReviewPath\)/);
   assert.match(host, /options\.loadRendererRoute\(window,\s*`agent-chat-window/);
   assert.doesNotMatch(main, /abortWorkspace:\s*\(outputDir\)/);
-  assert.match(main, /await piNativeSessionService\.suspendWorkspace\(tab\.workspaceDir\)/);
+  assert.match(main, /await piNativeSessionService\.suspendWorkspace\(normalizeProjectFolder\(tab\.workspaceDir\)\.outputDir\)/);
   assert.match(main, /htmlViewerWindow\.on\("close",\s*\(event\)\s*=>/);
   assert.match(main, /event\.preventDefault\(\)/);
 });
@@ -261,8 +261,8 @@ await test("HTML viewer attaches each BrowserView once and switches tabs without
   assert.match(main, /removeBrowserView\(tab\.view\);[\s\S]*tab\.view\.webContents\.close\(\)/);
   assert.match(main, /key === activeHtmlViewerTab[\s\S]*width: 0, height: 0/);
   assert.match(main, /async function flushHtmlViewerTabState\(tab: HtmlViewerTab\)/);
-  assert.match(main, /await flushHtmlViewerTabState\(tab\);[\s\S]*await cancelHtmlViewerTabAgentRuns\(tab\);/);
-  assert.match(main, /Promise\.all\(tabs\.map\(flushHtmlViewerTabState\)\)[\s\S]*Promise\.all\(tabs\.map\(cancelHtmlViewerTabAgentRuns\)\)/);
+  assert.match(main, /await settleHtmlViewerTab\(tab\);/);
+  assert.match(main, /Promise\.allSettled\(\[cancelHtmlViewerTabAgentRuns\(tab\), flushHtmlViewerTabState\(tab\)\]\)/);
   const html = await source("src/shared/core/html.ts");
   const unload = html.slice(
     html.indexOf('addEventListener("beforeunload", () => {'),

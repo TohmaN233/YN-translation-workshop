@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { normalizeCustomPreserveRules } from "../shared/validation/customPreserveRules.ts";
 import { writeTextFileAtomically } from "./atomicFile.ts";
+import { decodeProjectPaths, encodeProjectPaths } from "./projectPaths.ts";
 
 export type ProjectState = Record<string, unknown>;
 export type ProjectStateSubscriber = (
@@ -117,7 +118,9 @@ export async function readProjectState(outputDir: string): Promise<ProjectState>
     throw error;
   }
   try {
-    return canonicalProjectState(objectState(JSON.parse(source), filePath));
+    const stored = objectState(JSON.parse(source), filePath);
+    const legacyRoot = stored.projectPathsVersion === 1 ? undefined : typeof stored.outputDir === "string" ? stored.outputDir : undefined;
+    return canonicalProjectState(decodeProjectPaths(stored, projectRoot(outputDir), legacyRoot));
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new Error(`Invalid project state at ${filePath}: ${error.message}`);
@@ -170,7 +173,7 @@ export async function transactProjectState<T>(args: {
       const result = await args.apply();
       await mkdir(workspaceDir(root), { recursive: true });
       stateWriteAttempted = true;
-      await writeTextFileAtomically(filePath, JSON.stringify(state, null, 2));
+      await writeTextFileAtomically(filePath, JSON.stringify({ ...encodeProjectPaths(state, root), projectPathsVersion: 1 }, null, 2));
       for (const subscriber of subscribers) subscriber(root, state, canonicalProjectState(args.patch));
       return result;
     } catch (error) {
@@ -216,7 +219,7 @@ export async function patchProjectStateIfUnchanged(
       updatedAt: new Date().toISOString()
     });
     await mkdir(workspaceDir(root), { recursive: true });
-    await writeTextFileAtomically(projectStatePath(root), JSON.stringify(state, null, 2));
+    await writeTextFileAtomically(projectStatePath(root), JSON.stringify({ ...encodeProjectPaths(state, root), projectPathsVersion: 1 }, null, 2));
     for (const subscriber of subscribers) subscriber(root, state, canonicalProjectState(patch));
     return state;
   });

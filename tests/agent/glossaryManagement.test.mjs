@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { deleteProjectGlossaryEntry, readProjectAssets, updateProjectGlossaryEntry } from "../../src/main/agent/projectAssets.ts";
 import { commitWorkspaceGlossaryCandidates, deleteGeneratedGlossaryCandidate, importGeneratedGlossaryCandidates, readGeneratedGlossaryCandidates, readWorkspaceAssetsStatus, subscribeWorkspaceAssetsStatus, workspaceAssetPaths } from "../../src/main/agent/workspaceAssets.ts";
-import { patchProjectState } from "../../src/main/projectState.ts";
+import { patchProjectState, readProjectState } from "../../src/main/projectState.ts";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "yn-glossary-management-"));
 const external = await mkdtemp(path.join(os.tmpdir(), "yn-glossary-reference-"));
@@ -21,7 +21,7 @@ try {
   assert.deepEqual(first.glossary.entries.map(e => e.source), ["騎士団", "勇者"]);
   assert.equal(await readFile(externalPath, "utf8"), original);
   assert.equal(first.glossary.entries[0].info, "keep metadata");
-  assert.equal(JSON.parse(await readFile(path.join(root, ".translation-workshop", "project.json"), "utf8")).glossaryPath, first.paths.glossary);
+  assert.equal((await readProjectState(root)).glossaryPath, first.paths.glossary);
   const second = await deleteProjectGlossaryEntry({ outputDir: root, boundGlossaryPath: externalPath, source: "勇者", expectedTarget: "勇者大人" });
   assert.deepEqual(second.glossary.entries.map(e => e.source), ["騎士団"], "stale HTML external binding must not resurrect a deleted entry");
   await assert.rejects(deleteProjectGlossaryEntry({ outputDir: root, source: "騎士団", expectedTarget: "stale" }), /changed/);

@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, realpath, rm } from "node:fs/promises";
+import { appendFile, mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { writeTextFileAtomically } from "../../atomicFile.ts";
+import { decodeProjectPaths, encodeProjectPaths } from "../../projectPaths.ts";
 import {
   resolveTranslationCandidatePath,
   withTranslationCandidateLock
@@ -224,11 +225,9 @@ function isSameOrInside(root: string, target: string): boolean {
 }
 
 function assertProjectSourcePath(outputDir: string, sourcePath: string): string {
-  const root = path.resolve(outputDir);
+  // Source is an explicitly bound read-only input and may be outside the project.
+  if (!path.isAbsolute(sourcePath)) throw new Error(`Translation reuse source must be an absolute file binding: ${sourcePath}.`);
   const source = path.resolve(sourcePath);
-  if (source === root || !isSameOrInside(root, source)) {
-    throw new Error(`Translation reuse source must be a project file: ${source}.`);
-  }
   return source;
 }
 
@@ -257,13 +256,7 @@ function assertProjectCandidatePath(
 }
 
 async function assertPhysicalSourcePath(outputDir: string, sourcePath: string): Promise<void> {
-  const [projectRoot, source] = await Promise.all([
-    realpath(path.resolve(outputDir)),
-    realpath(sourcePath)
-  ]);
-  if (source === projectRoot || !isSameOrInside(projectRoot, source)) {
-    throw new Error(`Translation reuse source crosses the physical project boundary: ${sourcePath}.`);
-  }
+  if (!(await stat(sourcePath)).isFile()) throw new Error(`Translation reuse source is not a file: ${sourcePath}.`);
 }
 
 async function assertPhysicalCandidatePath(outputDir: string, candidatePath: string): Promise<void> {
@@ -345,7 +338,16 @@ async function validatedAuditPaths(outputDir: string, record: TranslationReuseAu
 
 async function readStore(outputDir: string): Promise<TranslationReuseAuditStore> {
   try {
-    const parsed = JSON.parse(await readFile(auditStorePath(outputDir), "utf8")) as TranslationReuseAuditStore;
+    const stored = JSON.parse(await readFile(auditStorePath(outputDir), "utf8"));
+    if (stored.version !== 1 || !Array.isArray(stored.audits)) throw new Error("Unsupported translation reuse audit store format.");
+    const parsed: TranslationReuseAuditStore = { version: 1, audits: stored.audits.map((audit: TranslationReuseAuditRecord) => {
+      // Legacy audit candidates were required to live under <project>/AI_translation.
+      // This durable binding identifies their old root without consulting the old disk.
+      const legacyRoot = stored.projectPathsVersion === 1 ? undefined
+        : /^(.*)[\\/]AI_translation[\\/]/i.exec(audit.document.candidatePath)?.[1];
+      if (stored.projectPathsVersion !== 1 && !legacyRoot) throw new Error(`Legacy reuse audit has no canonical project binding: ${audit.id}`);
+      return decodeProjectPaths(audit, outputDir, legacyRoot);
+    }) };
     if (parsed.version !== 1 || !Array.isArray(parsed.audits)) {
       throw new Error("Unsupported translation reuse audit store format.");
     }
@@ -394,7 +396,7 @@ async function writeStore(outputDir: string, store: TranslationReuseAuditStore):
       }
     }))
   };
-  await writeTextFileAtomically(target, `${JSON.stringify(persisted, null, 2)}\n`);
+  await writeTextFileAtomically(target, `${JSON.stringify({ ...encodeProjectPaths(persisted, outputDir), projectPathsVersion: 1 }, null, 2)}\n`);
 }
 
 async function withAuditLock<T>(outputDir: string, operation: () => Promise<T>): Promise<T> {

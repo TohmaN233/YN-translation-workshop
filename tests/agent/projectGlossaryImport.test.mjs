@@ -1,3 +1,4 @@
+import { readProjectState } from "../../src/main/projectState.ts";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -21,7 +22,7 @@ try {
     { entries: [{ source: "王都騎士団", target: "王都骑士团" }] }
   );
   assert.equal(
-    path.resolve(JSON.parse(await readFile(path.join(outputDir, ".translation-workshop", "project.json"), "utf8")).glossaryPath),
+    path.resolve((await readProjectState(outputDir)).glossaryPath),
     path.resolve(assets.paths.glossary)
   );
 

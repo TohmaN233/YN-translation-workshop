@@ -1,3 +1,4 @@
+import { readProjectState } from "../src/main/projectState.ts";
 import { app, BrowserWindow, dialog, type BrowserView, type OpenDialogOptions } from "electron";
 import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -330,7 +331,7 @@ async function run(): Promise<void> {
     field.dispatchEvent(new Event("blur"));
   })()`);
   const persistedState = await waitFor(
-    async () => JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>,
+    async () => await readProjectState(outputDir) as Record<string, unknown>,
     (value) => value.style === "historical-drama",
     "HTML prompt edit persistence"
   );
@@ -380,7 +381,7 @@ async function run(): Promise<void> {
   })()`);
   assert(reactStyleDuringTyping.value === "", "React style inserted the default 'game' while the user was still typing");
   assert(reactStyleDuringTyping.active === true, "React style lost focus during a project-state refresh");
-  const stateDuringReactStyleTyping = JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>;
+  const stateDuringReactStyleTyping = await readProjectState(outputDir) as Record<string, unknown>;
   assert(stateDuringReactStyleTyping.style === "historical-drama", "React style synchronized before the user left the input field");
   await mainWindow.webContents.executeJavaScript(`(() => {
     const label = [...document.querySelectorAll("label.field")].find((item) => {
@@ -405,7 +406,7 @@ async function run(): Promise<void> {
     input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
   })()`);
   await waitFor(
-    async () => JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>,
+    async () => await readProjectState(outputDir) as Record<string, unknown>,
     (value) => value.style === "cinematic-drama",
     "React style persistence after leaving the input field"
   );
@@ -476,7 +477,7 @@ async function run(): Promise<void> {
     save.click();
   })()`);
   await waitFor(
-    async () => JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>,
+    async () => await readProjectState(outputDir) as Record<string, unknown>,
     (value) => Array.isArray(value.customPreserveRules) && value.customPreserveRules.length === 2,
     "custom preservation rules to persist from the React project editor"
   );
@@ -516,7 +517,7 @@ async function run(): Promise<void> {
     "Selecting a glossary reference unexpectedly replaced the canonical project glossary"
   );
   await waitFor(
-    async () => JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>,
+    async () => await readProjectState(outputDir) as Record<string, unknown>,
     (value) => path.resolve(String(value.glossaryPath || "")) === path.resolve(importedGlossaryPath),
     "the selected glossary reference to persist in project state"
   );
@@ -546,7 +547,7 @@ async function run(): Promise<void> {
       && importedGlossary.entries.length === 2,
     "Canonical glossary import did not consolidate the existing canonical and selected external glossary"
   );
-  const projectStateAfterCanonicalImport = JSON.parse(await readFile(path.join(workspaceDir, "project.json"), "utf8")) as Record<string, unknown>;
+  const projectStateAfterCanonicalImport = await readProjectState(outputDir) as Record<string, unknown>;
   assert(
     path.resolve(String(projectStateAfterCanonicalImport.glossaryPath || "")) === path.resolve(glossaryPath),
     "A complete canonical glossary import did not switch the project binding to canonical"

@@ -1,6 +1,7 @@
 import { link, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { decodeProjectPaths } from "../../projectPaths.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/harness/context";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
@@ -414,7 +415,7 @@ export class PiSessionRepository {
   }
 
   async listChildMetadata(): Promise<JsonlSessionMetadata[]> {
-    return this.childRepo.list({ cwd: this.workspaceDir }, BACKGROUND_CONTEXT);
+    return this.listProjectMetadata(this.childRepo);
   }
 
   async findChildMetadata(sessionId: string): Promise<JsonlSessionMetadata | undefined> {
@@ -444,7 +445,19 @@ export class PiSessionRepository {
   }
 
   async listMetadata(): Promise<JsonlSessionMetadata[]> {
-    return this.repo.list({ cwd: this.workspaceDir }, BACKGROUND_CONTEXT);
+    return this.listProjectMetadata(this.repo);
+  }
+
+  private async listProjectMetadata(repo: JsonlSessionRepo): Promise<JsonlSessionMetadata[]> {
+    // The repository itself is project-local. Pi's historical cwd is audit
+    // metadata, not the identity of a project copied to a different computer.
+    const entries = await repo.list({}, BACKGROUND_CONTEXT);
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      if (ids.has(entry.id)) throw new Error(`Duplicate Pi session identity in project: ${entry.id}.`);
+      ids.add(entry.id);
+    }
+    return entries;
   }
 
   async findMetadata(sessionId: string): Promise<JsonlSessionMetadata | undefined> {
@@ -481,7 +494,7 @@ export class PiSessionRepository {
     return {
       id: item.id,
       path: item.path,
-      cwd: item.cwd,
+      cwd: this.workspaceDir,
       created: new Date(item.createdAt).toISOString(),
       modified: new Date(item.modifiedAt).toISOString(),
       messageCount: 0,
@@ -492,11 +505,12 @@ export class PiSessionRepository {
   private async belongsToParent(child: JsonlSessionMetadata, parent: JsonlSessionMetadata): Promise<boolean> {
     if (child.parentSessionId !== undefined) return child.parentSessionId === parent.id;
     if (child.legacyParentSessionPath === undefined) return false;
-    if (path.resolve(child.legacyParentSessionPath) !== path.resolve(parent.path)) return false;
-    const [legacyPath, parentPath] = await Promise.all([realpath(child.legacyParentSessionPath), realpath(parent.path)]);
+    const rebound = decodeProjectPaths({ parentSessionPath: child.legacyParentSessionPath }, this.workspaceDir, child.cwd).parentSessionPath;
+    if (path.resolve(rebound) !== path.resolve(parent.path)) return false;
+    const [legacyPath, parentPath] = await Promise.all([realpath(rebound), realpath(parent.path)]);
     if (legacyPath !== parentPath) return false;
     const header = await readSessionHeader(parentPath);
-    if (header.id !== parent.id || path.resolve(header.cwd as string) !== this.workspaceDir) {
+    if (header.id !== parent.id || path.resolve(header.cwd as string) !== path.resolve(parent.cwd)) {
       throw new Error(`Legacy Pi parent identity does not match ${parent.id}.`);
     }
     return true;

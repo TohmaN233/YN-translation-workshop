@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
+import { projectRelativePath } from "../projectPaths.ts";
 
 import {
   isEpubPath,
@@ -27,7 +28,10 @@ export function extractedWorkshopTextPath(
   filePath: string,
   role: "source" | "translation"
 ): string {
-  const digest = createHash("sha1").update(path.resolve(filePath).toLowerCase()).digest("hex").slice(0, 10);
+  // An internal input keeps its projection identity when the complete project moves.
+  // Explicit external inputs retain their absolute identity.
+  const inputIdentity = projectRelativePath(path.dirname(workspaceDir), path.resolve(filePath)) ?? path.resolve(filePath);
+  const digest = createHash("sha1").update(inputIdentity.toLowerCase()).digest("hex").slice(0, 10);
   const baseName = path.basename(filePath).replace(/\.[^.]+$/, "") || "document";
   const safe = baseName.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 80) || "document";
   return path.join(workspaceDir, "extracted-text", digest, role, `${safe}.txt`);

@@ -49,7 +49,7 @@ try {
   document.reportInitialized = true;
   document.completedSplitScopes = [{
     inputHash: "hash-1",
-    translationPath: "AI_translation/candidate.txt",
+    translationPath: path.join(workspaceDir, "AI_translation", "candidate.txt"),
     fromLine: 1,
     toLine: 4
   }];
@@ -64,7 +64,7 @@ try {
   }];
   document.prescan = {
     inputHash: "hash-1",
-    translationPath: "AI_translation/candidate.txt",
+    translationPath: path.join(workspaceDir, "AI_translation", "candidate.txt"),
     summary: {
       sourceLineCount: 12,
       translationLineCount: 12,
@@ -144,7 +144,7 @@ try {
     id: "bounded-local-repair",
     documentId: "default",
     inputHash: "bounded-local-input",
-    translationPath: "AI_translation/candidate.txt",
+    translationPath: path.join(workspaceDir, "AI_translation", "candidate.txt"),
     fromLine: 5,
     toLine: 5
   };

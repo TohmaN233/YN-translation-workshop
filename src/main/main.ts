@@ -74,6 +74,8 @@ import { readEpubText } from "./epubReader.ts";
 import { createTranslatedEpub } from "./epubWriter.ts";
 import { collectSourceTreeFiles } from "./sourceFileTree.ts";
 import { upgradeLegacyReviewHtmlTree } from "./reviewHtmlUpgrade.ts";
+import { containedProjectRoot, portableReviewHtml, readReviewHtml, writeReviewHtml } from "./reviewHtmlPortability.ts";
+import { decodeProjectPaths, encodeProjectPaths } from "./projectPaths.ts";
 import {
   discoverProjectReviewTargets,
   readRecentProjectDir,
@@ -293,6 +295,8 @@ type HtmlViewerTab = {
   loadPromise?: Promise<void>;
 };
 const htmlViewerTabs = new Map<string, HtmlViewerTab>();
+const htmlViewerTabCloseOperations = new Map<string, Promise<boolean>>();
+const htmlViewerTabSettlements = new WeakMap<HtmlViewerTab, Promise<void>>();
 const htmlStateWriteQueues = new Map<string, Promise<void>>();
 const htmlStateMutationSequences = new Map<string, Map<string, number>>();
 setPiSessionHtmlViewerTabsRef(htmlViewerTabs);
@@ -1277,10 +1281,23 @@ async function ensureWorkspace(outputDir: string): Promise<string> {
 async function readJsonObject(filePath: string): Promise<Record<string, unknown> | undefined> {
   try {
     const parsed = JSON.parse(await readFile(filePath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
-  } catch {
-    return undefined;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid project JSON object: ${filePath}`);
+    const root = containedProjectRoot(filePath);
+    let legacyRoot = parsed.projectPathsVersion === 1 ? undefined : parsed.outputDir;
+    if (root && !legacyRoot && parsed.projectPathsVersion !== 1) {
+      try { legacyRoot = JSON.parse(await readFile(path.join(root, ".translation-workshop", "project.json"), "utf8")).outputDir; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    return root ? decodeProjectPaths(parsed, root, legacyRoot) : parsed;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
+}
+
+function projectJson(filePath: string, value: unknown): string {
+  const root = containedProjectRoot(filePath);
+  return JSON.stringify(root ? { ...encodeProjectPaths(value as Record<string, unknown>, root), projectPathsVersion: 1 } : value, null, 2);
 }
 
 function normalizeProjectFolder(targetPath: string): { outputDir: string; workspaceDir: string } {
@@ -1348,7 +1365,7 @@ async function writeHtmlSidecarState(statePath: string, state: unknown): Promise
   const previous = htmlStateWriteQueues.get(key) ?? Promise.resolve();
   const current = previous.catch(() => undefined).then(async () => {
     await mkdir(path.dirname(statePath), { recursive: true });
-    await writeTextFileAtomically(statePath, JSON.stringify(state ?? {}, null, 2));
+    await writeTextFileAtomically(statePath, projectJson(statePath, state ?? {}));
   });
   htmlStateWriteQueues.set(key, current);
   try {
@@ -1369,7 +1386,7 @@ async function updateHtmlSidecarState(
     const existing = await readJsonObject(statePath) ?? {};
     updated = update(existing);
     await mkdir(path.dirname(statePath), { recursive: true });
-    await writeTextFileAtomically(statePath, JSON.stringify(updated, null, 2));
+    await writeTextFileAtomically(statePath, projectJson(statePath, updated));
   });
   htmlStateWriteQueues.set(key, current);
   try {
@@ -1634,7 +1651,7 @@ function normalizedLineReviewRouting(paths: Record<string, unknown>): {
 }
 
 async function lineReviewRouting(lineReviewPath: string): Promise<{ sourcePaths: string[]; translationPaths: string[] }> {
-  const html = await readFile(lineReviewPath, "utf8");
+  const html = await readReviewHtml(lineReviewPath);
   const match = html.match(/<script id=["']reviewData["'] type=["']application\/json["']>([\s\S]*?)<\/script>/i);
   if (!match) return { sourcePaths: [], translationPaths: [] };
   const parsed = JSON.parse(match[1]) as { workflow?: { paths?: Record<string, unknown> } };
@@ -1761,7 +1778,7 @@ async function readOptionalJsonObjectStrict(filePath: string): Promise<Record<st
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`Line-review state is not an object: ${filePath}`);
   }
-  return parsed as Record<string, unknown>;
+  return readJsonObject(filePath);
 }
 
 async function existingFile(filePath: string): Promise<boolean> {
@@ -1791,7 +1808,7 @@ async function discoverLegacyProposalLineReviews(
       const htmlPath = path.join(legacyDir, entry.name);
       const statePath = await resolveLineReviewSidecarStatePath(htmlPath);
       const [html, htmlInfo, stateInfo] = await Promise.all([
-        readFile(htmlPath, "utf8"),
+        readReviewHtml(htmlPath),
         stat(htmlPath),
         stat(statePath).catch((error) => {
           if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
@@ -1864,7 +1881,7 @@ async function migrateLegacySingleProposalLineReviews(
     } : {})
   };
   await ensureTransactionalTextTarget(canonicalStatePath, "{}\n");
-  await writeTextFileAtomically(canonicalStatePath, `${JSON.stringify(canonicalState, null, 2)}\n`);
+  await writeTextFileAtomically(canonicalStatePath, `${projectJson(canonicalStatePath, canonicalState)}\n`);
   broadcastLineReviewState({
     ok: true,
     path: canonicalStatePath,
@@ -1975,7 +1992,7 @@ async function planCanonicalBatchChildState(args: {
   };
   return {
     statePath: canonicalStatePath,
-    stateText: `${JSON.stringify(mergedState, null, 2)}\n`,
+    stateText: `${projectJson(canonicalStatePath, mergedState)}\n`,
     legacyPaths: legacyArtifacts.flatMap((artifact) => [artifact.htmlPath, artifact.statePath])
   };
 }
@@ -1990,7 +2007,7 @@ async function buildSynchronizedBatchChild(args: {
   legacyArtifacts: LegacyProposalLineReviewArtifact[];
 }): Promise<BatchProposalSynchronizationPlan> {
   const workspaceDir = normalizeProjectFolder(args.outputDir).workspaceDir;
-  const existingHtml = await readFile(args.childPath, "utf8");
+  const existingHtml = await readReviewHtml(args.childPath);
   const payload = lineReviewPayloadFromHtml(existingHtml, args.childPath);
   const workflow = payload.workflow;
   const sourceBinding = embeddedWorkflowPath(workflow, "sourcePath");
@@ -2066,7 +2083,7 @@ async function buildSynchronizedBatchChild(args: {
     translationPath: args.translationPath,
     translationLineCount,
     childPath: args.childPath,
-    html: rendered,
+    html: portableReviewHtml(rendered, args.childPath),
     ...statePlan
   };
 }
@@ -2111,7 +2128,7 @@ async function synchronizeBatchProposalLineReviews(args: {
       legacyArtifacts
     });
   }));
-  const indexHtml = await readFile(args.batchIndexPath, "utf8");
+  const indexHtml = await readReviewHtml(args.batchIndexPath);
   const boundIndexHtml = bindBatchLineReviewTranslations(indexHtml, plans.map((plan) => ({
     documentId: plan.documentId,
     translationPath: plan.translationPath,
@@ -2122,7 +2139,7 @@ async function synchronizeBatchProposalLineReviews(args: {
   }
   await writeTextFilesAtomically([
     ...plans.map((plan) => ({ targetPath: plan.childPath, text: plan.html })),
-    { targetPath: args.batchIndexPath, text: boundIndexHtml },
+    { targetPath: args.batchIndexPath, text: portableReviewHtml(boundIndexHtml, args.batchIndexPath) },
     ...plans.flatMap((plan) => plan.statePath && plan.stateText
       ? [{ targetPath: plan.statePath, text: plan.stateText }]
       : [])
@@ -2233,7 +2250,7 @@ async function generateProposalLineReview(
     : routing.translationPath;
   const lineReviewPath = proposalLineReviewArtifactPath(outputDir, routing);
   await mkdir(path.dirname(lineReviewPath), { recursive: true });
-  await writeTextFileAtomically(lineReviewPath, renderLineReviewHtml({
+  await writeReviewHtml(lineReviewPath, renderLineReviewHtml({
     title: `${routing.documentId} line review`,
     sourceText: sourceDocument.text,
     translationText: translationDocument?.text,
@@ -2361,7 +2378,7 @@ async function repairProposalReviewHtmlLineReviewPath(targetPath: string, output
   }
   let html = "";
   try {
-    html = await readFile(filePath, "utf8");
+    html = await readReviewHtml(filePath);
   } catch {
     return false;
   }
@@ -2375,7 +2392,7 @@ async function repairProposalReviewHtmlLineReviewPath(targetPath: string, output
   }
   const rewritten = rewriteProposalReviewLineReviewPathContent(html, path.basename(filePath), lineReviewPath);
   if (rewritten) {
-    await writeFile(filePath, rewritten, "utf8");
+    await writeReviewHtml(filePath, rewritten);
     return true;
   }
   return false;
@@ -2406,7 +2423,7 @@ async function findProofreadReportCandidates(outputDir: string): Promise<Proofre
         return;
       }
       const info = await stat(fullPath);
-      const content = await readFile(fullPath, "utf8");
+      const content = await readReviewHtml(fullPath);
       candidates.push({ path: fullPath, size: info.size, modifiedMs: info.mtimeMs, content });
     }));
   }
@@ -2827,6 +2844,7 @@ function renderHtmlTabShell(): string {
 </head>
 <body>
   <nav id="tabs"></nav>
+  <div id="closeError" role="alert" hidden style="position:fixed;z-index:20;top:0;right:0;height:${htmlViewerTabBarHeight}px;max-width:60%;overflow:auto;background:#fff0f0;color:#9b1c1c;padding:6px;font-size:12px"></div>
   <script>
     function escapeHtml(value) {
       return String(value || "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -2844,7 +2862,9 @@ function renderHtmlTabShell(): string {
       const close = event.target.closest("[data-close-key]");
       if (close && window.workshopTabs) {
         event.stopPropagation();
-        window.workshopTabs.close(close.dataset.closeKey);
+        window.workshopTabs.close(close.dataset.closeKey).catch(error => {
+          const status = document.getElementById("closeError"); status.textContent = error.message || String(error); status.hidden = false;
+        });
         return;
       }
       const button = event.target.closest("button[data-key]");
@@ -2907,8 +2927,7 @@ async function ensureHtmlViewerWindow(): Promise<BrowserWindow> {
     const closingWindow = htmlViewerWindow;
     const tabs = [...htmlViewerTabs.values()];
     htmlViewerWindowClosing = true;
-    void Promise.all(tabs.map(flushHtmlViewerTabState))
-      .then(() => Promise.all(tabs.map(cancelHtmlViewerTabAgentRuns)))
+    void Promise.all(tabs.map(settleHtmlViewerTab))
       .then(() => {
         if (closingWindow && !closingWindow.isDestroyed()) {
           disposeHtmlViewerTabs(closingWindow, tabs);
@@ -2917,6 +2936,10 @@ async function ensureHtmlViewerWindow(): Promise<BrowserWindow> {
     }).catch((error) => {
       htmlViewerWindowClosing = false;
       console.error("[html-viewer] Failed to persist state and suspend Agent sessions before closing", error);
+      if (closingWindow && !closingWindow.isDestroyed()) void dialog.showMessageBox(closingWindow, {
+        type: "error", title: "YN", message: "HTML 保存失败，窗口保留以避免丢失修改。 / HTML could not be saved; the window remains open to preserve edits.",
+        detail: error instanceof Error ? error.message : String(error)
+      });
     });
   });
   htmlViewerWindow.on("closed", () => {
@@ -2959,7 +2982,7 @@ async function rememberActiveHtmlViewerProject(): Promise<void> {
 }
 
 async function extractLineReviewWorkspaceDir(filePath: string): Promise<string | undefined> {
-  const html = await readFile(filePath, "utf8").catch(() => "");
+  const html = await readReviewHtml(filePath).catch(() => "");
   const match = html.match(/<script id="(?:reviewData|proposalData|batchData)" type="application\/json">([\s\S]*?)<\/script>/i);
   if (!match) return undefined;
   try {
@@ -2980,10 +3003,25 @@ async function extractLineReviewWorkspaceDir(filePath: string): Promise<string |
 }
 
 async function cancelHtmlViewerTabAgentRuns(tab: HtmlViewerTab): Promise<void> {
-  if (tab.workspaceDir) await piNativeSessionService.suspendWorkspace(tab.workspaceDir);
+  if (tab.workspaceDir) await piNativeSessionService.suspendWorkspace(normalizeProjectFolder(tab.workspaceDir).outputDir);
+}
+
+async function settleHtmlViewerTab(tab: HtmlViewerTab): Promise<void> {
+  const pending = htmlViewerTabSettlements.get(tab);
+  if (pending) return pending;
+  // Cancellation must reach the runtime even when a renderer write fails.
+  const operation = (async () => {
+    const results = await Promise.allSettled([cancelHtmlViewerTabAgentRuns(tab), flushHtmlViewerTabState(tab)]);
+    const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (errors.length) throw new AggregateError(errors, errors.map((error) => error instanceof Error ? error.message : String(error)).join("\n"));
+  })();
+  htmlViewerTabSettlements.set(tab, operation);
+  try { await operation; }
+  finally { if (htmlViewerTabSettlements.get(tab) === operation) htmlViewerTabSettlements.delete(tab); }
 }
 
 async function flushHtmlViewerTabState(tab: HtmlViewerTab): Promise<void> {
+  if (tab.loadPromise) await tab.loadPromise;
   if (tab.view.webContents.isDestroyed()) return;
   await tab.view.webContents.executeJavaScript(`
     (async () => {
@@ -3006,14 +3044,23 @@ function disposeHtmlViewerTabs(window: BrowserWindow, tabs: HtmlViewerTab[]): vo
 }
 
 async function closeHtmlViewerTab(key: string): Promise<boolean> {
+  const pending = htmlViewerTabCloseOperations.get(key);
+  if (pending) return pending;
+  const operation = finishClosingHtmlViewerTab(key);
+  htmlViewerTabCloseOperations.set(key, operation);
+  try { return await operation; }
+  finally { if (htmlViewerTabCloseOperations.get(key) === operation) htmlViewerTabCloseOperations.delete(key); }
+}
+
+async function finishClosingHtmlViewerTab(key: string): Promise<boolean> {
   const tab = htmlViewerTabs.get(key);
   if (!tab || !htmlViewerWindow || htmlViewerWindow.isDestroyed()) {
     return false;
   }
   const keys = Array.from(htmlViewerTabs.keys());
   const closedIndex = keys.indexOf(key);
-  await flushHtmlViewerTabState(tab);
-  await cancelHtmlViewerTabAgentRuns(tab);
+  await settleHtmlViewerTab(tab);
+  if (!htmlViewerWindow || htmlViewerWindow.isDestroyed() || !htmlViewerTabs.has(key)) return true;
   htmlViewerWindow.removeBrowserView(tab.view);
   if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
   htmlViewerTabs.delete(key);
@@ -3035,11 +3082,13 @@ async function closeHtmlViewerTab(key: string): Promise<boolean> {
 }
 
 async function loadHtmlViewerTab(targetPath: string, outputDir?: string): Promise<{ key: string; tab: HtmlViewerTab }> {
+  if (htmlViewerWindowClosing) throw new Error("HTML viewer is closing. Wait for pending changes to be saved before reopening it.");
   const resolvedTargetPath = await resolveHtmlOpenTarget(targetPath);
   const { filePath, hash, key } = splitHtmlOpenTarget(resolvedTargetPath);
   if (!(await fileExists(filePath))) {
     throw new Error(`HTML file not found: ${filePath}`);
   }
+  const upgradedOnDisk = await upgradeLegacyReviewHtmlTree(filePath);
   let tab = htmlViewerTabs.get(key);
   if (tab?.loadPromise) await tab.loadPromise;
   if (tab && !tab.view.webContents.isDestroyed()) {
@@ -3055,7 +3104,7 @@ async function loadHtmlViewerTab(targetPath: string, outputDir?: string): Promis
             .some((item) => currentMarkers.includes(item.getAttribute('content')));
         })()`)
       : false;
-    if (currentProtocol && !outputDir) {
+    if (currentProtocol && !outputDir && !upgradedOnDisk) {
       if (hash) {
         await tab.view.webContents.executeJavaScript(
           `if (location.hash !== "#${hash.replace(/"/g, "")}") location.hash = "#${hash.replace(/"/g, "")}";`
@@ -3065,7 +3114,6 @@ async function loadHtmlViewerTab(targetPath: string, outputDir?: string): Promis
       return { key, tab };
     }
   }
-  const upgradedOnDisk = await upgradeLegacyReviewHtmlTree(filePath);
   const repairedOnDisk = await repairProposalReviewHtmlLineReviewPath(filePath, outputDir);
   const workspaceDir = await extractLineReviewWorkspaceDir(filePath);
   await ensureHtmlViewerWindow();
@@ -3115,7 +3163,7 @@ async function loadHtmlViewerTab(targetPath: string, outputDir?: string): Promis
 }
 
 async function injectHtmlSidecarState(filePath: string, contents: Electron.WebContents): Promise<void> {
-  const html = await readFile(filePath, "utf8").catch(() => "");
+  const html = await readReviewHtml(filePath).catch(() => "");
   const kind = /<script\s+id=["']reviewData["']\s+type=["']application\/json["']>/i.test(html)
     ? "line"
     : /<script\s+id=["']proposalData["']\s+type=["']application\/json["']>/i.test(html)
@@ -3463,7 +3511,7 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
             epubExport: parsed.kind === "epub" ? { mode: "pair-position", replacePosition: translationPosition, pairSize: 2 } : undefined
           }
         });
-        await writeFile(childPath, html, "utf8");
+        await writeReviewHtml(childPath, html);
         indexFiles.push({
           sourceName: file.name,
           sourcePath: file.path,
@@ -3490,10 +3538,10 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
           advanced: folderAdvanced
         }
       });
-      await writeFile(outputPath, indexHtml, "utf8");
+      await writeReviewHtml(outputPath, indexHtml);
       await writeFile(
         path.join(workspaceDir, "state.json"),
-        JSON.stringify({
+        projectJson(path.join(workspaceDir, "state.json"), {
           lastHtml: outputPath,
           generatedAt: new Date().toISOString(),
           batch: {
@@ -3505,7 +3553,7 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
             matchedCount: indexFiles.length,
             warningCount: 0
           }
-        }, null, 2),
+        }),
         "utf8"
       );
       return { outputPath, fileCount: indexFiles.length, matchedCount: indexFiles.length, warningCount: 0 };
@@ -3539,10 +3587,10 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
         epubExport: parsed.kind === "epub" ? { mode: "pair-position", replacePosition: translationPosition, pairSize: 2 } : undefined
       }
     });
-    await writeFile(outputPath, html, "utf8");
+    await writeReviewHtml(outputPath, html);
     await writeFile(
       path.join(workspaceDir, "state.json"),
-      JSON.stringify({ lastHtml: outputPath, generatedAt: new Date().toISOString(), inputMode, sourcePosition, translationPosition }, null, 2),
+      projectJson(path.join(workspaceDir, "state.json"), { lastHtml: outputPath, generatedAt: new Date().toISOString(), inputMode, sourcePosition, translationPosition }),
       "utf8"
     );
     return { outputPath };
@@ -3620,7 +3668,7 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
           epubExport: match.sourcePath.toLowerCase().endsWith(".epub") ? { mode: "all" } : undefined
         }
       });
-      await writeFile(childPath, html, "utf8");
+      await writeReviewHtml(childPath, html);
       indexFiles.push({
         sourceName: match.sourceName,
         sourcePath: match.sourcePath,
@@ -3647,10 +3695,10 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
         advanced: folderAdvanced
       }
     });
-    await writeFile(outputPath, indexHtml, "utf8");
+    await writeReviewHtml(outputPath, indexHtml);
     await writeFile(
       path.join(workspaceDir, "state.json"),
-      JSON.stringify({
+      projectJson(path.join(workspaceDir, "state.json"), {
         lastHtml: outputPath,
         generatedAt: new Date().toISOString(),
         batch: {
@@ -3660,7 +3708,7 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
           matchedCount: indexFiles.filter((file) => file.status === "matched").length,
           warningCount: indexFiles.filter((file) => file.status !== "matched").length
         }
-      }, null, 2),
+      }),
       "utf8"
     );
     return {
@@ -3714,8 +3762,8 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
       epubExport: args.sourcePath.toLowerCase().endsWith(".epub") ? { mode: "all" } : undefined
     }
   });
-  await writeFile(outputPath, html, "utf8");
-  await writeFile(path.join(workspaceDir, "state.json"), JSON.stringify({ lastHtml: outputPath, generatedAt: new Date().toISOString() }, null, 2), "utf8");
+  await writeReviewHtml(outputPath, html);
+  await writeFile(path.join(workspaceDir, "state.json"), projectJson(path.join(workspaceDir, "state.json"), { lastHtml: outputPath, generatedAt: new Date().toISOString() }), "utf8");
   return { outputPath };
 }
 ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlArgs) => generateLineReview(args));
@@ -3754,17 +3802,14 @@ async function generateProposalReview(args: GenerateReviewHtmlArgs, allowEmpty =
     locale: args.locale
   });
   const outputPath = path.join(workspaceDir, "html", `proposal-review-${timestamp()}.html`);
-  await writeFile(outputPath, html, "utf8");
-  await writeFile(path.join(workspaceDir, "state.json"), JSON.stringify({
-    lastHtml: outputPath,
-    generatedAt: new Date().toISOString()
-  }, null, 2), "utf8");
+  await writeReviewHtml(outputPath, html);
+  await writeFile(path.join(workspaceDir, "state.json"), projectJson(path.join(workspaceDir, "state.json"), { lastHtml: outputPath, generatedAt: new Date().toISOString() }), "utf8");
   return { outputPath, proposalCount: proposals.length, reportPath, lineReviewPath };
 }
 ipcMain.handle("html:generateProposalReview", async (_event, args: GenerateReviewHtmlArgs) => generateProposalReview(args));
 
-async function builtinSourceFiles(settings: BuiltinTaskSettings): Promise<string[]> {
-  return (await prepareBuiltinTaskDocuments(settings)).documents.map((document) => document.sourcePath);
+async function builtinSourceFiles(settings: BuiltinTaskSettings, context: YnTaskPreparationContext): Promise<string[]> {
+  return (await prepareBuiltinTaskDocuments(settings, context.lineReviewPath)).documents.map((document) => document.sourcePath);
 }
 
 async function builtinModelSelection(outputDir: string) {
@@ -3834,7 +3879,7 @@ async function builtinWorkflowRequest(context: YnTaskPreparationContext, setting
   };
   const evidenceDir = path.join(settings.outputDir, ".translation-workshop", "agent", "task-preparation");
   await mkdir(evidenceDir, { recursive: true });
-  await writeTextFileAtomically(path.join(evidenceDir, `${context.preparationId}.json`), JSON.stringify({ ...request,
+  await writeTextFileAtomically(path.join(evidenceDir, `${context.preparationId}.json`), projectJson(path.join(evidenceDir, `${context.preparationId}.json`), { ...request,
     preparedSettings: { sourcePath: settings.sourcePath, translationPath, originalTranslationPath: settings.translationPath,
       proofreadOutputDir: settings.proofreadOutputDir } }));
   return request;
@@ -3843,9 +3888,10 @@ async function builtinWorkflowRequest(context: YnTaskPreparationContext, setting
 async function finishBuiltinWorkflow(context: YnTaskPreparationContext, settings: BuiltinTaskSettings, autoApply: boolean, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
   if (context.intent !== "proofread") return;
-  const prepared = JSON.parse(await readFile(path.join(context.outputDir, ".translation-workshop", "agent", "task-preparation", `${context.preparationId}.json`), "utf8")) as PiSessionPromptRequest & {
+  const prepared = await readJsonObject(path.join(context.outputDir, ".translation-workshop", "agent", "task-preparation", `${context.preparationId}.json`)) as unknown as PiSessionPromptRequest & {
     preparedSettings: { sourcePath: string; translationPath?: string; proofreadOutputDir?: string }
   };
+  if (!prepared) throw new Error(`Prepared task receipt is missing: ${context.preparationId}`);
   const sourcePath = prepared.sourceSelection?.path ?? prepared.sourcePath!;
   const reportPath = resolveProofreadReportPath({ outputDir: context.outputDir, sourcePaths: [sourcePath], documentId: path.basename(sourcePath),
     proofreadOutputDir: prepared.preparedSettings.proofreadOutputDir, kind: "findings_json",
@@ -4224,7 +4270,7 @@ ipcMain.handle("html:applyProposalLineReviewStates", async (event, args: ApplyPr
     for (const item of updates) await ensureTransactionalTextTarget(item.statePath, "{}\n");
     await writeTextFilesAtomically(updates.map((item) => ({
       targetPath: item.statePath,
-      text: `${JSON.stringify(item.state, null, 2)}\n`
+      text: `${projectJson(item.statePath, item.state)}\n`
     })));
     for (const item of updates) {
       broadcastLineReviewState({
@@ -4548,7 +4594,7 @@ ipcMain.handle("files:writeAuditWhitelistFile", async (_event, args: WriteAuditW
     );
     const whitelistText = await readMergedWhitelistText();
     await writeTextFilesAtomically([
-      { targetPath: statePath, text: `${JSON.stringify(canonicalState, null, 2)}\n` },
+      { targetPath: statePath, text: `${projectJson(statePath, canonicalState)}\n` },
       { targetPath, text: `${whitelistText}\n` }
     ]);
   });

@@ -8,13 +8,10 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 
 [中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases)
 
-## What's new in 2.1.8
+## What's new in 2.1.7–2.1.8
 
 - Exclude actual regex-preserved matches and correctly aligned glossary pairs from untranslated checks. Record explicitly preserved words as formal source-to-identical-target terms; validate the remaining prose with the same rules for candidate imports and AI review. Glossary matching, terminology conflicts, and recovery rescans also exclude regex-preserved spans.
 
-## What's new in 2.1.7
-
-- Exclude actual regex-preserved matches from untranslated checks; validate the remaining prose and use the same rules for candidate imports and AI review.
 - Automatically reconcile stale review bindings in Host, retain unchanged accepted evidence, and resume work. Fix batch settlement after Stop.
 
 ## What's new in 2.1.6

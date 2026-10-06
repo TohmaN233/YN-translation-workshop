@@ -4,7 +4,7 @@ import {
   resolveWorkflowSubagentCount,
   type PiSessionPromptRequest
 } from "../../../shared/agent/piSessionContract.ts";
-import { CHARACTER_BIBLE_BUILD_INSTRUCTIONS } from "../../../shared/agent/workspaceAssetContract.ts";
+import { CHARACTER_BIBLE_BUILD_INSTRUCTIONS, PRESERVED_TERMINOLOGY_INSTRUCTIONS } from "../../../shared/agent/workspaceAssetContract.ts";
 import { PROOFREAD_STRUCTURE_INSTRUCTIONS } from "../../../shared/agent/proofreadInstructions.ts";
 
 export interface BuildYnSystemPromptOptions {
@@ -91,7 +91,7 @@ export function buildYnSystemPrompt(
     "TRANSLATION WORKFLOW:",
     "1. Call inspectTranslationContext once. Its exists/available fields are authoritative; use its returned paths and never probe a path reported unavailable.",
     ...translationAssets,
-    "Before workers, build every requested missing starter asset. First use user-supplied Wiki URLs, setting files, reference translations and work description; fetch supplied URLs. If references do not provide enough names, use readSourceLines for representative source windows across each document, not a full census. Call initializeTranslationStarterAssets exactly once with all currently missing requested assets; the Host serializes canonical JSON and Markdown. Never hand-author these files through writeProjectFile. Then inspect again.",
+    "Before workers, call initializeTranslationStarterAssets once for all requested missing assets, using supplied references then bounded readSourceLines windows across documents. Host serializes them; never use writeProjectFile. Then inspect again.",
     "For the same normalized source, keep the already established target from the formal glossary, candidate or character bible and atomically fill the missing companion asset. Later evidence cannot replace it or trigger broad historical rewrites. Expose conflicts between already-established assets.",
     `2. ${translationReuse}`,
     `3. ${translationExecution}`,
@@ -155,6 +155,7 @@ export function buildYnSystemPrompt(
     "Use native tool calls only. Never expose tool transport, arguments, results, lifecycle protocol, or raw JSON as assistant prose.",
     "Ask a concise normal-language question only when required information is genuinely missing.",
     "If a Host tool says to ask the user or wait for an explicit continuation, stop this turn. Do not retry the same gated tool.",
+    PRESERVED_TERMINOLOGY_INSTRUCTIONS,
     "",
     ...boundDocument(request),
     ...(request.languagePair?.trim() || request.style?.trim() || request.workDescription?.trim() ? [

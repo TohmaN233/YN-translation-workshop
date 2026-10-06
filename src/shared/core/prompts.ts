@@ -1,5 +1,6 @@
 import { YN_DEFAULT_SPLIT_SIZE, type PiFolderSourceDocument } from "../agent/piSessionContract.ts";
 import { PROOFREAD_STRUCTURE_INSTRUCTIONS } from "../agent/proofreadInstructions.ts";
+import { PRESERVED_TERMINOLOGY_INSTRUCTIONS } from "../agent/workspaceAssetContract.ts";
 import {
   normalizeCustomPreserveRules,
   type CustomPreserveRule
@@ -232,6 +233,7 @@ export function buildTranslatePrompt(options: TranslatePromptOptions): string {
 
   return [
     ...taskHeader("translate", defaults.languagePair, defaults.style),
+    PRESERVED_TERMINOLOGY_INSTRUCTIONS,
     "",
     "Task settings:",
     `- ${folderBatch ? "Source folder" : "Source path"}: ${valueOrNone(options.sourcePath)}`,
@@ -263,6 +265,7 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
 
   return [
     ...taskHeader("proofread", defaults.languagePair, defaults.style),
+    PRESERVED_TERMINOLOGY_INSTRUCTIONS,
     "",
     "Task settings:",
     folderBatch

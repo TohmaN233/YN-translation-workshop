@@ -286,10 +286,10 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossaryEmpty: "\u672a\u52a0\u8f7d glossary",
     glossaryNoEntries: "\u672f\u8bed\u6587\u4ef6\u5df2\u8bfb\u53d6\uff0c\u4f46\u6ca1\u6709\u89e3\u6790\u5230\u672f\u8bed\u6761\u76ee",
     glossarySyncMissingTarget: "\u5f53\u524d HTML \u6ca1\u6709\u7ed1\u5b9a glossary \u6587\u4ef6\uff0c\u8bf7\u5148\u5bfc\u5165\u672f\u8bed\u3002",
-    glossaryConfirm: "\u786e\u8ba4\u6267\u884c\u672f\u8bed\u66ff\u6362\uff1f\u4f1a\u5c06\u65e7\u8bd1\u540d\u3001\u522b\u540d\u548c\u6b8b\u7559\u539f\u6587\u66ff\u6362\u4e3a\u53f3\u4fa7\u8bd1\u540d\uff0c\u4eba\u5de5\u6539\u5199\u884c\u4f1a\u8df3\u8fc7\u3002",
+    glossaryConfirm: "\u786e\u8ba4\u6267\u884c\u672f\u8bed\u66ff\u6362\uff1f\u4f1a\u5c06\u65e7\u8bd1\u540d\u3001\u522b\u540d\u548c\u6b8b\u7559\u539f\u6587\u66ff\u6362\u4e3a\u53f3\u4fa7\u8bd1\u540d\uff0c\u4eba\u5de5\u6539\u5199\u884c\u4f1a\u8df3\u8fc7\u3002\u6b63\u5219\u4fdd\u7559\u5185\u5bb9\u4f1a\u8df3\u8fc7\u3002",
     glossaryApplied: "\u672f\u8bed\u66ff\u6362\u5df2\u5e94\u7528",
     glossaryEditHelp: "\u53f3\u4fa7\u8bd1\u540d\u53ef\u7f16\u8f91\u3002\u4fee\u6539\u540e\u53ef\u786e\u8ba4\u628a\u65e7\u8bd1\u540d\u81ea\u52a8\u66ff\u6362\u4e3a\u65b0\u8bd1\u540d\uff1b\u5de6\u4fa7\u539f\u6587\u4e0d\u4f1a\u88ab\u4fee\u6539\u3002",
-    glossaryChangeConfirm: "\u662f\u5426\u5c06\u300c{from}\u300d\u66ff\u6362\u4e3a\u300c{to}\u300d\uff1f\u4eba\u5de5\u6539\u5199\u884c\u4f1a\u8df3\u8fc7\u3002",
+    glossaryChangeConfirm: "\u662f\u5426\u5c06\u300c{from}\u300d\u66ff\u6362\u4e3a\u300c{to}\u300d\uff1f\u4eba\u5de5\u6539\u5199\u884c\u4f1a\u8df3\u8fc7\u3002\u6b63\u5219\u4fdd\u7559\u5185\u5bb9\u4f1a\u8df3\u8fc7\u3002",
     glossaryChangeCancelled: "\u672f\u8bed\u5df2\u66f4\u65b0\uff0c\u672a\u6279\u91cf\u66ff\u6362\u8bd1\u6587\u3002",
     glossarySynced: "\u672f\u8bed\u5df2\u540c\u6b65",
     glossaryWritten: "\u672f\u8bed\u5df2\u5199\u5165",
@@ -468,10 +468,10 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossaryEmpty: "No glossary loaded",
     glossaryNoEntries: "Glossary file was read, but no entries were parsed",
     glossarySyncMissingTarget: "This HTML has no bound glossary file. Import a glossary first.",
-    glossaryConfirm: "Apply glossary replacements? Old translations, aliases, and remaining source terms will be replaced with the right-side term. Manual rows will be skipped.",
+    glossaryConfirm: "Apply glossary replacements? Old translations, aliases, and remaining source terms will be replaced with the right-side term. Manual rows and regex-preserved content will be skipped.",
     glossaryApplied: "Glossary replacements applied",
     glossaryEditHelp: "Edit the right-side term. After a change, you can confirm replacing old translations with the new term; source text is never modified.",
-    glossaryChangeConfirm: "Replace \"{from}\" with \"{to}\"? Manual rows will be skipped.",
+    glossaryChangeConfirm: "Replace \"{from}\" with \"{to}\"? Manual rows and regex-preserved content will be skipped.",
     glossaryChangeCancelled: "Glossary term updated without applying replacements.",
     glossarySynced: "Glossary synced",
     glossaryWritten: "Glossary written",
@@ -1094,11 +1094,11 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 45;
+export const LINE_REVIEW_PROTOCOL_VERSION = 46;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 18;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
-export const PROMPT_SETTINGS_VERSION = 42;
+export const PROMPT_SETTINGS_VERSION = 43;
 
 export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   const locale = options.locale ?? "zh-CN";
@@ -3684,7 +3684,7 @@ function glossaryReplacementItems() {
   }).filter(item => item.target && item.candidates.length > 0)
     .sort((left, right) => right.maxLength - left.maxLength);
 }
-function replaceByLongestGlossaryItems(text, items) {
+function replaceByLongestGlossaryItems(text, items, preserveRegexes = []) {
   const candidates = items.flatMap(item => item.candidates.map(source => ({ source: String(source || "").trim(), target: item.target })))
     .filter(item => item.source && item.target && item.source !== item.target)
     .sort((left, right) => right.source.length - left.source.length);
@@ -3693,8 +3693,21 @@ function replaceByLongestGlossaryItems(text, items) {
   let index = 0;
   let count = 0;
   const value = String(text);
+  const protectedRanges = preserveRegexes.flatMap(regex => [...value.matchAll(regex)]
+    .filter(match => match[0].length > 0)
+    .map(match => ({ from: match.index, to: match.index + match[0].length })))
+    .sort((left, right) => left.from - right.from);
+  let protectedIndex = 0;
   while (index < value.length) {
-    const match = candidates.find(candidate => value.startsWith(candidate.source, index));
+    while (protectedIndex < protectedRanges.length && protectedRanges[protectedIndex].to <= index) protectedIndex += 1;
+    const protectedRange = protectedRanges[protectedIndex];
+    if (protectedRange && protectedRange.from <= index) {
+      output += value.slice(index, protectedRange.to);
+      index = protectedRange.to;
+      continue;
+    }
+    const match = candidates.find(candidate => value.startsWith(candidate.source, index)
+      && (!protectedRange || index + candidate.source.length <= protectedRange.from));
     if (match) {
       output += match.target;
       index += match.source.length;
@@ -3871,6 +3884,7 @@ function runGlossaryAudit() {
   setAiStatus((data.labels.auditGlossaryFinished || "Term audit finished") + ": " + affectedLines + " lines / " + issueCount + " H3");
 }
 function applyGlossaryItems(scope, items) {
+  const preserveRegexes = readPromptCustomPreserveRules().map(rule => new RegExp(rule.pattern, rule.flags + "g"));
   let changedLines = 0;
   let replacementCount = 0;
   const changedLineNumbers = [];
@@ -3879,7 +3893,7 @@ function applyGlossaryItems(scope, items) {
     const lineNo = row.line;
     if (state.status[lineNo] === "manual") continue;
     let value = rowValue(row);
-    const replaced = replaceByLongestGlossaryItems(value, items);
+    const replaced = replaceByLongestGlossaryItems(value, items, preserveRegexes);
     value = replaced.text;
     const rowReplacementCount = replaced.count;
     if (rowReplacementCount > 0) {

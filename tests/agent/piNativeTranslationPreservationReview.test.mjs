@@ -17,8 +17,8 @@ const repository = new PiSessionRepository(outputDir);
 let worker;
 try {
   const sourcePath = path.join(outputDir, "source.txt");
-  const sourceLines = Array.from({ length: 2 }, (_, index) => `ソロモン：ここで待っている${index + 1}。`);
-  const candidateLines = sourceLines.map((_line, index) => `ソロモン：在这里等待${index + 1}。`);
+  const sourceLines = Array.from({ length: 2 }, (_, index) => `ソロモン：マユラがここで待っている${index + 1}。`);
+  const candidateLines = sourceLines.map((_line, index) => `ソロモン：マユラ在这里等待${index + 1}。`);
   await writeFile(sourcePath, `${sourceLines.join("\n")}\n`);
   await repository.create("review-parent");
   const provider = fauxProvider({ provider: "native-review-compaction", tokensPerSecond: 1_000_000,
@@ -36,6 +36,9 @@ try {
     publishCustomMessage: async () => {}, persistHostState: async () => { persisted.push(structuredClone(alignment)); },
     subagents: { hasRunning: () => false, startTranslationBatch(options) { batch = options; return { id: "review-compaction-batch", subagents: [], status: "running" }; } } };
   const tools = createYnDomainTools(hostContext);
+  await tools.find(tool => tool.name === "recordTranslationPreservedTerms").execute("preserve-name", {
+    entries: [{ source: "マユラ", rationale: "The supplied guide explicitly keeps マユラ unchanged." }]
+  });
   await tools.find(tool => tool.name === "runTranslationSubagents").execute("start", {});
   const canonicalPath = resolveTranslationCandidatePath({ outputDir, sourcePaths: [sourcePath], documentId: "source.txt" });
   await mkdir(path.dirname(canonicalPath), { recursive: true });
@@ -58,11 +61,11 @@ try {
       assert.ok(text.includes('Custom verbatim preservation rules'));
       return fauxAssistantMessage(fauxToolCall('readAssignedTranslationReview',{}),{stopReason:'toolUse'});
     },
-    fauxAssistantMessage(fauxToolCall('submitTranslationReview',{failures:[{line:1,code:'untranslated_residue',note:'Translate the remaining Japanese speaker name ソロモン.'}]}),{stopReason:'toolUse'})
+    fauxAssistantMessage(fauxToolCall('submitTranslationReview',{failures:[{line:1,code:'untranslated_residue',note:'Translate the remaining Japanese name マユラ.'}]}),{stopReason:'toolUse'})
   ]);
   worker = await createPiTranslationReviewSubagentWorker(context);
   const result = await worker.runAssignment(context);
-  assert.equal(result.decision.accepted,true,'protected Japanese prefix must not cause repair debt');
+  assert.equal(result.decision.accepted,true,'protected prefix and aligned formal glossary name must not cause repair debt');
   assert.ok(alignment.ranges['source.txt'][0].checks.every(c=>c.verdict==='aligned'));
   console.log('PASS native reviewer receives preservation rules and Host rejects false protected-residue debt');
   delete alignment.ranges['source.txt'][0].sourceHash;

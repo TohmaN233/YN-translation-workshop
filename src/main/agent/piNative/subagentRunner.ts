@@ -3681,7 +3681,7 @@ function createPiTranslationReviewRuntimeSpec(
       "FIRST TOOL: call readAssignedTranslationReview once. Inspect every selected row. Neighboring rows are context, but include one as a failure when it clearly shares or continues the same defect; Host will promote that row and expand the next repair review around it.",
       "Focus on one-to-one line identity, omissions, merged/split/shifted meaning, placeholder/meta text, untranslated residue, and material mistranslation. This is not the later full proofreading workflow; do not polish style or report minor wording preferences. Target-language punctuation and typography choices alone, including adding a conventional Chinese sentence-final mark inside a closing quote, are never safety-gate failures.",
       customPreserveRuleContext(context.request),
-      "The first tool result includes canonical projectReferences paths and direct matches for its review windows. Use those direct matches first. Do not invent shorthand paths such as 'glossary'. Use searchProjectText/readProjectFile only for one specific unresolved ambiguity, copying the exact returned path, and do not recursively search the project or read generated review HTML.",
+      "The first tool result includes canonical projectReferences paths and direct matches for its review windows. Use those direct matches first. Correctly aligned formal glossary terms, including source=target names and explicit target aliases, are not untranslated residue; review the remaining prose. Do not invent shorthand paths such as 'glossary'. Use searchProjectText/readProjectFile only for one specific unresolved ambiguity, copying the exact returned path, and do not recursively search the project or read generated review HTML.",
       "Then call submitTranslationReview exactly once with the single argument {failures:[...]}; never copy JSON Schema keywords such as maxItems into tool arguments. Use failures=[] when the selected scope is safe. For a real problem, include only its absolute line, a compact machine-readable code, and a short actionable note that names the defect and required correction. Never list aligned rows and never explain why correct rows pass.",
       "Do not modify any file and do not launch another subagent."
     ].join("\n"),
@@ -4490,6 +4490,7 @@ export function createPiTranslationRuntimeSpec(
     ...(context.request.style?.trim() ? [`Project style: ${context.request.style.trim()}`] : []),
     ...(context.request.workDescription?.trim() ? [`Work description: ${context.request.workDescription.trim()}`] : []),
     ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
+    "Aligned formal glossary pairs (explicit aliases included) are not residue.",
     boundedSelectedLines.length > 0
       ? "FIRST TOOL: call readAssignedSource with no arguments. It returns only the exact writable rows. Use readTranslationContext separately for bounded read-only context; context never expands write ownership."
       : "FIRST TOOL: call readAssignedSource for the exact target. It returns aligned text, canonical projectReferences paths, and directMatches for indexed assets. Use directMatches first; whole-file glossary, character-bible, and glossary-candidate reads are disabled. Search one exact source term only when the repair has a real uncovered ambiguity. available:false means the asset does not exist and must not be probed. Use readTranslationContext for bounded surrounding context when needed.",
@@ -4510,6 +4511,7 @@ export function createPiTranslationRuntimeSpec(
     `Current translation candidate (UTF-8): ${translationWorkingCandidatePath(context)}`,
     `Owned chunk: L${context.task.fromLine}-L${context.task.toLine} (1-based, inclusive). Language pair: ${context.request.languagePair}.`,
     ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
+    "Aligned formal glossary pairs (explicit aliases included) are not residue.",
     "Repair only the exact rejected rows below in this same child session. Do not restart the workflow, do not rewrite already accepted rows, and do not change the source file.",
     ...chunkReviewFeedback.map((feedback) => `- L${feedback.line}: ${feedback.reason}`),
     "FIRST TOOL: call readAssignedSource only for compact spans covering the rejected rows; do not read the entire owned chunk. Use returned directMatches first; whole-file indexed-asset reads are disabled. Search one exact term or read bounded context only when the rejection requires it.",
@@ -4532,6 +4534,7 @@ export function createPiTranslationRuntimeSpec(
       ...(context.request.style?.trim() ? [`Project style: ${context.request.style.trim()}`] : []),
       ...(context.request.workDescription?.trim() ? [`Work description: ${context.request.workDescription.trim()}`] : []),
       ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
+    "Aligned formal glossary pairs (explicit aliases included) are not residue.",
       ...sourceInstruction,
       "Read the complete translationReference from the first result. Use projectReferences.directMatches when present. Do not bulk-read the indexed glossary, character bible, or glossary candidates; exact-search one source term only for a real uncovered ambiguity. For the bound source document, use only readAssignedSource and readTranslationContext so context stays line-aware and centered on the assignment. Other project files and prior translations remain readable on demand.",
       ...(glossaryCandidatesEnabled ? [] : [
@@ -5693,6 +5696,7 @@ function createPiProofreadRuntimeSpec(
       ...(context.request.style?.trim() ? [`Project style: ${context.request.style.trim()}`] : []),
       ...(context.request.workDescription?.trim() ? [`Work description: ${context.request.workDescription.trim()}`] : []),
       ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
+    "Aligned formal glossary pairs (explicit aliases included) are not residue.",
       "FIRST TOOL: call readAssignedProofreadContext for structured glossary/character records, unresolved candidates, and matched prior search evidence. Reuse supplied evidence; searchProjectText only for a still-ambiguous term. References with complete=true are fully read; page complete=false through readProofreadReference from offset 0 and nextOffset. Web references only for relevant ambiguity.",
       "readAssignedProofreadContext supplies complete owned rows and exact boundary rows. Do not call listProjectDir or reread bound source/translation, raw assets, or preceding files for context already supplied by Host.",
       "Confirm or reject Host signals and semantically review every assigned row. Signals are evidence, not automatic findings.",

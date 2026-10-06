@@ -1079,6 +1079,7 @@ export async function deleteProjectGlossaryEntry(args: {
 export async function mergeProjectGlossaryEntries(args: {
   outputDir: string;
   entries: Record<string, unknown>[];
+  boundGlossaryPath?: string;
 }): Promise<{
   assets: ProjectAssets;
   counts: { imported: number; added: number; deduplicated: number; aliasesAdded: number };
@@ -1089,7 +1090,13 @@ export async function mergeProjectGlossaryEntries(args: {
     assertFormalAssetEntries("glossary", args.entries, paths.glossary);
     const currentAssets = await readProjectAssetsUnlocked({ outputDir: args.outputDir });
     const selected = await selectedGlossaryLayer(args.outputDir, paths.glossary);
-    const baseEntries = selected.path
+    const bound = args.boundGlossaryPath ? await resolveMutableGlossaryBase({
+      outputDir: args.outputDir, canonicalPath: paths.glossary,
+      currentEntries: currentAssets.glossary.entries, boundGlossaryPath: args.boundGlossaryPath
+    }) : undefined;
+    const baseEntries = bound ? mergeGlossaryLayers(currentAssets.glossary.entries, bound.entries, {
+      conflict: "replace", conflictPath: args.boundGlossaryPath!
+    }).entries : selected.path
       ? mergeGlossaryLayers(currentAssets.glossary.entries, selected.entries, {
           conflict: "replace",
           conflictPath: selected.path
@@ -1104,7 +1111,7 @@ export async function mergeProjectGlossaryEntries(args: {
       paths,
       currentAssets,
       entries: merged.entries,
-      inspectedBinding: selected.inspectedBinding
+      inspectedBinding: bound?.inspectedBinding ?? selected.inspectedBinding
     });
     return {
       assets,

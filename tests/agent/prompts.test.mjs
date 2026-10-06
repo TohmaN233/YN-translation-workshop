@@ -352,9 +352,9 @@ await test("full translation keeps one explicit mechanical-review gate", () => {
   assert.match(system, /optional workerCount.*1 through 3/i);
   assert.match(system, /Host queue owns assignment, validation, review, retry, and settlement/i);
   assert.match(system, /character bible is unavailable.*structured character records.*initializeTranslationStarterAssets.*bounded source sample/is);
-  assert.match(system, /user-supplied Wiki URLs.*references do not provide enough.*representative source windows/is);
-  assert.match(system, /initializeTranslationStarterAssets exactly once.*Host serializes canonical JSON and Markdown/is);
-  assert.match(system, /Never hand-author these files through writeProjectFile/i);
+  assert.match(system, /initializeTranslationStarterAssets once for all requested missing assets.*supplied references then bounded readSourceLines windows across documents/is);
+  assert.match(system, /Host serializes them; never use writeProjectFile.*Then inspect again/is);
+  assert.match(system, /fetchWebReference for user-supplied HTTP\(S\) references/i);
   assert.match(system, /After resumeYnWorkflow, follow nextAction/i);
   assert.match(system, /Remaining rejected\/empty lines require the complete Host translation queue first/i);
   assert.match(system, /already established target.*atomically fill the missing companion asset/is);

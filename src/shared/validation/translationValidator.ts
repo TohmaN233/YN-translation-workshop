@@ -363,6 +363,7 @@ export function looksLikeSourceResidue(
     sourceLanguage?: SourceLanguageKey;
     targetLanguage?: SourceLanguageKey;
     stripPayload?: (line: string) => string;
+    readPayloads?: (source: string, candidate: string) => { source: string; candidate: string };
   }
 ): boolean {
   if (!source || !candidate) {
@@ -371,8 +372,9 @@ export function looksLikeSourceResidue(
 
   const { extractPlaceholders, extractTags, sourceLanguage, targetLanguage } = options;
   const strip = options.stripPayload ?? ((line: string) => stripPreservedPayload(line, extractPlaceholders, extractTags));
-  const srcPayload = strip(source);
-  const candPayload = strip(candidate);
+  const payloads = options.readPayloads?.(source, candidate);
+  const srcPayload = payloads?.source ?? strip(source);
+  const candPayload = payloads?.candidate ?? strip(candidate);
   const srcCore = proseCore(srcPayload);
   const candCore = proseCore(candPayload);
 
@@ -525,6 +527,7 @@ function stripPayloadWithCustomRules(
   let cursor = 0;
   for (const span of spans) {
     if (span.start >= cursor) pieces.push(line.slice(cursor, span.start));
+    if (span.end > cursor) pieces.push(" ");
     cursor = Math.max(cursor, span.end);
   }
   pieces.push(line.slice(cursor));
@@ -539,6 +542,72 @@ export function createTranslationPreservedPayloadStripper(
     .map((rule) => compileCustomPreserveRule(rule));
   const extractPlaceholders = options.extractPlaceholders ?? ((line: string) => defaultPlaceholdersWithSelectedEscapes(line, customRules));
   return (line) => stripPayloadWithCustomRules(line, extractPlaceholders, extractTags, customRules);
+}
+
+/** Exclude only same-row glossary pairs, consuming each source/target occurrence once. */
+function createGlossaryAlignedPayloadReader(
+  entries: NonNullable<ValidationOptions["glossaryEntries"]>,
+  matchSources = compileGlossarySourceMatcher(entries)
+): (source: string, candidate: string) => { source: string; candidate: string } {
+  const targets = new Map(entries.map(entry => [entry, uniqueComparableTerms([
+    entry.target, ...(entry.aliases ?? [])
+  ]).map(comparableTerm).sort((left, right) => right.length - left.length)]));
+  type Span = { from: number; to: number };
+  const overlaps = (span: Span, used: Span[]) => used.some(other => span.from < other.to && other.from < span.to);
+  const occurrences = (text: string, term: string, used: Span[]): Span[] => {
+    const result: Span[] = [];
+    for (let from = text.indexOf(term); from >= 0; from = text.indexOf(term, from + term.length)) {
+      const span = { from, to: from + term.length };
+      // An ASCII identifier must not exempt part of another word, e.g. Ann in Annabelle.
+      if ((/^[a-z0-9_]/u.test(term) && /[a-z0-9_]/u.test(text[from - 1] ?? ""))
+        || (/[a-z0-9_]$/u.test(term) && /[a-z0-9_]/u.test(text[span.to] ?? ""))) continue;
+      if (!overlaps(span, used) && !overlaps(span, result)) result.push(span);
+    }
+    return result;
+  };
+  const remove = (text: string, spans: Span[]) => {
+    let cursor = 0;
+    const pieces: string[] = [];
+    for (const span of spans.sort((left, right) => left.from - right.from)) {
+      pieces.push(text.slice(cursor, span.from), " ");
+      cursor = span.to;
+    }
+    return pieces.join("") + text.slice(cursor);
+  };
+  return (source, candidate) => {
+    if (!entries.length) return { source, candidate };
+    const normalizedSource = comparableTerm(source);
+    const normalizedCandidate = comparableTerm(candidate);
+    const coveredSource: Span[] = [];
+    const groups = matchSources(normalizedSource).map(entry => {
+      const spans = occurrences(normalizedSource, comparableTerm(entry.source ?? ""), coveredSource);
+      coveredSource.push(...spans); // A longer source still covers short names when its target is wrong.
+      return { entry, spans };
+    }).sort((left, right) => (targets.get(right.entry)?.[0]?.length ?? 0) - (targets.get(left.entry)?.[0]?.length ?? 0));
+    const sourceSpans: Span[] = [];
+    const candidateSpans: Span[] = [];
+    for (const { entry, spans } of groups) {
+      const paired: Span[] = [];
+      for (const term of targets.get(entry) ?? []) {
+        if (!term) continue;
+        paired.push(...occurrences(normalizedCandidate, term, [...candidateSpans, ...paired]));
+      }
+      if (paired.length > spans.length) continue; // Extra copies are not a correctly aligned term group.
+      sourceSpans.push(...spans.slice(0, paired.length));
+      candidateSpans.push(...paired);
+    }
+    return sourceSpans.length
+      ? { source: remove(normalizedSource, sourceSpans), candidate: remove(normalizedCandidate, candidateSpans) }
+      : { source, candidate };
+  };
+}
+
+export function createTranslationResiduePayloadReader(
+  options: Pick<ValidationOptions, "extractPlaceholders" | "extractTags" | "customPreserveRules" | "glossaryEntries"> = {}
+): (source: string, candidate: string) => { source: string; candidate: string } {
+  const strip = createTranslationPreservedPayloadStripper(options);
+  const readPairs = createGlossaryAlignedPayloadReader((options.glossaryEntries ?? []).filter(entry => entry.source?.trim() && entry.target?.trim()));
+  return (source, candidate) => readPairs(strip(source), strip(candidate));
 }
 
 function emptyLineDetail(lineNo: number, srcEmpty: boolean, locale: ValidatorLocale): string {
@@ -825,7 +894,12 @@ export function scanResolvedTerminologyConflicts(args: {
   candidateLines: string[];
   terms: Array<{ source: string; target: string; observedTargets: string[] }>;
   coveringEntries?: Array<{ source?: string; target?: string; aliases?: string[] }>;
+  customPreserveRules?: ValidationOptions["customPreserveRules"];
 }): ResolvedTerminologyConflict[] {
+  if (!args.terms.some((term) => term.observedTargets.some((target) => target.trim() && target.trim() !== term.target))) return [];
+  const stripPayload = createTranslationPreservedPayloadStripper(args);
+  const sourcePayloads = args.sourceLines.map(stripPayload);
+  const candidatePayloads = args.candidateLines.map(stripPayload);
   const coveringEntries = [
     ...args.terms.map((term) => ({ source: term.source, target: term.target })),
     ...(args.coveringEntries ?? [])
@@ -836,13 +910,13 @@ export function scanResolvedTerminologyConflicts(args: {
     if (variants.length < 2) continue;
     const competing = variants.filter((target) => target !== term.target);
     if (competing.length === 0) continue;
-    for (const [index, sourceLine] of args.sourceLines.entries()) {
+    for (const [index, sourceLine] of sourcePayloads.entries()) {
       if (!sourceHasIndependentTermOccurrence(
         sourceLine,
         term.source,
         coveringEntries.map((entry) => entry.source)
       )) continue;
-      const candidateLine = args.candidateLines[index] ?? "";
+      const candidateLine = candidatePayloads[index] ?? "";
       if (textContainsTerm(candidateLine, term.target)) continue;
       const independentEntries = longestUncoveredGlossaryEntries(sourceLine, coveringEntries);
       const explainedTargets = new Set(
@@ -1067,6 +1141,7 @@ export function validateTranslationCandidate(
     Boolean(entry.source?.trim() && entry.target?.trim())
   );
   const matchGlossarySources = compileGlossarySourceMatcher(glossaryEntries);
+  const readGlossaryPayloads = createGlossaryAlignedPayloadReader(glossaryEntries, matchGlossarySources);
   const glossaryCatalog = glossaryCatalogTerms(glossaryEntries).map((term) => ({ term, normalized: comparableTerm(term) }));
   const glossaryTargets = new Map<typeof glossaryEntries[number], string[]>();
   const characterEntries = (options.characterEntries ?? []).filter((entry) =>
@@ -1267,22 +1342,22 @@ export function validateTranslationCandidate(
       });
     }
 
+    const residuePayloads = readGlossaryPayloads(sourcePayload, candidatePayload);
     if (
       detectUntranslated
       && !isProbablyEmpty(src)
-      && proseCore(sourcePayload).length > 0
+      && proseCore(residuePayloads.source).length > 0
       && looksLikeSourceResidue(src, cand, {
         extractPlaceholders: comparePlaceholders,
         extractTags,
         stripPayload,
+        readPayloads: () => residuePayloads,
         sourceLanguage,
         targetLanguage
       })
     ) {
-      const sourcePayload = stripPayload(src);
-      const candidatePayload = stripPayload(cand);
-      const copiedSource = proseCore(sourcePayload).normalize("NFKC").toLocaleLowerCase()
-        === proseCore(candidatePayload).normalize("NFKC").toLocaleLowerCase();
+      const copiedSource = proseCore(residuePayloads.source).normalize("NFKC").toLocaleLowerCase()
+        === proseCore(residuePayloads.candidate).normalize("NFKC").toLocaleLowerCase();
       const finding: ValidationFinding = {
         code: "likely_untranslated",
         severity: copiedSource ? "blocking" : "warning",
@@ -1292,7 +1367,8 @@ export function validateTranslationCandidate(
       (copiedSource ? blocking : warnings).push(finding);
     }
 
-    for (const entry of matchGlossarySources(src)) {
+    const normalizedGlossaryCandidate = glossaryEntries.length > 0 ? comparableTerm(candidatePayload) : "";
+    for (const entry of matchGlossarySources(sourcePayload)) {
       const sourceTerm = entry.source?.trim() ?? "";
       const targetTerm = entry.target?.trim() ?? "";
       let targetCandidates = glossaryTargets.get(entry);
@@ -1303,7 +1379,7 @@ export function validateTranslationCandidate(
       if (
         sourceTerm
         && targetTerm
-        && !targetCandidates.some((term) => term && normalizedCandidate.includes(term))
+        && !targetCandidates.some((term) => term && normalizedGlossaryCandidate.includes(term))
       ) {
         warnings.push({
           code: "glossary_missing",

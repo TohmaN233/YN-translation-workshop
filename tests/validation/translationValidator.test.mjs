@@ -48,7 +48,7 @@ await test("selected short escape rules preserve control tokens without freezing
   assert.ok(validateTranslationCandidate(String.raw`\N[2]Hello.`, String.raw`\N[3]你好。`, options).blocking.some(finding => finding.code === "placeholder_mismatch"));
   assert.ok(validateTranslationCandidate("Hello %s.", "你好 %d。", options).blocking.some(finding => finding.code === "placeholder_mismatch"));
   const strip = createTranslationPreservedPayloadStripper(options);
-  assert.equal(strip(source), "Helloworld.Next.");
+  assert.equal(strip(source), "Hello world. Next.", "preserved spans keep prose word boundaries");
 });
 
 await test("toy-txt-audit: 7 source lines align with 7 translation lines", () => {

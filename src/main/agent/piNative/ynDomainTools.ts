@@ -17,6 +17,7 @@ import {
   parseCharacterVoiceRequiredTerm,
   candidateContainsSourceLanguage,
   createTranslationPreservedPayloadStripper,
+  createTranslationResiduePayloadReader,
   parseSourceLanguageFromPair,
   proseCore,
   scanResolvedTerminologyConflicts,
@@ -34,6 +35,7 @@ import {
 } from "../projectFileTools.ts";
 import {
   readProjectAssets,
+  mergeProjectGlossaryEntries,
   createWorkflowProjectAssetReader,
   serializeCharacterBibleMarkdown,
   type ProjectAssets
@@ -801,7 +803,8 @@ async function hostTranslationValidation(args: {
     sourceLines: splitTextLines(args.sourceText),
     candidateLines: splitTextLines(args.candidateText),
     terms: args.resolvedTerms,
-    coveringEntries: terminologyCoveringEntries(baseOptions, workspaceEntries)
+    coveringEntries: terminologyCoveringEntries(baseOptions, workspaceEntries),
+    customPreserveRules: baseOptions.customPreserveRules
   });
   return {
     validation: withHostTerminologyWarnings(validation, terminologyDebt),
@@ -816,12 +819,14 @@ function scanResolvedTerminologyDebt(args: {
   candidateLines: string[];
   terms: YnResolvedTranslationTerm[];
   coveringEntries?: ValidationOptions["glossaryEntries"];
+  customPreserveRules?: ValidationOptions["customPreserveRules"];
 }): YnTranslationTerminologyDebt[] {
   return scanResolvedTerminologyConflicts({
     sourceLines: args.sourceLines,
     candidateLines: args.candidateLines,
     terms: args.terms,
-    coveringEntries: args.coveringEntries
+    coveringEntries: args.coveringEntries,
+    customPreserveRules: args.customPreserveRules
   }).map((conflict) => {
     const sourceLine = args.sourceLines[conflict.line - 1] ?? "";
     const candidateLine = args.candidateLines[conflict.line - 1] ?? "";
@@ -2007,7 +2012,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         documentId: document.id,
         sourceLines: splitTextLines(sourceText),
         candidateLines: splitTextLines(candidateText),
-        terms
+        terms,
+        customPreserveRules: bound.customPreserveRules
       }));
     }
     debt.sort((left, right) => (
@@ -2430,7 +2436,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         documentId: document.id,
         sourceLines: splitTextLines(sourceText),
         candidateLines: splitTextLines(candidateText),
-        terms
+        terms,
+        customPreserveRules: bound.customPreserveRules
       }));
     }
 
@@ -3108,7 +3115,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const grouped = new Map<number, { codes: Set<string>; notes: Set<string> }>();
         const ignoredPunctuationLines = new Set<number>();
         const ignoredPreservedResidueLines = new Set<number>();
-        const stripPreserved = createTranslationPreservedPayloadStripper({ customPreserveRules: bound.customPreserveRules });
+        const preservationOptions = failures.some(failure => canonicalTranslationReviewCode(failure.code.trim()) === "untranslated_or_source_residue")
+          ? await createValidationOptions(bound) : undefined;
+        const readResidue = preservationOptions ? createTranslationResiduePayloadReader(preservationOptions) : undefined;
         const sourceLanguage = parseSourceLanguageFromPair(bound.languagePair);
         for (const failure of failures) {
           const code = failure.code.trim();
@@ -3129,16 +3138,13 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             ignoredPunctuationLines.add(failure.line);
             continue;
           }
-          if (bound.customPreserveRules?.length && sourceLanguage
+          if (readResidue && sourceLanguage
             && canonicalTranslationReviewCode(code) === "untranslated_or_source_residue"
             && !/wrong.target.language/iu.test(code)) {
             const source = sourceLines[failure.line - 1];
             const candidate = candidateLines[failure.line - 1];
-            const sourceProse = stripPreserved(source);
-            const candidateProse = stripPreserved(candidate);
-            const preservation = validateTranslationCandidate(source, candidate, {
-              customPreserveRules: bound.customPreserveRules, languagePair: bound.languagePair
-            });
+            const { source: sourceProse, candidate: candidateProse } = readResidue(source, candidate);
+            const preservation = validateTranslationCandidate(source, candidate, preservationOptions);
             if (sourceProse !== source && preservation.ok
               && (!proseCore(sourceProse) || proseCore(candidateProse))
               && !candidateContainsSourceLanguage(candidateProse, sourceLanguage)) {
@@ -4458,6 +4464,47 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     });
   };
   const tools: YnDomainAgentTool[] = [
+    {
+      name: "recordTranslationPreservedTerms",
+      label: "Record user-preserved terms",
+      description: "Record words the user or supplied reference explicitly requires untranslated as confirmed source=target formal glossary entries. Include the exact requirement as rationale; never infer blanket exemptions. Existing targets cannot be overwritten. The Host merges and binds the canonical glossary transactionally; then inspectTranslationContext again before starting workers. This is independent of new AI candidate generation.",
+      parameters: Type.Object({ entries: Type.Array(Type.Object({
+        source: Type.String({ minLength: 1 }),
+        rationale: Type.String({ minLength: 1 })
+      }, { additionalProperties: false }), { minItems: 1 }) }, { additionalProperties: false }),
+      executionMode: "sequential",
+      async execute(_toolCallId, params) {
+        const input = params as { entries: Array<{ source: string; rationale: string }> };
+        if (!Array.isArray(input.entries) || input.entries.length === 0) throw new Error("Record at least one explicitly preserved term.");
+        const entries = input.entries.map(entry => {
+          const source = entry.source?.trim();
+          const rationale = entry.rationale?.trim();
+          if (!source || !rationale) throw new Error("Each preserved term requires its source and the explicit preservation evidence.");
+          return { source, target: source, status: "confirmed", info: rationale };
+        });
+        return withTranslationAssetTransaction(async () => {
+          const assets = await readWorkflowAssets(baseRequest);
+          const workspace = await readWorkspaceAgentContext(baseRequest.outputDir);
+          for (const entry of entries) {
+            const established = workspace.glossaryCandidates?.find(candidate => normalizeTranslationTerm(candidate.source) === normalizeTranslationTerm(entry.source));
+            if (established && normalizeTranslationTerm(established.target) !== normalizeTranslationTerm(entry.target)) {
+              throw new Error(`Preserved term ${entry.source} conflicts with established target ${established.target}. Resolve the conflict explicitly first.`);
+            }
+            const character = assets.characterBible.characters.find(value => normalizeTranslationTerm(String(value.name ?? "")) === normalizeTranslationTerm(entry.source));
+            const characterTarget = String(character?.target ?? character?.localizedName ?? character?.translation ?? "");
+            if (characterTarget && normalizeTranslationTerm(characterTarget) !== normalizeTranslationTerm(entry.target)) {
+              throw new Error(`Preserved term ${entry.source} conflicts with established character target ${characterTarget}. Resolve the conflict explicitly first.`);
+            }
+          }
+          const result = await mergeProjectGlossaryEntries({ outputDir: baseRequest.outputDir, entries,
+            boundGlossaryPath: baseRequest.glossaryPath });
+          baseRequest.glossaryPath = result.assets.paths.glossary;
+          request.glossaryPath = result.assets.paths.glossary;
+          return textResult({ recorded: entries.map(entry => ({ source: entry.source, target: entry.target })),
+            glossaryPath: result.assets.paths.glossary, counts: result.counts });
+        });
+      }
+    },
     {
       name: "resumeYnWorkflow",
 
@@ -8655,7 +8702,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
                 documentId: completedDocumentId,
                 sourceLines,
                 candidateLines,
-                terms: context.domainRun.resolvedTranslationTerms()
+                terms: context.domainRun.resolvedTranslationTerms(),
+                customPreserveRules: bound.customPreserveRules
               });
               const untouched = currentDebt.filter((debt) => (
                 debt.documentId !== completedDocumentId || !terminologyRepairLines.has(debt.line)

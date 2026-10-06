@@ -5,11 +5,14 @@ import { pathToFileURL } from "node:url";
 import electronPath from "electron";
 import { build } from "esbuild";
 const root = process.cwd();
-const directory = path.join(root, "artifacts", "settlement-failure-2026-10-05", "electron");
+const directory = process.env.YN_RECOVERY_VERIFY_OUTPUT_DIR
+  ? path.resolve(root, process.env.YN_RECOVERY_VERIFY_OUTPUT_DIR)
+  : path.join(root, "artifacts", "settlement-failure-2026-10-05", "electron");
 await mkdir(directory, { recursive: true });
 const external = ["electron", "@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "@earendil-works/pi-agent-core", "@earendil-works/pi-agent-core/*", "cheerio", "extract-zip"];
 for (const [entry, name] of [["scripts/verify-electron-preservation-recovery-main.ts", "main.mjs"],
-  ["tests/agent/piNativeTranslationAutomaticReviewRecovery.test.mjs", "recovery.mjs"]]) {
+  ["tests/agent/piNativeTranslationAutomaticReviewRecovery.test.mjs", "recovery.mjs"],
+  ["tests/agent/piNativePreservedGlossaryTerms.test.mjs", "terms.mjs"]]) {
   await build({ entryPoints: [entry], bundle: true, platform: "node", format: "esm", outfile: path.join(directory, name), external,
     banner: { js: 'import { createRequire as __ynCreateRequire } from "node:module"; const require = __ynCreateRequire(import.meta.url);' } });
 }
@@ -19,7 +22,8 @@ await copyFile(path.join(root, "dist/main/sourcePreparationWorker.js"), path.joi
 const result = await new Promise((resolve, reject) => {
   const child = spawn(electronPath, ["--disable-gpu", "--no-sandbox", `--user-data-dir=${path.join(directory, "user-data")}`, path.join(directory, "main.mjs")], {
     cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
-      YN_RECOVERY_VERIFY_DIR: directory, YN_RECOVERY_VERIFY_TEST: pathToFileURL(path.join(directory, "recovery.mjs")).href } });
+      YN_RECOVERY_VERIFY_DIR: directory, YN_RECOVERY_VERIFY_TEST: pathToFileURL(path.join(directory, "recovery.mjs")).href,
+      YN_RECOVERY_VERIFY_TERMS_TEST: pathToFileURL(path.join(directory, "terms.mjs")).href } });
   let output = "";
   child.stdout.on("data", data => { output += data; process.stdout.write(data); });
   child.stderr.on("data", data => process.stderr.write(data));

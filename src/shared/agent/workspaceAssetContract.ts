@@ -1,3 +1,5 @@
+export const PRESERVED_TERMINOLOGY_INSTRUCTIONS = "Before work, use recordTranslationPreservedTerms only for explicit user/reference preservation requirements; quote the rationale. Correctly aligned formal glossary pairs (including explicit aliases) are not residue. Translate all other prose and preserve structure.";
+
 export const CHARACTER_BIBLE_SECTION_TEMPLATE = [
   "# Character Bible",
   "",

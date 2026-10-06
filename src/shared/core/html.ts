@@ -1094,11 +1094,11 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 44;
+export const LINE_REVIEW_PROTOCOL_VERSION = 45;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 18;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
-export const PROMPT_SETTINGS_VERSION = 41;
+export const PROMPT_SETTINGS_VERSION = 42;
 
 export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   const locale = options.locale ?? "zh-CN";
@@ -2960,6 +2960,7 @@ async function discoverAgentArtifacts() {
             candidatePath: artifact.path,
             locale,
             languagePair: artifactLanguagePair(),
+            customPreserveRules: readPromptCustomPreserveRules(),
             glossaryPath: boundGlossaryPath() || undefined
           });
         } catch (error) {
@@ -2991,6 +2992,7 @@ async function importArtifactAsDraft(candidatePath, sourcePath) {
       candidatePath,
       locale: data.locale || "zh-CN",
       languagePair: artifactLanguagePair(),
+      customPreserveRules: readPromptCustomPreserveRules(),
       glossaryPath: boundGlossaryPath() || undefined
     });
     if (!plan.ok) {

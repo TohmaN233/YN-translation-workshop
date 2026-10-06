@@ -1,14 +1,15 @@
+import type { CustomPreserveRule } from "../shared/validation/customPreserveRules.ts";
 import { contextBridge, ipcRenderer } from "electron";
 import type { StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
 
 const agentArtifactApi = {
   discoverAgentArtifacts: (args: { projectDir: string; sourcePaths?: string[] }) =>
     ipcRenderer.invoke("agent-artifacts:discover", args),
-  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string }) =>
+  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[] }) =>
     ipcRenderer.invoke("agent-artifacts:validate", args),
-  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string }) =>
+  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[] }) =>
     ipcRenderer.invoke("agent-artifacts:importPlan", args),
-  buildAgentRepairPrompt: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string }) =>
+  buildAgentRepairPrompt: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; customPreserveRules?: CustomPreserveRule[] }) =>
     ipcRenderer.invoke("agent-artifacts:repairPrompt", args)
 };
 

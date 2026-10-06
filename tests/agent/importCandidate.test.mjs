@@ -130,6 +130,15 @@ await test("style warnings do not block candidate import", () => {
   assert.ok(plan.validation.warnings.some((f) => f.code === "style_forbidden_term"));
 });
 
+await test("candidate import honors deliberate Japanese preservation without exempting prose", () => {
+  const rules = [{ pattern: "^[^：:\\r\\n]+[：:]", flags: "u" }];
+  const plan = (source, candidate) => buildCandidateImportPlan(source, candidate, "zh-CN", "ja->zh-CN", [], [], [], rules);
+  assert.equal(plan("ソロモン：", "ソロモン：").ok, true);
+  assert.equal(plan("ソロモン：ここで待っている。", "ソロモン：在这里等着。").ok, true);
+  assert.ok(plan("ソロモン：ここで待っている。", "ソロモン：ここで待っている。").validation.blocking.some(f => f.code === "likely_untranslated"));
+  assert.ok(plan("ソロモン：ここで待っている。", "モンソロ：在这里等着。").validation.blocking.some(f => f.code === "custom_preserve_mismatch"));
+});
+
 console.log("");
 console.log(`# tests ${passed + failed}`);
 console.log(`# pass ${passed}`);

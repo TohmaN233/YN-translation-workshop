@@ -27,6 +27,8 @@ import { readWorkflowTranslationValidationAssets } from "../agent/projectAssets.
 import { resolveProjectPath } from "../agent/projectPathGuard.ts";
 import { rememberTranslationSegments } from "../agent/translationMemory.ts";
 import { validateTranslationCandidate, type TranslationValidationResult } from "../../shared/validation/translationValidator.ts";
+import { normalizeCustomPreserveRules, type CustomPreserveRule } from "../../shared/validation/customPreserveRules.ts";
+import { readProjectState } from "../projectState.ts";
 
 export interface DiscoverArtifactsArgs {
   projectDir: string;
@@ -41,6 +43,7 @@ export interface ValidateArtifactArgs {
   locale?: "zh-CN" | "en-US";
   languagePair?: string;
   glossaryPath?: string;
+  customPreserveRules?: CustomPreserveRule[];
 }
 
 export interface RepairPromptArgs {
@@ -48,6 +51,13 @@ export interface RepairPromptArgs {
   sourcePath: string;
   candidatePath: string;
   locale?: "zh-CN" | "en-US";
+  languagePair?: string;
+  customPreserveRules?: CustomPreserveRule[];
+}
+
+async function artifactPreserveRules(args: ValidateArtifactArgs | RepairPromptArgs) {
+  const project = await readProjectState(args.projectDir);
+  return normalizeCustomPreserveRules(args.customPreserveRules ?? project.customPreserveRules);
 }
 
 async function readDirEntries(dir: string): Promise<{ directory: string; entries: DirEntry[] } | undefined> {
@@ -122,6 +132,7 @@ export function registerAgentArtifactIpc(): void {
     const validation = validateTranslationCandidate(sourceText, candidateText, {
       locale: args.locale === "en-US" ? "en-US" : "zh-CN",
       languagePair: args.languagePair,
+      customPreserveRules: await artifactPreserveRules(args),
       glossaryEntries,
       characterEntries,
       styleForbiddenTerms
@@ -152,7 +163,8 @@ export function registerAgentArtifactIpc(): void {
       args.languagePair,
       glossaryEntries,
       characterEntries,
-      styleForbiddenTerms
+      styleForbiddenTerms,
+      await artifactPreserveRules(args)
     );
     if (plan.ok) {
       await rememberTranslationSegments({
@@ -178,7 +190,8 @@ export function registerAgentArtifactIpc(): void {
       readFile(candidatePath, "utf8")
     ]);
     const locale = args.locale === "en-US" ? "en-US" : "zh-CN";
-    const plan = buildCandidateImportPlan(sourceText, candidateText, locale);
+    const plan = buildCandidateImportPlan(sourceText, candidateText, locale, args.languagePair,
+      undefined, undefined, undefined, await artifactPreserveRules(args));
     return buildRepairPrompt(sourceText, candidateText, plan.validation, locale);
   });
 }

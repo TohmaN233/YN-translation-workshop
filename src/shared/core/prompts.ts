@@ -117,6 +117,7 @@ function customPreserveRuleLines(rules: ReturnType<typeof normalizeCustomPreserv
   return [
     "",
     "Custom preservation rules (each source match must remain verbatim on the same candidate line):",
+    "Protected matches are intentionally untranslated, including source-language names. Exclude these matches from untranslated-residue checks; translate and review the remaining prose.",
     ...rules.map((rule, index) => `- ${rule.label || `Rule ${index + 1}`}: /${rule.pattern}/${rule.flags}`)
   ];
 }

@@ -14,6 +14,7 @@ import {
   isFatalHostAssignmentError,
   isWorkflowStoppingAssignmentError,
   NonRetryableAssignmentError,
+  TranslationReviewBindingChangedError,
   type ParentTakeoverAssignmentDetails
 } from "./assignmentFailure.ts";
 import { PiSessionRepository } from "./sessionRepository.ts";
@@ -531,8 +532,14 @@ export class YnSubagentSupervisor {
             },
             error: outcome.error ?? reviewFailure
           };
+          if (reviewFailure !== undefined) {
+            const current = this.batches.get(outcome.batch.id);
+            if (current) {
+              current.status = settledOutcome.batch.status;
+              current.error = settledOutcome.batch.error;
+            }
+          }
           await onSettled?.(settledOutcome);
-          if (reviewFailure !== undefined) throw reviewFailure;
         }
       });
     } catch (error) {
@@ -622,7 +629,7 @@ export class YnSubagentSupervisor {
           `Host resumed review settlement failed: ${error instanceof Error ? error.message : String(error)}`, error
         ));
       }
-      if (!batch.stopRequested) {
+      if (!batch.stopRequested && !(this.fatalHostFailure instanceof TranslationReviewBindingChangedError)) {
         try {
           await this.options.notifyParent?.(this.parentCompletionMessage(
             this.snapshot(batch),
@@ -1791,7 +1798,7 @@ export class YnSubagentSupervisor {
             error: terminalError
           };
         }
-        if (!batch.stopRequested && !stopRequestedByParent) {
+        if (!batch.stopRequested && !stopRequestedByParent && !(this.fatalHostFailure instanceof TranslationReviewBindingChangedError)) {
           await this.options.notifyParent?.(this.parentCompletionMessage(
             snapshot,
             options.parentCompletionContext?.(outcome)

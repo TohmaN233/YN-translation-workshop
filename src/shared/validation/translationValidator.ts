@@ -265,14 +265,6 @@ export function candidateContainsSourceLanguage(
   }
 }
 
-function hasTranslatableProse(
-  line: string,
-  extractPlaceholders: (line: string) => string[],
-  extractTags: (line: string) => string[]
-): boolean {
-  return proseCore(stripPreservedPayload(line, extractPlaceholders, extractTags)).length > 0;
-}
-
 function sharedKanaRuns(sourcePayload: string, candidatePayload: string, minLength: number): boolean {
   const kana = /[\u3040-\u309f\u30a0-\u30ff]+/g;
   const srcRuns: string[] = sourcePayload.match(kana) ?? [];
@@ -370,6 +362,7 @@ export function looksLikeSourceResidue(
     extractTags: (line: string) => string[];
     sourceLanguage?: SourceLanguageKey;
     targetLanguage?: SourceLanguageKey;
+    stripPayload?: (line: string) => string;
   }
 ): boolean {
   if (!source || !candidate) {
@@ -377,8 +370,9 @@ export function looksLikeSourceResidue(
   }
 
   const { extractPlaceholders, extractTags, sourceLanguage, targetLanguage } = options;
-  const srcPayload = stripPreservedPayload(source, extractPlaceholders, extractTags);
-  const candPayload = stripPreservedPayload(candidate, extractPlaceholders, extractTags);
+  const strip = options.stripPayload ?? ((line: string) => stripPreservedPayload(line, extractPlaceholders, extractTags));
+  const srcPayload = strip(source);
+  const candPayload = strip(candidate);
   const srcCore = proseCore(srcPayload);
   const candCore = proseCore(candPayload);
 
@@ -514,6 +508,29 @@ function defaultPlaceholdersWithSelectedEscapes(line: string, rules: RegExp[]): 
   });
 }
 
+/** Remove only actual regex match locations, never every occurrence of a matched value. */
+function stripPayloadWithCustomRules(
+  line: string,
+  extractPlaceholders: (line: string) => string[],
+  extractTags: (line: string) => string[],
+  rules: RegExp[]
+): string {
+  if (rules.length === 0) return stripPreservedPayload(line, extractPlaceholders, extractTags);
+  const spans = rules.flatMap(regex => {
+    regex.lastIndex = 0;
+    return [...line.matchAll(regex)].filter(match => match[0].length > 0)
+      .map(match => ({ start: match.index, end: match.index + match[0].length }));
+  }).sort((left, right) => left.start - right.start);
+  const pieces: string[] = [];
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.start >= cursor) pieces.push(line.slice(cursor, span.start));
+    cursor = Math.max(cursor, span.end);
+  }
+  pieces.push(line.slice(cursor));
+  return stripPreservedPayload(pieces.join(""), () => extractPlaceholders(line), () => extractTags(line));
+}
+
 export function createTranslationPreservedPayloadStripper(
   options: Pick<ValidationOptions, "extractPlaceholders" | "extractTags" | "customPreserveRules"> = {}
 ): (line: string) => string {
@@ -521,14 +538,7 @@ export function createTranslationPreservedPayloadStripper(
   const customRules = normalizeCustomPreserveRules(options.customPreserveRules)
     .map((rule) => compileCustomPreserveRule(rule));
   const extractPlaceholders = options.extractPlaceholders ?? ((line: string) => defaultPlaceholdersWithSelectedEscapes(line, customRules));
-  return (line) => stripPreservedPayload(
-    line,
-    (value) => [
-      ...extractPlaceholders(value),
-      ...customRules.flatMap((regex) => regexMatches(value, regex))
-    ],
-    extractTags
-  );
+  return (line) => stripPayloadWithCustomRules(line, extractPlaceholders, extractTags, customRules);
 }
 
 function emptyLineDetail(lineNo: number, srcEmpty: boolean, locale: ValidatorLocale): string {
@@ -1049,13 +1059,7 @@ export function validateTranslationCandidate(
   const customPreserveRegexes = compiledCustomPreserveRules.map(({ regex }) => regex);
   const comparePlaceholders = options.extractPlaceholders ?? ((line: string) =>
     defaultPlaceholdersWithSelectedEscapes(line, customPreserveRegexes));
-  const extractCustomPreserved = (line: string) => compiledCustomPreserveRules.flatMap(({ regex }) =>
-    regexMatches(line, regex)
-  );
-  const extractPlaceholders = (line: string) => [
-    ...comparePlaceholders(line),
-    ...extractCustomPreserved(line)
-  ];
+  const stripPayload = (line: string) => stripPayloadWithCustomRules(line, comparePlaceholders, extractTags, customPreserveRegexes);
   const detectUntranslated = options.detectUntranslated ?? true;
   const sourceLanguage = options.sourceLanguage ?? parseSourceLanguageFromPair(options.languagePair);
   const targetLanguage = parseTargetLanguageFromPair(options.languagePair);
@@ -1086,8 +1090,8 @@ export function validateTranslationCandidate(
   const repeatedCandidateRunLines = new Set<number>();
   const repeatedCandidateGroups = new Map<string, { sources: Set<string>; lines: number[] }>();
   for (let index = 0; index < Math.min(sourceLines.length, candidateLines.length); index += 1) {
-    const sourceCore = proseCore(stripPreservedPayload(sourceLines[index], extractPlaceholders, extractTags));
-    const candidateCore = proseCore(stripPreservedPayload(candidateLines[index], extractPlaceholders, extractTags));
+    const sourceCore = proseCore(stripPayload(sourceLines[index]));
+    const candidateCore = proseCore(stripPayload(candidateLines[index]));
     if (sourceCore.length < 24 || candidateCore.length === 0 || candidateCore.length > 12) continue;
     if (candidateCore.length / sourceCore.length > 0.35) continue;
     const key = candidateCore.normalize("NFKC").toLocaleLowerCase();
@@ -1101,11 +1105,11 @@ export function validateTranslationCandidate(
     for (const line of group.lines) repeatedShortCandidateLines.add(line);
   }
   for (let start = 0; start < Math.min(sourceLines.length, candidateLines.length);) {
-    const candidateCore = proseCore(stripPreservedPayload(candidateLines[start], extractPlaceholders, extractTags));
+    const candidateCore = proseCore(stripPayload(candidateLines[start]));
     const key = candidateCore.normalize("NFKC").toLocaleLowerCase();
     let end = start + 1;
     while (key && end < Math.min(sourceLines.length, candidateLines.length)) {
-      const next = proseCore(stripPreservedPayload(candidateLines[end], extractPlaceholders, extractTags))
+      const next = proseCore(stripPayload(candidateLines[end]))
         .normalize("NFKC")
         .toLocaleLowerCase();
       if (next !== key) break;
@@ -1113,7 +1117,7 @@ export function validateTranslationCandidate(
     }
     if (sourceLines.length === candidateLines.length && key && end - start >= 3) {
       const sourceCores = sourceLines.slice(start, end).map((line) =>
-        proseCore(stripPreservedPayload(line, extractPlaceholders, extractTags)).normalize("NFKC").toLocaleLowerCase()
+        proseCore(stripPayload(line)).normalize("NFKC").toLocaleLowerCase()
       );
       const distinctSources = new Set(sourceCores.filter(Boolean));
       const clearlyCompressed = sourceCores.every((sourceCore) =>
@@ -1197,8 +1201,8 @@ export function validateTranslationCandidate(
       });
     }
 
-    const sourcePayload = stripPreservedPayload(src, extractPlaceholders, extractTags);
-    const candidatePayload = stripPreservedPayload(cand, extractPlaceholders, extractTags);
+    const sourcePayload = stripPayload(src);
+    const candidatePayload = stripPayload(cand);
     const sourceCoreLength = proseCore(sourcePayload).length;
     const candidateCoreLength = proseCore(candidatePayload).length;
     const sourceProseUnits = proseUnitLength(sourcePayload);
@@ -1266,16 +1270,17 @@ export function validateTranslationCandidate(
     if (
       detectUntranslated
       && !isProbablyEmpty(src)
-      && hasTranslatableProse(src, extractPlaceholders, extractTags)
+      && proseCore(sourcePayload).length > 0
       && looksLikeSourceResidue(src, cand, {
-        extractPlaceholders,
+        extractPlaceholders: comparePlaceholders,
         extractTags,
+        stripPayload,
         sourceLanguage,
         targetLanguage
       })
     ) {
-      const sourcePayload = stripPreservedPayload(src, extractPlaceholders, extractTags);
-      const candidatePayload = stripPreservedPayload(cand, extractPlaceholders, extractTags);
+      const sourcePayload = stripPayload(src);
+      const candidatePayload = stripPayload(cand);
       const copiedSource = proseCore(sourcePayload).normalize("NFKC").toLocaleLowerCase()
         === proseCore(candidatePayload).normalize("NFKC").toLocaleLowerCase();
       const finding: ValidationFinding = {

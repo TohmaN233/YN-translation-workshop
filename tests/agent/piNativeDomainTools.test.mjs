@@ -3397,8 +3397,10 @@ await test("legacy exhaustive bounded alignment state is migrated to the canonic
     assert.ok(audit.details.pendingCount < 1_024);
     const migrated = translationAlignmentState.ranges["source.txt"][0];
     assert.equal(migrated.auditId, audit.details.auditId);
+    const { lineInputHash, ...retainedFailure } = migrated.checks.find((check) => check.line === 777);
+    assert.match(lineInputHash, /^[a-f0-9]{64}$/u, "migrated evidence binds the exact unchanged row");
     assert.deepEqual(
-      migrated.checks.find((check) => check.line === 777),
+      retainedFailure,
       {
         line: 777,
         signals: ["previous_misaligned_verdict"],

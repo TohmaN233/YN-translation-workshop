@@ -110,6 +110,9 @@ function copyFor(locale: Locale) {
     preserveHint: "YN 先用原文样例核对参数，检查 /n、反斜杠转义、代码与控制前缀，并试跑保留规则；修改写回 HTML 共用参数表，再用同一提示词启动翻译，不保留普通正文。",
     savedRules: "当前项目的自定义保留规则",
     noRules: "当前没有已保存的自定义规则。",
+    preservationInstructions: "希望保留的内容（可用自然语言描述）",
+    preservationPlaceholder: "例如：保留冒号前的角色名、/n 和反斜杠控制码，后面的台词正常翻译。",
+    preservationHelp: "不用自己写正则。YN 会结合原文样例生成并试跑规则，再保存到共用参数表；已有规则也会一起核对。",
     proofreadMode: "校对模式",
     splitMode: "分块校对",
     montecarloMode: "多轮抽样校对",
@@ -182,6 +185,9 @@ function copyFor(locale: Locale) {
     preserveHint: "YN checks parameters against source samples, reviews /n, backslash escapes and control prefixes, and trials preservation rules. Changes go into the shared HTML parameter form before the same translation prompt starts; ordinary prose stays translatable.",
     savedRules: "Custom preservation rules saved in this project",
     noRules: "No custom rules are saved in this project.",
+    preservationInstructions: "What to preserve (describe it in plain language)",
+    preservationPlaceholder: "For example: preserve speaker names before colons, /n and backslash control codes; translate the dialogue after them.",
+    preservationHelp: "No regex needed. YN checks source examples, builds and trials rules, then saves them to the shared parameters. Existing rules are checked too.",
     proofreadMode: "Proofreading mode",
     splitMode: "Chunked proofreading",
     montecarloMode: "Multi-round sampled proofreading",
@@ -218,6 +224,7 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const startPending = useRef(false);
   const [autoApplyProofread, setAutoApplyProofread] = useState(false);
+  const [preservationInstructions, setPreservationInstructions] = useState("");
   const [busyTask, setBusyTask] = useState<BuiltinTaskKind | undefined>();
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -274,6 +281,7 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
     setDraft(next);
     setModalTask(task);
     setAutoApplyProofread(false);
+    setPreservationInstructions("");
     setError("");
     setStatus("");
   }
@@ -396,6 +404,7 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
       const result = await window.workshop.startBuiltinTask({
         task,
         settings,
+        ...(task === "translation" ? { preservationInstructions } : {}),
         ...(task === "proofread" ? { autoApplyProofreadSuggestions: autoApply } : {})
       });
       await props.onStarted(task, result, settings);
@@ -634,6 +643,11 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
                     {draft.customPreserveRules?.length ? <ul>{draft.customPreserveRules.map((rule, index) => (
                       <li key={`${rule.pattern}-${index}`}><span>{rule.label || `Rule ${index + 1}`}</span><code>/{rule.pattern}/{rule.flags}</code></li>
                     ))}</ul> : <p>{text.noRules}</p>}
+                    <label className="builtinTaskField builtinTaskPreservationInstructions">
+                      <span>{text.preservationInstructions}</span>
+                      <textarea rows={3} value={preservationInstructions} disabled={busyTask !== undefined} onChange={(event) => setPreservationInstructions(event.target.value)} placeholder={text.preservationPlaceholder} />
+                      <small>{text.preservationHelp}</small>
+                    </label>
                   </div>
                 </> : <>
                   <label className="builtinTaskField">

@@ -50,7 +50,7 @@ import {
 import type { TranslationAlignmentHostState } from "./translationAlignmentState.ts";
 import { PiSessionRepository } from "./sessionRepository.ts";
 import { PiQueuedInputNotConsumedError, PiSessionAgentRuntime } from "./sessionAgentRuntime.ts";
-import { NonRetryableAssignmentError, isWorkflowStoppingAssignmentError } from "./assignmentFailure.ts";
+import { NonRetryableAssignmentError, TranslationReviewBindingChangedError, isWorkflowStoppingAssignmentError } from "./assignmentFailure.ts";
 import { compactSubagentCards, interruptedSubagentCards } from "./subagentMessages.ts";
 import { YnSubagentSupervisor } from "./subagentSupervisor.ts";
 import { buildYnSystemPrompt } from "./systemPrompt.ts";
@@ -168,7 +168,7 @@ async function resolveCurrentProjectPromptRequest(
     current.translationSplitSize = state.splitSize as number;
     current.proofreadSplitSize = state.splitSize as number;
   }
-  current.customPreserveRules = normalizeCustomPreserveRules(state.customPreserveRules);
+  current.customPreserveRules = normalizeCustomPreserveRules(state.customPreserveRules ?? request.customPreserveRules);
   const folderSource = (current.sourceSelection ?? request.sourceSelection)?.kind === "folder"
     || request.sourceSelection?.kind === "folder";
   let translationState = state;
@@ -238,6 +238,7 @@ interface ActiveSession {
   promptOperation?: PromptOperation;
   promptTask?: Promise<void>;
   childCompletionGeneration: number;
+  reviewBindingRecovery?: { controller: AbortController; task: Promise<void>; keys: Set<string>; pending: boolean };
 }
 
 type QueuedInputKind = PiSessionInputKind | "nextTurn";
@@ -300,6 +301,7 @@ export interface PiNativeSessionServiceOptions {
     resumeWorkflow?: (kind?: "translation" | "proofread") => Promise<void>;
     parkedWorkflows?: () => Array<"translation" | "proofread">;
     readInterfaceContext?: () => ReturnType<typeof ynInterfaceContextStore.read>;
+    recoverReviewBinding?: (error: TranslationReviewBindingChangedError, signal?: AbortSignal) => Promise<void>;
   }) => Promise<AgentTool[]> | AgentTool[];
   buildSystemPrompt?: (
     request: PiSessionPromptRequest,
@@ -585,7 +587,7 @@ export class PiNativeSessionService {
     const prefix = `${workspaceKey(workspaceDir)}::`;
     return [...this.sessionOperationReservations.keys()].some(key => key.startsWith(prefix))
       || [...this.active.entries()].some(([key, active]) => key.startsWith(prefix)
-        && (active.running || active.compacting || active.subagents.hasRunning()));
+        && (active.running || active.compacting || active.subagents.hasRunning() || active.reviewBindingRecovery?.pending));
   }
 
   private async acceptPrompt(request: PiSessionPromptRequest, preparationHandoff?: YnTaskPreparationState, handoffCancelled?: () => boolean): Promise<PiSessionPromptAcceptance> {
@@ -597,6 +599,7 @@ export class PiNativeSessionService {
     const key = sessionKey(request.outputDir, request.sessionId);
     if (this.closingSessions.has(key)) throw new Error(`Pi session ${request.sessionId} is closing.`);
     await this.sessionOperationReservations.get(key)?.stopSettlement;
+    await this.active.get(key)?.reviewBindingRecovery?.task;
     if (this.sessionOperationReservations.has(key)) {
       throw new Error("Pi session is already running. Use Steer or Follow-up.");
     }
@@ -770,6 +773,7 @@ export class PiNativeSessionService {
     this.sessionOperationReservations.set(key, stopReservation);
     let active = this.active.get(key);
     const signalStop = (current: ActiveSession) => {
+      current.reviewBindingRecovery?.controller.abort(new DOMException("Host recovery was stopped.", "AbortError"));
       current.childCompletionGeneration += 1;
       if (current.promptOperation) {
         current.promptOperation.cancelled = true;
@@ -794,11 +798,17 @@ export class PiNativeSessionService {
       const outcomes = await Promise.allSettled([
         active.running || active.promptOperation ? this.abortActiveSession(active) : Promise.resolve(),
         active.subagents.waitForAll(),
+        ...(active.reviewBindingRecovery ? [active.reviewBindingRecovery.task] : []),
         ...(active.compactionTask ? [active.compactionTask] : []),
         active.runtime.appendCustomEntry("yn_workflow_stop", { phase: "requested", timestamp: stopStartedAt })
       ]);
       const errors = outcomes.flatMap((outcome) => outcome.status === "rejected"
         && !(outcome.reason instanceof Error && outcome.reason.name === "AbortError") ? [outcome.reason] : []);
+      // A cancelled recovery may have been awaiting resume persistence when
+      // Stop first suspended it. Reassert the terminal fence after it settles.
+      await this.withSessionTransition(workspaceDir, sessionId, async () => {
+        if (this.active.get(key) === active) this.suspendDomainRun(active!);
+      });
       try {
         await active.persistHostState({ force: true });
       } catch (error) {
@@ -1153,6 +1163,13 @@ export class PiNativeSessionService {
           onFatalHostFailure: async (error) => {
             const current = this.active.get(sessionKey(request.outputDir, request.sessionId));
             if (!current) throw error;
+            // A failure in a newly started pool supersedes the recovery that
+            // launched it; that older task must never clear the new error.
+            if (current.reviewBindingRecovery?.pending) {
+              current.reviewBindingRecovery.controller.abort(new DOMException("Host recovery was interrupted by a new failure.", "AbortError"));
+            }
+            const failureGeneration = current.childCompletionGeneration;
+            const explicitlyStopping = Boolean(this.sessionOperationReservations.get(sessionKey(request.outputDir, request.sessionId))?.stopSettlement);
             current.error = error.message;
             // Settlement still owns the active batch contract. Fence model work
             // now, but let onSettled record accepted results and remaining debt.
@@ -1160,12 +1177,74 @@ export class PiNativeSessionService {
             if (current.domainRun) current.hostState.domainRun = current.domainRun;
             current.runtime.requestAbort();
             try {
+              await current.runtime.appendCustomEntry("yn_host_failure", {
+                error: error.message, kind: error.name, timestamp: Date.now(),
+                automaticRecovery: error instanceof TranslationReviewBindingChangedError
+              });
               await current.persistHostState({ force: true });
             } catch (persistenceError) {
               current.error = `${error.message} Host failure persistence also failed: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`;
               throw persistenceError;
             } finally {
               this.emitActiveState(current);
+            }
+            if (error instanceof TranslationReviewBindingChangedError && !explicitlyStopping
+              && current.childCompletionGeneration === failureGeneration) {
+              const keys = current.reviewBindingRecovery?.keys ?? new Set<string>();
+              if (keys.has(error.recoveryKey)) {
+                await current.runtime.appendCustomEntry("yn_review_binding_recovery", {
+                  phase: "blocked_repeat", recoveryKey: error.recoveryKey, error: error.message, timestamp: Date.now()
+                });
+                return;
+              }
+              keys.add(error.recoveryKey);
+              const controller = new AbortController();
+              const generation = failureGeneration;
+              const task = (async () => {
+                // Do not await this task inside onFatalHostFailure: the old
+                // batch must finish its onSettled callback before recovery.
+                await current.subagents.waitForAll();
+                await current.promptTask;
+                controller.signal.throwIfAborted();
+                if (this.active.get(sessionKey(request.outputDir, request.sessionId)) !== current
+                  || generation !== current.childCompletionGeneration) return;
+                await current.runtime.appendCustomEntry("yn_review_binding_recovery", {
+                  phase: "preflight", recoveryKey: error.recoveryKey, timestamp: Date.now()
+                });
+                const resume = tools.find(tool => tool.name === "resumeYnWorkflow");
+                const start = tools.find(tool => tool.name === "runTranslationSubagents");
+                const reconcile = toolContext.recoverReviewBinding;
+                if (!resume || !start || !reconcile) throw new Error("Host review recovery requires verified rebinding and the existing translation resume and queue tools.");
+                await reconcile(error, controller.signal);
+                await resume.execute("host-review-recovery-resume", { workflow: "translation" }, controller.signal);
+                controller.signal.throwIfAborted();
+                const result = await start.execute("host-review-recovery-start", {}, controller.signal);
+                controller.signal.throwIfAborted();
+                current.error = undefined;
+                await current.runtime.appendCustomEntry("yn_review_binding_recovery", {
+                  phase: "restarted", recoveryKey: error.recoveryKey, result: result.details, timestamp: Date.now()
+                });
+                this.emitActiveState(current);
+              })().catch(async recoveryError => {
+                if (controller.signal.aborted) return;
+                current.error = `${error.message} Host automatic recovery failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`;
+                current.hostState.workflowSuspended = true;
+                current.subagents.abortAll(recoveryError);
+                current.runtime.requestAbort();
+                await current.subagents.waitForAll();
+                await current.runtime.appendCustomEntry("yn_review_binding_recovery", {
+                  phase: "failed", recoveryKey: error.recoveryKey, error: current.error, timestamp: Date.now()
+                });
+                await current.persistHostState({ force: true });
+                this.emitActiveState(current);
+              }).finally(() => {
+                if (current.reviewBindingRecovery?.task === task) current.reviewBindingRecovery.pending = false;
+              });
+              current.reviewBindingRecovery = { controller, task, keys, pending: true };
+              void task.catch(recoveryError => {
+                current.error = `${current.error ?? error.message} Recovery diagnostics persistence failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`;
+                this.emitActiveState(current);
+              });
             }
           }
         });

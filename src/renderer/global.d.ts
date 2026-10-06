@@ -1,3 +1,4 @@
+import type { CustomPreserveRule } from "../shared/validation/customPreserveRules.ts";
 import type { StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
 import type { PiWorkflowPromptMetadata } from "../shared/agent/piSessionContract.ts";
 export {};
@@ -114,8 +115,8 @@ type WorkshopCandidateImportPlan = {
 
 type WorkshopAgentArtifactApi = {
   discoverAgentArtifacts: (args: { projectDir: string; sourcePaths?: string[] }) => Promise<WorkshopCandidateArtifact[]>;
-  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string }) => Promise<WorkshopTranslationValidationResult>;
-  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string }) => Promise<WorkshopCandidateImportPlan>;
+  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[] }) => Promise<WorkshopTranslationValidationResult>;
+  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[] }) => Promise<WorkshopCandidateImportPlan>;
   buildAgentRepairPrompt: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US" }) => Promise<string>;
 };
 

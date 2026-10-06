@@ -139,6 +139,21 @@ await test("custom-preserved identifiers are excluded from untranslated prose an
   assert.equal(result.warnings.some((entry) => entry.code === "likely_untranslated"), false);
 });
 
+await test("Japanese regex matches are protected but identical unprotected occurrences remain prose", () => {
+  const options = { languagePair: "ja->zh-CN", customPreserveRules: [{ pattern: "^ソロモン(?=：)", flags: "u" }] };
+  const preservedOnly = validateTranslationCandidate("ソロモン：", "ソロモン：", options);
+  assert.equal(preservedOnly.ok, true, preservedOnly.summary);
+  assert.equal(preservedOnly.warnings.some(f => f.code === "likely_untranslated"), false);
+  const copiedBody = validateTranslationCandidate("ソロモン：ソロモン", "ソロモン：ソロモン", options);
+  assert.ok(copiedBody.blocking.some(f => f.code === "likely_untranslated"));
+  const translatedBody = validateTranslationCandidate("ソロモン：ソロモン", "ソロモン：所罗门", options);
+  assert.equal(translatedBody.ok, true, translatedBody.summary);
+  assert.equal(translatedBody.warnings.some(f => f.code === "likely_untranslated"), false);
+  const middle = { languagePair: "ja->zh-CN", customPreserveRules: [{ pattern: "(?<=「)ソロモン(?=」)", flags: "u" }] };
+  assert.equal(validateTranslationCandidate("「ソロモン」へ行こう。", "去找「ソロモン」吧。", middle).ok, true);
+  assert.ok(validateTranslationCandidate("「ソロモン」ソロモン", "「ソロモン」ソロモン", middle).blocking.some(f => f.code === "likely_untranslated"), "only actual matched spans are excluded at any position");
+});
+
 await test("generic model placeholder prose is a blocking artifact error", () => {
   const result = validateTranslationCandidate("本当の台詞です。", "（本段译文）", {
     languagePair: "ja->zh-CN"

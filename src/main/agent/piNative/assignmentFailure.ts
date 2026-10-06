@@ -7,6 +7,19 @@ export class NonRetryableAssignmentError extends Error {
   }
 }
 
+/** Model retries cannot repair a stale review binding. Host may reconcile it
+ * once all old owners settle, then continue the retained workflow. */
+export class TranslationReviewBindingChangedError extends NonRetryableAssignmentError {
+  readonly recoveryKey: string;
+  readonly replacement?: { documentId: string; fromLine: number; toLine: number; candidatePath: string; inputHash: string; previousAuditId: string };
+  constructor(message: string, recoveryKey: string, replacement?: TranslationReviewBindingChangedError["replacement"]) {
+    super(message);
+    this.recoveryKey = recoveryKey;
+    this.replacement = replacement;
+    this.name = "TranslationReviewBindingChangedError";
+  }
+}
+
 /** A reviewed staging promotion may have a durable canonical checkpoint already.
  * Only its Host callback may require preserving that verified post-image when
  * the forced old-checkpoint compensation cannot be confirmed. */

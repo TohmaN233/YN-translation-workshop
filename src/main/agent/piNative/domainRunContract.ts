@@ -581,6 +581,10 @@ export function createYnDomainRunContract({
     }
   };
 
+  const assertSettlementKind = (kind: YnWorkflowKind, batchId: string): void => {
+    if (activeKind !== kind) throw new Error(`Cannot settle ${kind} child batch ${batchId} in the active ${activeKind ?? "unselected"} workflow.`);
+  };
+
   const requireDocument = (documentId = selectedDocumentId): DocumentRunState => {
     if (!documentId) throw new Error("Inspect and select a source document before using workflow artifact tools.");
     const document = documents.get(documentId);
@@ -1445,7 +1449,7 @@ export function createYnDomainRunContract({
       }
     },
     recordSubagentBatchFailure(kind, batchId, documentIds) {
-      activate(kind);
+      assertSettlementKind(kind, batchId);
       const batch = batchDocuments(documentIds);
       for (const document of batch) {
         if (document.activeSubagentBatch?.kind !== kind || document.activeSubagentBatch.id !== batchId) {
@@ -1464,7 +1468,7 @@ export function createYnDomainRunContract({
       };
     },
     recordSubagentBatchStartFailure(kind, batchId, documentIds) {
-      activate(kind);
+      assertSettlementKind(kind, batchId);
       const batch = batchDocuments(documentIds);
       for (const document of batch) {
         if (document.activeSubagentBatch?.kind !== kind || document.activeSubagentBatch.id !== batchId) {
@@ -1479,7 +1483,7 @@ export function createYnDomainRunContract({
       }
     },
     recordSubagentBatchProgress(kind, batchId, documentIds) {
-      activate(kind);
+      assertSettlementKind(kind, batchId);
       const batch = batchDocuments(documentIds);
       for (const document of batch) {
         if (document.activeSubagentBatch?.kind !== kind || document.activeSubagentBatch.id !== batchId) {
@@ -1487,10 +1491,10 @@ export function createYnDomainRunContract({
         }
       }
       for (const document of batch) document.activeSubagentBatch = undefined;
-      markProgress();
+      progressRevision += 1;
     },
     recordSubagentBatch(kind, batchId, count, documentIds) {
-      activate(kind);
+      assertSettlementKind(kind, batchId);
       const batch = batchDocuments(documentIds);
       for (const document of batch) {
         if (document.activeSubagentBatch?.kind !== kind || document.activeSubagentBatch.id !== batchId) {
@@ -1517,16 +1521,18 @@ export function createYnDomainRunContract({
         };
         document.recoveryReason = undefined;
         if (kind === "proofread" && candidateRevisionIsCurrent) {
-          if (!document.findingsWritten) markProgress();
+          if (!document.findingsWritten) progressRevision += 1;
           document.findingsWritten = true;
           document.validatedProofreadArtifactRevision = document.proofreadArtifactRevision;
           document.proofreadDirtyRanges = [];
         }
-        markProgress();
+        progressRevision += 1;
       }
     },
     recordSubagentBatchSettlement(kind, batchId, settlements) {
-      activate(kind);
+      // Closing already reserved ownership is legal after Stop. It must never
+      // activate a workflow or grant permission to start new model work.
+      assertSettlementKind(kind, batchId);
       const normalized = settlements.map((settlement) => ({
         ...settlement,
         documentId: settlement.documentId.trim(),
@@ -1581,7 +1587,7 @@ export function createYnDomainRunContract({
           };
           document.recoveryReason = undefined;
           if (kind === "proofread" && candidateRevisionIsCurrent) {
-            if (!document.findingsWritten) markProgress();
+            if (!document.findingsWritten) progressRevision += 1;
             document.findingsWritten = true;
             document.validatedProofreadArtifactRevision = document.proofreadArtifactRevision;
             document.proofreadDirtyRanges = [];

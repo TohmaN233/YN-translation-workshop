@@ -35,7 +35,7 @@ import { setPiSessionHtmlViewerTabsRef, subscribePiSessionBroadcast } from "./ag
 import { openAgentChatWindow } from "./agent/piNative/agentChatWindowHost.ts";
 import { piNativeSessionService } from "./agent/piNative/sessionService.ts";
 import type { PiSessionPromptRequest } from "../shared/agent/piSessionContract.ts";
-import type { BuiltinTaskSettings, StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
+import { builtinTranslationPreparationPrompt, type BuiltinTaskSettings, type StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
 import type { YnTaskPreparationContext } from "./agent/piNative/taskPreparation.ts";
 import { createBuiltinTaskPreparationHost, validateBuiltinTaskSettings } from "./builtinTaskPreparationHost.ts";
 import { generateBuiltinTaskReview, prepareBuiltinTaskDocuments } from "./builtinTaskDocuments.ts";
@@ -3945,6 +3945,7 @@ piNativeSessionService.configureTaskPreparationHost(createBuiltinTaskPreparation
 const startingBuiltinTasks = new Set<string>();
 ipcMain.handle("tasks:start", async (_event, args: StartBuiltinTaskRequest) => {
   const settings = await validateBuiltinTaskSettings(args);
+  const translationPreparationPrompt = args.task === "translation" ? builtinTranslationPreparationPrompt(args.preservationInstructions) : undefined;
   const key = path.resolve(settings.outputDir).toLowerCase();
   if (startingBuiltinTasks.has(key)) throw new Error("A task is already being prepared for this project.");
   startingBuiltinTasks.add(key);
@@ -3968,7 +3969,7 @@ ipcMain.handle("tasks:start", async (_event, args: StartBuiltinTaskRequest) => {
     const prompt = args.task === "assets"
       ? `Organize the project's reference materials into editable glossary and character drafts using importTaskAssets. Read the supplied references, finish all draft batches, read and review both draft collections, correct/delete inaccurate records, then checkTaskAssetDraft and commitTaskAssets. Retain established formal translations and resolve draft conflicts before committing. Do not claim completion before successful commit; do not start translation.\n${settings.materials || settings.workDescription || "Use the current project files and existing source as references."}`
       : args.task === "translation"
-        ? "Check the confirmed parameters against representative source content and control-token examples. Use inspectTaskSettings to obtain the internal shared parameter path; updateTaskSettings only when content contradicts the settings. Inspect /n, backslash escapes, tags and code prefixes, and trial narrow preservation rules including existing rules. Then startPreparedWorkflow saves the same HTML parameter form and starts exactly its normal translation prompt. Do not translate during this preflight or create another translation entry."
+        ? translationPreparationPrompt!
         : "Start proofreading the existing translation using the confirmed project settings. Auto-application, when selected, updates HTML review state only. Writing TXT remains a manual user action.";
     await piNativeSessionService.prompt({ outputDir: settings.outputDir, sessionId: session.id, ...model, prompt,
       languagePair: settings.languagePair, lineReviewPath: outputPath,

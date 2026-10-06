@@ -1318,6 +1318,7 @@ code {
 }
 
 .builtinTaskNotice {
+  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: 21px minmax(0, 1fr);
   gap: 9px;
@@ -1338,6 +1339,7 @@ code {
 }
 
 .builtinTaskExistingRules {
+  grid-column: 1 / -1;
   padding: 11px 12px;
   border: 1px solid #e0e8e4;
   border-radius: 9px;
@@ -1352,6 +1354,10 @@ code {
   margin: 9px 0 0;
   padding: 0;
   list-style: none;
+}
+
+.builtinTaskPreservationInstructions {
+  margin-top: 12px;
 }
 
 .builtinTaskExistingRules li {

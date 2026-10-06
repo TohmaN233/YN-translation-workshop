@@ -1543,9 +1543,7 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
             </div>
             <div className="companionBubble">
               <strong>{t.companionGuideTitle}</strong>
-              <p>{t.companionGuideLine1}</p>
-              <p>{t.companionGuideLine2}</p>
-              <p>{t.companionGuideLine3}</p>
+              <p>{t.companionGuidePrefix}{t.startupSuggestions[startupSuggestionIndex % t.startupSuggestions.length]}</p>
             </div>
           </section>
           {lastOutput && (
@@ -1579,7 +1577,6 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
               <strong>{t.assetProposals ?? "Asset proposals"}</strong>
               <button type="button" onClick={refreshStartupSuggestion}>{t.refreshAssetProposals ?? "Refresh"}</button>
             </div>
-            <p>{t.startupSuggestions[startupSuggestionIndex % t.startupSuggestions.length]}</p>
             {projectAssets ? (
               <div className="assetProposalCard">
                 <strong>{t.projectAssets ?? "Project assets"}</strong>

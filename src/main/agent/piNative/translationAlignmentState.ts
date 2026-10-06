@@ -7,6 +7,7 @@ export interface TranslationAlignmentCheckState {
   signals: string[];
   verdict?: "aligned" | "misaligned";
   reason?: string;
+  lineInputHash?: string;
   warningVerdicts?: Array<{
     identity: string;
     code: string;
@@ -33,6 +34,7 @@ export interface TranslationAlignmentRangeState extends TranslationAlignmentDocu
   toLine: number;
   riskLineCount: number;
   sampledLineCount: number;
+  sourceHash?: string;
 }
 
 export interface TranslationAlignmentHostState {
@@ -98,6 +100,7 @@ export function createTranslationRepairReviewAudit(
   const checks = previous.checks.map((check) => rejectedLines.has(check.line)
     ? {
         line: check.line,
+        ...(currentByLine.get(check.line)?.lineInputHash ? { lineInputHash: currentByLine.get(check.line)!.lineInputHash } : {}),
         signals: [...new Set([
           ...(currentByLine.get(check.line)?.signals ?? []),
           "review_repair_target"
@@ -105,6 +108,7 @@ export function createTranslationRepairReviewAudit(
       }
     : {
         line: check.line,
+        ...(check.lineInputHash ? { lineInputHash: check.lineInputHash } : {}),
         signals: [...check.signals],
         verdict: check.verdict,
         ...(check.reason ? { reason: check.reason } : {})
@@ -242,7 +246,8 @@ export function normalizeTranslationAlignmentState(value: unknown): TranslationA
           line: check.line,
           signals: [...new Set(check.signals)],
           ...(check.verdict ? { verdict: check.verdict } : {}),
-          ...(typeof check.reason === "string" ? { reason: check.reason } : {})
+          ...(typeof check.reason === "string" ? { reason: check.reason } : {}),
+          ...(typeof check.lineInputHash === "string" && /^[a-f0-9]{64}$/u.test(check.lineInputHash) ? { lineInputHash: check.lineInputHash } : {})
         }));
         if (value.schemaVersion === 2 && checks.length !== toLine - fromLine + 1) return [];
         if (checks.length === 0) return [];
@@ -268,6 +273,7 @@ export function normalizeTranslationAlignmentState(value: unknown): TranslationA
           riskLineCount,
           sampledLineCount,
           checks,
+          ...(typeof raw.sourceHash === "string" && /^[a-f0-9]{64}$/u.test(raw.sourceHash) ? { sourceHash: raw.sourceHash } : {}),
           ...(raw.lineHashVersion === 2 ? { lineHashVersion: 2 as const } : {})
         }];
       });
@@ -303,6 +309,10 @@ export function translationAlignmentLinesInputHash(
     .update("\0")
     .update(languagePair?.trim() ?? "")
     .digest("hex");
+}
+
+export function translationReviewSourceHash(lines: string[]): string {
+  return createHash("sha256").update(JSON.stringify(lines)).digest("hex");
 }
 
 interface TranslationAlignmentContentInput {
@@ -474,6 +484,7 @@ export function createTranslationAlignmentRangeAudit(input: {
   sourceLineCount: number;
 }): TranslationAlignmentRangeState {
   const created = createTranslationAlignmentAudit(input);
+  const content = explicitAlignmentContent(input);
   const checkedLineCount = created.checks.length;
   const toLine = input.toLine ?? input.fromLine + checkedLineCount - 1;
   const ownedLineCount = toLine - input.fromLine + 1;
@@ -505,6 +516,7 @@ export function createTranslationAlignmentRangeAudit(input: {
     documentId: input.documentId,
     auditId: `alignment-range-${auditKey.slice(0, 20)}`,
     inputHash: created.inputHash,
+    sourceHash: translationReviewSourceHash(content.sourceLines),
     candidatePath: input.candidatePath,
     sourceLineCount: input.sourceLineCount,
     fromLine: input.fromLine,
@@ -514,6 +526,7 @@ export function createTranslationAlignmentRangeAudit(input: {
     ...(created.lineHashVersion === 2 ? { lineHashVersion: 2 as const } : {}),
     checks: created.checks.map((check) => ({
       ...check,
+      lineInputHash: translationAlignmentLinesInputHash([content.sourceLines[check.line - 1]], [content.candidateLines[check.line - 1]], input.languagePair),
       line: check.line + input.fromLine - 1
     }))
   };
@@ -568,6 +581,7 @@ export function createTranslationChunkReviewAudit(input: {
     .filter((check) => selected.has(check.line))
     .map((check) => ({
       line: check.line,
+      lineInputHash: check.lineInputHash,
       signals: riskSet.has(check.line)
         ? [...(signalsByLine.get(check.line) ?? new Set<string>())]
         : ["deterministic_unflagged_sample"]

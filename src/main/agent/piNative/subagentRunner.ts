@@ -1063,6 +1063,7 @@ function customPreserveRuleContext(request: PiSessionPromptRequest): string {
   return [
     "## Custom verbatim preservation rules",
     "Every source-line regex match must remain byte-for-byte identical on the same candidate line. The Host rejects any changed, missing, duplicated, or moved match.",
+    "Matched text is intentionally untranslated, even when it contains Japanese names or other source-language prose. Exclude these protected matches from untranslated-residue judgments; review only the remaining prose.",
     ...rules.map((rule, index) => `- ${rule.label || `Rule ${index + 1}`}: /${rule.pattern}/${rule.flags}`)
   ].join("\n");
 }
@@ -3679,6 +3680,7 @@ function createPiTranslationReviewRuntimeSpec(
       `The Host selected every mechanical-risk row plus ${context.task.sampledLineCount} deterministic clean sample row(s).`,
       "FIRST TOOL: call readAssignedTranslationReview once. Inspect every selected row. Neighboring rows are context, but include one as a failure when it clearly shares or continues the same defect; Host will promote that row and expand the next repair review around it.",
       "Focus on one-to-one line identity, omissions, merged/split/shifted meaning, placeholder/meta text, untranslated residue, and material mistranslation. This is not the later full proofreading workflow; do not polish style or report minor wording preferences. Target-language punctuation and typography choices alone, including adding a conventional Chinese sentence-final mark inside a closing quote, are never safety-gate failures.",
+      customPreserveRuleContext(context.request),
       "The first tool result includes canonical projectReferences paths and direct matches for its review windows. Use those direct matches first. Do not invent shorthand paths such as 'glossary'. Use searchProjectText/readProjectFile only for one specific unresolved ambiguity, copying the exact returned path, and do not recursively search the project or read generated review HTML.",
       "Then call submitTranslationReview exactly once with the single argument {failures:[...]}; never copy JSON Schema keywords such as maxItems into tool arguments. Use failures=[] when the selected scope is safe. For a real problem, include only its absolute line, a compact machine-readable code, and a short actionable note that names the defect and required correction. Never list aligned rows and never explain why correct rows pass.",
       "Do not modify any file and do not launch another subagent."

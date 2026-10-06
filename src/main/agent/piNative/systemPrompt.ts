@@ -37,6 +37,7 @@ function customPreserveRuleContext(request: PiSessionPromptRequest): string[] {
     "CUSTOM VERBATIM PRESERVATION RULES:",
     ...rules.map((rule, index) => `- ${rule.label || `Rule ${index + 1}`}: /${rule.pattern}/${rule.flags}`),
     "The Host blocks writes unless every match remains byte-for-byte identical on the same candidate line.",
+    "These matches are intentionally untranslated, including source-language character names. Exclude the matched spans when judging untranslated residue; the remaining prose must still be translated.",
     ""
   ];
 }

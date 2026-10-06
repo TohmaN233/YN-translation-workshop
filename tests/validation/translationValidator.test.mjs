@@ -551,6 +551,28 @@ await test("character aliases satisfy character name warnings", () => {
   assert.equal(result.warnings.filter((f) => f.code === "character_name_missing").length, 0);
 });
 
+await test("character aliases do not create character-name translation warnings", () => {
+  const characterEntries = [{ name: "遥娜", target: "遥娜", aliases: ["小遥", "遥"] }];
+  for (const source of ["小遥は笑った。", "遥は笑った。", "遥か遠くで笑った。", "小遥「私は笑った」"]) {
+    const result = validateTranslationCandidate(source, "她笑了。", { characterEntries });
+    assert.equal(result.warnings.some(f => f.code === "character_name_missing"), false, source);
+  }
+  const explicitGlossary = validateTranslationCandidate("小遥は笑った。", "她笑了。", {
+    characterEntries, glossaryEntries: [{ source: "小遥", target: "小遥" }]
+  });
+  assert.ok(explicitGlossary.warnings.some(f => f.code === "glossary_missing"));
+  const canonical = validateTranslationCandidate("遥娜は笑った。", "她笑了。", { characterEntries });
+  assert.ok(canonical.warnings.some(f => f.code === "character_name_missing"));
+});
+
+await test("character aliases still identify speakers for voice review", () => {
+  const result = validateTranslationCandidate("小遥「私は笑った」", "她笑了。", {
+    characterEntries: [{ name: "遥娜", aliases: ["小遥"], requiredTerms: ["私 -> 本小姐"] }]
+  });
+  assert.equal(result.warnings.some(f => f.code === "character_name_missing"), false);
+  assert.ok(result.warnings.some(f => f.code === "character_voice_required_missing"));
+});
+
 await test("character voice required terms warn only when that character speaks the mapped source word", () => {
   const violated = validateTranslationCandidate("遥娜は「私が笑った」と言った。", "遥娜露出了机器翻译腔的笑容。", {
     characterEntries: [{

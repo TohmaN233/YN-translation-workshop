@@ -33,6 +33,13 @@ const signals = buildProofreadDeterministicSignals({
 });
 
 const byCode = new Map(signals.map((signal) => [`${signal.code}:${signal.line}`, signal]));
+const aliasSignals = buildProofreadDeterministicSignals({
+  sourceText: "小遥は笑った。\n遥娜は笑った。",
+  translationText: "她笑了。\n她笑了。",
+  validationOptions: { languagePair: "ja->zh-CN", characterEntries: [{ name: "遥娜", aliases: ["小遥"] }] }
+});
+assert.equal(aliasSignals.some(signal => signal.code === "H3" && signal.line === 1), false);
+assert.ok(aliasSignals.some(signal => signal.code === "H3" && signal.line === 2));
 assert.ok(byCode.has("H3:1"), "glossary mismatch must be found by the full deterministic scan");
 assert.ok(byCode.has("H4:2"), "source-language residue must be found by the full deterministic scan");
 assert.ok(byCode.has("H7:3"), "AI contamination must be found by the full deterministic scan");

@@ -7,7 +7,7 @@ import type { ValidationOptions } from "../../../shared/validation/translationVa
 import type { ProofreadDeterministicSignal, ProofreadPrescanProgress } from "./proofreadPrescan.ts";
 
 // Bump when deterministic signal semantics change, not for scheduling/performance-only changes.
-const PRESCAN_CACHE_VERSION = 1;
+const PRESCAN_CACHE_VERSION = 2;
 type ScanInput = {
   sourceText: string;
   translationText: string;

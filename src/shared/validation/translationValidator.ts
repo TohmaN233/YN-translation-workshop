@@ -91,7 +91,7 @@ export interface ValidationOptions {
   detectUntranslated?: boolean;
   /** Glossary entries whose target term should appear when the source term appears. */
   glossaryEntries?: Array<{ source?: string; target?: string; aliases?: string[] }>;
-  /** Character bible entries whose names/aliases should survive line translation. */
+  /** Character names checked in translation; aliases identify speakers and acceptable renderings. */
   characterEntries?: Array<{
     name?: string;
     target?: string;
@@ -1149,6 +1149,7 @@ export function validateTranslationCandidate(
   );
   const characterMatchers = characterEntries.map((entry) => ({
     entry,
+    canonicalName: comparableTerm(entry.name ?? ""),
     names: uniqueComparableTerms([entry.name, ...(entry.aliases ?? [])]).map(comparableTerm),
     targets: uniqueComparableTerms([entry.target?.trim() || entry.name, entry.name, ...(entry.aliases ?? [])])
       .map(comparableTerm)
@@ -1390,12 +1391,12 @@ export function validateTranslationCandidate(
       }
     }
 
-    for (const { entry, targets } of characterMatchers) {
+    for (const { entry, canonicalName, targets } of characterMatchers) {
       const sourceName = entry.name?.trim() ?? "";
       const targetName = entry.target?.trim() || sourceName;
       const characterAppears = sourceCharacterSet.has(entry);
       if (
-        characterAppears
+        normalizedSource.includes(canonicalName)
         && !targets.some((term) => normalizedCandidate.includes(term))
       ) {
         warnings.push({

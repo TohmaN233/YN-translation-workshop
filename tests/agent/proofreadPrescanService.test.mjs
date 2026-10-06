@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { buildProofreadDeterministicSignals } from "../../src/main/agent/piNative/proofreadPrescan.ts";
@@ -39,6 +39,15 @@ try {
   assert.deepEqual(await runProofreadPrescan({ ...changed, cache: { ...cache, inputHash: "input-2" } }),
     buildProofreadDeterministicSignals(changed));
   assert.equal((await events()).filter((event) => event.event === "completed").length, 2);
+
+  const previousCachePath = path.join(directory, (await readdir(directory)).find(name => name.endsWith(".json")));
+  const previousCache = JSON.parse(await readFile(previousCachePath, "utf8"));
+  await writeFile(previousCachePath, JSON.stringify({ ...previousCache, version: 1,
+    signals: [{ line: 1, code: "H3", evidence: "stale alias-name warning" }] }));
+  assert.deepEqual(await runProofreadPrescan({ ...changed, cache: { ...cache, inputHash: "input-2" } }),
+    buildProofreadDeterministicSignals(changed), "old alias warning cache must be recomputed");
+  assert.equal(JSON.parse(await readFile(previousCachePath, "utf8")).version, 2);
+  assert.equal((await events()).filter(event => event.event === "completed").length, 3);
 
   const controller = new AbortController();
   await assert.rejects(runProofreadPrescan({

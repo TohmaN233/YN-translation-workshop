@@ -1,4 +1,4 @@
-# YN Translation Workshop 2.1.8
+# YN Translation Workshop 2.1.9
 
 New to YN? Start with the [project introduction (Chinese)](https://tgy233.top/tgypage/yn/), then follow the guide below to begin using the workshop.
 
@@ -7,6 +7,10 @@ A local workbench that brings human line editing, project assets, full AI transl
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
 [中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## What's new in 2.1.9
+
+- Fix the single-file mode regression introduced in 2.1.4.
 
 ## What's new in 2.1.7–2.1.8
 
@@ -79,13 +83,13 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.1.8-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.1.8-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.1.9-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.1.9-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.
 
-Local 2.1.8 artifacts are under `release/`; the releases page lists only versions actually uploaded.
+Local 2.1.9 artifacts are under `release/`; the releases page lists only versions actually uploaded.
 
 ## Complete feature list
 

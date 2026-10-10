@@ -1,5 +1,5 @@
 import { buildLinePairs, paginateRows } from "./lineReview.ts";
-import { buildPrompt, promptParameterDefaults, type PromptAdvancedOptions } from "./prompts.ts";
+import { buildPrompt, promptAdvancedForSource, promptParameterDefaults, type PromptAdvancedOptions } from "./prompts.ts";
 import type { GlossaryEntry } from "./glossary.ts";
 import type { ReviewProposal } from "./reviewReport.ts";
 import type { EpubReplacementOptions } from "./epubExport.ts";
@@ -542,10 +542,10 @@ function workflowData(workflow: HtmlWorkflowOptions | undefined, initialTranslat
   const promptSourcePath = fallbackPath(workflow?.sourcePromptPath ?? workflow?.sourcePath, "source path");
   const promptTranslationPath = workflow?.translationPromptPath ?? workflow?.translationPath;
   const promptTranslationPathFallback = fallbackPath(promptTranslationPath, "sync translation file first");
-  const promptSourceKind = workflow?.promptSourceKind ?? workflow?.sourceKind;
+  const promptSourceKind = workflow?.promptSourceKind ?? workflow?.sourceKind ?? "file";
   const outputDir = fallbackPath(workflow?.outputDir, "output folder");
   const glossaryPath = workflow?.glossaryPath;
-  const advanced = workflow?.advanced;
+  const advanced = promptAdvancedForSource(promptSourceKind, workflow?.advanced);
   const inputMode = workflow?.inputMode ?? "separate";
   const promptInputMode = workflow?.promptInputMode ?? inputMode;
   const promptDefaults = promptParameterDefaults(outputDir, advanced);
@@ -1094,11 +1094,11 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 46;
+export const LINE_REVIEW_PROTOCOL_VERSION = 47;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 18;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
-export const PROMPT_SETTINGS_VERSION = 43;
+export const PROMPT_SETTINGS_VERSION = 44;
 
 export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   const locale = options.locale ?? "zh-CN";
@@ -2263,6 +2263,7 @@ async function resetPromptSettings() {
 }
 function workflowPromptMetadata(settings, kind) {
   const defaults = promptStoredDefaults();
+  const folderSource = (workflow.paths?.promptSourceKind || workflow.paths?.sourceKind || "file") === "folder";
   return {
     workflowIntent: kind === "proofread" ? "proofread" : "translation",
     languagePair: settings.languagePair,
@@ -2280,9 +2281,8 @@ function workflowPromptMetadata(settings, kind) {
     subagentProviderId: settings.subagentProviderId,
     subagentModelId: settings.subagentModelId,
     translationSplitSize: settings.splitSize,
-    folderTranslationOrder: settings.folderTranslationOrder,
-    folderSourceDocuments: defaults.folderSourceDocuments,
-    ...(defaults.folderSourceSelection ? { folderSourceSelection: defaults.folderSourceSelection } : {}),
+    ...(folderSource ? { folderTranslationOrder: settings.folderTranslationOrder, folderSourceDocuments: defaults.folderSourceDocuments } : {}),
+    ...(folderSource && defaults.folderSourceSelection ? { folderSourceSelection: defaults.folderSourceSelection } : {}),
     proofreadMode: settings.proofreadMode,
     proofreadSplitSize: settings.splitSize,
     proofreadMontecarloSize: settings.montecarloSize,

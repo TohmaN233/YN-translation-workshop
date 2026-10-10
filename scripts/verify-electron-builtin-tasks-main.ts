@@ -144,7 +144,8 @@ async function run() {
     await main!.webContents.executeJavaScript("document.querySelector('.builtinTaskClose').click()");
   }
   await writeProviderConfig(fixture, { activeProviderId: "custom-api", providers: { "custom-api": { id: "custom-api", type: "openai_compatible", name: "Verifier faux only", model: "fixture", models: ["fixture"], baseUrl: "http://127.0.0.1:1/v1", enabled: true } } });
-  const settings = builtinTaskDefaults({ outputDir: fixture, sourcePath, languagePair: "en->zh-CN", glossaryCandidates: false, characterBible: false, customPreserveRules: rules });
+  // Reproduce the prior homepage's optional folder field reaching single-file IPC.
+  const settings = { ...builtinTaskDefaults({ outputDir: fixture, sourcePath, languagePair: "en->zh-CN", glossaryCandidates: false, characterBible: false, customPreserveRules: rules }), folderSourceDocuments: [] };
   assert(settings.splitSize === 500 && settings.subagentCount === 3, "New task defaults must be 500/3");
   let releasePreparation!: () => void;
   const preparationReady = new Promise<void>(resolve => { releasePreparation = resolve; });
@@ -191,6 +192,7 @@ async function run() {
   await waitFor(() => translationView!.webContents.executeJavaScript("Boolean(window.__ynAgentChatPiWebEmbedded && document.querySelector('#characterBibleToggle'))").catch(() => false), Boolean, "actual embedded Agent and character table");
   const launchedRequest = requests.at(-1);
   const packet = await translationView!.webContents.executeJavaScript("window.translationWorkshopTaskParameters.prepare('translate')");
+  assert(packet.metadata.folderSourceDocuments === undefined && launchedRequest.folderSourceDocuments === undefined, "Single-file HTML and native handoff must omit inactive folder metadata");
   assert(packet.prompt === launchedRequest.prompt, "One-click launch must use byte-for-byte the HTML parameter prompt");
   for (const key of Object.keys(packet.metadata)) assert(JSON.stringify(packet.metadata[key]) === JSON.stringify(launchedRequest[key]), `Shared HTML metadata differs: ${key}`);
   assert(packet.settings.style === "concise game dialogue" && launchedRequest.style === packet.settings.style, "Style must be one shared parameter");

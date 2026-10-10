@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { buildPrompt } from "../shared/core/prompts.ts";
+import { buildPrompt, promptAdvancedForSource } from "../shared/core/prompts.ts";
 import { YN_DEFAULT_SPLIT_SIZE, YN_WORKFLOW_SUBAGENT_COUNT } from "../shared/agent/piSessionContract.ts";
 import { builtinTaskDefaults, type BuiltinTaskKind, type BuiltinTaskSettings } from "../shared/builtinTasks.ts";
 import { normalizeHandwrittenCharacterRequiredTerms } from "../shared/validation/translationValidator.ts";
@@ -243,7 +243,7 @@ function initialFormState(): FormState {
     subagentProviderId: "",
     subagentModelId: "",
     folderTranslationOrder: "",
-    folderSourceDocuments: [],
+    folderSourceDocuments: undefined,
     proofreadMode: "split",
     candidateRatio: 1.5,
     montecarloSize: 3000,
@@ -685,7 +685,7 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
   }
 
   function promptAdvanced() {
-    return {
+    return promptAdvancedForSource(form.sourceKind, {
       languagePair: form.languagePair,
       style: form.style,
       translateOutputDir: form.translateOutputDir || defaultTranslateOutputDir(),
@@ -711,7 +711,7 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
       workflowTemplateId: form.workflowTemplateId,
       translationType: form.translationType,
       customPreserveRules: savedCustomPreserveRules
-    };
+    });
   }
 
   const builtinTaskSettings = useMemo(() => builtinTaskDefaults({

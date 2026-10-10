@@ -123,6 +123,12 @@ function customPreserveRuleLines(rules: ReturnType<typeof normalizeCustomPreserv
   ];
 }
 
+/** Folder bindings describe a folder input, never a previously selected task. */
+export function promptAdvancedForSource(sourceKind: "file" | "folder" | undefined, advanced: PromptAdvancedOptions = {}): PromptAdvancedOptions {
+  if (sourceKind === "folder") return advanced;
+  return { ...advanced, folderSourceDocuments: undefined, folderSourceSelection: undefined, folderTranslationOrder: undefined };
+}
+
 export function promptParameterDefaults(projectDir: string, advanced: PromptAdvancedOptions = {}) {
   const subagentCount = optionalPositiveNumber(advanced.subagentCount) ?? 3;
   return {

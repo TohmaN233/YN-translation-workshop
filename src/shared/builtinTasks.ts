@@ -1,4 +1,4 @@
-import { promptParameterDefaults, type PromptAdvancedOptions } from "./core/prompts.ts";
+import { promptAdvancedForSource, promptParameterDefaults, type PromptAdvancedOptions } from "./core/prompts.ts";
 
 export type BuiltinTaskKind = "translation" | "proofread" | "assets";
 
@@ -35,9 +35,11 @@ export function builtinTranslationPreparationPrompt(instructions?: string): stri
 
 /** Existing project choices win; new task defaults have one source of truth. */
 export function builtinTaskDefaults(current: Partial<BuiltinTaskSettings> = {}): BuiltinTaskSettings {
+  const advanced = promptAdvancedForSource(current.sourceKind, current);
   return {
     ...current,
-    ...promptParameterDefaults(current.outputDir ?? "", current),
+    ...advanced,
+    ...promptParameterDefaults(current.outputDir ?? "", advanced),
     outputDir: current.outputDir ?? "",
     sourcePath: current.sourcePath ?? "",
     sourceKind: current.sourceKind ?? "file",

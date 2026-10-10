@@ -1,4 +1,4 @@
-# YN Translation Workshop 2.1.8
+# YN Translation Workshop 2.1.9
 
 第一次了解 YN？可以先读[项目介绍 · YN Translation Workshop](https://tgy233.top/tgypage/yn/)，再按下面的教程开始使用。
 
@@ -7,6 +7,10 @@
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
 [English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [发布下载](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## 2.1.9 更新
+
+- 修复 2.1.4 带来的单文件模式回归。
 
 ## 2.1.7–2.1.8 更新
 
@@ -79,13 +83,13 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.1.8-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.1.8-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.1.9-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.1.9-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。
 
-本地 2.1.8 构建位于 `release/`；公开包以[发布页面](https://github.com/TohmaN233/YN-translation-workshop/releases)实际上传的版本为准。
+本地 2.1.9 构建位于 `release/`；公开包以[发布页面](https://github.com/TohmaN233/YN-translation-workshop/releases)实际上传的版本为准。
 
 ## 完整功能清单
 

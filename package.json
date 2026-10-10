@@ -122,8 +122,8 @@
     }
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.99.1",
-    "@earendil-works/pi-ai": "0.99.1",
+    "@earendil-works/pi-agent-core": "1.0.0",
+    "@earendil-works/pi-ai": "1.0.0",
     "cheerio": "^1.2.0",
     "electron-updater": "^6.8.9",
     "extract-zip": "^2.0.1",

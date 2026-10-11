@@ -2418,7 +2418,7 @@ await test("prompt-defined translation repairs preserve exact local objectives a
     assert.match(repairPrompt, /Never write to the source file/i);
     assert.match(
       repairCoachingPrompt,
-      /Latest host tool rejection: Validation failed[\s\S]*entries\.0\.line: must be <= 1/i
+      /Latest host tool rejection: Translated L2 outside the Host-required sparse repair set \(L1\)/i
     );
     assert.match(repairCoachingPrompt, /still write-capable/i);
     const investigationCard = terminal.find((card) => card.customType === "subagent.general");

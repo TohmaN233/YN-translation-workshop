@@ -589,7 +589,7 @@ await test("a persistent proofread worker retries its failed block before claimi
   models.setProvider(faux.provider);
   let failedFirstBlock = false;
   const response = (context) => {
-    if (!failedFirstBlock && getCurrentSystemPrompt(context.messages).includes("L1-L2")) {
+    if (!failedFirstBlock && JSON.stringify(context.messages.filter(message => message.role === "user")).includes("L1-L2")) {
       failedFirstBlock = true;
       throw new Error("retry this proofread block");
     }
@@ -671,7 +671,7 @@ await test("two native Pi proofread children merge strict findings and expose on
   models.setProvider(faux.provider);
   const response = (context) => {
     const toolResults = context.messages.filter((message) => message.role === "toolResult").length;
-    const firstRange = getCurrentSystemPrompt(context.messages).includes("L1-L2");
+    const firstRange = JSON.stringify(context.messages.filter(message => message.role === "user")).includes("L1-L2");
     if (toolResults === 0) {
       return fauxAssistantMessage(fauxToolCall("readAssignedProofreadContext", {}), { stopReason: "toolUse" });
     }
@@ -990,7 +990,7 @@ await test("parent abort cancels every proofread child before any delayed findin
           if (released) return;
           released = true;
           setTimeout(() => {
-            const firstRange = getCurrentSystemPrompt(context.messages).includes("L1-L2");
+            const firstRange = JSON.stringify(context.messages.filter(message => message.role === "user")).includes("L1-L2");
             resolve(fauxAssistantMessage(fauxToolCall("writeAssignedFindings", {
               findings: [firstRange ? {
                 id: "M1-101",

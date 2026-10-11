@@ -754,7 +754,7 @@ await test("full translation children receive the built-in contract once and rea
 
   try {
     const readResult = await read.execute("compact-reference-read", {});
-    assert.match(readResult.details.translationReference, /Built-in translate-text child workflow/);
+    assert.match(readResult.details.translationReference, /built-in translation guide.*system instructions/);
     assert.doesNotMatch(JSON.stringify(readResult.details), /REFERENCE_SENTINEL/,
       "project asset bodies must not be duplicated into every child assignment result");
     assert.equal(readResult.details.projectReferences.approvedGlossary.available, true);
@@ -962,7 +962,7 @@ await test("disabled glossary candidates stay readable but are absent from the c
     assert.deepEqual(readResult.details.projectReferences.directMatches.approvedGlossary, [
       { source: "Alice", target: "爱丽丝" }
     ], "the formal glossary must remain active when candidate collection is disabled");
-    assert.match(readResult.details.translationReference, /New glossary-candidate collection is disabled/i);
+    assert.match(readResult.details.translationReference, /Host asset switches.*system instructions/i);
     assert.equal(Object.hasOwn(validate.parameters.properties, "glossaryCandidates"), false);
     assert.equal(Object.hasOwn(validate.parameters.properties, "characterFacts"), true);
     const runtimeSpec = subagentRunner.createPiTranslationRuntimeSpec(context, progress);
@@ -2526,8 +2526,10 @@ await test("translation children execute the host-owned Pi prompt and receive va
     assert.doesNotMatch(userPrompt, /readProjectFile|readSourceLines|writeTranslationChunk/);
     assert.doesNotMatch(getCurrentSystemPrompt(firstContext.messages), /Current workflow glossary candidates|用語|Alice: calm/);
     const postReadMessages = JSON.stringify((postReadContext?.messages ?? []).filter((message) => message.role !== "system"));
-    assert.match(postReadMessages, /Built-in translate-text child workflow/);
-    assert.match(postReadMessages, /Translation Child Contract/);
+    assert.match(getCurrentSystemPrompt(firstContext.messages), /Built-in translate-text child workflow/);
+    assert.match(getCurrentSystemPrompt(firstContext.messages), /Translation Child Contract/);
+    assert.doesNotMatch(postReadMessages, /Translation Child Contract/,
+      "fixed guidance belongs to the stable system prefix rather than the changing source result");
     assert.doesNotMatch(postReadMessages, /Host Tool Sequence|Self-check Before Every Write|Non-Translate Patterns/);
     assert.match(postReadMessages, /projectReferences/);
     assert.match(postReadMessages, /glossary_candidates\.json/);
@@ -2625,9 +2627,10 @@ await test("proofreading children receive one aligned host context with the comp
     assert.doesNotMatch(userPrompt, /readAssignedSource|readAssignedTranslation|readProjectFile/);
     assert.doesNotMatch(getCurrentSystemPrompt(firstContext.messages), /Current workflow glossary candidates|术语目标|Alice: calm/);
     const postReadMessages = JSON.stringify((postReadContext?.messages ?? []).filter((message) => message.role !== "system"));
-    assert.match(postReadMessages, /Built-in proofread-translation child workflow/);
-    assert.match(postReadMessages, /Proofread Child Task Contract/);
-    assert.match(postReadMessages, /H1-001/);
+    assert.match(getCurrentSystemPrompt(firstContext.messages), /Proofread Child Task Contract/);
+    assert.match(postReadMessages, /Follow the built-in proofreading child workflow in the system instructions/);
+    assert.doesNotMatch(postReadMessages, /Proofread Child Task Contract/);
+    assert.match(getCurrentSystemPrompt(firstContext.messages), /H1-001/);
     assert.doesNotMatch(postReadMessages, /Reviewer Priorities|Severity Codes|Non-Negotiable Fix Contract/);
     assert.ok(postReadMessages.length < 10_000, `proofread child context is still bloated (${postReadMessages.length} chars)`);
     assert.match(postReadMessages, /projectReferences/);
@@ -2740,7 +2743,7 @@ await test("bounded repair keeps the same writable child alive and coaches it wi
     assert.match(initialPrompts.at(0) ?? "", /available:false means the asset does not exist and must not be probed/i);
     assert.match(
       coachingPrompts.at(-1) ?? "",
-      /Latest host tool rejection: Validation failed[\s\S]*entries\.0\.line: must be <= 1/i
+      /Latest host tool rejection: Translated entry L2 must stay inside L1-L1/i
     );
     assert.match(coachingPrompts.at(-1) ?? "", /still write-capable/i);
     const translated = await readFile(path.join(outputDir, "AI_translation", "source_translated.txt"), "utf8");

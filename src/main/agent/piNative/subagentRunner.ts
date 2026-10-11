@@ -1125,18 +1125,14 @@ async function boundedPriorDiscoveryContext(
   ].join("\n");
 }
 
-async function optionalContext(
-  request: PiSessionPromptRequest,
-  task: PiSubagentRangeTask
-): Promise<string> {
-  const sections: string[] = [];
-  if (request.style?.trim()) sections.push(`## Project style\n${request.style.trim()}`);
-  if (request.workDescription?.trim()) sections.push(`## Work description\n${request.workDescription.trim()}`);
-  const customPreserveContext = customPreserveRuleContext(request);
-  if (customPreserveContext) sections.push(customPreserveContext);
-  const priorDiscoveryContext = await boundedPriorDiscoveryContext(request, task);
-  if (priorDiscoveryContext) sections.push(priorDiscoveryContext);
-  return sections.join("\n\n");
+function stableProjectInstructions(request: PiSessionPromptRequest): string {
+  return [
+    `Language pair: ${request.languagePair}.`,
+    request.style?.trim() ? `## Project style\n${request.style.trim()}` : "",
+    request.workDescription?.trim() ? `## Work description\n${request.workDescription.trim()}` : "",
+    customPreserveRuleContext(request),
+    "Aligned formal glossary pairs (explicit aliases included) are not untranslated residue; review the remaining prose."
+  ].filter(Boolean).join("\n\n");
 }
 
 async function readPackagedProtocolReference(relativePath: string, label: string): Promise<string> {
@@ -1187,22 +1183,9 @@ async function translationReferenceContext(
   task: PiSubagentRangeTask
 ): Promise<string> {
   if (executionMode === "bounded_repair" || executionMode === "chunk_review_repair") return "";
-  const [guidance, projectContext] = await Promise.all([
-    readTranslationSubagentGuidance(),
-    optionalContext(request, task)
-  ]);
-  const assetSwitches = [
-    request.glossaryCandidates === false
-      ? "New glossary-candidate collection is disabled for this assignment. Existing candidate entries remain read-only translation references; do not construct or report new candidate discoveries."
-      : "Glossary-candidate collection is enabled for this assignment.",
-    request.characterBible === false
-      ? "New character-fact collection is disabled for this assignment. Existing character-bible entries remain read-only translation references; do not construct or report new character facts."
-      : "Character-fact collection is enabled for this assignment."
-  ].join(" ");
   return [
-    `## Built-in translate-text child workflow\n${guidance}`,
-    `## Host asset switches\n${assetSwitches}`,
-    projectContext
+    "Follow the built-in translation guide, Host asset switches, and project rules in the system instructions.",
+    await boundedPriorDiscoveryContext(request, task)
   ].filter(Boolean).join("\n\n");
 }
 
@@ -1403,7 +1386,6 @@ interface ProofreadReferenceBundle {
 
 interface ProofreadWorkerReferenceCache {
   signature?: string;
-  workflowSha256?: string;
   referenceSha256: Map<string, string>;
   bundle?: ProofreadReferenceBundle;
   projectKey?: string;
@@ -2301,8 +2283,8 @@ export function createPiTranslationSubagentTools(
   const readSchema = selectedRepairLines.length > 0
     ? Type.Object({}, { additionalProperties: false })
     : Type.Object({
-        fromLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine })),
-        toLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine }))
+        fromLine: Type.Optional(Type.Integer({ minimum: 1 })),
+        toLine: Type.Optional(Type.Integer({ minimum: 1 }))
       }, { additionalProperties: false });
   const translatedBlockSchema = Type.Object({
     id: Type.String({ description: "The exact sourceBlocks id." }),
@@ -2312,8 +2294,8 @@ export function createPiTranslationSubagentTools(
     })
   }, { additionalProperties: false });
   const writeSchema = Type.Object({
-    fromLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine })),
-    toLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine })),
+    fromLine: Type.Optional(Type.Integer({ minimum: 1 })),
+    toLine: Type.Optional(Type.Integer({ minimum: 1 })),
     blocks: Type.Array(translatedBlockSchema, {
       minItems: 1,
       description: "Initial bulk translation blocks. Mirror every sourceBlocks object and echo each compact relative line id exactly once."
@@ -2321,8 +2303,7 @@ export function createPiTranslationSubagentTools(
   }, { additionalProperties: false });
   const repairEntrySchema = Type.Object({
     line: Type.Integer({
-      minimum: context.task.fromLine,
-      maximum: context.task.toLine,
+      minimum: 1,
       description: "The exact absolute 1-based line from requiredBatchLines."
     }),
     translation: Type.String({
@@ -2331,8 +2312,8 @@ export function createPiTranslationSubagentTools(
     })
   }, { additionalProperties: false });
   const repairSchema = Type.Object({
-    fromLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine })),
-    toLine: Type.Optional(Type.Integer({ minimum: context.task.fromLine })),
+    fromLine: Type.Optional(Type.Integer({ minimum: 1 })),
+    toLine: Type.Optional(Type.Integer({ minimum: 1 })),
     entries: Type.Array(repairEntrySchema, {
       minItems: 1,
       maxItems: MAX_STRUCTURED_TRANSLATION_REPAIR_LINES,
@@ -2343,18 +2324,14 @@ export function createPiTranslationSubagentTools(
   const characterFactsEnabled = context.request.characterBible !== false;
   const validateSchema = Type.Object({
     fromLine: Type.Optional(Type.Integer({
-      minimum: context.task.fromLine,
-      maximum: context.task.toLine
+      minimum: 1
     })),
     toLine: Type.Optional(Type.Integer({
-      minimum: context.task.fromLine,
-      maximum: context.task.toLine
+      minimum: 1
     })),
     ...(context.executionMode === "bounded_repair" ? {
       misalignedLines: Type.Array(
-        Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }), {
-        maxItems: context.task.toLine - context.task.fromLine + 1
-      })
+        Type.Integer({ minimum: 1 }))
     } : {}),
     ...(glossaryCandidatesEnabled ? { glossaryCandidates: Type.Optional(Type.Array(Type.Object({
       source: Type.String({ minLength: 1 }),
@@ -2367,7 +2344,7 @@ export function createPiTranslationSubagentTools(
         Type.Literal("title"),
         Type.Literal("setting_term")
       ]),
-      evidenceLine: Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }),
+      evidenceLine: Type.Integer({ minimum: 1 }),
       rationale: Type.String({ minLength: 1, maxLength: 1_000 }),
       aliases: Type.Optional(Type.Array(Type.String({
         minLength: 1,
@@ -2380,7 +2357,7 @@ export function createPiTranslationSubagentTools(
     ...(characterFactsEnabled ? { characterFacts: Type.Optional(Type.Array(Type.Object({
       sourceName: Type.String({ minLength: 1 }),
       targetName: Type.Optional(Type.String({ minLength: 1 })),
-      evidenceLine: Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }),
+      evidenceLine: Type.Integer({ minimum: 1 }),
       evidence: Type.String({ minLength: 1, maxLength: 2_000 }),
       gender: Type.Union([
         Type.Literal("male"),
@@ -2410,7 +2387,7 @@ export function createPiTranslationSubagentTools(
       name: "readTranslationContext",
       label: "readTranslationContext",
       hostControl: "continue",
-      description: `Read a page of up to ${MAX_TRANSLATION_CONTEXT_LINES} numbered source and current-translation rows anywhere in the bound document for dialogue, pronoun, terminology, and scene context. Continue with nextFromLine as often as the translation requires. This is read-only and never expands the Host-owned write range L${context.task.fromLine}-L${context.task.toLine}.`,
+      description: `Read a page of up to ${MAX_TRANSLATION_CONTEXT_LINES} numbered source and current-translation rows anywhere in the bound document for dialogue, pronoun, terminology, and scene context. Continue with nextFromLine as often as the translation requires. This is read-only and never expands the Host-owned assignment write range.`,
       parameters: Type.Object({
         fromLine: Type.Integer({ minimum: 1 }),
         toLine: Type.Integer({ minimum: 1 })
@@ -2461,8 +2438,8 @@ export function createPiTranslationSubagentTools(
       label: "readAssignedSource",
       hostControl: "continue",
       description: context.executionMode === "bounded_repair" || context.executionMode === "chunk_review_repair"
-        ? `Read one ordered source chunk for the host-owned bounded repair inside L${context.task.fromLine}-L${context.task.toLine}. Use readProjectFile/searchProjectText on demand for relevant project or user-provided external references; only artifact writes are assignment-bound.`
-        : `Read one ordered source chunk for the host-owned write protocol inside L${context.task.fromLine}-L${context.task.toLine}, together with the complete built-in translation guide, canonical reference paths, and bounded direct glossary/character matches for this source. Use exact search for missing indexed terms and readProjectFile for other project, prior-translation, or user-provided external context; only artifact writes are assignment-bound.`,
+        ? "Read one ordered source chunk inside the host-owned bounded repair assignment. Use readProjectFile/searchProjectText on demand for relevant project or user-provided external references; only artifact writes are assignment-bound."
+        : "Read one ordered source chunk inside the host-owned write assignment, together with canonical reference paths and bounded direct glossary/character matches for this source. Follow the built-in translation guide in the system instructions. Use exact search for missing indexed terms and readProjectFile for other project, prior-translation, or user-provided external context; only artifact writes are assignment-bound.",
       parameters: readSchema,
       async execute(_toolCallId, params, signal) {
         throwIfAborted(context.signal, signal);
@@ -3141,7 +3118,7 @@ export function createPiProofreadSubagentTools(
       Type.Literal("title"),
       Type.Literal("setting_term")
     ]),
-    evidenceLine: Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }),
+    evidenceLine: Type.Integer({ minimum: 1 }),
     rationale: Type.String({ minLength: 1, maxLength: 1_000 }),
     aliases: Type.Optional(Type.Array(Type.String({
       minLength: 1,
@@ -3161,7 +3138,7 @@ export function createPiProofreadSubagentTools(
     {
       name: "readAssignedProofreadContext",
       label: "readAssignedProofreadContext",
-      description: `Read the aligned source and translation for L${context.task.fromLine}-L${context.task.toLine}, boundary context, deterministic host signals, the complete built-in proofreading workflow, and approved project references.`,
+      description: "Read the aligned source and translation for the Host-owned assignment, boundary context, deterministic host signals, and approved project references. Follow the built-in proofreading workflow in the system instructions.",
       parameters: emptySchema,
       async execute(_toolCallId, _params, signal) {
         throwIfAborted(context.signal, signal);
@@ -3288,10 +3265,6 @@ export function createPiProofreadSubagentTools(
             }];
           }));
         }
-        const workflowChanged = assignmentReferences?.cache.workflowSha256 !== bundle.workflow.sha256;
-        if (workflowChanged && assignmentReferences) {
-          assignmentReferences.cache.workflowSha256 = bundle.workflow.sha256;
-        }
         return textResult({
           assignmentFromLine: context.task.fromLine,
           assignmentToLine: context.task.toLine,
@@ -3322,9 +3295,7 @@ export function createPiProofreadSubagentTools(
                 sha256: bundle.workflow.sha256
               }
             },
-            ...(workflowChanged ? {
-              workflow: `## Built-in proofread-translation child workflow\n${bundle.workflow.content}`
-            } : {}),
+            workflow: "Follow the built-in proofreading child workflow in the system instructions.",
             references: referencesToInject.map(({ id, label, content, required, sourcePath, sha256 }) => ({
               id,
               label,
@@ -3642,7 +3613,7 @@ function createPiTranslationReviewRuntimeSpec(
       description: "Accept the selected review scope with no failures, or reject concrete bad lines with an actionable repair note. A clearly bad context row may be included; Host promotes it to repair debt and centers the next review window on it. Never emit per-line pass verdicts.",
       parameters: Type.Object({
         failures: Type.Array(Type.Object({
-          line: Type.Integer({ minimum: context.task.fromLine, maximum: context.task.toLine }),
+          line: Type.Integer({ minimum: 1 }),
           code: Type.String({ minLength: 1, maxLength: 80 }),
           note: Type.String({ minLength: 1, maxLength: 240 })
         }, { additionalProperties: false }))
@@ -3780,7 +3751,7 @@ function createPiTranslationAuditRuntimeSpec(
       description: "Submit one semantic verdict for every assigned line that requires semantic review.",
       parameters: Type.Object({
         entries: Type.Array(Type.Object({
-          line: Type.Integer({ minimum: fromLine, maximum: toLine }),
+          line: Type.Integer({ minimum: 1 }),
           verdict: Type.Union([
             Type.Literal("reuse"),
             Type.Literal("retranslate")
@@ -4280,26 +4251,52 @@ interface PiSubagentRuntimeSpec<TExtra extends object> {
   cardDetails?: (extra: TExtra) => Record<string, unknown>;
 }
 
+function subagentAssignmentTarget<TTask extends PiSubagentTaskBase & { fromLine?: number; toLine?: number }>(
+  context: PiSubagentContext<TTask>
+): string {
+  const target = context.task.documentId?.trim()
+    || (context.request.sourcePath?.trim() ? documentId(context.request) : undefined);
+  if (!target) return "";
+  return context.task.fromLine !== undefined && context.task.toLine !== undefined
+    ? `Your delegated task target is ${target} L${context.task.fromLine}-L${context.task.toLine}.`
+    : `Your delegated task target is ${target}.`;
+}
+
 async function subagentSystemPrompt<TTask extends PiSubagentTaskBase & { fromLine?: number; toLine?: number }, TExtra extends object>(
   context: PiSubagentContext<TTask>,
   spec: PiSubagentRuntimeSpec<TExtra>
 ): Promise<string> {
-  const targetDocumentId = context.task.documentId?.trim()
-    || (context.request.sourcePath?.trim() ? documentId(context.request) : undefined);
   const generalProjectStyle = spec.kind === "general"
     ? (await readProjectAssets({ outputDir: context.request.outputDir })).styleGuide.trim()
     : "";
+  const translationGuide = spec.kind === "translation"
+    && (context as PiTranslationSubagentContext).executionMode !== "bounded_repair"
+    && (context as PiTranslationSubagentContext).executionMode !== "chunk_review_repair"
+    ? await readTranslationSubagentGuidance()
+    : "";
+  const proofreadGuide = spec.kind === "proofread"
+    ? (await readProofreadSubagentGuidanceDocument()).content
+    : "";
   return [
     ...spec.systemPrompt,
-    targetDocumentId && context.task.fromLine !== undefined && context.task.toLine !== undefined
-      ? `Your delegated task target is ${targetDocumentId} L${context.task.fromLine}-L${context.task.toLine}. You may read any relevant project file, source context, or user-provided external reference; write-capable tools remain host-limited to this target.`
-      : targetDocumentId
-        ? `Your delegated task target is ${targetDocumentId}. You may read any relevant project file, source context, or user-provided external reference; write-capable tools remain host-limited to this target.`
-        : "You may read any relevant file in the current YN project. Stay focused on the task explicitly delegated by the parent.",
+    "The current assignment message and tool results identify the delegated target and exact owned lines. You may read any relevant project file, source context, or user-provided external reference; write-capable tools remain Host-limited to that assignment. Never widen its ownership.",
     spec.kind === "general"
       ? "Report concrete evidence and results to the parent. Do not launch another subagent."
       : "The artifact, not chat prose, is the output contract. Complete all mandatory tool calls before answering.",
-    generalProjectStyle ? `## Approved style guide\n${generalProjectStyle.slice(0, 24_000)}` : ""
+    stableProjectInstructions(context.request),
+    translationGuide ? `## Built-in translate-text child workflow\n${translationGuide}` : "",
+    spec.kind === "translation" ? [
+      "## Host asset switches",
+      context.request.glossaryCandidates === false
+        ? "New glossary-candidate collection is disabled. Existing candidates remain read-only references; do not construct or report new discoveries."
+        : "Glossary-candidate collection is enabled.",
+      context.request.characterBible === false
+        ? "New character-fact collection is disabled. Existing character records remain read-only references; do not report new facts."
+        : "Character-fact collection is enabled."
+    ].join("\n") : "",
+    proofreadGuide ? `## Built-in proofreading child workflow\n${proofreadGuide}` : "",
+    generalProjectStyle ? `## Approved style guide\n${generalProjectStyle.slice(0, 24_000)}` : "",
+    spec.kind === "general" ? subagentAssignmentTarget(context) : ""
   ].filter(Boolean).join("\n\n");
 }
 
@@ -5741,6 +5738,7 @@ function createPiProofreadRuntimeSpec(
         : context.task.reviewLines
           ? `Split-review only the ${context.task.reviewLines.length} Host-selected HOT-region aligned lines. Read every selected row; unlisted gap lines are boundary context, not owned findings.`
           : `Proofread the aligned ${assignmentDescription(context.task)}.`,
+      `Assigned document: ${documentId(context.request)}. Read-only envelope: L${context.task.fromLine}-L${context.task.toLine}. Findings may reference only Host-owned rows returned by readAssignedProofreadContext.`,
       ...(context.request.style?.trim() ? [`Project style: ${context.request.style.trim()}`] : []),
       ...(context.request.workDescription?.trim() ? [`Work description: ${context.request.workDescription.trim()}`] : []),
       ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
@@ -5930,7 +5928,6 @@ export async function createPiProofreadSubagentWorker(
         try {
           await assertProofreadAssignmentFiles(context.request);
           if (assignmentsStarted > 0) {
-            referenceCache.workflowSha256 = undefined;
             referenceCache.referenceSha256.clear();
           }
           const bundle = await proofreadReferenceBundle(context.request, referenceCache);
@@ -5938,7 +5935,6 @@ export async function createPiProofreadSubagentWorker(
           const referencesChanged = previousReferenceSignature !== undefined
             && previousReferenceSignature !== bundle.signature;
           if (referencesChanged) {
-            referenceCache.workflowSha256 = undefined;
             referenceCache.referenceSha256.clear();
           }
           const assignmentReferences: ProofreadAssignmentReferenceContext = {

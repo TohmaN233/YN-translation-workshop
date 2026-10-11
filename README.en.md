@@ -11,6 +11,7 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 ## What's new in 2.1.10
 
 - Fix oversized session loading, compact older sessions with verified backups, and reuse verified recovery state to avoid replaying history before chat; add loading progress and cancellation.
+- Stabilize translation, review, and proofreading child prompt and tool prefixes for cache reuse across chunks. Context still resets after each chunk, with unchanged Host scope validation.
 
 ## What's new in 2.1.9
 

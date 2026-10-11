@@ -1,4 +1,4 @@
-# YN Translation Workshop 2.1.9
+# YN Translation Workshop 2.1.10
 
 第一次了解 YN？可以先读[项目介绍 · YN Translation Workshop](https://tgy233.top/tgypage/yn/)，再按下面的教程开始使用。
 
@@ -7,6 +7,10 @@
 你可以完全关闭 Agent，只使用行对行网页前端手动翻译；也可以让内置 Harness 把整批初翻或校对拆给多个 Worker，并在机械校验、独立复审和完成门全部通过后，再由你逐条确认结果。
 
 [English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [发布下载](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## 2.1.10 更新
+
+- 修复超大会话读取失败；旧会话自动压缩重复状态并保留原文件备份，后台加载支持进度和停止。
 
 ## 2.1.9 更新
 
@@ -83,13 +87,13 @@
 
 ## 下载
 
-- Windows 安装版：`translation-workshop-Setup-2.1.9-x64.exe`
-- Windows 便携版：`translation-workshop-Portable-2.1.9-x64.exe`
+- Windows 安装版：`translation-workshop-Setup-2.1.10-x64.exe`
+- Windows 便携版：`translation-workshop-Portable-2.1.10-x64.exe`
 - 校验文件：`SHA256SUMS.txt`
 
 安装版可检查新版本并在下载后重启安装；便携版检测到更新时会打开 Release 页面。
 
-本地 2.1.9 构建位于 `release/`；公开包以[发布页面](https://github.com/TohmaN233/YN-translation-workshop/releases)实际上传的版本为准。
+本地 2.1.10 构建位于 `release/`；公开包以[发布页面](https://github.com/TohmaN233/YN-translation-workshop/releases)实际上传的版本为准。
 
 ## 完整功能清单
 
@@ -147,6 +151,7 @@
 - 工作进行中可发送 Steer，当前工作结束后可排队 Follow-up；Stop 会终止活动 runtime 和 Worker pool。
 - Parent 与 Child 使用同一套 Pi Agent runtime、`AgentMessage[]` 和 Pi JSONL 会话。
 - 长会话使用 Pi 原生 compaction；完整 Child 对话留在自己的 JSONL，Parent 只保存轻量状态和会话引用。
+- 大会话按需读取；旧 v4 会话打开时自动压缩重复状态并保留可校验的 gzip 原文件备份，详见[会话存储说明](docs/session-storage.md)。
 
 ### 5. 完整初翻 Workflow
 

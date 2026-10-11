@@ -12,6 +12,28 @@ import {
   type JsonValue,
   type Session
 } from "@earendil-works/pi-agent-core/node";
+import type { IndexedJsonlStorage } from "./indexedJsonlStorage.ts";
+import path from "node:path";
+
+const diskSessions = new WeakMap<object, { path: string; storage: IndexedJsonlStorage }>();
+const openDiskSessions = new Map<string, WeakRef<Session>>();
+const sessionPathKey = (filePath: string) => process.platform === "win32" ? path.resolve(filePath).toLowerCase() : path.resolve(filePath);
+export function registerDiskSession(session: Session, storage: IndexedJsonlStorage): void {
+  diskSessions.set(session, { path: storage.path, storage });
+  openDiskSessions.set(sessionPathKey(storage.path), new WeakRef(session));
+}
+export function unregisterDiskSession(session: Session): void {
+  const disk = diskSessions.get(session);
+  if (disk && openDiskSessions.get(sessionPathKey(disk.path))?.deref() === session) openDiskSessions.delete(sessionPathKey(disk.path));
+  diskSessions.delete(session);
+}
+/** Borrow for read-only inspection; the runtime retains its Session ownership. */
+export function getOpenDiskSession(filePath: string): Session | undefined {
+  return openDiskSessions.get(sessionPathKey(filePath))?.deref();
+}
+export function getDiskSessionAccess(session: Session): { path: string; storage: IndexedJsonlStorage } | undefined {
+  return diskSessions.get(session);
+}
 
 export const PI_SESSION_BRANCH = "main";
 
@@ -52,6 +74,26 @@ export async function readSessionEntries(session: Session): Promise<Entry[]> {
   return branch ? branch.findEntries({ order: "oldestFirst" }, BACKGROUND_CONTEXT) : [];
 }
 
+/** Read bounded pages; historical Host payloads must not accumulate in memory. */
+export async function* iterateSessionEntries(
+  session: Session,
+  options: { type?: Entry["type"]; customType?: string; afterSeq?: number } = {}
+): AsyncGenerator<Entry> {
+  const branch = await session.branch(PI_SESSION_BRANCH, BACKGROUND_CONTEXT);
+  if (!branch) return;
+  let cursor = options.afterSeq === undefined ? undefined : { seq: options.afterSeq };
+  while (true) {
+    const entries = await branch.findEntries({
+      order: "oldestFirst", limit: 32, cursor,
+      ...(options.type ? { type: options.type } : {}),
+      ...(options.customType ? { customType: options.customType } : {})
+    }, BACKGROUND_CONTEXT);
+    if (!entries.length) return;
+    for (const entry of entries) yield entry;
+    cursor = { seq: entries[entries.length - 1]!.seq };
+  }
+}
+
 /**
  * Source-adapted from Pi 0.99.1 harness/session/context.ts (MIT).
  * That helper is not a public package export. Keep its native retainedTail
@@ -62,12 +104,15 @@ export async function readSessionContext(
   session: Session,
   options: { includeFailedAssistant?: boolean } = {}
 ): Promise<{ messages: AgentMessage[] }> {
-  const entries = await readSessionEntries(session);
-  let compactionIndex = -1;
-  for (let index = entries.length - 1; index >= 0; index--) {
-    if (entries[index]?.type === "compaction") { compactionIndex = index; break; }
+  const branch = await session.branch(PI_SESSION_BRANCH, BACKGROUND_CONTEXT);
+  const compaction = await branch?.findEntry({ type: "compaction", order: "newestFirst" }, BACKGROUND_CONTEXT);
+  const contextEntries: Entry[] = compaction ? [compaction] : [];
+  for (const type of ["message", "branch_summary"] as const) {
+    for await (const entry of iterateSessionEntries(session, { type, afterSeq: compaction?.seq })) {
+      contextEntries.push(entry);
+    }
   }
-  const contextEntries = compactionIndex < 0 ? entries : entries.slice(compactionIndex);
+  contextEntries.sort((left, right) => left.seq - right.seq);
   const messages: AgentMessage[] = [];
   for (const entry of contextEntries) {
     switch (entry.type) {

@@ -12,7 +12,7 @@ try {
     platform: "node", format: "esm", outfile: path.join(fixture, "main.mjs"),
     banner: { js: 'import { createRequire as __ynCreateRequire } from "node:module"; const require = __ynCreateRequire(import.meta.url);' },
     external: ["electron", "electron-updater", "electron-updater/*", "extract-zip", "cheerio", "cheerio/*", "@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "@earendil-works/pi-agent-core", "@earendil-works/pi-agent-core/*"] });
-  for (const worker of ["translationValidationWorker.js", "proofreadPrescanWorker.js", "sourcePreparationWorker.js"]) {
+  for (const worker of ["translationValidationWorker.js", "proofreadPrescanWorker.js", "sourcePreparationWorker.js", "sessionIndexWorker.js", "sessionMaintenanceWorker.js", "sessionHostReplayWorker.js"]) {
     await copyFile(path.join(root, "dist", "main", worker), path.join(fixture, worker));
   }
   let stdout = "";

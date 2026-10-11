@@ -1,4 +1,4 @@
-# YN Translation Workshop 2.1.9
+# YN Translation Workshop 2.1.10
 
 New to YN? Start with the [project introduction (Chinese)](https://tgy233.top/tgypage/yn/), then follow the guide below to begin using the workshop.
 
@@ -7,6 +7,10 @@ A local workbench that brings human line editing, project assets, full AI transl
 You can keep the Agent disabled and use only the line-by-line web frontend, or let the built-in Harness divide a complete translation or proofreading run across Workers. Mechanical validation, independent review, and Host completion gates run before you approve the result.
 
 [中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases)
+
+## What's new in 2.1.10
+
+- Fix oversized session loading, automatically compact older sessions with verified backups, and add background loading progress and cancellation.
 
 ## What's new in 2.1.9
 
@@ -83,13 +87,13 @@ Terminology consistency, character voice, existing-translation reuse, and final 
 
 ## Download
 
-- Windows installer: `translation-workshop-Setup-2.1.9-x64.exe`
-- Windows portable build: `translation-workshop-Portable-2.1.9-x64.exe`
+- Windows installer: `translation-workshop-Setup-2.1.10-x64.exe`
+- Windows portable build: `translation-workshop-Portable-2.1.10-x64.exe`
 - Checksums: `SHA256SUMS.txt`
 
 The installed build can check for updates and restart into the downloaded installer. The portable build opens the Release page when an update is available.
 
-Local 2.1.9 artifacts are under `release/`; the releases page lists only versions actually uploaded.
+Local 2.1.10 artifacts are under `release/`; the releases page lists only versions actually uploaded.
 
 ## Complete feature list
 
@@ -147,6 +151,7 @@ Local 2.1.9 artifacts are under `release/`; the releases page lists only version
 - Send Steer while work is active and queue Follow-up after it settles. Stop terminates active runtimes and Worker pools.
 - Parent and Child use the same Pi Agent runtime, `AgentMessage[]`, and Pi JSONL sessions.
 - Long sessions use native Pi compaction. Full Child conversations stay in Child JSONL; the Parent stores only lightweight state and a session reference.
+- Large sessions load on demand. Older v4 sessions automatically compact repeated state on opening and retain a verified gzip backup of the original file; see [session storage](docs/session-storage.md).
 
 ### 5. Full initial-translation Workflow
 

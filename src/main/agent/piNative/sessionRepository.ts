@@ -3,11 +3,17 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { decodeProjectPaths } from "../../projectPaths.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/harness/context";
+import { withAbortSignal } from "@earendil-works/pi-agent-core/harness/context";
+import { IndexedJsonlStorage } from "./indexedJsonlStorage.ts";
+import { getDiskSessionAccess, getOpenDiskSession, registerDiskSession, unregisterDiskSession } from "./sessionAccess.ts";
+import { TornJsonlTailError } from "./jsonlRecords.ts";
+import { upgradePiSessionStorage, SESSION_STORAGE_MAINTENANCE_VERSION, type PiSessionStorageOptions } from "./sessionStorageMaintenance.ts";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 
 import {
   JsonlSessionRepo,
+  StorageBackedSession,
   NodeExecutionEnv,
   type AgentMessage,
   type JsonlSessionMetadata,
@@ -390,8 +396,10 @@ export class PiSessionRepository {
   readonly childRepo: JsonlSessionRepo;
   private readonly sessions = new Map<string, Promise<Session<JsonlSessionMetadata>>>();
   private readonly childSessions = new Map<string, Promise<Session<JsonlSessionMetadata>>>();
+  private readonly storageOptions: PiSessionStorageOptions;
 
-  constructor(workspaceDir: string) {
+  constructor(workspaceDir: string, storageOptions: PiSessionStorageOptions = {}) {
+    this.storageOptions = storageOptions;
     this.workspaceDir = path.resolve(workspaceDir);
     this.env = new NodeExecutionEnv({ cwd: this.workspaceDir });
     this.repo = new JsonlSessionRepo({ fileSystem: this.env, sessionsRoot: sessionsRoot(this.workspaceDir) });
@@ -400,8 +408,10 @@ export class PiSessionRepository {
 
   async create(id?: string): Promise<Session<JsonlSessionMetadata>> {
     const session = await this.repo.create({ cwd: this.workspaceDir, id }, BACKGROUND_CONTEXT);
-    this.sessions.set(session.metadata.id, Promise.resolve(session));
-    return session;
+    const metadata = session.metadata;
+    await session.close(BACKGROUND_CONTEXT);
+    await this.markNewSession(metadata.path);
+    return this.openOwned(metadata, false);
   }
 
   async createChild(id?: string, parentSessionId?: string): Promise<Session<JsonlSessionMetadata>> {
@@ -410,8 +420,15 @@ export class PiSessionRepository {
       id,
       ...(parentSessionId ? { parentSessionId } : {})
     }, BACKGROUND_CONTEXT);
-    this.childSessions.set(session.metadata.id, Promise.resolve(session));
-    return session;
+    const metadata = session.metadata;
+    await session.close(BACKGROUND_CONTEXT);
+    await this.markNewSession(metadata.path);
+    return this.openOwned(metadata, true);
+  }
+
+  private async markNewSession(filePath: string): Promise<void> {
+    const header = await readSessionHeader(filePath);
+    await writeTextFileAtomically(filePath, `${JSON.stringify({ ...header, ynSessionStorageVersion: SESSION_STORAGE_MAINTENANCE_VERSION })}\n`);
   }
 
   async listChildMetadata(): Promise<JsonlSessionMetadata[]> {
@@ -444,6 +461,64 @@ export class PiSessionRepository {
     return this.openOwned(child, true);
   }
 
+  async withChildSessionReadForParent<T>(
+    childSessionId: string,
+    parentSessionId: string,
+    reader: (session: Session<JsonlSessionMetadata>) => Promise<T>
+  ): Promise<T> {
+    const [child, parent] = await Promise.all([
+      this.findChildMetadata(childSessionId),
+      this.findMetadata(parentSessionId)
+    ]);
+    if (!child) throw new Error(`Pi child session ${childSessionId} was not found.`);
+    if (!parent) throw new Error(`Pi session ${parentSessionId} was not found.`);
+    if (!await this.belongsToParent(child, parent)) {
+      throw new Error(`Pi child session ${childSessionId} does not belong to Pi session ${parentSessionId}.`);
+    }
+    return this.withChildSessionReadOwned(child, reader);
+  }
+
+  /**
+   * Read a child session minted by the session-scoped supervisor. The caller
+   * must already have established that ownership boundary; UI reads should use
+   * withChildSessionReadForParent instead.
+   */
+  async withChildSessionRead<T>(
+    childSessionId: string,
+    reader: (session: Session<JsonlSessionMetadata>) => Promise<T>
+  ): Promise<T> {
+    const child = await this.findChildMetadata(childSessionId);
+    if (!child) throw new Error(`Pi child session ${childSessionId} was not found.`);
+    return this.withChildSessionReadOwned(child, reader);
+  }
+
+  private async withChildSessionReadOwned<T>(
+    metadata: JsonlSessionMetadata,
+    reader: (session: Session<JsonlSessionMetadata>) => Promise<T>
+  ): Promise<T> {
+    const borrowed = getOpenDiskSession(metadata.path);
+    if (borrowed) {
+      const borrowedPath = getDiskSessionAccess(borrowed)?.path;
+      if (borrowed.metadata.id !== metadata.id || !borrowedPath || path.resolve(borrowedPath) !== path.resolve(metadata.path)) {
+        throw new Error(`Open Pi child session identity changed: ${metadata.id}.`);
+      }
+      const borrowedChild = borrowed as Session<JsonlSessionMetadata>;
+      // The Pi Session mutation line excludes a writer append or close until a
+      // transcript snapshot has finished. Never close a borrowed runtime owner.
+      return borrowedChild.mutate(() => reader(borrowedChild), BACKGROUND_CONTEXT);
+    }
+
+    const session = await this.openOwned(metadata, true);
+    try {
+      if (session.metadata.id !== metadata.id || path.resolve(session.metadata.path) !== path.resolve(metadata.path)) {
+        throw new Error(`Pi child session identity changed: ${metadata.id}.`);
+      }
+      return await session.mutate(() => reader(session), BACKGROUND_CONTEXT);
+    } finally {
+      await this.closeChildSession(metadata.id);
+    }
+  }
+
   async listMetadata(): Promise<JsonlSessionMetadata[]> {
     return this.listProjectMetadata(this.repo);
   }
@@ -464,10 +539,10 @@ export class PiSessionRepository {
     return (await this.listMetadata()).find((item) => item.id === sessionId);
   }
 
-  async open(sessionId: string): Promise<Session<JsonlSessionMetadata>> {
+  async open(sessionId: string, options?: PiSessionStorageOptions): Promise<Session<JsonlSessionMetadata>> {
     const metadata = await this.findMetadata(sessionId);
     if (!metadata) throw new Error(`Pi session ${sessionId} was not found.`);
-    return this.openOwned(metadata, false);
+    return this.openOwned(metadata, false, options);
   }
 
   async delete(sessionId: string): Promise<boolean> {
@@ -516,7 +591,7 @@ export class PiSessionRepository {
     return true;
   }
 
-  private async openOwned(metadata: JsonlSessionMetadata, child: boolean): Promise<Session<JsonlSessionMetadata>> {
+  private async openOwned(metadata: JsonlSessionMetadata, child: boolean, options = this.storageOptions): Promise<Session<JsonlSessionMetadata>> {
     const cache = child ? this.childSessions : this.sessions;
     const existing = cache.get(metadata.id);
     if (existing) return existing;
@@ -528,7 +603,32 @@ export class PiSessionRepository {
           }
         });
       } else await migrateLegacyParentSession(this.workspaceDir, metadata.path);
-      return (child ? this.childRepo : this.repo).open(metadata, BACKGROUND_CONTEXT);
+      if ((await readSessionHeader(metadata.path)).v !== 4) {
+        return (child ? this.childRepo : this.repo).open(metadata, BACKGROUND_CONTEXT);
+      }
+      await upgradePiSessionStorage(metadata.path, options);
+      const context = options.signal ? withAbortSignal(options.signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT;
+      const openIndexed = () => IndexedJsonlStorage.open(metadata.path, context, {
+        onProgress: (progress) => options.onProgress?.({ phase: progress.phase === "complete" ? "complete" : "index",
+          processedBytes: progress.bytes ?? 0, totalBytes: progress.totalBytes ?? 0 })
+      });
+      let storage;
+      try { storage = await openIndexed(); }
+      catch (error) {
+        if (!(error instanceof TornJsonlTailError)) throw error;
+        await upgradePiSessionStorage(metadata.path, options, true);
+        storage = await openIndexed();
+      }
+      if (storage.header.id !== metadata.id || storage.header.cwd !== metadata.cwd) {
+        await storage.close(BACKGROUND_CONTEXT);
+        throw new Error(`Pi session storage identity changed: ${metadata.id}.`);
+      }
+      const session = new StorageBackedSession(metadata, storage, { onClose: () => {
+        unregisterDiskSession(session);
+        cache.delete(metadata.id);
+      } });
+      registerDiskSession(session, storage);
+      return session;
     })();
     cache.set(metadata.id, opening);
     try { return await opening; }

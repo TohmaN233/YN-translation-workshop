@@ -22,7 +22,11 @@ The 0.99.1 core migration also source-adapts Pi's MIT-licensed
 `harness/session/context.ts` projection in
 `src/main/agent/piNative/sessionAccess.ts`, because that helper is not a public
 package export. Storage transactions, branches and compaction entries remain
-native Pi structures. `src/shared/agent/piLegacyConfiguredModels.ts` contains
+native Pi structures. The disk-indexed Storage implementation in
+`src/main/agent/piNative/indexedJsonlStorage.ts` also adapts native Storage query,
+list, branch and usage aggregation semantics from Pi 0.99.1 (MIT). It preserves
+Pi transaction validation and Session APIs while loading historical payloads
+on demand. `src/shared/agent/piLegacyConfiguredModels.ts` contains
 official 0.80.6 catalog metadata only for explicitly configured model IDs removed
 from 0.99.1; it is a migration input, not a maintained replacement catalog.
 

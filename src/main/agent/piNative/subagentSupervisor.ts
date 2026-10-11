@@ -2,7 +2,7 @@ import { readSessionContext } from "./sessionAccess.ts";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
-import { BACKGROUND_CONTEXT, type AgentMessage } from "@earendil-works/pi-agent-core/node";
+import type { AgentMessage } from "@earendil-works/pi-agent-core/node";
 
 import type { PiSessionPromptRequest } from "../../../shared/agent/piSessionContract.ts";
 import type { createPiModelSelection } from "./providerRegistry.ts";
@@ -865,12 +865,9 @@ export class YnSubagentSupervisor {
       // The session-scoped supervisor minted this child ID and never accepts an
       // arbitrary ID into its records, so reopening that exact child is the
       // ownership boundary after the live control closure has been released.
-      const child = await new PiSessionRepository(record.outputDir).openChild(record.id);
-      try {
-        return (await readSessionContext(child)).messages;
-      } finally {
-        await child.close(BACKGROUND_CONTEXT);
-      }
+      return new PiSessionRepository(record.outputDir).withChildSessionRead(record.id, (child) => (
+        readSessionContext(child).then(({ messages }) => messages)
+      ));
     }
     return [];
   }

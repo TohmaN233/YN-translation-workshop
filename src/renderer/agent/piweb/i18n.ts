@@ -56,6 +56,10 @@ export interface AgentUiStrings {
   providerFailed: string;
   notSelected: string;
   loadingSession: string;
+  preparingSession: string;
+  storageProgress: string;
+  stopStoragePreparation: string;
+  storageStages: Record<"scan" | "verify" | "backup" | "publish" | "index" | "replay" | "complete", string>;
   subagentsRunning: string;
   commands: string;
   noMatchingCommand: string;
@@ -242,6 +246,10 @@ export const agentUiStrings: Record<AgentUiLocale, AgentUiStrings> = {
     providerFailed: "模型服务失败，但没有返回错误信息。",
     notSelected: "未选择",
     loadingSession: "正在加载会话…",
+    preparingSession: "正在准备会话存储…",
+    storageProgress: "{stage} · {percent}%",
+    stopStoragePreparation: "停止加载",
+    storageStages: { scan: "扫描会话文件", verify: "校验数据", backup: "准备备份", publish: "写入压缩文件", index: "建立会话索引", replay: "恢复并核验任务状态", complete: "会话存储就绪" },
     subagentsRunning: "{count} 个子 Agent 运行中 · 主 Agent 可交互",
     commands: "命令",
     noMatchingCommand: "没有匹配的命令",
@@ -357,6 +365,10 @@ export const agentUiStrings: Record<AgentUiLocale, AgentUiStrings> = {
     providerFailed: "The model provider failed without an error message.",
     notSelected: "Not selected",
     loadingSession: "Loading session…",
+    preparingSession: "Preparing session storage…",
+    storageProgress: "{stage} · {percent}%",
+    stopStoragePreparation: "Stop loading",
+    storageStages: { scan: "Scanning session files", verify: "Verifying data", backup: "Preparing backup", publish: "Publishing compacted data", index: "Building session index", replay: "Restoring and verifying task state", complete: "Session storage ready" },
     subagentsRunning: "{count} subagent(s) running · Main Agent available",
     commands: "Commands",
     noMatchingCommand: "No matching command",

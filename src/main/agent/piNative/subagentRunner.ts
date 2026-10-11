@@ -3925,6 +3925,25 @@ export interface PiTranslationReviewSubagentWorker {
   dispose: () => Promise<void>;
 }
 
+/** Every acquired child owns a persistent handle, including failed initialization and Stop. */
+async function closeChildResources(
+  session: Session,
+  runtime: PiSessionAgentRuntime | undefined,
+  failures: unknown[] = [],
+  pendingAbort?: Promise<unknown>,
+  removeAbortListener?: () => void
+): Promise<void> {
+  const errors = [...failures];
+  try { removeAbortListener?.(); } catch (error) { errors.push(error); }
+  if (pendingAbort) {
+    try { await pendingAbort; } catch (error) { errors.push(error); }
+  }
+  try { runtime?.dispose(); } catch (error) { errors.push(error); }
+  try { await session.close(BACKGROUND_CONTEXT); } catch (error) { errors.push(error); }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "Pi child operation and resource cleanup failed.");
+}
+
 export async function createPiTranslationReviewSubagentWorker(
   initialContext: PiTranslationReviewSubagentContext & { workerLabel?: string }
 ): Promise<PiTranslationReviewSubagentWorker> {
@@ -3940,136 +3959,143 @@ export async function createPiTranslationReviewSubagentWorker(
     subagentId,
     initialContext.request.sessionId
   );
-  const initialSpec = createPiTranslationReviewRuntimeSpec(initialContext);
-  const runtime = new PiSessionAgentRuntime({
-    session,
-    sessionId: subagentId,
-    models: selection.models,
-    model: selection.model,
-    thinkingLevel: resolveThinkingLevelForModel(selection.model, initialContext.request.thinkingLevel),
-    tools: initialSpec.tools(subagentId),
-    systemPrompt: await subagentSystemPrompt(initialContext, initialSpec),
-    providerStreamTimeouts: initialContext.providerStreamTimeouts,
-    retry: CHILD_RUNTIME_RETRY
-  });
-  const workerStartedAt = Date.now();
-  let assignmentsStarted = 0;
-  let lastContext = initialContext;
-  let lastSpec = initialSpec;
-  let lastLabel = label;
-  let disposed = false;
-  let runtimeAbort: Promise<unknown> | undefined;
-  const abortRuntime = () => runtimeAbort ??= runtime.abort();
-  const onAbort = () => { void abortRuntime().catch(() => undefined); };
-  initialContext.signal?.addEventListener("abort", onAbort, { once: true });
-  const control: PiSubagentControl = {
-    inspect: async () => (await readSessionContext(session)).messages,
-    steer: async (text) => runtime.queueSteer(text),
-    followUp: async (text) => runtime.followUp(text),
-    abort: async () => { await abortRuntime(); }
-  };
-  initialContext.registerControl?.(control);
+  let initializationRuntime: PiSessionAgentRuntime | undefined;
+  let initializationAbort: Promise<unknown> | undefined;
+  let removeInitializationAbortListener: (() => void) | undefined;
+  try {
+    const initialSpec = createPiTranslationReviewRuntimeSpec(initialContext);
+    const runtime = new PiSessionAgentRuntime({
+      session,
+      sessionId: subagentId,
+      models: selection.models,
+      model: selection.model,
+      thinkingLevel: resolveThinkingLevelForModel(selection.model, initialContext.request.thinkingLevel),
+      tools: initialSpec.tools(subagentId),
+      systemPrompt: await subagentSystemPrompt(initialContext, initialSpec),
+      providerStreamTimeouts: initialContext.providerStreamTimeouts,
+      retry: CHILD_RUNTIME_RETRY
+    });
+    initializationRuntime = runtime;
+    const workerStartedAt = Date.now();
+    let assignmentsStarted = 0;
+    let lastContext = initialContext;
+    let lastSpec = initialSpec;
+    let lastLabel = label;
+    let disposed = false;
+    let runtimeAbort: Promise<unknown> | undefined;
+    const abortRuntime = () => initializationAbort = runtimeAbort ??= runtime.abort();
+    const onAbort = () => { void abortRuntime().catch(() => undefined); };
+    removeInitializationAbortListener = () => initialContext.signal?.removeEventListener("abort", onAbort);
+    initialContext.signal?.addEventListener("abort", onAbort, { once: true });
+    const control: PiSubagentControl = {
+      inspect: async () => (await readSessionContext(session)).messages,
+      steer: async (text) => runtime.queueSteer(text),
+      followUp: async (text) => runtime.followUp(text),
+      abort: async () => { await abortRuntime(); }
+    };
+    initialContext.registerControl?.(control);
 
-  return {
-    control,
-    async runAssignment(context) {
-      if (disposed) throw new Error(`Pi translation review worker ${subagentId} is disposed.`);
-      throwIfAborted(initialContext.signal, context.signal);
-      const spec = createPiTranslationReviewRuntimeSpec(context);
-      const assignmentLabel = context.task.label?.trim() || label;
-      lastContext = context;
-      lastSpec = spec;
-      lastLabel = assignmentLabel;
-      if (assignmentsStarted > 0) runtime.resetContext();
-      runtime.reconfigure({
-        tools: spec.tools(subagentId),
-        systemPrompt: await subagentSystemPrompt(context, spec)
-      });
-      assignmentsStarted += 1;
-      await (context.publishLiveCustomMessage ?? context.publishCustomMessage)(subagentCard({
-        kind: "translation-review",
-        id: subagentId,
-        label: assignmentLabel,
-        status: "running",
-        prompt: spec.taskPrompt,
-        task: context.task,
-        providerId: selection.providerId,
-        modelId: selection.modelId,
-        modelName: selection.model.name,
-        startedAt: workerStartedAt,
-        extraDetails: {
-          activity: `reviewing assignment ${assignmentsStarted}`,
-          reviewer: true,
-          riskLineCount: context.task.riskLineCount,
-          sampledLineCount: context.task.sampledLineCount
-        }
-      }));
-      const outcome = await spec.execute(runtime, session, spec.taskPrompt);
-      await (context.publishLiveCustomMessage ?? context.publishCustomMessage)(subagentCard({
-        kind: "translation-review",
-        id: subagentId,
-        label: assignmentLabel,
-        status: "running",
-        prompt: spec.taskPrompt,
-        reply: outcome.reply,
-        resultSummary: outcome.resultSummary,
-        task: context.task,
-        providerId: selection.providerId,
-        modelId: selection.modelId,
-        modelName: selection.model.name,
-        startedAt: workerStartedAt,
-        extraDetails: {
-          activity: outcome.extra.decision.accepted ? "review accepted" : "repair requested",
-          reviewer: true,
-          riskLineCount: context.task.riskLineCount,
-          sampledLineCount: context.task.sampledLineCount
-        }
-      }));
-      return {
-        subagentId,
-        label: assignmentLabel,
-        documentId: context.task.documentId,
-        fromLine: context.task.fromLine,
-        toLine: context.task.toLine,
-        providerId: selection.providerId,
-        modelId: selection.modelId,
-        modelName: selection.model.name,
-        reply: outcome.reply,
-        resultSummary: outcome.resultSummary,
-        decision: outcome.extra.decision
-      };
-    },
-    async finish(outcome) {
-      await initialContext.publishCustomMessage(subagentCard({
-        kind: "translation-review",
-        id: subagentId,
-        label: lastLabel,
-        status: outcome.status,
-        prompt: lastSpec.taskPrompt,
-        resultSummary: `${outcome.completedAssignments}/${outcome.assignmentCount} review assignments settled.`,
-        error: outcome.error,
-        task: lastContext.task,
-        providerId: selection.providerId,
-        modelId: selection.modelId,
-        modelName: selection.model.name,
-        startedAt: workerStartedAt,
-        finishedAt: Date.now(),
-        extraDetails: {
-          reviewer: true,
-          assignmentCount: outcome.assignmentCount,
-          completedAssignments: outcome.completedAssignments
-        }
-      }));
-    },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      initialContext.signal?.removeEventListener("abort", onAbort);
-      if (runtimeAbort) await runtimeAbort;
-      runtime.dispose();
-      await session.close(BACKGROUND_CONTEXT);
-    }
-  };
+    return {
+      control,
+      async runAssignment(context) {
+        if (disposed) throw new Error(`Pi translation review worker ${subagentId} is disposed.`);
+        throwIfAborted(initialContext.signal, context.signal);
+        const spec = createPiTranslationReviewRuntimeSpec(context);
+        const assignmentLabel = context.task.label?.trim() || label;
+        lastContext = context;
+        lastSpec = spec;
+        lastLabel = assignmentLabel;
+        if (assignmentsStarted > 0) runtime.resetContext();
+        runtime.reconfigure({
+          tools: spec.tools(subagentId),
+          systemPrompt: await subagentSystemPrompt(context, spec)
+        });
+        assignmentsStarted += 1;
+        await (context.publishLiveCustomMessage ?? context.publishCustomMessage)(subagentCard({
+          kind: "translation-review",
+          id: subagentId,
+          label: assignmentLabel,
+          status: "running",
+          prompt: spec.taskPrompt,
+          task: context.task,
+          providerId: selection.providerId,
+          modelId: selection.modelId,
+          modelName: selection.model.name,
+          startedAt: workerStartedAt,
+          extraDetails: {
+            activity: `reviewing assignment ${assignmentsStarted}`,
+            reviewer: true,
+            riskLineCount: context.task.riskLineCount,
+            sampledLineCount: context.task.sampledLineCount
+          }
+        }));
+        const outcome = await spec.execute(runtime, session, spec.taskPrompt);
+        await (context.publishLiveCustomMessage ?? context.publishCustomMessage)(subagentCard({
+          kind: "translation-review",
+          id: subagentId,
+          label: assignmentLabel,
+          status: "running",
+          prompt: spec.taskPrompt,
+          reply: outcome.reply,
+          resultSummary: outcome.resultSummary,
+          task: context.task,
+          providerId: selection.providerId,
+          modelId: selection.modelId,
+          modelName: selection.model.name,
+          startedAt: workerStartedAt,
+          extraDetails: {
+            activity: outcome.extra.decision.accepted ? "review accepted" : "repair requested",
+            reviewer: true,
+            riskLineCount: context.task.riskLineCount,
+            sampledLineCount: context.task.sampledLineCount
+          }
+        }));
+        return {
+          subagentId,
+          label: assignmentLabel,
+          documentId: context.task.documentId,
+          fromLine: context.task.fromLine,
+          toLine: context.task.toLine,
+          providerId: selection.providerId,
+          modelId: selection.modelId,
+          modelName: selection.model.name,
+          reply: outcome.reply,
+          resultSummary: outcome.resultSummary,
+          decision: outcome.extra.decision
+        };
+      },
+      async finish(outcome) {
+        await initialContext.publishCustomMessage(subagentCard({
+          kind: "translation-review",
+          id: subagentId,
+          label: lastLabel,
+          status: outcome.status,
+          prompt: lastSpec.taskPrompt,
+          resultSummary: `${outcome.completedAssignments}/${outcome.assignmentCount} review assignments settled.`,
+          error: outcome.error,
+          task: lastContext.task,
+          providerId: selection.providerId,
+          modelId: selection.modelId,
+          modelName: selection.model.name,
+          startedAt: workerStartedAt,
+          finishedAt: Date.now(),
+          extraDetails: {
+            reviewer: true,
+            assignmentCount: outcome.assignmentCount,
+            completedAssignments: outcome.completedAssignments
+          }
+        }));
+      },
+      async dispose() {
+        if (disposed) return;
+        disposed = true;
+        await closeChildResources(session, runtime, [], runtimeAbort, removeInitializationAbortListener);
+      }
+    };
+  } catch (error) {
+    await closeChildResources(session, initializationRuntime, [error], initializationAbort, removeInitializationAbortListener);
+    throw error;
+  }
 }
 
 export interface PiTranslationAuditSubagentWorker {
@@ -4096,89 +4122,96 @@ export async function createPiTranslationAuditSubagentWorker(
     subagentId,
     initialContext.request.sessionId
   );
-  const initialSpec = createPiTranslationAuditRuntimeSpec(initialContext);
-  const runtime = new PiSessionAgentRuntime({
-    session,
-    sessionId: subagentId,
-    models: selection.models,
-    model: selection.model,
-    thinkingLevel: resolveThinkingLevelForModel(selection.model, initialContext.request.thinkingLevel),
-    tools: initialSpec.tools(subagentId),
-    systemPrompt: await subagentSystemPrompt(initialContext, initialSpec),
-    providerStreamTimeouts: initialContext.providerStreamTimeouts,
-    retry: CHILD_RUNTIME_RETRY
-  });
-  let assignmentsStarted = 0;
-  let disposed = false;
-  let activeSignal: AbortSignal | undefined;
-  let runtimeAbort: Promise<unknown> | undefined;
-  const abortRuntime = () => runtimeAbort ??= runtime.abort();
-  const onAbort = () => { void abortRuntime().catch(() => undefined); };
-  initialContext.signal?.addEventListener("abort", onAbort, { once: true });
-  const control: PiSubagentControl = {
-    inspect: async () => (await readSessionContext(session)).messages,
-    steer: async (text) => runtime.queueSteer(text),
-    followUp: async (text) => runtime.followUp(text),
-    abort: async () => { await abortRuntime(); }
-  };
-  initialContext.registerControl?.(control);
+  let initializationRuntime: PiSessionAgentRuntime | undefined;
+  let initializationAbort: Promise<unknown> | undefined;
+  let removeInitializationAbortListener: (() => void) | undefined;
+  try {
+    const initialSpec = createPiTranslationAuditRuntimeSpec(initialContext);
+    const runtime = new PiSessionAgentRuntime({
+      session,
+      sessionId: subagentId,
+      models: selection.models,
+      model: selection.model,
+      thinkingLevel: resolveThinkingLevelForModel(selection.model, initialContext.request.thinkingLevel),
+      tools: initialSpec.tools(subagentId),
+      systemPrompt: await subagentSystemPrompt(initialContext, initialSpec),
+      providerStreamTimeouts: initialContext.providerStreamTimeouts,
+      retry: CHILD_RUNTIME_RETRY
+    });
+    initializationRuntime = runtime;
+    let assignmentsStarted = 0;
+    let disposed = false;
+    let activeSignal: AbortSignal | undefined;
+    let runtimeAbort: Promise<unknown> | undefined;
+    const abortRuntime = () => initializationAbort = runtimeAbort ??= runtime.abort();
+    const onAbort = () => { void abortRuntime().catch(() => undefined); };
+    removeInitializationAbortListener = () => initialContext.signal?.removeEventListener("abort", onAbort);
+    initialContext.signal?.addEventListener("abort", onAbort, { once: true });
+    const control: PiSubagentControl = {
+      inspect: async () => (await readSessionContext(session)).messages,
+      steer: async (text) => runtime.queueSteer(text),
+      followUp: async (text) => runtime.followUp(text),
+      abort: async () => { await abortRuntime(); }
+    };
+    initialContext.registerControl?.(control);
 
-  return {
-    control,
-    async runAssignment(context) {
-      if (disposed) throw new Error(`Pi translation audit worker ${subagentId} is disposed.`);
-      throwIfAborted(initialContext.signal, context.signal);
-      activeSignal = context.signal;
-      const spec = createPiTranslationAuditRuntimeSpec(context);
-      if (assignmentsStarted > 0) runtime.resetContext();
-      runtime.reconfigure({
-        tools: spec.tools(subagentId),
-        systemPrompt: await subagentSystemPrompt(context, spec)
-      });
-      assignmentsStarted += 1;
-      const startedAt = Date.now();
-      await (context.publishLiveCustomMessage ?? context.publishCustomMessage)(subagentCard({
-        kind: "general", id: subagentId, label, status: "running", prompt: spec.taskPrompt,
-        task: context.task, providerId: selection.providerId, modelId: selection.modelId,
-        modelName: selection.model.name, startedAt,
-        extraDetails: { activity: `auditing assignment ${assignmentsStarted}` }
-      }));
-      const outcome = await spec.execute(runtime, session, spec.taskPrompt);
-      activeSignal = undefined;
-      return {
-        subagentId,
-        label,
-        documentId: context.task.documentId,
-        fromLine: context.task.fromLine,
-        toLine: context.task.toLine,
-        providerId: selection.providerId,
-        modelId: selection.modelId,
-        modelName: selection.model.name,
-        reply: outcome.reply,
-        resultSummary: outcome.resultSummary,
-        ...outcome.extra
-      };
-    },
-    async finish(outcome) {
-      await initialContext.publishCustomMessage(subagentCard({
-        kind: "general", id: subagentId, label, status: outcome.status,
-        prompt: initialSpec.taskPrompt,
-        resultSummary: `${outcome.completedAssignments}/${outcome.assignmentCount} audit assignments settled.`,
-        error: outcome.error, task: initialContext.task, providerId: selection.providerId,
-        modelId: selection.modelId, modelName: selection.model.name, startedAt: Date.now(), finishedAt: Date.now(),
-        extraDetails: { assignmentCount: outcome.assignmentCount, completedAssignments: outcome.completedAssignments }
-      }));
-    },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      initialContext.signal?.removeEventListener("abort", onAbort);
-      if (runtimeAbort) await runtimeAbort;
-      runtime.dispose();
-      await session.close(BACKGROUND_CONTEXT);
-      void activeSignal;
-    }
-  };
+    return {
+      control,
+      async runAssignment(context) {
+        if (disposed) throw new Error(`Pi translation audit worker ${subagentId} is disposed.`);
+        throwIfAborted(initialContext.signal, context.signal);
+        activeSignal = context.signal;
+        const spec = createPiTranslationAuditRuntimeSpec(context);
+        if (assignmentsStarted > 0) runtime.resetContext();
+        runtime.reconfigure({
+          tools: spec.tools(subagentId),
+          systemPrompt: await subagentSystemPrompt(context, spec)
+        });
+        assignmentsStarted += 1;
+        const startedAt = Date.now();
+        await (context.publishLiveCustomMessage ?? context.publishCustomMessage)(subagentCard({
+          kind: "general", id: subagentId, label, status: "running", prompt: spec.taskPrompt,
+          task: context.task, providerId: selection.providerId, modelId: selection.modelId,
+          modelName: selection.model.name, startedAt,
+          extraDetails: { activity: `auditing assignment ${assignmentsStarted}` }
+        }));
+        const outcome = await spec.execute(runtime, session, spec.taskPrompt);
+        activeSignal = undefined;
+        return {
+          subagentId,
+          label,
+          documentId: context.task.documentId,
+          fromLine: context.task.fromLine,
+          toLine: context.task.toLine,
+          providerId: selection.providerId,
+          modelId: selection.modelId,
+          modelName: selection.model.name,
+          reply: outcome.reply,
+          resultSummary: outcome.resultSummary,
+          ...outcome.extra
+        };
+      },
+      async finish(outcome) {
+        await initialContext.publishCustomMessage(subagentCard({
+          kind: "general", id: subagentId, label, status: outcome.status,
+          prompt: initialSpec.taskPrompt,
+          resultSummary: `${outcome.completedAssignments}/${outcome.assignmentCount} audit assignments settled.`,
+          error: outcome.error, task: initialContext.task, providerId: selection.providerId,
+          modelId: selection.modelId, modelName: selection.model.name, startedAt: Date.now(), finishedAt: Date.now(),
+          extraDetails: { assignmentCount: outcome.assignmentCount, completedAssignments: outcome.completedAssignments }
+        }));
+      },
+      async dispose() {
+        if (disposed) return;
+        disposed = true;
+        await closeChildResources(session, runtime, [], runtimeAbort, removeInitializationAbortListener);
+        void activeSignal;
+      }
+    };
+  } catch (error) {
+    await closeChildResources(session, initializationRuntime, [error], initializationAbort, removeInitializationAbortListener);
+    throw error;
+  }
 }
 
 function subagentCard(args: {
@@ -4292,55 +4325,65 @@ async function runPiSubagentRuntime<
     subagentId,
     context.request.sessionId
   );
-  throwIfAborted(context.signal);
   const taskPrompt = spec.taskPrompt;
   const startedAt = Date.now();
-  const tools = spec.tools(subagentId);
-  const translationTools = spec.kind === "translation"
-    ? requireTranslationToolCapabilities(tools)
-    : undefined;
-  const runtime = new PiSessionAgentRuntime({
-    session,
-    sessionId: subagentId,
-    models: selection.models,
-    model: selection.model,
-    thinkingLevel: resolveThinkingLevelForModel(selection.model, context.request.thinkingLevel),
-    tools,
-    systemPrompt: await subagentSystemPrompt(context, spec),
-    providerStreamTimeouts: context.providerStreamTimeouts,
-    retry: CHILD_RUNTIME_RETRY,
-    afterToolCall: translationTools
-      ? createTranslationWriteBatchHandoff(translationTools)
-      : undefined
-  });
+  let runtime!: PiSessionAgentRuntime;
   let runtimeAbort: Promise<unknown> | undefined;
   let abortFailureHandled = false;
+  let onAbort: (() => void) | undefined;
   const abortRuntime = () => {
     runtimeAbort ??= runtime.abort();
     return runtimeAbort;
   };
-  context.registerControl?.({
-    inspect: async () => (await readSessionContext(session)).messages,
-    steer: async (text) => {
-      throwIfAborted(context.signal);
-      return runtime.queueSteer(text);
-    },
-    followUp: async (text) => {
-      throwIfAborted(context.signal);
-      await runtime.followUp(text);
-    },
-    abort: async () => {
-      await abortRuntime();
-    }
-  });
-  const onAbort = () => {
-    const pending = abortRuntime();
-    // The original promise is awaited below; this prevents a transient unhandled rejection.
-    void pending.catch(() => undefined);
-  };
-  context.signal?.addEventListener("abort", onAbort, { once: true });
-  if (context.signal?.aborted) onAbort();
+  try {
+    throwIfAborted(context.signal);
+    const tools = spec.tools(subagentId);
+    const translationTools = spec.kind === "translation"
+      ? requireTranslationToolCapabilities(tools)
+      : undefined;
+    runtime = new PiSessionAgentRuntime({
+      session,
+      sessionId: subagentId,
+      models: selection.models,
+      model: selection.model,
+      thinkingLevel: resolveThinkingLevelForModel(selection.model, context.request.thinkingLevel),
+      tools,
+      systemPrompt: await subagentSystemPrompt(context, spec),
+      providerStreamTimeouts: context.providerStreamTimeouts,
+      retry: CHILD_RUNTIME_RETRY,
+      afterToolCall: translationTools
+        ? createTranslationWriteBatchHandoff(translationTools)
+        : undefined
+    });
+    context.registerControl?.({
+      inspect: async () => (await readSessionContext(session)).messages,
+      steer: async (text) => {
+        throwIfAborted(context.signal);
+        return runtime.queueSteer(text);
+      },
+      followUp: async (text) => {
+        throwIfAborted(context.signal);
+        await runtime.followUp(text);
+      },
+      abort: async () => {
+        await abortRuntime();
+      }
+    });
+    onAbort = () => {
+      const pending = abortRuntime();
+      // The original promise is awaited below; this prevents a transient unhandled rejection.
+      void pending.catch(() => undefined);
+    };
+    context.signal?.addEventListener("abort", onAbort, { once: true });
+    if (context.signal?.aborted) onAbort();
+  } catch (error) {
+    await closeChildResources(session, runtime, [error], runtimeAbort, () => {
+      if (onAbort) context.signal?.removeEventListener("abort", onAbort);
+    });
+    throw error;
+  }
 
+  let executionFailures: unknown[] = [];
   try {
     await context.publishCustomMessage(subagentCard({
       kind: spec.kind,
@@ -4417,24 +4460,30 @@ async function runPiSubagentRuntime<
         failure = new AggregateError([error, abortError], `${spec.kind} subagent abort failed.`);
       }
     }
+    executionFailures = [failure];
     const message = failure instanceof Error ? failure.message : String(failure);
-    await context.publishCustomMessage(subagentCard({
-      kind: spec.kind,
-      id: subagentId,
-      label,
-      status: context.signal?.aborted ? "stopped" : "failed",
-      prompt: taskPrompt,
-      error: message,
-      task: context.task,
-      providerId: selection.providerId,
-      modelId: selection.modelId,
-      modelName: selection.model.name,
-      startedAt,
-      finishedAt: Date.now()
-    }));
+    try {
+      await context.publishCustomMessage(subagentCard({
+        kind: spec.kind,
+        id: subagentId,
+        label,
+        status: context.signal?.aborted ? "stopped" : "failed",
+        prompt: taskPrompt,
+        error: message,
+        task: context.task,
+        providerId: selection.providerId,
+        modelId: selection.modelId,
+        modelName: selection.model.name,
+        startedAt,
+        finishedAt: Date.now()
+      }));
+    } catch (publishError) {
+      executionFailures.push(publishError);
+      throw new AggregateError(executionFailures, "Pi child failed and its failure report could not be persisted.");
+    }
     throw failure;
   } finally {
-    context.signal?.removeEventListener("abort", onAbort);
+    if (onAbort) context.signal?.removeEventListener("abort", onAbort);
     let unhandledAbortFailure: unknown;
     if (runtimeAbort) {
       try {
@@ -4443,9 +4492,8 @@ async function runPiSubagentRuntime<
         if (!abortFailureHandled) unhandledAbortFailure = error;
       }
     }
-    runtime.dispose();
-    await session.close(BACKGROUND_CONTEXT);
-    if (unhandledAbortFailure !== undefined) throw unhandledAbortFailure;
+    if (unhandledAbortFailure !== undefined) executionFailures.push(unhandledAbortFailure);
+    await closeChildResources(session, runtime, executionFailures);
   }
 }
 
@@ -4946,694 +4994,694 @@ export async function createPiTranslationSubagentWorker(
     subagentId,
     initialContext.request.sessionId
   );
-  const initialProgress: PiTranslationProgress = {
-    referenceRead: false,
-    sourceRead: false,
-    translationWritten: false,
-    translationValidated: false
-  };
-  const initialSpec = createPiTranslationRuntimeSpec(initialContext, initialProgress);
-  const tools = requireTranslationToolCapabilities(initialSpec.tools(subagentId));
-  const runtime = new PiSessionAgentRuntime({
-    session,
-    sessionId: subagentId,
-    models: selection.models,
-    model: selection.model,
-    thinkingLevel: resolveThinkingLevelForModel(selection.model, initialContext.request.thinkingLevel),
-    tools,
-    systemPrompt: await subagentSystemPrompt(initialContext, initialSpec),
-    providerStreamTimeouts: initialContext.providerStreamTimeouts,
-    retry: CHILD_RUNTIME_RETRY,
-    afterToolCall: createTranslationWriteBatchHandoff(tools)
-  });
-  const workerStartedAt = Date.now();
-  let activeContext: PiTranslationSubagentContext | undefined;
-  let lastContext = initialContext;
-  let lastPrompt = initialSpec.taskPrompt;
-  let lastReply = "";
-  let lastResultSummary = "";
-  let lastError = "";
-  let assignmentDiscoveries: PiTranslationDiscoveries = EMPTY_TRANSLATION_DISCOVERIES;
-  let disposed = false;
-  let assignmentsStarted = 0;
-  const completedDocumentIds: string[] = [];
-  const failedDocumentIds: string[] = [];
+  let initializationRuntime: PiSessionAgentRuntime | undefined;
+  let initializationAbort: Promise<unknown> | undefined;
+  let removeInitializationAbortListener: (() => void) | undefined;
+  try {
+    const initialProgress: PiTranslationProgress = {
+      referenceRead: false,
+      sourceRead: false,
+      translationWritten: false,
+      translationValidated: false
+    };
+    const initialSpec = createPiTranslationRuntimeSpec(initialContext, initialProgress);
+    const tools = requireTranslationToolCapabilities(initialSpec.tools(subagentId));
+    const runtime = new PiSessionAgentRuntime({
+      session,
+      sessionId: subagentId,
+      models: selection.models,
+      model: selection.model,
+      thinkingLevel: resolveThinkingLevelForModel(selection.model, initialContext.request.thinkingLevel),
+      tools,
+      systemPrompt: await subagentSystemPrompt(initialContext, initialSpec),
+      providerStreamTimeouts: initialContext.providerStreamTimeouts,
+      retry: CHILD_RUNTIME_RETRY,
+      afterToolCall: createTranslationWriteBatchHandoff(tools)
+    });
+    initializationRuntime = runtime;
+    const workerStartedAt = Date.now();
+    let activeContext: PiTranslationSubagentContext | undefined;
+    let lastContext = initialContext;
+    let lastPrompt = initialSpec.taskPrompt;
+    let lastReply = "";
+    let lastResultSummary = "";
+    let lastError = "";
+    let assignmentDiscoveries: PiTranslationDiscoveries = EMPTY_TRANSLATION_DISCOVERIES;
+    let disposed = false;
+    let assignmentsStarted = 0;
+    const completedDocumentIds: string[] = [];
+    const failedDocumentIds: string[] = [];
 
-  const publishCard = async (args: {
-    status: "running" | "completed" | "failed" | "stopped";
-    live?: boolean;
-    reply?: string;
-    resultSummary?: string;
-    error?: string;
-    extraDetails?: Record<string, unknown>;
-  }) => {
-    const context = activeContext ?? lastContext;
-    const publisher = args.live
-      ? initialContext.publishLiveCustomMessage ?? initialContext.publishCustomMessage
-      : initialContext.publishCustomMessage;
-    await publisher(subagentCard({
-      kind: "translation",
-      id: subagentId,
-      label: context.task.label?.trim() || workerLabel,
-      status: args.status,
-      prompt: lastPrompt,
-      reply: args.reply,
-      resultSummary: args.resultSummary,
-      error: args.error,
-      task: context.task,
-      providerId: selection.providerId,
-      modelId: selection.modelId,
-      modelName: selection.model.name,
-      startedAt: workerStartedAt,
-      ...(args.status === "running" ? {} : { finishedAt: Date.now() }),
-      extraDetails: {
-        currentDocumentId: context.task.documentId || documentId(context.request),
-        completedDocumentIds: [...completedDocumentIds],
-        failedDocumentIds: [...failedDocumentIds],
-        ...args.extraDetails
-      }
-    }));
-  };
-
-  let runtimeAbort: Promise<unknown> | undefined;
-  const abortRuntime = () => {
-    runtimeAbort ??= runtime.abort();
-    return runtimeAbort;
-  };
-  const onAbort = () => {
-    const pending = abortRuntime();
-    void pending.catch(() => undefined);
-  };
-  initialContext.signal?.addEventListener("abort", onAbort, { once: true });
-  if (initialContext.signal?.aborted) onAbort();
-
-  const control: PiSubagentControl = {
-    inspect: async () => (await readSessionContext(session)).messages,
-    steer: async (text) => {
-      throwIfAborted(initialContext.signal);
-      return runtime.queueSteer(text);
-    },
-    followUp: async (text) => {
-      throwIfAborted(initialContext.signal);
-      await runtime.followUp(text);
-    },
-    abort: async () => {
-      await abortRuntime();
-    }
-  };
-  initialContext.registerControl?.(control);
-  await publishCard({
-    status: "running",
-    extraDetails: { activity: "queued" }
-  });
-
-  return {
-    control,
-    async runAssignment(context) {
-      if (disposed) throw new Error(`Pi translation worker ${subagentId} is disposed.`);
-      if (activeContext) throw new Error(`Pi translation worker ${subagentId} already owns an active assignment.`);
-      throwIfAborted(initialContext.signal, context.signal);
-      let stagingPath: string | undefined;
-      let retainStagingAfterRun = Boolean(context.task.stagingCandidatePath?.trim());
-      const assignmentDocumentId = context.task.documentId || documentId(context.request);
-      if (context.onChunkReadyForReview) {
-        try {
-          stagingPath = await prepareTranslationStagingCandidate({
-            outputDir: context.request.outputDir,
-            sourcePaths: [sourcePath(context.request)],
-            documentId: assignmentDocumentId,
-            sessionId: context.request.sessionId,
-            subagentId,
-            assignmentId: `${assignmentDocumentId}:L${context.task.fromLine}-L${context.task.toLine}`,
-            resumeStagingPath: context.task.stagingCandidatePath
-          });
-          await context.onStagingCandidatePrepared?.({
-            documentId: assignmentDocumentId,
-            fromLine: context.task.fromLine,
-            toLine: context.task.toLine,
-            candidatePath: stagingPath
-          }, context.signal);
-        } catch (error) {
-          if (error === context.signal?.reason || (error instanceof Error && error.name === "AbortError")) throw error;
-          throw new NonRetryableAssignmentError(
-            `Failed to prepare the staging recovery binding for ${assignmentDocumentId} L${context.task.fromLine}-L${context.task.toLine}. Cause: ${compactErrorCause(error)}`,
-            error
-          );
+    const publishCard = async (args: {
+      status: "running" | "completed" | "failed" | "stopped";
+      live?: boolean;
+      reply?: string;
+      resultSummary?: string;
+      error?: string;
+      extraDetails?: Record<string, unknown>;
+    }) => {
+      const context = activeContext ?? lastContext;
+      const publisher = args.live
+        ? initialContext.publishLiveCustomMessage ?? initialContext.publishCustomMessage
+        : initialContext.publishCustomMessage;
+      await publisher(subagentCard({
+        kind: "translation",
+        id: subagentId,
+        label: context.task.label?.trim() || workerLabel,
+        status: args.status,
+        prompt: lastPrompt,
+        reply: args.reply,
+        resultSummary: args.resultSummary,
+        error: args.error,
+        task: context.task,
+        providerId: selection.providerId,
+        modelId: selection.modelId,
+        modelName: selection.model.name,
+        startedAt: workerStartedAt,
+        ...(args.status === "running" ? {} : { finishedAt: Date.now() }),
+        extraDetails: {
+          currentDocumentId: context.task.documentId || documentId(context.request),
+          completedDocumentIds: [...completedDocumentIds],
+          failedDocumentIds: [...failedDocumentIds],
+          ...args.extraDetails
         }
+      }));
+    };
+
+    let runtimeAbort: Promise<unknown> | undefined;
+    const abortRuntime = () => {
+      runtimeAbort ??= runtime.abort();
+      initializationAbort = runtimeAbort;
+      return runtimeAbort;
+    };
+    const onAbort = () => {
+      const pending = abortRuntime();
+      void pending.catch(() => undefined);
+    };
+    removeInitializationAbortListener = () => initialContext.signal?.removeEventListener("abort", onAbort);
+    initialContext.signal?.addEventListener("abort", onAbort, { once: true });
+    if (initialContext.signal?.aborted) onAbort();
+
+    const control: PiSubagentControl = {
+      inspect: async () => (await readSessionContext(session)).messages,
+      steer: async (text) => {
+        throwIfAborted(initialContext.signal);
+        return runtime.queueSteer(text);
+      },
+      followUp: async (text) => {
+        throwIfAborted(initialContext.signal);
+        await runtime.followUp(text);
+      },
+      abort: async () => {
+        await abortRuntime();
       }
-      const assignmentContext: PiTranslationSubagentContext = stagingPath
-        ? {
-            ...context,
-            workingCandidatePath: stagingPath,
-            onStagingCandidateCheckpoint: async (checkpoint) => {
-              retainStagingAfterRun = true;
-              await context.onStagingCandidateCheckpoint?.(checkpoint);
-            }
-          }
-        : context;
-      activeContext = assignmentContext;
-      lastContext = assignmentContext;
-      assignmentDiscoveries = EMPTY_TRANSLATION_DISCOVERIES;
-      const promoteAcceptedRange = async (
-        chunkContext: PiTranslationSubagentContext,
-        promotedDocumentId: string,
-        promotedRange: { fromLine: number; toLine: number }
-      ) => runTranslationArtifactTransaction(chunkContext, async () => {
-        if (!stagingPath) throw new Error("A reviewed translation requires a Host staging candidate.");
-        const canonical = candidatePath(chunkContext.request);
-        const sourceLineCount = splitTextLines(await readRequiredWorkflowText(sourcePath(chunkContext.request))).length;
-        let previousCanonicalText: string | undefined;
-        try { previousCanonicalText = await readFile(canonical, "utf8"); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        if (previousCanonicalText !== undefined && splitTextLines(previousCanonicalText).length > sourceLineCount) {
-          throw new NonRetryableAssignmentError("Canonical candidate has more lines than the source before promotion.");
-        }
-        const rollbackReuseBaseline = await captureTranslationReuseBaselineRollback({ outputDir: chunkContext.request.outputDir,
-          documentId: promotedDocumentId, candidatePath: canonical
-        }).catch((error) => { throw new NonRetryableAssignmentError("Cannot capture the Host canonical reuse baseline before promotion.", error); });
-        try {
-          const promoted = await promoteTranslationStagingRange({
-            outputDir: chunkContext.request.outputDir,
-            sourcePaths: [sourcePath(chunkContext.request)],
-            documentId: promotedDocumentId,
-            stagingPath,
-            ...promotedRange
-          });
-          if (!promoted.ok) throw new Error(promoted.error || "Failed to promote the accepted translation range.");
-          await context.onArtifactMutation?.(promotedDocumentId, promotedRange);
-        } catch (error) {
-          if (error instanceof TranslationPromotionCompensationError) {
-            // The old Host checkpoint owns accepted staging and a possibly
-            // durable new checkpoint owns canonical. Both describe this same
-            // verified range, so retain the post-image and its reuse baseline.
-            const diagnosisDir = path.join(chunkContext.request.outputDir, ".translation-workshop", "agent", "recovery-transactions", `host-promotion-${randomUUID()}`);
-            try {
-              await mkdir(diagnosisDir, { recursive: true });
-              const backupPath = previousCanonicalText === undefined ? undefined : path.join(diagnosisDir, "previous-canonical.txt");
-              if (backupPath) await writeTextFileAtomically(backupPath, previousCanonicalText!);
-              await writeTextFileAtomically(path.join(diagnosisDir, "transaction.json"), `${JSON.stringify({ schemaVersion: 1,
-                phase: "compensation_unconfirmed", documentId: promotedDocumentId, ...promotedRange,
-                canonicalSnapshots: [{ candidatePath: canonical, previouslyAbsent: previousCanonicalText === undefined, backupPath,
-                  previousHash: previousCanonicalText === undefined ? undefined : createHash("sha256").update(previousCanonicalText).digest("hex") }],
-                retainedStagingCandidates: [stagingPath], originalError: error.message
-              }, null, 2)}\n`);
-            } catch (diagnosisError) {
-              throw new TranslationPromotionCompensationError("Accepted staging promotion artifacts were retained but recovery diagnosis could not be saved.", new AggregateError([error, diagnosisError]));
-            }
-            throw error;
-          }
-          const rollbackErrors: unknown[] = [];
-          try { await rollbackReuseBaseline(); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+    };
+    initialContext.registerControl?.(control);
+    await publishCard({
+      status: "running",
+      extraDetails: { activity: "queued" }
+    });
+
+    return {
+      control,
+      async runAssignment(context) {
+        if (disposed) throw new Error(`Pi translation worker ${subagentId} is disposed.`);
+        if (activeContext) throw new Error(`Pi translation worker ${subagentId} already owns an active assignment.`);
+        throwIfAborted(initialContext.signal, context.signal);
+        let stagingPath: string | undefined;
+        let retainStagingAfterRun = Boolean(context.task.stagingCandidatePath?.trim());
+        const assignmentDocumentId = context.task.documentId || documentId(context.request);
+        if (context.onChunkReadyForReview) {
           try {
-            if (previousCanonicalText === undefined) await rm(canonical, { force: true });
-            else await writeTextFileAtomically(canonical, previousCanonicalText);
-          } catch (rollbackError) { rollbackErrors.push(rollbackError); }
-          if (rollbackErrors.length > 0) {
+            stagingPath = await prepareTranslationStagingCandidate({
+              outputDir: context.request.outputDir,
+              sourcePaths: [sourcePath(context.request)],
+              documentId: assignmentDocumentId,
+              sessionId: context.request.sessionId,
+              subagentId,
+              assignmentId: `${assignmentDocumentId}:L${context.task.fromLine}-L${context.task.toLine}`,
+              resumeStagingPath: context.task.stagingCandidatePath
+            });
+            await context.onStagingCandidatePrepared?.({
+              documentId: assignmentDocumentId,
+              fromLine: context.task.fromLine,
+              toLine: context.task.toLine,
+              candidatePath: stagingPath
+            }, context.signal);
+          } catch (error) {
+            if (error === context.signal?.reason || (error instanceof Error && error.name === "AbortError")) throw error;
             throw new NonRetryableAssignmentError(
-              `Accepted translation promotion failed and L${promotedRange.fromLine}-L${promotedRange.toLine} could not be rolled back.`,
-              new AggregateError([error, ...rollbackErrors])
+              `Failed to prepare the staging recovery binding for ${assignmentDocumentId} L${context.task.fromLine}-L${context.task.toLine}. Cause: ${compactErrorCause(error)}`,
+              error
             );
           }
-          throw new NonRetryableAssignmentError(
-            `Host evidence commit failed after accepting L${promotedRange.fromLine}-L${promotedRange.toLine}: ${error instanceof Error ? error.message : String(error)}`,
-            error
-          );
         }
-      });
-      const requestChunkReview = async (
-        review: PiTranslationChunkReviewRequest
-      ): Promise<PiTranslationChunkReviewDecision> => {
-        if (!assignmentContext.onChunkReadyForReview) {
-          throw new Error("Translation review callback is missing.");
-        }
-        try {
-          return await assignmentContext.onChunkReadyForReview(review);
-        } catch (error) {
-          if (context.signal?.aborted) throw error;
-          throw new NonRetryableAssignmentError(
-            `Translation review failed after staging ${review.documentId} L${review.fromLine}-L${review.toLine}; the staged candidate was retained for recovery.`,
-            error
-          );
-        }
-      };
-      try {
-        assertWorkerModel(selection, assignmentContext);
-        const chunks = hostOwnedTranslationChunks(assignmentContext.task);
-        await publishCard({
-          status: "running",
-          live: true,
-          extraDetails: {
-            activity: `translating ${context.task.documentId || documentId(context.request)}`,
-            completedChunks: 0,
-            totalChunks: chunks.length
-          }
-        });
-        let outcome: Awaited<ReturnType<ReturnType<typeof createPiTranslationRuntimeSpec>["execute"]>> | undefined;
-        for (const [chunkIndex, chunkTask] of chunks.entries()) {
-          let reviewFeedback = chunkTask.reviewFeedback
-            ?.filter((feedback) => feedback.line >= chunkTask.fromLine && feedback.line <= chunkTask.toLine)
-            .map((feedback) => ({ line: feedback.line, reason: feedback.reason }));
-          let previousRejectedCandidateHash: string | undefined;
-          let reviewRepairCycles = 0;
-          if (reviewFeedback?.length) {
-            const rejectedContext: PiTranslationSubagentContext = {
-              ...assignmentContext,
-              task: chunkTask,
-              executionMode: "chunk_review_repair"
-            };
-            const rejectedArtifact = await validateExistingAssignedRange(rejectedContext);
-            if (rejectedArtifact && isStructurallyCompleteAssignedTranslation(rejectedArtifact)) {
-              previousRejectedCandidateHash = assignedCandidateHash(rejectedContext, rejectedArtifact);
+        const assignmentContext: PiTranslationSubagentContext = stagingPath
+          ? {
+              ...context,
+              workingCandidatePath: stagingPath,
+              onStagingCandidateCheckpoint: async (checkpoint) => {
+                retainStagingAfterRun = true;
+                await context.onStagingCandidateCheckpoint?.(checkpoint);
+              }
             }
+          : context;
+        activeContext = assignmentContext;
+        lastContext = assignmentContext;
+        assignmentDiscoveries = EMPTY_TRANSLATION_DISCOVERIES;
+        const promoteAcceptedRange = async (
+          chunkContext: PiTranslationSubagentContext,
+          promotedDocumentId: string,
+          promotedRange: { fromLine: number; toLine: number }
+        ) => runTranslationArtifactTransaction(chunkContext, async () => {
+          if (!stagingPath) throw new Error("A reviewed translation requires a Host staging candidate.");
+          const canonical = candidatePath(chunkContext.request);
+          const sourceLineCount = splitTextLines(await readRequiredWorkflowText(sourcePath(chunkContext.request))).length;
+          let previousCanonicalText: string | undefined;
+          try { previousCanonicalText = await readFile(canonical, "utf8"); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+          if (previousCanonicalText !== undefined && splitTextLines(previousCanonicalText).length > sourceLineCount) {
+            throw new NonRetryableAssignmentError("Canonical candidate has more lines than the source before promotion.");
           }
-          while (true) {
-            const repairingRejectedChunk = Boolean(reviewFeedback?.length);
-            const chunkContext: PiTranslationSubagentContext = {
-              ...assignmentContext,
-              task: {
-                ...chunkTask,
-                ...(reviewFeedback ? { reviewFeedback } : {})
-              },
-              ...(repairingRejectedChunk ? { executionMode: "chunk_review_repair" as const } : {}),
-              terminateOnAcceptedWrite: chunkIndex + 1 < chunks.length,
-              deferSparseRepair: false
-            };
-            activeContext = chunkContext;
-            const existingArtifact = repairingRejectedChunk
-              ? undefined
-              : await validateExistingAssignedRange(chunkContext);
-            if (
-              existingArtifact
-              && isStructurallyCompleteAssignedTranslation(existingArtifact)
-              && isYnTranslationChunkWritable(existingArtifact.validation)
-            ) {
-              const rangeLabel = `L${chunkTask.fromLine}-L${chunkTask.toLine}`;
-              outcome = {
-                reply: `Reused structurally valid translation ${rangeLabel}; the review-worker safety check is still required.`,
-                resultSummary: `Structurally valid ${rangeLabel}; review-worker safety check required. ${existingArtifact.validation.summary}`,
-                extra: {
-                  validation: existingArtifact.validation,
-                  discoveries: EMPTY_TRANSLATION_DISCOVERIES
-                }
-              };
-            } else {
-              const progress: PiTranslationProgress = {
-                referenceRead: false,
-                sourceRead: false,
-                translationWritten: false,
-                translationValidated: false,
-                readLines: new Set<number>()
-              };
-              const spec = createPiTranslationRuntimeSpec(chunkContext, progress);
-              lastPrompt = spec.taskPrompt;
-              if (assignmentsStarted > 0) runtime.resetContext();
-              runtime.reconfigure({
-                tools: spec.tools(subagentId),
-                systemPrompt: await subagentSystemPrompt(chunkContext, spec)
-              });
-              assignmentsStarted += 1;
-              outcome = await spec.execute(runtime, session, spec.taskPrompt, async (attempt, error) => {
-                await publishCard({
-                  status: "running",
-                  live: true,
-                  extraDetails: {
-                    activity: `${repairingRejectedChunk ? "repairing parent rejection" : `chunk ${chunkIndex + 1}/${chunks.length}`} · retry ${attempt}/${CHILD_RUNTIME_RETRY.maxRetries}`,
-                    currentChunk: { fromLine: chunkTask.fromLine, toLine: chunkTask.toLine },
-                    retryAttempt: attempt,
-                    retryError: error
-                  }
-                });
-              });
+          const rollbackReuseBaseline = await captureTranslationReuseBaselineRollback({ outputDir: chunkContext.request.outputDir,
+            documentId: promotedDocumentId, candidatePath: canonical
+          }).catch((error) => { throw new NonRetryableAssignmentError("Cannot capture the Host canonical reuse baseline before promotion.", error); });
+          try {
+            const promoted = await promoteTranslationStagingRange({
+              outputDir: chunkContext.request.outputDir,
+              sourcePaths: [sourcePath(chunkContext.request)],
+              documentId: promotedDocumentId,
+              stagingPath,
+              ...promotedRange
+            });
+            if (!promoted.ok) throw new Error(promoted.error || "Failed to promote the accepted translation range.");
+            await context.onArtifactMutation?.(promotedDocumentId, promotedRange);
+          } catch (error) {
+            if (error instanceof TranslationPromotionCompensationError) {
+              // The old Host checkpoint owns accepted staging and a possibly
+              // durable new checkpoint owns canonical. Both describe this same
+              // verified range, so retain the post-image and its reuse baseline.
+              const diagnosisDir = path.join(chunkContext.request.outputDir, ".translation-workshop", "agent", "recovery-transactions", `host-promotion-${randomUUID()}`);
+              try {
+                await mkdir(diagnosisDir, { recursive: true });
+                const backupPath = previousCanonicalText === undefined ? undefined : path.join(diagnosisDir, "previous-canonical.txt");
+                if (backupPath) await writeTextFileAtomically(backupPath, previousCanonicalText!);
+                await writeTextFileAtomically(path.join(diagnosisDir, "transaction.json"), `${JSON.stringify({ schemaVersion: 1,
+                  phase: "compensation_unconfirmed", documentId: promotedDocumentId, ...promotedRange,
+                  canonicalSnapshots: [{ candidatePath: canonical, previouslyAbsent: previousCanonicalText === undefined, backupPath,
+                    previousHash: previousCanonicalText === undefined ? undefined : createHash("sha256").update(previousCanonicalText).digest("hex") }],
+                  retainedStagingCandidates: [stagingPath], originalError: error.message
+                }, null, 2)}\n`);
+              } catch (diagnosisError) {
+                throw new TranslationPromotionCompensationError("Accepted staging promotion artifacts were retained but recovery diagnosis could not be saved.", new AggregateError([error, diagnosisError]));
+              }
+              throw error;
             }
-            assignmentDiscoveries = mergeTranslationDiscoveries([
-              assignmentDiscoveries,
-              outcome.extra.discoveries
-            ]);
-            lastReply = outcome.reply || lastReply;
-            const chunkArtifact = await validateAssignedRange(chunkContext);
-            if (!chunkArtifact.accepted) {
-              throw new Error(
-                `Chunk L${chunkTask.fromLine}-L${chunkTask.toLine} failed mechanical validation before review-worker inspection: ${chunkArtifact.validation.summary}`
+            const rollbackErrors: unknown[] = [];
+            try { await rollbackReuseBaseline(); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+            try {
+              if (previousCanonicalText === undefined) await rm(canonical, { force: true });
+              else await writeTextFileAtomically(canonical, previousCanonicalText);
+            } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+            if (rollbackErrors.length > 0) {
+              throw new NonRetryableAssignmentError(
+                `Accepted translation promotion failed and L${promotedRange.fromLine}-L${promotedRange.toLine} could not be rolled back.`,
+                new AggregateError([error, ...rollbackErrors])
               );
             }
-            if (!assignmentContext.onChunkReadyForReview) break;
-            await publishCard({
-              status: "running",
-              live: true,
-              extraDetails: {
-                activity: `awaiting review worker for L${chunkTask.fromLine}-L${chunkTask.toLine}`,
-                currentChunk: { fromLine: chunkTask.fromLine, toLine: chunkTask.toLine }
-              }
-            });
-            retainStagingAfterRun = true;
-            const decision = await requestChunkReview({
-              subagentId,
-              label: workerLabel,
-              documentId: chunkTask.documentId || documentId(chunkContext.request),
-              fromLine: chunkTask.fromLine,
-              toLine: chunkTask.toLine,
-              candidatePath: translationWorkingCandidatePath(chunkContext),
-              validation: chunkArtifact.validation,
-              discoveries: outcome.extra.discoveries,
-              signal: context.signal
-            });
-            if (decision.accepted) {
-              if (stagingPath) {
-                await promoteAcceptedRange(
-                  chunkContext,
-                  chunkTask.documentId || documentId(chunkContext.request),
-                  {
-                  fromLine: chunkTask.fromLine,
-                  toLine: chunkTask.toLine
-                  }
-                );
-                retainStagingAfterRun = false;
-              }
-              break;
-            }
-            retainStagingAfterRun = true;
-            const rejectedFeedback = normalizedTranslationReviewFeedback(decision, chunkTask);
-            const rejectedCandidateHash = assignedCandidateHash(chunkContext, chunkArtifact);
-            if (repairingRejectedChunk) {
-              reviewRepairCycles += 1;
-              if (previousRejectedCandidateHash === rejectedCandidateHash) {
-                throw new ParentTakeoverAssignmentError(
-                  `Review repair made no candidate progress for L${chunkTask.fromLine}-L${chunkTask.toLine}; reviewer still rejects ${reviewFeedbackSummary(rejectedFeedback)}.`,
-                  {
-                    documentId: chunkTask.documentId || documentId(chunkContext.request),
-                    fromLine: chunkTask.fromLine,
-                    toLine: chunkTask.toLine,
-                    rejectedLines: [...new Set(rejectedFeedback.map((entry) => entry.line))].sort((left, right) => left - right),
-                    feedback: reviewFeedbackSummary(rejectedFeedback),
-                    ...(stagingPath ? { stagingCandidatePath: stagingPath } : {}),
-                    candidateHash: rejectedCandidateHash
-                  }
-                );
-              }
-              if (reviewRepairCycles >= MAX_TRANSLATION_REVIEW_REPAIR_CYCLES) {
-                throw new ParentTakeoverAssignmentError(
-                  `Review repair did not pass after ${MAX_TRANSLATION_REVIEW_REPAIR_CYCLES} changed candidate attempts for L${chunkTask.fromLine}-L${chunkTask.toLine}. Latest feedback: ${reviewFeedbackSummary(rejectedFeedback)}.`,
-                  {
-                    documentId: chunkTask.documentId || documentId(chunkContext.request),
-                    fromLine: chunkTask.fromLine,
-                    toLine: chunkTask.toLine,
-                    rejectedLines: [...new Set(rejectedFeedback.map((entry) => entry.line))].sort((left, right) => left - right),
-                    feedback: reviewFeedbackSummary(rejectedFeedback),
-                    ...(stagingPath ? { stagingCandidatePath: stagingPath } : {}),
-                    candidateHash: rejectedCandidateHash
-                  }
-                );
-              }
-            }
-            previousRejectedCandidateHash = rejectedCandidateHash;
-            reviewFeedback = rejectedFeedback;
-          }
-        }
-        throwIfAborted(initialContext.signal, context.signal);
-        if (!outcome) throw new Error("Pi translation worker received an empty host chunk plan.");
-        activeContext = context;
-        let finalArtifact = await validateAssignedRange(context);
-        if (!finalArtifact.accepted) {
-          if (!isStructurallyCompleteAssignedTranslation(finalArtifact)) {
-            throw new Error(
-              `Whole-file validation is structurally incomplete after host chunk completion: ${finalArtifact.validation.summary}`
+            throw new NonRetryableAssignmentError(
+              `Host evidence commit failed after accepting L${promotedRange.fromLine}-L${promotedRange.toLine}: ${error instanceof Error ? error.message : String(error)}`,
+              error
             );
           }
-          const finalRepairFindings = [...finalArtifact.validation.blocking];
-          let repairFeedback: Array<{ line: number; reason: string }> | undefined = finalRepairFindings
-            .flatMap((finding) => finding.line === undefined
-              ? []
-              : [{
-                  line: context.task.fromLine + finding.line - 1,
-                  reason: finding.detail
-                }])
-            .filter((feedback) => feedback.line >= context.task.fromLine && feedback.line <= context.task.toLine);
-          if (repairFeedback.length === 0) repairFeedback = undefined;
-          let requiredReviewLines = [...new Set((repairFeedback ?? []).map((feedback) => feedback.line))]
-            .filter((line) => line >= context.task.fromLine && line <= context.task.toLine)
-            .sort((left, right) => left - right);
-          let previousReviewRejectedCandidateHash: string | undefined;
-          let reviewRepairCycles = 0;
-          const repairProgress: PiTranslationProgress = {
-            referenceRead: false,
-            sourceRead: false,
-            translationWritten: false,
-            translationValidated: false
-          };
-          while (true) {
-            const fileRepairContext: PiTranslationSubagentContext = {
-              ...(assignmentContext.onChunkReadyForReview ? assignmentContext : context),
-              task: repairFeedback
-                ? { ...context.task, reviewFeedback: repairFeedback }
-                : context.task,
-              ...(repairFeedback ? { executionMode: "chunk_review_repair" as const } : {}),
-              terminateOnAcceptedWrite: false,
-              deferSparseRepair: false
-            };
-            activeContext = fileRepairContext;
-            repairProgress.referenceRead = false;
-            repairProgress.sourceRead = false;
-            repairProgress.translationWritten = false;
-            repairProgress.translationValidated = false;
-            repairProgress.readLines = new Set<number>();
-            repairProgress.writtenLines = new Set<number>();
-            repairProgress.mutatedLines = new Set<number>();
-            repairProgress.requiredBatchLines = undefined;
-            repairProgress.requiredBatchIssues = undefined;
-            if (repairFeedback?.length) {
-              repairProgress.requiredBatchLines = new Set(requiredReviewLines);
-              markCovered(repairProgress.writtenLines, context.task);
-              repairProgress.translationWritten = true;
+        });
+        const requestChunkReview = async (
+          review: PiTranslationChunkReviewRequest
+        ): Promise<PiTranslationChunkReviewDecision> => {
+          if (!assignmentContext.onChunkReadyForReview) {
+            throw new Error("Translation review callback is missing.");
+          }
+          try {
+            return await assignmentContext.onChunkReadyForReview(review);
+          } catch (error) {
+            if (context.signal?.aborted) throw error;
+            throw new NonRetryableAssignmentError(
+              `Translation review failed after staging ${review.documentId} L${review.fromLine}-L${review.toLine}; the staged candidate was retained for recovery.`,
+              error
+            );
+          }
+        };
+        try {
+          assertWorkerModel(selection, assignmentContext);
+          const chunks = hostOwnedTranslationChunks(assignmentContext.task);
+          await publishCard({
+            status: "running",
+            live: true,
+            extraDetails: {
+              activity: `translating ${context.task.documentId || documentId(context.request)}`,
+              completedChunks: 0,
+              totalChunks: chunks.length
             }
-            const repairSpec = createPiTranslationRuntimeSpec(fileRepairContext, repairProgress);
-            runtime.resetContext();
-            runtime.reconfigure({
-              tools: repairSpec.tools(subagentId),
-              systemPrompt: await subagentSystemPrompt(fileRepairContext, repairSpec)
-            });
-            assignmentsStarted += 1;
-            outcome = await repairSpec.execute(runtime, session, repairSpec.taskPrompt, async (attempt, error) => {
-              await publishCard({
-                status: "running",
-                live: true,
-                extraDetails: {
-                  activity: `file repair · retry ${attempt}/${CHILD_RUNTIME_RETRY.maxRetries}`,
-                  retryAttempt: attempt,
-                  retryError: error
-                }
-              });
-            });
-            assignmentDiscoveries = mergeTranslationDiscoveries([
-              assignmentDiscoveries,
-              outcome.extra.discoveries
-            ]);
-            lastReply = outcome.reply || lastReply;
-            const mutatedLines = [...(repairProgress.mutatedLines ?? [])]
-              .filter((line) => line >= context.task.fromLine && line <= context.task.toLine)
-              .sort((left, right) => left - right);
-            if (mutatedLines.length > 0) requiredReviewLines = mutatedLines;
-            finalArtifact = await validateAssignedRange(fileRepairContext);
-            if (!finalArtifact.accepted) {
-              throw new Error(`Whole-file validation failed after host chunk repair: ${finalArtifact.validation.summary}`);
-            }
-            if (!assignmentContext.onChunkReadyForReview) break;
-
-            const requiredLineSet = new Set(requiredReviewLines);
-            const reviewTargets = requiredLineSet.size > 0
-              ? chunks.filter((chunk) => [...requiredLineSet].some((line) => (
-                  line >= chunk.fromLine && line <= chunk.toLine
-                )))
-              : chunks;
-            const rejectedFeedback: Array<{ line: number; reason: string }> = [];
-            for (const reviewTask of reviewTargets) {
-              const reviewContext: PiTranslationSubagentContext = {
-                ...fileRepairContext,
-                task: reviewTask
+          });
+          let outcome: Awaited<ReturnType<ReturnType<typeof createPiTranslationRuntimeSpec>["execute"]>> | undefined;
+          for (const [chunkIndex, chunkTask] of chunks.entries()) {
+            let reviewFeedback = chunkTask.reviewFeedback
+              ?.filter((feedback) => feedback.line >= chunkTask.fromLine && feedback.line <= chunkTask.toLine)
+              .map((feedback) => ({ line: feedback.line, reason: feedback.reason }));
+            let previousRejectedCandidateHash: string | undefined;
+            let reviewRepairCycles = 0;
+            if (reviewFeedback?.length) {
+              const rejectedContext: PiTranslationSubagentContext = {
+                ...assignmentContext,
+                task: chunkTask,
+                executionMode: "chunk_review_repair"
               };
-              const reviewedArtifact = await validateAssignedRange(reviewContext);
-              if (!reviewedArtifact.accepted) {
+              const rejectedArtifact = await validateExistingAssignedRange(rejectedContext);
+              if (rejectedArtifact && isStructurallyCompleteAssignedTranslation(rejectedArtifact)) {
+                previousRejectedCandidateHash = assignedCandidateHash(rejectedContext, rejectedArtifact);
+              }
+            }
+            while (true) {
+              const repairingRejectedChunk = Boolean(reviewFeedback?.length);
+              const chunkContext: PiTranslationSubagentContext = {
+                ...assignmentContext,
+                task: {
+                  ...chunkTask,
+                  ...(reviewFeedback ? { reviewFeedback } : {})
+                },
+                ...(repairingRejectedChunk ? { executionMode: "chunk_review_repair" as const } : {}),
+                terminateOnAcceptedWrite: chunkIndex + 1 < chunks.length,
+                deferSparseRepair: false
+              };
+              activeContext = chunkContext;
+              const existingArtifact = repairingRejectedChunk
+                ? undefined
+                : await validateExistingAssignedRange(chunkContext);
+              if (
+                existingArtifact
+                && isStructurallyCompleteAssignedTranslation(existingArtifact)
+                && isYnTranslationChunkWritable(existingArtifact.validation)
+              ) {
+                const rangeLabel = `L${chunkTask.fromLine}-L${chunkTask.toLine}`;
+                outcome = {
+                  reply: `Reused structurally valid translation ${rangeLabel}; the review-worker safety check is still required.`,
+                  resultSummary: `Structurally valid ${rangeLabel}; review-worker safety check required. ${existingArtifact.validation.summary}`,
+                  extra: {
+                    validation: existingArtifact.validation,
+                    discoveries: EMPTY_TRANSLATION_DISCOVERIES
+                  }
+                };
+              } else {
+                const progress: PiTranslationProgress = {
+                  referenceRead: false,
+                  sourceRead: false,
+                  translationWritten: false,
+                  translationValidated: false,
+                  readLines: new Set<number>()
+                };
+                const spec = createPiTranslationRuntimeSpec(chunkContext, progress);
+                lastPrompt = spec.taskPrompt;
+                if (assignmentsStarted > 0) runtime.resetContext();
+                runtime.reconfigure({
+                  tools: spec.tools(subagentId),
+                  systemPrompt: await subagentSystemPrompt(chunkContext, spec)
+                });
+                assignmentsStarted += 1;
+                outcome = await spec.execute(runtime, session, spec.taskPrompt, async (attempt, error) => {
+                  await publishCard({
+                    status: "running",
+                    live: true,
+                    extraDetails: {
+                      activity: `${repairingRejectedChunk ? "repairing parent rejection" : `chunk ${chunkIndex + 1}/${chunks.length}`} · retry ${attempt}/${CHILD_RUNTIME_RETRY.maxRetries}`,
+                      currentChunk: { fromLine: chunkTask.fromLine, toLine: chunkTask.toLine },
+                      retryAttempt: attempt,
+                      retryError: error
+                    }
+                  });
+                });
+              }
+              assignmentDiscoveries = mergeTranslationDiscoveries([
+                assignmentDiscoveries,
+                outcome.extra.discoveries
+              ]);
+              lastReply = outcome.reply || lastReply;
+              const chunkArtifact = await validateAssignedRange(chunkContext);
+              if (!chunkArtifact.accepted) {
                 throw new Error(
-                  `Repaired chunk L${reviewTask.fromLine}-L${reviewTask.toLine} failed mechanical validation before review-worker inspection: ${reviewedArtifact.validation.summary}`
+                  `Chunk L${chunkTask.fromLine}-L${chunkTask.toLine} failed mechanical validation before review-worker inspection: ${chunkArtifact.validation.summary}`
                 );
               }
-              const requiredLines = [...requiredLineSet]
-                .filter((line) => line >= reviewTask.fromLine && line <= reviewTask.toLine);
+              if (!assignmentContext.onChunkReadyForReview) break;
               await publishCard({
                 status: "running",
                 live: true,
                 extraDetails: {
-                  activity: `awaiting review worker for repaired L${reviewTask.fromLine}-L${reviewTask.toLine}`,
-                  currentChunk: { fromLine: reviewTask.fromLine, toLine: reviewTask.toLine }
+                  activity: `awaiting review worker for L${chunkTask.fromLine}-L${chunkTask.toLine}`,
+                  currentChunk: { fromLine: chunkTask.fromLine, toLine: chunkTask.toLine }
                 }
               });
               retainStagingAfterRun = true;
               const decision = await requestChunkReview({
                 subagentId,
                 label: workerLabel,
-                documentId: reviewTask.documentId || documentId(reviewContext.request),
-                fromLine: reviewTask.fromLine,
-                toLine: reviewTask.toLine,
-                candidatePath: translationWorkingCandidatePath(reviewContext),
-                validation: reviewedArtifact.validation,
+                documentId: chunkTask.documentId || documentId(chunkContext.request),
+                fromLine: chunkTask.fromLine,
+                toLine: chunkTask.toLine,
+                candidatePath: translationWorkingCandidatePath(chunkContext),
+                validation: chunkArtifact.validation,
                 discoveries: outcome.extra.discoveries,
-                ...(requiredLines.length > 0 ? { requiredLines } : {}),
                 signal: context.signal
               });
               if (decision.accepted) {
-                if (!stagingPath) {
-                  throw new Error("A reviewed whole-file repair requires a Host staging candidate.");
-                }
-                const promotedRanges = requiredLines.length > 0
-                  ? contiguousLineRanges(requiredLines)
-                  : [{ fromLine: reviewTask.fromLine, toLine: reviewTask.toLine }];
-                for (const promotedRange of promotedRanges) {
+                if (stagingPath) {
                   await promoteAcceptedRange(
-                    reviewContext,
-                    reviewTask.documentId || documentId(reviewContext.request),
-                    promotedRange
+                    chunkContext,
+                    chunkTask.documentId || documentId(chunkContext.request),
+                    {
+                    fromLine: chunkTask.fromLine,
+                    toLine: chunkTask.toLine
+                    }
+                  );
+                  retainStagingAfterRun = false;
+                }
+                break;
+              }
+              retainStagingAfterRun = true;
+              const rejectedFeedback = normalizedTranslationReviewFeedback(decision, chunkTask);
+              const rejectedCandidateHash = assignedCandidateHash(chunkContext, chunkArtifact);
+              if (repairingRejectedChunk) {
+                reviewRepairCycles += 1;
+                if (previousRejectedCandidateHash === rejectedCandidateHash) {
+                  throw new ParentTakeoverAssignmentError(
+                    `Review repair made no candidate progress for L${chunkTask.fromLine}-L${chunkTask.toLine}; reviewer still rejects ${reviewFeedbackSummary(rejectedFeedback)}.`,
+                    {
+                      documentId: chunkTask.documentId || documentId(chunkContext.request),
+                      fromLine: chunkTask.fromLine,
+                      toLine: chunkTask.toLine,
+                      rejectedLines: [...new Set(rejectedFeedback.map((entry) => entry.line))].sort((left, right) => left - right),
+                      feedback: reviewFeedbackSummary(rejectedFeedback),
+                      ...(stagingPath ? { stagingCandidatePath: stagingPath } : {}),
+                      candidateHash: rejectedCandidateHash
+                    }
                   );
                 }
-                retainStagingAfterRun = false;
+                if (reviewRepairCycles >= MAX_TRANSLATION_REVIEW_REPAIR_CYCLES) {
+                  throw new ParentTakeoverAssignmentError(
+                    `Review repair did not pass after ${MAX_TRANSLATION_REVIEW_REPAIR_CYCLES} changed candidate attempts for L${chunkTask.fromLine}-L${chunkTask.toLine}. Latest feedback: ${reviewFeedbackSummary(rejectedFeedback)}.`,
+                    {
+                      documentId: chunkTask.documentId || documentId(chunkContext.request),
+                      fromLine: chunkTask.fromLine,
+                      toLine: chunkTask.toLine,
+                      rejectedLines: [...new Set(rejectedFeedback.map((entry) => entry.line))].sort((left, right) => left - right),
+                      feedback: reviewFeedbackSummary(rejectedFeedback),
+                      ...(stagingPath ? { stagingCandidatePath: stagingPath } : {}),
+                      candidateHash: rejectedCandidateHash
+                    }
+                  );
+                }
+              }
+              previousRejectedCandidateHash = rejectedCandidateHash;
+              reviewFeedback = rejectedFeedback;
+            }
+          }
+          throwIfAborted(initialContext.signal, context.signal);
+          if (!outcome) throw new Error("Pi translation worker received an empty host chunk plan.");
+          activeContext = context;
+          let finalArtifact = await validateAssignedRange(context);
+          if (!finalArtifact.accepted) {
+            if (!isStructurallyCompleteAssignedTranslation(finalArtifact)) {
+              throw new Error(
+                `Whole-file validation is structurally incomplete after host chunk completion: ${finalArtifact.validation.summary}`
+              );
+            }
+            const finalRepairFindings = [...finalArtifact.validation.blocking];
+            let repairFeedback: Array<{ line: number; reason: string }> | undefined = finalRepairFindings
+              .flatMap((finding) => finding.line === undefined
+                ? []
+                : [{
+                    line: context.task.fromLine + finding.line - 1,
+                    reason: finding.detail
+                  }])
+              .filter((feedback) => feedback.line >= context.task.fromLine && feedback.line <= context.task.toLine);
+            if (repairFeedback.length === 0) repairFeedback = undefined;
+            let requiredReviewLines = [...new Set((repairFeedback ?? []).map((feedback) => feedback.line))]
+              .filter((line) => line >= context.task.fromLine && line <= context.task.toLine)
+              .sort((left, right) => left - right);
+            let previousReviewRejectedCandidateHash: string | undefined;
+            let reviewRepairCycles = 0;
+            const repairProgress: PiTranslationProgress = {
+              referenceRead: false,
+              sourceRead: false,
+              translationWritten: false,
+              translationValidated: false
+            };
+            while (true) {
+              const fileRepairContext: PiTranslationSubagentContext = {
+                ...(assignmentContext.onChunkReadyForReview ? assignmentContext : context),
+                task: repairFeedback
+                  ? { ...context.task, reviewFeedback: repairFeedback }
+                  : context.task,
+                ...(repairFeedback ? { executionMode: "chunk_review_repair" as const } : {}),
+                terminateOnAcceptedWrite: false,
+                deferSparseRepair: false
+              };
+              activeContext = fileRepairContext;
+              repairProgress.referenceRead = false;
+              repairProgress.sourceRead = false;
+              repairProgress.translationWritten = false;
+              repairProgress.translationValidated = false;
+              repairProgress.readLines = new Set<number>();
+              repairProgress.writtenLines = new Set<number>();
+              repairProgress.mutatedLines = new Set<number>();
+              repairProgress.requiredBatchLines = undefined;
+              repairProgress.requiredBatchIssues = undefined;
+              if (repairFeedback?.length) {
+                repairProgress.requiredBatchLines = new Set(requiredReviewLines);
+                markCovered(repairProgress.writtenLines, context.task);
+                repairProgress.translationWritten = true;
+              }
+              const repairSpec = createPiTranslationRuntimeSpec(fileRepairContext, repairProgress);
+              runtime.resetContext();
+              runtime.reconfigure({
+                tools: repairSpec.tools(subagentId),
+                systemPrompt: await subagentSystemPrompt(fileRepairContext, repairSpec)
+              });
+              assignmentsStarted += 1;
+              outcome = await repairSpec.execute(runtime, session, repairSpec.taskPrompt, async (attempt, error) => {
+                await publishCard({
+                  status: "running",
+                  live: true,
+                  extraDetails: {
+                    activity: `file repair · retry ${attempt}/${CHILD_RUNTIME_RETRY.maxRetries}`,
+                    retryAttempt: attempt,
+                    retryError: error
+                  }
+                });
+              });
+              assignmentDiscoveries = mergeTranslationDiscoveries([
+                assignmentDiscoveries,
+                outcome.extra.discoveries
+              ]);
+              lastReply = outcome.reply || lastReply;
+              const mutatedLines = [...(repairProgress.mutatedLines ?? [])]
+                .filter((line) => line >= context.task.fromLine && line <= context.task.toLine)
+                .sort((left, right) => left - right);
+              if (mutatedLines.length > 0) requiredReviewLines = mutatedLines;
+              finalArtifact = await validateAssignedRange(fileRepairContext);
+              if (!finalArtifact.accepted) {
+                throw new Error(`Whole-file validation failed after host chunk repair: ${finalArtifact.validation.summary}`);
+              }
+              if (!assignmentContext.onChunkReadyForReview) break;
+
+              const requiredLineSet = new Set(requiredReviewLines);
+              const reviewTargets = requiredLineSet.size > 0
+                ? chunks.filter((chunk) => [...requiredLineSet].some((line) => (
+                    line >= chunk.fromLine && line <= chunk.toLine
+                  )))
+                : chunks;
+              const rejectedFeedback: Array<{ line: number; reason: string }> = [];
+              for (const reviewTask of reviewTargets) {
+                const reviewContext: PiTranslationSubagentContext = {
+                  ...fileRepairContext,
+                  task: reviewTask
+                };
+                const reviewedArtifact = await validateAssignedRange(reviewContext);
+                if (!reviewedArtifact.accepted) {
+                  throw new Error(
+                    `Repaired chunk L${reviewTask.fromLine}-L${reviewTask.toLine} failed mechanical validation before review-worker inspection: ${reviewedArtifact.validation.summary}`
+                  );
+                }
+                const requiredLines = [...requiredLineSet]
+                  .filter((line) => line >= reviewTask.fromLine && line <= reviewTask.toLine);
+                await publishCard({
+                  status: "running",
+                  live: true,
+                  extraDetails: {
+                    activity: `awaiting review worker for repaired L${reviewTask.fromLine}-L${reviewTask.toLine}`,
+                    currentChunk: { fromLine: reviewTask.fromLine, toLine: reviewTask.toLine }
+                  }
+                });
+                retainStagingAfterRun = true;
+                const decision = await requestChunkReview({
+                  subagentId,
+                  label: workerLabel,
+                  documentId: reviewTask.documentId || documentId(reviewContext.request),
+                  fromLine: reviewTask.fromLine,
+                  toLine: reviewTask.toLine,
+                  candidatePath: translationWorkingCandidatePath(reviewContext),
+                  validation: reviewedArtifact.validation,
+                  discoveries: outcome.extra.discoveries,
+                  ...(requiredLines.length > 0 ? { requiredLines } : {}),
+                  signal: context.signal
+                });
+                if (decision.accepted) {
+                  if (!stagingPath) {
+                    throw new Error("A reviewed whole-file repair requires a Host staging candidate.");
+                  }
+                  const promotedRanges = requiredLines.length > 0
+                    ? contiguousLineRanges(requiredLines)
+                    : [{ fromLine: reviewTask.fromLine, toLine: reviewTask.toLine }];
+                  for (const promotedRange of promotedRanges) {
+                    await promoteAcceptedRange(
+                      reviewContext,
+                      reviewTask.documentId || documentId(reviewContext.request),
+                      promotedRange
+                    );
+                  }
+                  retainStagingAfterRun = false;
+                  continue;
+                }
+
+                const feedback = normalizedTranslationReviewFeedback(decision, reviewTask);
+                rejectedFeedback.push(...feedback);
+                retainStagingAfterRun = true;
+              }
+              if (rejectedFeedback.length > 0) {
+                reviewRepairCycles += 1;
+                const rejectedCandidateHash = assignedCandidateHash(fileRepairContext, finalArtifact);
+                if (previousReviewRejectedCandidateHash === rejectedCandidateHash) {
+                  throw new ParentTakeoverAssignmentError(
+                    `Review repair made no candidate progress for L${context.task.fromLine}-L${context.task.toLine}; reviewer still rejects ${reviewFeedbackSummary(rejectedFeedback)}.`,
+                    {
+                      documentId: context.task.documentId || documentId(context.request),
+                      fromLine: context.task.fromLine,
+                      toLine: context.task.toLine,
+                      rejectedLines: [...new Set(rejectedFeedback.map((entry) => entry.line))].sort((left, right) => left - right),
+                      feedback: reviewFeedbackSummary(rejectedFeedback),
+                      ...(stagingPath ? { stagingCandidatePath: stagingPath } : {}),
+                      candidateHash: rejectedCandidateHash
+                    }
+                  );
+                }
+                if (reviewRepairCycles >= MAX_TRANSLATION_REVIEW_REPAIR_CYCLES) {
+                  throw new ParentTakeoverAssignmentError(
+                    `Review repair did not pass after ${MAX_TRANSLATION_REVIEW_REPAIR_CYCLES} changed candidate attempts for L${context.task.fromLine}-L${context.task.toLine}. Latest feedback: ${reviewFeedbackSummary(rejectedFeedback)}.`,
+                    {
+                      documentId: context.task.documentId || documentId(context.request),
+                      fromLine: context.task.fromLine,
+                      toLine: context.task.toLine,
+                      rejectedLines: [...new Set(rejectedFeedback.map((entry) => entry.line))].sort((left, right) => left - right),
+                      feedback: reviewFeedbackSummary(rejectedFeedback),
+                      ...(stagingPath ? { stagingCandidatePath: stagingPath } : {}),
+                      candidateHash: rejectedCandidateHash
+                    }
+                  );
+                }
+                previousReviewRejectedCandidateHash = rejectedCandidateHash;
+                repairFeedback = rejectedFeedback;
+                requiredReviewLines = [...new Set(rejectedFeedback.map((entry) => entry.line))];
                 continue;
               }
-
-              const feedback = normalizedTranslationReviewFeedback(decision, reviewTask);
-              rejectedFeedback.push(...feedback);
-              retainStagingAfterRun = true;
+              finalArtifact = await validateAssignedRange(context);
+              break;
             }
-            if (rejectedFeedback.length > 0) {
-              reviewRepairCycles += 1;
-              const rejectedCandidateHash = assignedCandidateHash(fileRepairContext, finalArtifact);
-              if (previousReviewRejectedCandidateHash === rejectedCandidateHash) {
-                throw new ParentTakeoverAssignmentError(
-                  `Review repair made no candidate progress for L${context.task.fromLine}-L${context.task.toLine}; reviewer still rejects ${reviewFeedbackSummary(rejectedFeedback)}.`,
-                  {
-                    documentId: context.task.documentId || documentId(context.request),
-                    fromLine: context.task.fromLine,
-                    toLine: context.task.toLine,
-                    rejectedLines: [...new Set(rejectedFeedback.map((entry) => entry.line))].sort((left, right) => left - right),
-                    feedback: reviewFeedbackSummary(rejectedFeedback),
-                    ...(stagingPath ? { stagingCandidatePath: stagingPath } : {}),
-                    candidateHash: rejectedCandidateHash
-                  }
-                );
-              }
-              if (reviewRepairCycles >= MAX_TRANSLATION_REVIEW_REPAIR_CYCLES) {
-                throw new ParentTakeoverAssignmentError(
-                  `Review repair did not pass after ${MAX_TRANSLATION_REVIEW_REPAIR_CYCLES} changed candidate attempts for L${context.task.fromLine}-L${context.task.toLine}. Latest feedback: ${reviewFeedbackSummary(rejectedFeedback)}.`,
-                  {
-                    documentId: context.task.documentId || documentId(context.request),
-                    fromLine: context.task.fromLine,
-                    toLine: context.task.toLine,
-                    rejectedLines: [...new Set(rejectedFeedback.map((entry) => entry.line))].sort((left, right) => left - right),
-                    feedback: reviewFeedbackSummary(rejectedFeedback),
-                    ...(stagingPath ? { stagingCandidatePath: stagingPath } : {}),
-                    candidateHash: rejectedCandidateHash
-                  }
-                );
-              }
-              previousReviewRejectedCandidateHash = rejectedCandidateHash;
-              repairFeedback = rejectedFeedback;
-              requiredReviewLines = [...new Set(rejectedFeedback.map((entry) => entry.line))];
-              continue;
+          }
+          if (!finalArtifact.accepted) {
+            throw new Error(`Whole-file validation failed after host chunk completion: ${finalArtifact.validation.summary}`);
+          }
+          const resolvedDocumentId = assignmentDocumentId;
+          if (!completedDocumentIds.includes(resolvedDocumentId)) completedDocumentIds.push(resolvedDocumentId);
+          const failedIndex = failedDocumentIds.indexOf(resolvedDocumentId);
+          if (failedIndex >= 0) failedDocumentIds.splice(failedIndex, 1);
+          lastError = "";
+          lastResultSummary = `Review-worker-accepted candidate ${context.task.documentId ?? assignmentDocumentId} `
+            + `L${context.task.fromLine}-L${context.task.toLine}; every Host-sized chunk was accepted before queue advance. `
+            + finalArtifact.validation.summary;
+          await publishCard({
+            status: "running",
+            live: true,
+            reply: lastReply,
+            resultSummary: lastResultSummary,
+            extraDetails: {
+              activity: `validated ${chunks.length}/${chunks.length} chunks`,
+              completedChunks: chunks.length,
+              totalChunks: chunks.length
             }
-            finalArtifact = await validateAssignedRange(context);
-            break;
+          });
+          return {
+            subagentId,
+            label: workerLabel,
+            documentId: resolvedDocumentId,
+            fromLine: context.task.fromLine,
+            toLine: context.task.toLine,
+            providerId: selection.providerId,
+            modelId: selection.modelId,
+            modelName: selection.model.name,
+            reply: lastReply,
+            resultSummary: lastResultSummary,
+            validation: finalArtifact.validation,
+            discoveries: assignmentDiscoveries
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const failedDocumentId = context.task.documentId || documentId(context.request);
+          if (isFatalHostAssignmentError(error)) retainStagingAfterRun = true;
+          if (!failedDocumentIds.includes(failedDocumentId)) failedDocumentIds.push(failedDocumentId);
+          lastError = message;
+          try {
+            await publishCard({ status: "running", live: true, error: message });
+          } catch (publishError) {
+            throw new NonRetryableAssignmentError(
+              `${message}; publishing worker failure also failed.`, new AggregateError([error, publishError])
+            );
+          }
+          throw error;
+        } finally {
+          activeContext = undefined;
+          if (stagingPath && !retainStagingAfterRun) {
+            await discardTranslationStagingCandidate({
+              outputDir: context.request.outputDir,
+              stagingPath
+            });
           }
         }
-        if (!finalArtifact.accepted) {
-          throw new Error(`Whole-file validation failed after host chunk completion: ${finalArtifact.validation.summary}`);
-        }
-        const resolvedDocumentId = assignmentDocumentId;
-        if (!completedDocumentIds.includes(resolvedDocumentId)) completedDocumentIds.push(resolvedDocumentId);
-        const failedIndex = failedDocumentIds.indexOf(resolvedDocumentId);
-        if (failedIndex >= 0) failedDocumentIds.splice(failedIndex, 1);
-        lastError = "";
-        lastResultSummary = `Review-worker-accepted candidate ${context.task.documentId ?? assignmentDocumentId} `
-          + `L${context.task.fromLine}-L${context.task.toLine}; every Host-sized chunk was accepted before queue advance. `
-          + finalArtifact.validation.summary;
+      },
+      async finish(outcome) {
+        if (disposed) throw new Error(`Pi translation worker ${subagentId} is disposed.`);
         await publishCard({
-          status: "running",
-          live: true,
-          reply: lastReply,
-          resultSummary: lastResultSummary,
+          status: outcome.status,
+          reply: outcome.status === "completed" ? lastReply : "",
+          resultSummary: outcome.status === "completed"
+            ? lastResultSummary
+            : `${outcome.completedAssignments}/${outcome.assignmentCount} assignments settled; ${failedDocumentIds.length} failed.`,
+          error: outcome.error || (outcome.status === "completed" ? undefined : lastError),
           extraDetails: {
-            activity: `validated ${chunks.length}/${chunks.length} chunks`,
-            completedChunks: chunks.length,
-            totalChunks: chunks.length
+            assignmentCount: outcome.assignmentCount,
+            completedAssignments: outcome.completedAssignments,
+            documentIds: [...outcome.documentIds]
           }
         });
-        return {
-          subagentId,
-          label: workerLabel,
-          documentId: resolvedDocumentId,
-          fromLine: context.task.fromLine,
-          toLine: context.task.toLine,
-          providerId: selection.providerId,
-          modelId: selection.modelId,
-          modelName: selection.model.name,
-          reply: lastReply,
-          resultSummary: lastResultSummary,
-          validation: finalArtifact.validation,
-          discoveries: assignmentDiscoveries
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const failedDocumentId = context.task.documentId || documentId(context.request);
-        if (isFatalHostAssignmentError(error)) retainStagingAfterRun = true;
-        if (!failedDocumentIds.includes(failedDocumentId)) failedDocumentIds.push(failedDocumentId);
-        lastError = message;
-        try {
-          await publishCard({ status: "running", live: true, error: message });
-        } catch (publishError) {
-          throw new NonRetryableAssignmentError(
-            `${message}; publishing worker failure also failed.`, new AggregateError([error, publishError])
-          );
-        }
-        throw error;
-      } finally {
-        activeContext = undefined;
-        if (stagingPath && !retainStagingAfterRun) {
-          await discardTranslationStagingCandidate({
-            outputDir: context.request.outputDir,
-            stagingPath
-          });
-        }
+      },
+      async dispose() {
+        if (disposed) return;
+        disposed = true;
+        await closeChildResources(session, runtime, [], runtimeAbort, removeInitializationAbortListener);
       }
-    },
-    async finish(outcome) {
-      if (disposed) throw new Error(`Pi translation worker ${subagentId} is disposed.`);
-      await publishCard({
-        status: outcome.status,
-        reply: outcome.status === "completed" ? lastReply : "",
-        resultSummary: outcome.status === "completed"
-          ? lastResultSummary
-          : `${outcome.completedAssignments}/${outcome.assignmentCount} assignments settled; ${failedDocumentIds.length} failed.`,
-        error: outcome.error || (outcome.status === "completed" ? undefined : lastError),
-        extraDetails: {
-          assignmentCount: outcome.assignmentCount,
-          completedAssignments: outcome.completedAssignments,
-          documentIds: [...outcome.documentIds]
-        }
-      });
-    },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      initialContext.signal?.removeEventListener("abort", onAbort);
-      let abortFailure: unknown;
-      if (runtimeAbort) {
-        try {
-          await runtimeAbort;
-        } catch (error) {
-          abortFailure = error;
-        }
-      }
-      runtime.dispose();
-      await session.close(BACKGROUND_CONTEXT);
-      if (abortFailure !== undefined) throw abortFailure;
-    }
-  };
+    };
+  } catch (error) {
+    await closeChildResources(session, initializationRuntime, [error], initializationAbort, removeInitializationAbortListener);
+    throw error;
+  }
 }
 
 function missingProofreadSteps(progress: PiProofreadProgress): string[] {
@@ -5799,212 +5847,218 @@ export async function createPiProofreadSubagentWorker(
     subagentId,
     initialContext.request.sessionId
   );
-  const workerStartedAt = Date.now();
-  let assignmentsStarted = 0;
-  let disposed = false;
-  let activeContext: PiProofreadSubagentContext | undefined;
-  let lastContext = initialContext.task
-    ? { ...initialContext, task: initialContext.task } as PiProofreadSubagentContext
-    : undefined;
-  let lastPrompt = "Waiting for a Host proofreading assignment.";
-  let lastReply = "";
-  let lastResultSummary = "";
-  let lastError = "";
-  let runtime: PiSessionAgentRuntime | undefined;
-  let runtimeAbort: Promise<unknown> | undefined;
-  const referenceCache: ProofreadWorkerReferenceCache = {
-    referenceSha256: new Map()
-  };
+  let initializationRuntime: PiSessionAgentRuntime | undefined;
+  let initializationAbort: Promise<unknown> | undefined;
+  let removeInitializationAbortListener: (() => void) | undefined;
+  try {
+    const workerStartedAt = Date.now();
+    let assignmentsStarted = 0;
+    let disposed = false;
+    let activeContext: PiProofreadSubagentContext | undefined;
+    let lastContext = initialContext.task
+      ? { ...initialContext, task: initialContext.task } as PiProofreadSubagentContext
+      : undefined;
+    let lastPrompt = "Waiting for a Host proofreading assignment.";
+    let lastReply = "";
+    let lastResultSummary = "";
+    let lastError = "";
+    let runtime: PiSessionAgentRuntime | undefined;
+    let runtimeAbort: Promise<unknown> | undefined;
+    const referenceCache: ProofreadWorkerReferenceCache = {
+      referenceSha256: new Map()
+    };
 
-  const publishCard = async (args: {
-    status: "running" | "completed" | "failed" | "stopped";
-    live?: boolean;
-    reply?: string;
-    resultSummary?: string;
-    error?: string;
-    extraDetails?: Record<string, unknown>;
-  }) => {
-    const context = activeContext ?? lastContext;
-    const publisher = args.live
-      ? initialContext.publishLiveCustomMessage ?? initialContext.publishCustomMessage
-      : initialContext.publishCustomMessage;
-    await publisher(subagentCard({
-      kind: "proofread",
-      id: subagentId,
-      label: workerLabel,
-      status: args.status,
-      prompt: lastPrompt,
-      reply: args.reply,
-      resultSummary: args.resultSummary,
-      error: args.error,
-      task: context?.task ?? {},
-      providerId: selection.providerId,
-      modelId: selection.modelId,
-      modelName: selection.model.name,
-      startedAt: workerStartedAt,
-      ...(args.status === "running" ? {} : { finishedAt: Date.now() }),
-      extraDetails: args.extraDetails
-    }));
-  };
+    const publishCard = async (args: {
+      status: "running" | "completed" | "failed" | "stopped";
+      live?: boolean;
+      reply?: string;
+      resultSummary?: string;
+      error?: string;
+      extraDetails?: Record<string, unknown>;
+    }) => {
+      const context = activeContext ?? lastContext;
+      const publisher = args.live
+        ? initialContext.publishLiveCustomMessage ?? initialContext.publishCustomMessage
+        : initialContext.publishCustomMessage;
+      await publisher(subagentCard({
+        kind: "proofread",
+        id: subagentId,
+        label: workerLabel,
+        status: args.status,
+        prompt: lastPrompt,
+        reply: args.reply,
+        resultSummary: args.resultSummary,
+        error: args.error,
+        task: context?.task ?? {},
+        providerId: selection.providerId,
+        modelId: selection.modelId,
+        modelName: selection.model.name,
+        startedAt: workerStartedAt,
+        ...(args.status === "running" ? {} : { finishedAt: Date.now() }),
+        extraDetails: args.extraDetails
+      }));
+    };
 
-  const abortRuntime = () => runtimeAbort ??= runtime?.abort() ?? Promise.resolve();
-  const onAbort = () => { void abortRuntime().catch(() => undefined); };
-  initialContext.signal?.addEventListener("abort", onAbort, { once: true });
-  if (initialContext.signal?.aborted) onAbort();
-  const control: PiSubagentControl = {
-    inspect: async () => (await readSessionContext(session)).messages,
-    steer: async (text) => {
-      if (!runtime) throw new Error(`Pi proofread worker ${subagentId} has no active assignment to steer.`);
-      return runtime.queueSteer(text);
-    },
-    followUp: async (text) => {
-      if (!runtime) throw new Error(`Pi proofread worker ${subagentId} has no active assignment for follow-up.`);
-      await runtime.followUp(text);
-    },
-    abort: async () => { await abortRuntime(); }
-  };
-  initialContext.registerControl?.(control);
-  await publishCard({ status: "running", extraDetails: { activity: "queued" } });
+    const abortRuntime = () => initializationAbort = runtimeAbort ??= runtime?.abort() ?? Promise.resolve();
+    const onAbort = () => { void abortRuntime().catch(() => undefined); };
+    removeInitializationAbortListener = () => initialContext.signal?.removeEventListener("abort", onAbort);
+    initialContext.signal?.addEventListener("abort", onAbort, { once: true });
+    if (initialContext.signal?.aborted) onAbort();
+    const control: PiSubagentControl = {
+      inspect: async () => (await readSessionContext(session)).messages,
+      steer: async (text) => {
+        if (!runtime) throw new Error(`Pi proofread worker ${subagentId} has no active assignment to steer.`);
+        return runtime.queueSteer(text);
+      },
+      followUp: async (text) => {
+        if (!runtime) throw new Error(`Pi proofread worker ${subagentId} has no active assignment for follow-up.`);
+        await runtime.followUp(text);
+      },
+      abort: async () => { await abortRuntime(); }
+    };
+    initialContext.registerControl?.(control);
+    await publishCard({ status: "running", extraDetails: { activity: "queued" } });
 
-  return {
-    control,
-    async runAssignment(context) {
-      if (disposed) throw new Error(`Pi proofread worker ${subagentId} is disposed.`);
-      if (activeContext) throw new Error(`Pi proofread worker ${subagentId} already owns an active assignment.`);
-      throwIfAborted(initialContext.signal, context.signal);
-      activeContext = context;
-      lastContext = context;
-      try {
-        await assertProofreadAssignmentFiles(context.request);
-        if (assignmentsStarted > 0) {
-          referenceCache.workflowSha256 = undefined;
-          referenceCache.referenceSha256.clear();
-        }
-        const bundle = await proofreadReferenceBundle(context.request, referenceCache);
-        const previousReferenceSignature = referenceCache.signature;
-        const referencesChanged = previousReferenceSignature !== undefined
-          && previousReferenceSignature !== bundle.signature;
-        if (referencesChanged) {
-          referenceCache.workflowSha256 = undefined;
-          referenceCache.referenceSha256.clear();
-        }
-        const assignmentReferences: ProofreadAssignmentReferenceContext = {
-          bundle,
-          cache: referenceCache,
-          status: previousReferenceSignature === undefined
-            ? "loaded"
-            : referencesChanged ? "refreshed" : "reused"
-        };
-        referenceCache.signature = bundle.signature;
-        const progress: PiProofreadProgress = {
-          referenceRead: false,
-          findingsWritten: false,
-          findingsCount: 0,
-          glossaryCandidates: []
-        };
-        const spec = createPiProofreadRuntimeSpec(context, progress, assignmentReferences);
-        const systemPrompt = await subagentSystemPrompt(context, spec);
-        if (!runtime) {
-          runtime = new PiSessionAgentRuntime({
-            session,
-            sessionId: subagentId,
-            models: selection.models,
-            model: selection.model,
-            thinkingLevel: resolveThinkingLevelForModel(selection.model, context.request.thinkingLevel),
-            tools: spec.tools(subagentId),
-            systemPrompt,
-            providerStreamTimeouts: context.providerStreamTimeouts,
-            retry: CHILD_RUNTIME_RETRY
-          });
-        } else {
-          runtime.resetContext();
-          runtime.reconfigure({
-            tools: spec.tools(subagentId),
-            systemPrompt
-          });
-        }
-        assignmentsStarted += 1;
-        lastPrompt = spec.taskPrompt;
-        await publishCard({
-          status: "running",
-          live: true,
-          extraDetails: {
-            activity: `proofreading L${context.task.fromLine}-L${context.task.toLine}`,
-            assignment: assignmentsStarted
+    return {
+      control,
+      async runAssignment(context) {
+        if (disposed) throw new Error(`Pi proofread worker ${subagentId} is disposed.`);
+        if (activeContext) throw new Error(`Pi proofread worker ${subagentId} already owns an active assignment.`);
+        throwIfAborted(initialContext.signal, context.signal);
+        activeContext = context;
+        lastContext = context;
+        try {
+          await assertProofreadAssignmentFiles(context.request);
+          if (assignmentsStarted > 0) {
+            referenceCache.workflowSha256 = undefined;
+            referenceCache.referenceSha256.clear();
           }
-        });
-        const outcome = await spec.execute(runtime, session, spec.taskPrompt, async (attempt, error) => {
+          const bundle = await proofreadReferenceBundle(context.request, referenceCache);
+          const previousReferenceSignature = referenceCache.signature;
+          const referencesChanged = previousReferenceSignature !== undefined
+            && previousReferenceSignature !== bundle.signature;
+          if (referencesChanged) {
+            referenceCache.workflowSha256 = undefined;
+            referenceCache.referenceSha256.clear();
+          }
+          const assignmentReferences: ProofreadAssignmentReferenceContext = {
+            bundle,
+            cache: referenceCache,
+            status: previousReferenceSignature === undefined
+              ? "loaded"
+              : referencesChanged ? "refreshed" : "reused"
+          };
+          referenceCache.signature = bundle.signature;
+          const progress: PiProofreadProgress = {
+            referenceRead: false,
+            findingsWritten: false,
+            findingsCount: 0,
+            glossaryCandidates: []
+          };
+          const spec = createPiProofreadRuntimeSpec(context, progress, assignmentReferences);
+          const systemPrompt = await subagentSystemPrompt(context, spec);
+          if (!runtime) {
+            runtime = new PiSessionAgentRuntime({
+              session,
+              sessionId: subagentId,
+              models: selection.models,
+              model: selection.model,
+              thinkingLevel: resolveThinkingLevelForModel(selection.model, context.request.thinkingLevel),
+              tools: spec.tools(subagentId),
+              systemPrompt,
+              providerStreamTimeouts: context.providerStreamTimeouts,
+              retry: CHILD_RUNTIME_RETRY
+            });
+          } else {
+            runtime.resetContext();
+            runtime.reconfigure({
+              tools: spec.tools(subagentId),
+              systemPrompt
+            });
+          }
+          assignmentsStarted += 1;
+          lastPrompt = spec.taskPrompt;
           await publishCard({
             status: "running",
             live: true,
             extraDetails: {
-              activity: `retrying L${context.task.fromLine}-L${context.task.toLine}`,
-              retryAttempt: attempt,
-              retryError: error
+              activity: `proofreading L${context.task.fromLine}-L${context.task.toLine}`,
+              assignment: assignmentsStarted
             }
           });
-        });
-        throwIfAborted(initialContext.signal, context.signal);
-        lastReply = outcome.reply || lastReply;
-        lastResultSummary = outcome.resultSummary;
-        lastError = "";
+          const outcome = await spec.execute(runtime, session, spec.taskPrompt, async (attempt, error) => {
+            await publishCard({
+              status: "running",
+              live: true,
+              extraDetails: {
+                activity: `retrying L${context.task.fromLine}-L${context.task.toLine}`,
+                retryAttempt: attempt,
+                retryError: error
+              }
+            });
+          });
+          throwIfAborted(initialContext.signal, context.signal);
+          lastReply = outcome.reply || lastReply;
+          lastResultSummary = outcome.resultSummary;
+          lastError = "";
+          await publishCard({
+            status: "running",
+            live: true,
+            reply: lastReply,
+            resultSummary: lastResultSummary,
+            extraDetails: {
+              activity: `completed L${context.task.fromLine}-L${context.task.toLine}`,
+              assignment: assignmentsStarted,
+              findingsWritten: outcome.extra.findingsWritten
+            }
+          });
+          return {
+            subagentId,
+            label: workerLabel,
+            documentId: context.task.documentId,
+            fromLine: context.task.fromLine,
+            toLine: context.task.toLine,
+            providerId: selection.providerId,
+            modelId: selection.modelId,
+            modelName: selection.model.name,
+            reply: outcome.reply,
+            resultSummary: outcome.resultSummary,
+            findingsWritten: outcome.extra.findingsWritten,
+            glossaryCandidates: outcome.extra.glossaryCandidates,
+            ...(outcome.extra.reportPath ? { reportPath: outcome.extra.reportPath } : {})
+          };
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+          await publishCard({ status: "running", live: true, error: lastError });
+          throw error;
+        } finally {
+          activeContext = undefined;
+        }
+      },
+      async finish(outcome) {
+        if (disposed) throw new Error(`Pi proofread worker ${subagentId} is disposed.`);
         await publishCard({
-          status: "running",
-          live: true,
-          reply: lastReply,
-          resultSummary: lastResultSummary,
+          status: outcome.status,
+          reply: outcome.status === "completed" ? lastReply : "",
+          resultSummary: outcome.status === "completed"
+            ? `${outcome.completedAssignments}/${outcome.assignmentCount} proofreading assignments completed.`
+            : `${outcome.completedAssignments}/${outcome.assignmentCount} proofreading assignments settled.`,
+          error: outcome.error || (outcome.status === "completed" ? undefined : lastError),
           extraDetails: {
-            activity: `completed L${context.task.fromLine}-L${context.task.toLine}`,
-            assignment: assignmentsStarted,
-            findingsWritten: outcome.extra.findingsWritten
+            assignmentCount: outcome.assignmentCount,
+            completedAssignments: outcome.completedAssignments,
+            lastResultSummary
           }
         });
-        return {
-          subagentId,
-          label: workerLabel,
-          documentId: context.task.documentId,
-          fromLine: context.task.fromLine,
-          toLine: context.task.toLine,
-          providerId: selection.providerId,
-          modelId: selection.modelId,
-          modelName: selection.model.name,
-          reply: outcome.reply,
-          resultSummary: outcome.resultSummary,
-          findingsWritten: outcome.extra.findingsWritten,
-          glossaryCandidates: outcome.extra.glossaryCandidates,
-          ...(outcome.extra.reportPath ? { reportPath: outcome.extra.reportPath } : {})
-        };
-      } catch (error) {
-        lastError = error instanceof Error ? error.message : String(error);
-        await publishCard({ status: "running", live: true, error: lastError });
-        throw error;
-      } finally {
-        activeContext = undefined;
+      },
+      async dispose() {
+        if (disposed) return;
+        disposed = true;
+        await closeChildResources(session, runtime, [], runtimeAbort, removeInitializationAbortListener);
       }
-    },
-    async finish(outcome) {
-      if (disposed) throw new Error(`Pi proofread worker ${subagentId} is disposed.`);
-      await publishCard({
-        status: outcome.status,
-        reply: outcome.status === "completed" ? lastReply : "",
-        resultSummary: outcome.status === "completed"
-          ? `${outcome.completedAssignments}/${outcome.assignmentCount} proofreading assignments completed.`
-          : `${outcome.completedAssignments}/${outcome.assignmentCount} proofreading assignments settled.`,
-        error: outcome.error || (outcome.status === "completed" ? undefined : lastError),
-        extraDetails: {
-          assignmentCount: outcome.assignmentCount,
-          completedAssignments: outcome.completedAssignments,
-          lastResultSummary
-        }
-      });
-    },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      initialContext.signal?.removeEventListener("abort", onAbort);
-      if (runtimeAbort) await runtimeAbort;
-      runtime?.dispose();
-      await session.close(BACKGROUND_CONTEXT);
-    }
-  };
+    };
+  } catch (error) {
+    await closeChildResources(session, initializationRuntime, [error], initializationAbort, removeInitializationAbortListener);
+    throw error;
+  }
 }

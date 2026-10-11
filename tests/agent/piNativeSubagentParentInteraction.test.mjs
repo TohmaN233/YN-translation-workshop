@@ -1,4 +1,3 @@
-import { readSessionConversation } from "../helpers/pi-session.mjs";
 import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -14,6 +13,7 @@ import {
 
 import { PiNativeSessionService } from "../../src/main/agent/piNative/sessionService.ts";
 import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
+import { readSessionContext } from "../../src/main/agent/piNative/sessionAccess.ts";
 import { createYnDomainTools } from "../../src/main/agent/piNative/ynDomainTools.ts";
 
 function deferred() {
@@ -144,16 +144,19 @@ try {
       .filter((message) => message.role === "custom" && message.details?.status === "running").length === 2
   ), "two running child cards");
   await waitUntil(async () => {
-    const children = await new PiSessionRepository(workspaceDir).listChildMetadata();
+    const repository = new PiSessionRepository(workspaceDir);
+    const children = await repository.listChildMetadata();
     if (children.length !== 2) return false;
-    const transcripts = await Promise.all(children.map(async (child) => (
-      await readSessionConversation(await new PiSessionRepository(workspaceDir).openChild(child.id))
-    ).messages));
+    const transcripts = await Promise.all(children.map((child) => (
+      repository.withChildSessionReadForParent(child.id, session.id, async (nativeSession) => (
+        (await readSessionContext(nativeSession)).messages.filter((message) => message.role !== "system")
+      ))
+    )));
     return transcripts.every((transcript) => transcript.some((message) => message.role === "toolResult"));
   }, "two live child Pi JSONL tool results");
   let messages = await service.loadMessages(workspaceDir, session.id);
   assert.equal(messages.filter((message) => message.role === "custom" && message.details?.status === "running").length, 2);
-  const rawContext = await readSessionConversation(await new PiSessionRepository(workspaceDir).open(session.id));
+  const rawContext = { messages: await service.loadMessages(workspaceDir, session.id) };
   assert.equal(
     rawContext.messages.filter((message) => message.role === "custom" && message.details?.subagentId).length,
     2,

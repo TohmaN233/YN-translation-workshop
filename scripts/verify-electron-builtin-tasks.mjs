@@ -35,6 +35,10 @@ console.log(JSON.stringify({browserViewBaseline:true,electron:process.versions.e
     platform: "node", format: "esm", outfile: path.join(tempDir, "sourcePreparationWorker.js") });
   await build({ absWorkingDir: root, entryPoints: ["src/main/agent/piNative/translationValidationWorker.ts"], bundle: true,
     platform: "node", format: "esm", outfile: path.join(tempDir, "translationValidationWorker.js") });
+  for (const worker of ["sessionIndexWorker", "sessionMaintenanceWorker", "sessionHostReplayWorker"]) {
+    await build({ absWorkingDir: root, entryPoints: [`src/main/agent/piNative/${worker}.ts`], bundle: true,
+      platform: "node", format: "esm", outfile: path.join(tempDir, `${worker}.js`), external });
+  }
   const result = await new Promise(resolve => {
     const child = spawn(electronPath, ["--disable-gpu", "--disable-gpu-compositing", "--in-process-gpu", "--no-sandbox", `--user-data-dir=${userDataDir}`, path.join(tempDir, "main.mjs")], {
       cwd: root, windowsHide: true, env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "true", YN_ELECTRON_VERIFY_HEADLESS: "1", YN_ELECTRON_VERIFY_OFFSCREEN: "1" }, stdio: ["ignore", "pipe", "pipe"]

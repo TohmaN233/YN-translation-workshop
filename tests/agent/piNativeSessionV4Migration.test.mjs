@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { gunzipSync } from "node:zlib";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/harness/context";
 import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
 import { appendSessionMessage, readSessionContext, readSessionEntries } from "../../src/main/agent/piNative/sessionAccess.ts";
@@ -17,6 +18,22 @@ const assistant = (text) => ({
   role: "assistant", content: [{ type: "text", text }], api: "openai-responses",
   provider: "test", model: "test-model", usage, stopReason: "stop", timestamp: Date.parse(timestamp)
 });
+
+async function verifyStorageUpgrade(repository, id, filePath, original) {
+  const upgraded = await readFile(filePath, "utf8");
+  const before = original.trimEnd().split("\n").map(JSON.parse);
+  const after = upgraded.trimEnd().split("\n").map(JSON.parse);
+  assert.equal(after[0].ynSessionStorageVersion, 1);
+  const { ynSessionStorageVersion: _version, ...header } = after[0];
+  assert.deepEqual(header, before[0]);
+  assert.deepEqual(after.slice(1).flat(), before.slice(1).flat(), "native transaction identities and payloads survive storage upgrade");
+  const receipt = JSON.parse(await readFile(`${filePath}.storage-upgrade.json`, "utf8"));
+  assert.equal(receipt.status, "published");
+  assert.equal(gunzipSync(await readFile(receipt.backup)).toString("utf8"), original);
+  await repository.closeSession(id);
+  await repository.open(id);
+  assert.equal(await readFile(filePath, "utf8"), upgraded, "already-upgraded v4 remains byte-identical on reopen");
+}
 
 async function fixture(workspace, id, { child = false, parentPath, entries = [] } = {}) {
   const directory = path.join(workspace, ".translation-workshop/agent", child ? "pi-child-sessions" : "pi-sessions",
@@ -80,7 +97,7 @@ test("v3 history, compaction, host entries, name and usage survive native v4 wri
     assert.equal((await reopened.getStats(BACKGROUND_CONTEXT)).usage.totalTokens, 15);
     assert.equal((await reopened.getStats(BACKGROUND_CONTEXT)).messageCount, 4);
     assert.equal((await readSessionEntries(reopened)).find((entry) => entry.customType === "yn.host-state").data.marker, "preserved");
-    assert.equal(await readFile(legacy.path, "utf8"), migrated, "reopening v4 must not rewrite native transactions");
+    await verifyStorageUpgrade(repository, "legacy", legacy.path, migrated);
     assert.equal(await repository.readActiveSessionId(), "selected-other-session");
   });
 });
@@ -109,7 +126,7 @@ test("v3 parent transcript slimming backs up original and leaves child JSONL int
     const migratedParent = await readFile(parent.path, "utf8");
     await repository.closeSession("parent");
     await repository.open("parent");
-    assert.equal(await readFile(parent.path, "utf8"), migratedParent);
+    await verifyStorageUpgrade(repository, "parent", parent.path, migratedParent);
     assert.equal(JSON.parse((await readFile(child.path, "utf8")).split("\n")[0]).parentSessionId, "parent");
     assert.equal(await readFile(`${child.path}.v3.backup`, "utf8"), child.text);
     await repository.delete("parent");

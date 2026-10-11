@@ -25,6 +25,7 @@ import type {
   PiSessionPromptRequest,
   PiSessionRunState,
   PiSessionStateEnvelope,
+  PiSessionStorageProgress,
   PiSessionSummary,
   PiSessionRuntimeEvent
 } from "../../../shared/agent/piSessionContract.ts";
@@ -431,6 +432,8 @@ export class PiNativeSessionService {
   private readonly transitionTails = new Map<string, Promise<void>>();
   private readonly closingSessions = new Set<string>();
   private readonly events = new Map<string, PiSessionEventEnvelope[]>();
+  private readonly coldStorageControllers = new Map<string, Set<AbortController>>();
+  private readonly coldStorageSequences = new Map<string, number>();
   private readonly eventListeners = new Set<EventListener>();
   private readonly stateListeners = new Set<StateListener>();
   private readonly options: PiNativeSessionServiceOptions;
@@ -473,9 +476,21 @@ export class PiNativeSessionService {
       const repository = new PiSessionRepository(workspaceDir);
       const sessionId = `pi_${randomUUID()}`;
       const session = await repository.create(sessionId);
-      await repository.writeActiveSessionId(sessionId);
-      const summary = await repository.summaryForMetadata(session.metadata);
-      await repository.closeSession(sessionId);
+      let failure: unknown;
+      let failed = false;
+      let summary: PiSessionSummary;
+      try {
+        await repository.writeActiveSessionId(sessionId);
+        summary = await repository.summaryForMetadata(session.metadata);
+      } catch (error) {
+        failed = true; failure = error; throw error;
+      } finally {
+        try { await repository.closeSession(sessionId); }
+        catch (closeError) {
+          if (failed) throw new AggregateError([failure, closeError], "Pi session creation and handle cleanup both failed.");
+          throw closeError;
+        }
+      }
       this.emitState(workspaceDir, this.idleState(sessionId), true);
       return summary;
     });
@@ -510,6 +525,7 @@ export class PiNativeSessionService {
         await active?.session.close(BACKGROUND_CONTEXT);
         this.active.delete(key);
         this.events.delete(key);
+        this.coldStorageSequences.delete(key);
 
         const repository = new PiSessionRepository(workspaceDir);
         const selectedSessionId = await repository.readActiveSessionId();
@@ -535,27 +551,41 @@ export class PiNativeSessionService {
 
   async loadMessages(workspaceDir: string, sessionId: string): Promise<AgentMessage[]> {
     if (!sessionId) return [];
-    return this.withSessionTransition(workspaceDir, sessionId, async () => {
-      const key = sessionKey(workspaceDir, sessionId);
-      const active = this.active.get(key);
-      const repository = new PiSessionRepository(workspaceDir);
-      const session = active?.session ?? await repository.open(sessionId);
-      try {
-        const messages = compactSubagentCards((await readSessionContext(session)).messages
-          .filter((message) => message.role !== "system").map(piWebDisplayMessage));
-        const interrupted = interruptedSubagentCards(
-          messages,
-          Date.now(),
-          ownedSubagentIds(this.active.get(key))
-        );
-        for (const message of interrupted) await appendSessionMessage(session, message);
-        return interrupted.length > 0
-          ? compactSubagentCards([...messages, ...interrupted])
-          : messages;
-      } finally {
-        if (!active) await repository.closeSession(sessionId);
-      }
-    });
+    const key = sessionKey(workspaceDir, sessionId);
+    const coldController = this.active.has(key) ? undefined : this.registerColdStorageController(key);
+    try {
+      return await this.withSessionTransition(workspaceDir, sessionId, async () => {
+        const active = this.active.get(key);
+        const repository = new PiSessionRepository(workspaceDir);
+        let session: Session | undefined;
+        try {
+          if (!active && coldController && !coldController.signal.aborted) {
+            this.emitStorageProgress(workspaceDir, sessionId, { phase: "scan", processedBytes: 0, totalBytes: 0 });
+          }
+          session = active?.session ?? await repository.open(sessionId, coldController ? {
+            signal: coldController.signal,
+            onProgress: (progress) => {
+              if (!coldController.signal.aborted) this.emitStorageProgress(workspaceDir, sessionId, progress);
+            }
+          } : undefined);
+          const messages = compactSubagentCards((await readSessionContext(session)).messages
+            .filter((message) => message.role !== "system").map(piWebDisplayMessage));
+          const interrupted = interruptedSubagentCards(
+            messages,
+            Date.now(),
+            ownedSubagentIds(this.active.get(key))
+          );
+          for (const message of interrupted) await appendSessionMessage(session, message);
+          return interrupted.length > 0
+            ? compactSubagentCards([...messages, ...interrupted])
+            : messages;
+        } finally {
+          if (!active && session) await repository.closeSession(sessionId);
+        }
+      });
+    } finally {
+      if (coldController) this.releaseColdStorageController(key, coldController);
+    }
   }
 
   async loadSubagentMessages(
@@ -564,9 +594,11 @@ export class PiNativeSessionService {
     childSessionId: string
   ): Promise<AgentMessage[]> {
     const repository = new PiSessionRepository(workspaceDir);
-    const child = await repository.openChildForParent(childSessionId, parentSessionId);
-    try { return (await readSessionContext(child)).messages.filter((message) => message.role !== "system").map(piWebDisplayMessage); }
-    finally { await repository.closeChildSession(childSessionId); }
+    return repository.withChildSessionReadForParent(childSessionId, parentSessionId, async (child) => (
+      (await readSessionContext(child)).messages
+        .filter((message) => message.role !== "system")
+        .map(piWebDisplayMessage)
+    ));
   }
 
   listRecentEvents(workspaceDir: string, sessionId: string, afterSequence = 0): PiSessionEventEnvelope[] {
@@ -575,8 +607,11 @@ export class PiNativeSessionService {
   }
 
   async getRunState(workspaceDir: string, sessionId: string): Promise<PiSessionRunState> {
-    const current = this.active.get(sessionKey(workspaceDir, sessionId));
-    return current ? this.stateFromActive(current) : this.idleState(sessionId);
+    const key = sessionKey(workspaceDir, sessionId);
+    const current = this.active.get(key);
+    return current
+      ? this.stateFromActive(current)
+      : { ...this.idleState(sessionId), sequence: this.coldStorageSequences.get(key) ?? 0 };
   }
 
   async prompt(request: PiSessionPromptRequest): Promise<PiSessionPromptAcceptance> {
@@ -760,7 +795,25 @@ export class PiNativeSessionService {
     const stopStartedAt = Date.now();
     const key = sessionKey(workspaceDir, sessionId);
     const reservation = this.sessionOperationReservations.get(key);
+    const coldControllers = this.coldStorageControllers.get(key);
+    const activeBeforeStop = this.active.get(key);
+    if (!activeBeforeStop) {
+      for (const controller of coldControllers ?? []) {
+        controller.abort(new DOMException("Pi session storage preparation was stopped.", "AbortError"));
+      }
+    }
     if (reservation?.stopSettlement) return reservation.stopSettlement;
+    const hasActiveWork = Boolean(
+      reservation
+      || (!activeBeforeStop && coldControllers?.size)
+      || activeBeforeStop?.running
+      || activeBeforeStop?.compacting
+      || activeBeforeStop?.promptOperation
+      || activeBeforeStop?.subagents.hasRunning()
+      || activeBeforeStop?.reviewBindingRecovery?.pending
+      || activeBeforeStop?.compactionTask
+    );
+    if (!hasActiveWork) return;
     if (reservation) reservation.cancelled = true;
     let settleStop!: () => void;
     let failStop!: (error: unknown) => void;
@@ -913,6 +966,12 @@ export class PiNativeSessionService {
         this.active.delete(key);
         this.events.delete(key);
       }
+      for (const key of this.coldStorageSequences.keys()) {
+        if (key.startsWith(prefix)) {
+          this.coldStorageSequences.delete(key);
+          this.events.delete(key);
+        }
+      }
     });
   }
 
@@ -928,14 +987,26 @@ export class PiNativeSessionService {
     }
     const queuedCarryover = previous ? orderedQueuedMessages(previous).map((entry) => entry.message) : [];
     const repository = new PiSessionRepository(request.outputDir);
-    const session = previous?.session ?? await repository.open(request.sessionId);
+    const coldController = previous ? undefined : this.registerColdStorageController(key);
+    let session: Session | undefined;
     try {
+      if (coldController && !coldController.signal.aborted) {
+        this.emitStorageProgress(request.outputDir, request.sessionId, { phase: "scan", processedBytes: 0, totalBytes: 0 });
+      }
+      session = previous?.session ?? await repository.open(request.sessionId, coldController ? {
+        signal: coldController.signal,
+        onProgress: (progress) => {
+          if (!coldController.signal.aborted) this.emitStorageProgress(request.outputDir, request.sessionId, progress);
+        }
+      } : undefined);
       return await this.prepareOwnedRuntime(request, purpose, previous, session, queuedCarryover, preparationHandoff);
     } catch (error) {
       // A failed provider/tool preparation never transfers this new handle to
       // the active owner. Keep an existing owner's session usable on rejection.
-      if (!previous) await session.close(BACKGROUND_CONTEXT);
+      if (!previous && session) await session.close(BACKGROUND_CONTEXT);
       throw error;
+    } finally {
+      if (coldController) this.releaseColdStorageController(key, coldController);
     }
   }
 
@@ -955,6 +1026,14 @@ export class PiNativeSessionService {
       projectRoot: request.outputDir,
       throwIfCancelled: () => {
         if (reservation?.cancelled) throw new DOMException("Pi Host replay was stopped.", "AbortError");
+      },
+      onReplayProgress: (processedEntries, totalEntries) => {
+        if (reservation?.cancelled) return;
+        this.emitStorageProgress(request.outputDir, request.sessionId, {
+          phase: "replay",
+          processedBytes: processedEntries,
+          totalBytes: totalEntries
+        });
       }
     });
     const selection = await (this.options.createModelSelection ?? createPiModelSelection)({
@@ -1551,7 +1630,7 @@ export class PiNativeSessionService {
       runtime,
       session,
       unsubscribe: () => {},
-      sequence: previous?.sequence ?? 0,
+      sequence: Math.max(previous?.sequence ?? 0, this.coldStorageSequences.get(sessionKey(request.outputDir, request.sessionId)) ?? 0),
       phase: "idle",
       running: false,
       compacting: false,
@@ -2122,6 +2201,49 @@ export class PiNativeSessionService {
     }
   }
 
+  private registerColdStorageController(key: string): AbortController {
+    const controller = new AbortController();
+    const controllers = this.coldStorageControllers.get(key) ?? new Set<AbortController>();
+    controllers.add(controller);
+    this.coldStorageControllers.set(key, controllers);
+    return controller;
+  }
+
+  private releaseColdStorageController(key: string, controller: AbortController): void {
+    const controllers = this.coldStorageControllers.get(key);
+    controllers?.delete(controller);
+    if (controllers?.size === 0) this.coldStorageControllers.delete(key);
+  }
+
+  private emitStorageProgress(
+    workspaceDir: string,
+    sessionId: string,
+    progress: PiSessionStorageProgress
+  ): void {
+    const key = sessionKey(workspaceDir, sessionId);
+    const active = this.active.get(key);
+    const previousSequence = Math.max(
+      active?.sequence ?? 0,
+      this.coldStorageSequences.get(key) ?? 0,
+      this.events.get(key)?.at(-1)?.sequence ?? 0
+    );
+    const sequence = previousSequence + 1;
+    if (active) active.sequence = sequence;
+    else this.coldStorageSequences.set(key, sequence);
+    const envelope: PiSessionEventEnvelope = {
+      workspaceDir: path.resolve(workspaceDir),
+      sessionId,
+      sequence,
+      timestamp: Date.now(),
+      event: { type: "storage_progress", progress }
+    };
+    const log = this.events.get(key) ?? [];
+    log.push(envelope);
+    if (log.length > EVENT_LOG_LIMIT) log.splice(0, log.length - EVENT_LOG_LIMIT);
+    this.events.set(key, log);
+    for (const listener of this.eventListeners) listener(envelope);
+  }
+
   private async withWorkspaceTransition<T>(workspaceDir: string, operation: () => Promise<T>): Promise<T> {
     return this.withTransitions([this.workspaceTransitionResource(workspaceDir)], operation);
   }
@@ -2192,6 +2314,9 @@ export class PiNativeSessionService {
         .map(([, active]) => active.sessionId)
     );
     for (const key of this.sessionOperationReservations.keys()) {
+      if (key.startsWith(prefix)) sessionIds.add(key.slice(prefix.length));
+    }
+    for (const key of this.coldStorageControllers.keys()) {
       if (key.startsWith(prefix)) sessionIds.add(key.slice(prefix.length));
     }
     return [...sessionIds];

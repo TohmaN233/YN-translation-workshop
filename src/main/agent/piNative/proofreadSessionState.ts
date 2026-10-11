@@ -1,9 +1,21 @@
-import { readSessionEntries, appendSessionCustomEntry } from "./sessionAccess.ts";
-import { createHash } from "node:crypto";
+import {
+  appendSessionCustomEntry,
+  getDiskSessionAccess,
+  PI_SESSION_BRANCH
+} from "./sessionAccess.ts";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
+import { stat } from "node:fs/promises";
+import { Worker } from "node:worker_threads";
+import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/harness/context";
+import { StorageBackedSession, type Entry, type JsonlSessionMetadata, type Session } from "@earendil-works/pi-agent-core/node";
 import { decodeProjectPaths, encodeProjectPaths } from "../../projectPaths.ts";
-
-import type { Session } from "@earendil-works/pi-agent-core/node";
+import {
+  applyJsonDelta,
+  createJsonDelta,
+  hostStateHash,
+  validateJsonDeltaOperations,
+  type JsonDeltaOperation
+} from "./hostStateDelta.ts";
 
 import type { ProofreadPrescanSummary } from "./proofreadPrescan.ts";
 import { normalizeTaskPreparationState, type YnTaskPreparationState } from "./taskPreparation.ts";
@@ -19,24 +31,10 @@ import {
 
 export const YN_HOST_STATE_CUSTOM_TYPE = "yn.host-state.v1";
 export const YN_HOST_STATE_DELTA_CUSTOM_TYPE = "yn.host-state.v2";
+export const YN_HOST_STATE_DELTA_SCHEMA_VERSION = 3;
 export const YN_RUNTIME_CONTRACT_VERSION = 2;
 
-type JsonPathPart = string | number;
-
-interface JsonDeltaOperation {
-  op: "set" | "delete";
-  path: JsonPathPart[];
-  value?: unknown;
-}
-
-interface HostStatePersistenceCursor {
-  ownerSessionId: string;
-  state: YnSessionHostState;
-  stateHash: string;
-  deltasSinceCheckpoint: number;
-}
-
-const hostStatePersistenceCursors = new WeakMap<object, HostStatePersistenceCursor>();
+const hostStatePersistenceCursors = new WeakMap<object, YnHostStateReplayCursor>();
 const hostStateLoadDiagnostics = new WeakMap<object, YnHostStateLoadDiagnostics>();
 const HOST_STATE_CHECKPOINT_INTERVAL = 256;
 const HOST_STATE_DELTA_CHECKPOINT_RATIO = 0.65;
@@ -48,6 +46,31 @@ export interface YnHostStateLoadDiagnostics {
   migratedRuntimeContractFromVersion?: number;
   elapsedMs: number;
   maxReplayStepMs: number;
+  replayThread?: "main" | "worker";
+}
+
+export interface YnHostStateReplayProgress {
+  processedEntries: number;
+  totalEntries: number;
+}
+
+export interface YnHostStateReplayCursor {
+  ownerSessionId: string;
+  state: YnSessionHostState;
+  stateHash: string;
+  deltasSinceCheckpoint: number;
+}
+
+export interface YnHostStateReplayResult {
+  state?: YnSessionHostState;
+  cursor?: YnHostStateReplayCursor;
+  diagnostics: YnHostStateLoadDiagnostics;
+}
+
+export interface YnHostStateLoadOptions {
+  projectRoot?: string;
+  throwIfCancelled?: () => void;
+  onReplayProgress?: (processedEntries: number, totalEntries: number) => void;
 }
 
 export function getYnHostStateLoadDiagnostics(session: Session): YnHostStateLoadDiagnostics | undefined {
@@ -131,96 +154,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function cloneJson<T>(value: T): T {
   const serialized = JSON.stringify(value);
   return serialized === undefined ? value : JSON.parse(serialized) as T;
-}
-
-function canonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.keys(value).sort().map((key) => [key, canonicalJson(value[key])])
-  );
-}
-
-function hostStateHash(state: YnSessionHostState): string {
-  return createHash("sha256").update(JSON.stringify(canonicalJson(state))).digest("hex");
-}
-
-function createJsonDelta(
-  previous: unknown,
-  current: unknown,
-  path: JsonPathPart[] = [],
-  operations: JsonDeltaOperation[] = []
-): JsonDeltaOperation[] {
-  if (Object.is(previous, current)) return operations;
-  if (Array.isArray(previous) && Array.isArray(current)) {
-    if (previous.length !== current.length) {
-      operations.push({ op: "set", path, value: current });
-      return operations;
-    }
-    for (let index = 0; index < current.length; index += 1) {
-      createJsonDelta(previous[index], current[index], [...path, index], operations);
-    }
-    return operations;
-  }
-  if (isRecord(previous) && isRecord(current)) {
-    for (const key of Object.keys(previous)) {
-      if (!Object.prototype.hasOwnProperty.call(current, key)) {
-        operations.push({ op: "delete", path: [...path, key] });
-      }
-    }
-    for (const key of Object.keys(current)) {
-      if (!Object.prototype.hasOwnProperty.call(previous, key)) {
-        operations.push({ op: "set", path: [...path, key], value: current[key] });
-      } else {
-        createJsonDelta(previous[key], current[key], [...path, key], operations);
-      }
-    }
-    return operations;
-  }
-  operations.push({ op: "set", path, value: current });
-  return operations;
-}
-
-function applyJsonDelta(base: YnSessionHostState, operations: JsonDeltaOperation[]): YnSessionHostState {
-  let root: unknown = cloneJson(base);
-  for (const operation of operations) {
-    if (operation.op !== "set" && operation.op !== "delete") {
-      throw new Error("The persisted YN Host-state delta contains an unsupported operation.");
-    }
-    if (!Array.isArray(operation.path) || operation.path.some((part) => (
-      typeof part !== "string" && (!Number.isInteger(part) || Number(part) < 0)
-    ))) {
-      throw new Error("The persisted YN Host-state delta contains an invalid path.");
-    }
-    if (operation.path.length === 0) {
-      if (operation.op !== "set") throw new Error("The persisted YN Host-state delta cannot delete its root.");
-      root = cloneJson(operation.value);
-      continue;
-    }
-    let parent: unknown = root;
-    for (const part of operation.path.slice(0, -1)) {
-      if (Array.isArray(parent) && typeof part === "number") parent = parent[part];
-      else if (isRecord(parent) && typeof part === "string") parent = parent[part];
-      else throw new Error("The persisted YN Host-state delta path does not exist in its checkpoint.");
-    }
-    const leaf = operation.path.at(-1)!;
-    if (Array.isArray(parent) && typeof leaf === "number") {
-      if (operation.op === "delete") {
-        throw new Error("The persisted YN Host-state delta cannot delete an array element.");
-      }
-      if (leaf < 0 || leaf >= parent.length) {
-        throw new Error("The persisted YN Host-state delta array index is outside its checkpoint.");
-      }
-      parent[leaf] = cloneJson(operation.value);
-    } else if (isRecord(parent) && typeof leaf === "string") {
-      if (operation.op === "delete") delete parent[leaf];
-      else parent[leaf] = cloneJson(operation.value);
-    } else {
-      throw new Error("The persisted YN Host-state delta path does not match its checkpoint.");
-    }
-  }
-  if (!isRecord(root)) throw new Error("The persisted YN Host-state delta did not produce an object.");
-  return root as unknown as YnSessionHostState;
 }
 
 function normalizeProofreadState(value: unknown): ProofreadHostState {
@@ -384,14 +317,34 @@ const isEmptyHostState = (state: YnSessionHostState) => (
   && isEmptyAlignmentState(state.translationAlignment)
 );
 
-export async function loadYnSessionHostState(
+/**
+ * Host-state replay ignores unrelated custom entries. Fetch the two versioned
+ * Host types in bounded pages, merge by durable sequence, and advance one
+ * shared cursor so interleaved audit entries never change chain ordering.
+ */
+async function* iterateHostStateEntries(session: Session): AsyncGenerator<Entry> {
+  const branch = await session.branch(PI_SESSION_BRANCH, BACKGROUND_CONTEXT);
+  if (!branch) return;
+  let cursor: { seq: number } | undefined;
+  while (true) {
+    const [legacy, deltas] = await Promise.all([
+      branch.findEntries({ type: "custom", customType: YN_HOST_STATE_CUSTOM_TYPE, order: "oldestFirst", limit: 16, cursor }, BACKGROUND_CONTEXT),
+      branch.findEntries({ type: "custom", customType: YN_HOST_STATE_DELTA_CUSTOM_TYPE, order: "oldestFirst", limit: 16, cursor }, BACKGROUND_CONTEXT)
+    ]);
+    const page = [...legacy, ...deltas].sort((left, right) => left.seq - right.seq).slice(0, 16);
+    if (!page.length) return;
+    for (const entry of page) yield entry;
+    cursor = { seq: page[page.length - 1]!.seq };
+  }
+}
+
+export async function replayYnSessionHostState(
   session: Session,
   ownerSessionId: string,
-  options: { projectRoot?: string; throwIfCancelled?: () => void } = {}
-): Promise<YnSessionHostState | undefined> {
+  options: YnHostStateLoadOptions = {}
+): Promise<YnHostStateReplayResult> {
   const started = performance.now();
   options.throwIfCancelled?.();
-  const branch = await readSessionEntries(session);
   let current: YnSessionHostState | undefined;
   let previous: YnSessionHostState | undefined;
   let beforePrevious: YnSessionHostState | undefined;
@@ -407,6 +360,13 @@ export async function loadYnSessionHostState(
   let currentRuntimeContractVersion = 1;
   let replayStepStarted = performance.now();
   let maxReplayStepMs = 0;
+  let processedEntries = 0;
+  let lastProgressAt = Date.now();
+  const reportProgress = (force = false): void => {
+    if (!force && Date.now() - lastProgressAt < 250) return;
+    options.onReplayProgress?.(processedEntries, 0);
+    lastProgressAt = Date.now();
+  };
   const retain = (next: YnSessionHostState): void => {
     beforePrevious = previous;
     previous = current;
@@ -422,7 +382,9 @@ export async function loadYnSessionHostState(
       latestAlignment
     ].filter(Boolean)).size);
   };
-  for (const entry of branch) {
+  for await (const entry of iterateHostStateEntries(session)) {
+    processedEntries += 1;
+    reportProgress();
     if (entry.type !== "custom") continue;
     if (entry.customType !== YN_HOST_STATE_CUSTOM_TYPE && entry.customType !== YN_HOST_STATE_DELTA_CUSTOM_TYPE) continue;
     // A cold replay must verify every durable state, but the historical chain
@@ -444,9 +406,10 @@ export async function loadYnSessionHostState(
       continue;
     }
     if (entry.customType !== YN_HOST_STATE_DELTA_CUSTOM_TYPE) continue;
-    if (!isRecord(entry.data) || entry.data.schemaVersion !== 2) {
+    if (!isRecord(entry.data) || (entry.data.schemaVersion !== 2 && entry.data.schemaVersion !== 3)) {
       throw new Error("The persisted YN Host-state checkpoint/delta has an unsupported schema.");
     }
+    const deltaSchemaVersion = entry.data.schemaVersion;
     if (entry.data.ownerSessionId !== ownerSessionId) {
       throw new Error("The persisted YN Host state belongs to a different Pi session.");
     }
@@ -476,7 +439,7 @@ export async function loadYnSessionHostState(
       );
     }
     const next = normalizeYnSessionHostState(
-      applyJsonDelta(current, entry.data.operations as unknown as JsonDeltaOperation[]),
+      applyJsonDelta(current, entry.data.operations as JsonDeltaOperation[], deltaSchemaVersion),
       ownerSessionId
     );
     currentHash = hostStateHash(next);
@@ -500,7 +463,8 @@ export async function loadYnSessionHostState(
     ? currentRuntimeContractVersion
     : undefined;
   options.throwIfCancelled?.();
-  hostStateLoadDiagnostics.set(session as object, {
+  reportProgress(true);
+  const diagnostics: YnHostStateLoadDiagnostics = {
     reconstructedStateCount,
     peakRetainedStateCount,
     skippedStaleWorkflowRevivalCount,
@@ -509,18 +473,14 @@ export async function loadYnSessionHostState(
     ...(migratedRuntimeContractFromVersion
       ? { migratedRuntimeContractFromVersion }
       : {})
-  });
-  if (current) {
-    hostStatePersistenceCursors.set(session as object, {
+  };
+  const cursor = current ? {
       ownerSessionId,
       state: cloneJson(current),
       stateHash: currentHash,
       deltasSinceCheckpoint
-    });
-  } else {
-    hostStatePersistenceCursors.delete(session as object);
-  }
-  if (!current) return undefined;
+    } : undefined;
+  if (!current) return { diagnostics };
   const loaded = current.domainRun
     || !isEmptyProofreadState(current.proofread)
     || !isEmptyAlignmentState(current.translationAlignment)
@@ -540,10 +500,160 @@ export async function loadYnSessionHostState(
     proofread: decodeProjectPaths(loaded.proofread, projectRoot, (loaded.proofread === latestProofread ? latestProofreadRelativePaths : relativePaths) ? undefined : historicalRoot),
     translationAlignment: decodeProjectPaths(loaded.translationAlignment, projectRoot, (loaded.translationAlignment === latestAlignment ? latestAlignmentRelativePaths : relativePaths) ? undefined : historicalRoot)
   } : loaded;
-  if (!migratedRuntimeContractFromVersion) return rebound;
+  return { state: rebound, ...(cursor ? { cursor } : {}), diagnostics };
+}
 
-  const migrated = migrateLegacyRuntimeContract(rebound);
-  await appendYnSessionHostState(session, migrated, { force: true, projectRoot });
+const HOST_STATE_WORKER_THRESHOLD_BYTES = 1024 * 1024;
+
+async function hasIndexedHostStateEntry(
+  session: Session,
+  disk: NonNullable<ReturnType<typeof getDiskSessionAccess>>
+): Promise<boolean> {
+  const branch = await session.branch(PI_SESSION_BRANCH, BACKGROUND_CONTEXT);
+  const tipId = await branch?.getTipId(BACKGROUND_CONTEXT);
+  if (!tipId) return false;
+  for (const customType of [YN_HOST_STATE_CUSTOM_TYPE, YN_HOST_STATE_DELTA_CUSTOM_TYPE]) {
+    const matches = await disk.storage.scanBranchStructure({
+      start: tipId,
+      order: "newestFirst",
+      type: "custom",
+      customType,
+      limit: 1
+    }, BACKGROUND_CONTEXT);
+    if (matches.length) return true;
+  }
+  return false;
+}
+
+function replayError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  if (value && typeof value === "object" && "message" in value) {
+    const serialized = value as { name?: unknown; message?: unknown; stack?: unknown; code?: unknown };
+    const error = new Error(typeof serialized.message === "string" ? serialized.message : "Host-state replay worker failed.");
+    if (typeof serialized.name === "string") error.name = serialized.name;
+    if (typeof serialized.stack === "string") error.stack = serialized.stack;
+    if (typeof serialized.code === "string") Object.assign(error, { code: serialized.code });
+    return error;
+  }
+  return new Error(String(value));
+}
+
+interface HostStateReplayWorkerInput {
+  path: string;
+  metadata: JsonlSessionMetadata;
+  ownerSessionId: string;
+  projectRoot?: string;
+}
+
+function runHostStateReplayWorker(
+  input: HostStateReplayWorkerInput,
+  options: YnHostStateLoadOptions
+): Promise<YnHostStateReplayResult> {
+  options.throwIfCancelled?.();
+  const workerUrl = new URL(import.meta.url.endsWith(".ts")
+    ? "./sessionHostReplayWorker.ts"
+    : "./sessionHostReplayWorker.js", import.meta.url);
+  const worker = new Worker(workerUrl, {
+    workerData: input,
+    execArgv: process.execArgv.filter((arg) => !arg.startsWith("--input-type") && !arg.startsWith("--expose-gc"))
+  });
+  return new Promise((resolve, reject) => {
+    let result: YnHostStateReplayResult | undefined;
+    let failure: unknown;
+    let terminating = false;
+    const failAndTerminate = (error: unknown): void => {
+      if (failure === undefined) failure = error;
+      if (terminating) return;
+      terminating = true;
+      void worker.terminate().catch((terminateError) => {
+        failure = new AggregateError([failure, terminateError], "Host-state replay failed and its worker could not be terminated.");
+      });
+    };
+    const cancellationPoll = setInterval(() => {
+      try { options.throwIfCancelled?.(); }
+      catch (error) { failAndTerminate(error); }
+    }, 25);
+    worker.on("message", (message: unknown) => {
+      if (!message || typeof message !== "object" || !("type" in message)) {
+        failAndTerminate(new Error("Host-state replay worker sent an invalid message."));
+        return;
+      }
+      const event = message as Record<string, unknown>;
+      if (event.type === "progress") {
+        try {
+          const processedEntries = event.processedEntries;
+          const totalEntries = event.totalEntries;
+          if (!Number.isInteger(processedEntries) || Number(processedEntries) < 0
+            || !Number.isInteger(totalEntries) || Number(totalEntries) < 0) {
+            throw new Error("Host-state replay worker sent invalid progress.");
+          }
+          options.onReplayProgress?.(Number(processedEntries), Number(totalEntries));
+        } catch (error) { failAndTerminate(error); }
+      } else if (event.type === "result") {
+        result = event.result as YnHostStateReplayResult;
+      } else if (event.type === "failure") {
+        failure = replayError(event.error);
+      } else {
+        failAndTerminate(new Error(`Host-state replay worker sent an unknown message type: ${String(event.type)}.`));
+      }
+    });
+    worker.once("error", (error) => { failure ??= error; });
+    worker.once("exit", (code) => {
+      clearInterval(cancellationPoll);
+      if (failure !== undefined) reject(failure);
+      else if (code !== 0 || !result) reject(new Error(`Host-state replay worker exited without a result (code ${code}).`));
+      else resolve(result);
+    });
+  });
+}
+
+function installReplayResult(session: Session, result: YnHostStateReplayResult): void {
+  hostStateLoadDiagnostics.set(session as object, { ...result.diagnostics });
+  if (result.cursor) hostStatePersistenceCursors.set(session as object, result.cursor);
+  else hostStatePersistenceCursors.delete(session as object);
+}
+
+export async function loadYnSessionHostState(
+  session: Session,
+  ownerSessionId: string,
+  options: YnHostStateLoadOptions = {}
+): Promise<YnSessionHostState | undefined> {
+  options.throwIfCancelled?.();
+  const disk = getDiskSessionAccess(session);
+  const fileSize = disk ? (await stat(disk.path)).size : 0;
+  const hasHostState = disk && fileSize > HOST_STATE_WORKER_THRESHOLD_BYTES
+    ? await hasIndexedHostStateEntry(session, disk)
+    : false;
+  let result: YnHostStateReplayResult;
+  if (disk && hasHostState) {
+    result = await session.mutate(async () => {
+      options.throwIfCancelled?.();
+      // This queued storage read checks the registered source identity before
+      // the background worker takes over replay.
+      await disk.storage.getStats(BACKGROUND_CONTEXT);
+      options.throwIfCancelled?.();
+      const workerResult = await runHostStateReplayWorker({
+        path: disk.path,
+        metadata: session.metadata as JsonlSessionMetadata,
+        ownerSessionId,
+        ...(options.projectRoot ? { projectRoot: options.projectRoot } : {})
+      }, options);
+      await disk.storage.getStats(BACKGROUND_CONTEXT);
+      options.throwIfCancelled?.();
+      workerResult.diagnostics.replayThread = "worker";
+      installReplayResult(session, workerResult);
+      return workerResult;
+    }, BACKGROUND_CONTEXT);
+  } else {
+    result = await replayYnSessionHostState(session, ownerSessionId, options);
+    result.diagnostics.replayThread = "main";
+    installReplayResult(session, result);
+  }
+  if (!result.state) return undefined;
+  if (!result.diagnostics.migratedRuntimeContractFromVersion) return result.state;
+
+  const migrated = migrateLegacyRuntimeContract(result.state);
+  await appendYnSessionHostState(session, migrated, { force: true, projectRoot: options.projectRoot });
   return migrated;
 }
 
@@ -561,7 +671,7 @@ export async function appendYnSessionHostState(
   }
   if (!options.force && cursor?.stateHash === stateHash) return;
   const checkpoint = {
-    schemaVersion: 2 as const,
+    schemaVersion: YN_HOST_STATE_DELTA_SCHEMA_VERSION,
     runtimeContractVersion: YN_RUNTIME_CONTRACT_VERSION,
     ownerSessionId: normalized.ownerSessionId,
     mode: "checkpoint" as const,
@@ -574,7 +684,7 @@ export async function appendYnSessionHostState(
   if (!options.force && cursor && cursor.deltasSinceCheckpoint < HOST_STATE_CHECKPOINT_INTERVAL) {
     const operations = createJsonDelta(cursor.state, normalized);
     const delta = {
-      schemaVersion: 2 as const,
+      schemaVersion: YN_HOST_STATE_DELTA_SCHEMA_VERSION,
       runtimeContractVersion: YN_RUNTIME_CONTRACT_VERSION,
       ownerSessionId: normalized.ownerSessionId,
       mode: "delta" as const,
@@ -602,3 +712,5 @@ export async function appendYnSessionHostState(
 }
 
 export { createTranslationAlignmentHostState };
+export { applyJsonDelta, createJsonDelta, hostStateHash, validateJsonDeltaOperations };
+export type { JsonDeltaOperation };

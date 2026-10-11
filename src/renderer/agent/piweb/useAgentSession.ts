@@ -9,6 +9,7 @@ import type {
   PiSessionImageAttachment,
   PiSessionRunState,
   PiSessionSummary,
+  PiSessionStorageProgress,
   PiWorkflowPromptMetadata
 } from "../../../shared/agent/piSessionContract.ts";
 import { electronPiSessionClient, type YnAgentRoute } from "./electronPiSessionClient";
@@ -63,6 +64,8 @@ export interface SessionState {
   messages: AgentMessage[];
   streamingMessage: AgentMessage | null;
   agentRunning: boolean;
+  storagePreparing: boolean;
+  storageProgress: PiSessionStorageProgress | null;
   phase: AgentPhase;
   phaseText: string;
   retryInfo: { attempt: number; maxAttempts: number; errorMessage?: string } | null;
@@ -87,6 +90,8 @@ const INITIAL_STATE: SessionState = {
   messages: [],
   streamingMessage: null,
   agentRunning: false,
+  storagePreparing: false,
+  storageProgress: null,
   phase: null,
   phaseText: "ready",
   retryInfo: null,
@@ -209,6 +214,8 @@ export function mergePiRunState(
     ...current,
     messages,
     agentRunning: preserve ? true : runState.running,
+    storagePreparing: runState.running ? false : current.storagePreparing,
+    storageProgress: runState.running ? null : current.storageProgress,
     streamingMessage: runState.streamingMessage
       ? normalizeToolCalls(runState.streamingMessage as AgentMessage)
       : preserve ? current.streamingMessage : null,
@@ -270,8 +277,24 @@ export function reduceNativePiEvent(
   if (envelope.sessionId !== current.sessionId || envelope.sequence <= current.lastSequence) return current;
   const event = envelope.event;
   let next = { ...current, lastSequence: envelope.sequence };
+  if (event.type === "storage_progress") {
+    const workStarted = event.progress.phase !== "complete"
+      && !(event.progress.phase === "scan" && event.progress.processedBytes === 0 && event.progress.totalBytes === 0);
+    return {
+      ...next,
+      storagePreparing: workStarted,
+      storageProgress: workStarted ? event.progress : null
+    };
+  }
   if (event.type === "agent_start") {
-    return { ...next, agentRunning: true, phase: { kind: "waiting_model" }, phaseText: "thinking" };
+    return {
+      ...next,
+      agentRunning: true,
+      storagePreparing: false,
+      storageProgress: null,
+      phase: { kind: "waiting_model" },
+      phaseText: "thinking"
+    };
   }
   if (event.type === "auto_retry_start") {
     return {
@@ -299,6 +322,8 @@ export function reduceNativePiEvent(
     return {
       ...next,
       agentRunning: true,
+      storagePreparing: false,
+      storageProgress: null,
       streamingMessage: normalizeToolCalls(event.message),
       phase: null,
       phaseText: "running"
@@ -334,7 +359,15 @@ export function reduceNativePiEvent(
     };
   }
   if (event.type === "settled") {
-    return { ...next, agentRunning: false, streamingMessage: null, phase: null, phaseText: "ready" };
+    return {
+      ...next,
+      agentRunning: false,
+      storagePreparing: false,
+      storageProgress: null,
+      streamingMessage: null,
+      phase: null,
+      phaseText: "ready"
+    };
   }
   return next;
 }
@@ -376,6 +409,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     id: number;
     sessionId: string;
     cancelled: boolean;
+    originalMessages: AgentMessage[];
   } | null>(null);
   const terminalConvergenceRef = useRef("");
   const providerReloadEpochRef = useRef(0);
@@ -442,47 +476,65 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
 
   const loadSelectedSession = useCallback(async (sessionId: string, epoch: number) => {
     if (!route.outputDir || !sessionId) return;
-    const runState = await electronPiSessionClient.loadRunState(route.outputDir, sessionId);
-    const messages = (await electronPiSessionClient.loadMessages(route.outputDir, sessionId)).map(normalizeToolCalls);
-    const recentEvents = await electronPiSessionClient.loadRecentEvents(
-      route.outputDir,
-      sessionId,
-      runState.sequence
-    );
-    if (loadEpochRef.current !== epoch || stateRef.current.sessionId !== sessionId) return;
-    setState((current) => {
-      const liveAdvanced = current.lastSequence > runState.sequence;
-      const loadedMessages = runState.subagentMessages.reduce(
-        (merged, message) => appendPiSessionMessage(merged, message),
-        messages
+    setLoading(true);
+    setState((current) => ({ ...current, storagePreparing: false, storageProgress: null }));
+    try {
+      const runState = await electronPiSessionClient.loadRunState(route.outputDir, sessionId);
+      if (loadEpochRef.current !== epoch) return;
+      if (runState.running || runState.compacting) {
+        setState((current) => mergePiRunState(current, runState));
+      }
+      const messages = (await electronPiSessionClient.loadMessages(route.outputDir, sessionId)).map(normalizeToolCalls);
+      const recentEvents = await electronPiSessionClient.loadRecentEvents(
+        route.outputDir,
+        sessionId,
+        runState.sequence
       );
-      let next: SessionState = {
-        ...current,
-        messages: liveAdvanced
-          ? current.messages.reduce((merged, message) => appendPiSessionMessage(merged, message), loadedMessages)
-          : loadedMessages,
-        agentRunning: liveAdvanced ? current.agentRunning : runState.running,
-        streamingMessage: liveAdvanced
-          ? current.streamingMessage
-          : runState.streamingMessage
-            ? normalizeToolCalls(runState.streamingMessage as AgentMessage)
-            : null,
-        phase: liveAdvanced ? current.phase : phaseFromState(runState),
-        phaseText: liveAdvanced
-          ? current.phaseText
-          : runState.compactionError || runState.error || (runState.compacting ? "compacting" : runState.running ? "thinking" : "ready"),
-        queuedSteer: liveAdvanced ? current.queuedSteer : runState.queuedSteer.map(normalizeToolCalls),
-        queuedFollowUp: liveAdvanced ? current.queuedFollowUp : runState.queuedFollowUp.map(normalizeToolCalls),
-        queuedNextTurn: liveAdvanced ? current.queuedNextTurn : runState.queuedNextTurn.map(normalizeToolCalls),
-        isCompacting: liveAdvanced ? current.isCompacting : runState.compacting,
-        compactResult: runState.lastCompaction ?? current.compactResult,
-        compactError: runState.compactionError ?? null,
-        contextUsage: runState.contextUsage ?? current.contextUsage,
-        lastSequence: Math.max(current.lastSequence, runState.sequence)
-      };
-      for (const envelope of recentEvents) next = reduceNativePiEvent(next, envelope);
-      return next;
-    });
+      if (loadEpochRef.current !== epoch || stateRef.current.sessionId !== sessionId) return;
+      setState((current) => {
+        const liveAdvanced = current.lastSequence > runState.sequence;
+        const loadedMessages = runState.subagentMessages.reduce(
+          (merged, message) => appendPiSessionMessage(merged, message),
+          messages
+        );
+        let next: SessionState = {
+          ...current,
+          messages: liveAdvanced
+            ? current.messages.reduce((merged, message) => appendPiSessionMessage(merged, message), loadedMessages)
+            : loadedMessages,
+          agentRunning: liveAdvanced ? current.agentRunning : runState.running,
+          streamingMessage: liveAdvanced
+            ? current.streamingMessage
+            : runState.streamingMessage
+              ? normalizeToolCalls(runState.streamingMessage as AgentMessage)
+              : null,
+          phase: liveAdvanced ? current.phase : phaseFromState(runState),
+          phaseText: liveAdvanced
+            ? current.phaseText
+            : runState.compactionError || runState.error || (runState.compacting ? "compacting" : runState.running ? "thinking" : "ready"),
+          queuedSteer: liveAdvanced ? current.queuedSteer : runState.queuedSteer.map(normalizeToolCalls),
+          queuedFollowUp: liveAdvanced ? current.queuedFollowUp : runState.queuedFollowUp.map(normalizeToolCalls),
+          queuedNextTurn: liveAdvanced ? current.queuedNextTurn : runState.queuedNextTurn.map(normalizeToolCalls),
+          isCompacting: liveAdvanced ? current.isCompacting : runState.compacting,
+          compactResult: runState.lastCompaction ?? current.compactResult,
+          compactError: runState.compactionError ?? null,
+          contextUsage: runState.contextUsage ?? current.contextUsage,
+          lastSequence: Math.max(current.lastSequence, runState.sequence)
+        };
+        for (const envelope of recentEvents) next = reduceNativePiEvent(next, envelope);
+        return { ...next, storagePreparing: false, storageProgress: null };
+      });
+    } catch (loadError) {
+      if (loadEpochRef.current !== epoch || (loadError instanceof Error && loadError.name === "AbortError")) return;
+      throw loadError;
+    } finally {
+      if (loadEpochRef.current === epoch) {
+        setLoading(false);
+        setState((current) => current.sessionId === sessionId
+          ? { ...current, storagePreparing: false, storageProgress: null }
+          : current);
+      }
+    }
   }, [route.outputDir]);
 
   const reloadProviderSettings = useCallback(async () => {
@@ -578,6 +630,8 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
           ...current,
           sessionId,
           messages: carriedMessages,
+          storagePreparing: false,
+          storageProgress: null,
           lastSequence: payload.state.sequence
         }, payload.state, preserveOptimisticRun));
         void electronPiSessionClient.loadBootstrap(route.outputDir)
@@ -663,6 +717,8 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     workflowMetadata?: PiWorkflowPromptMetadata,
     attachedImages: AttachedImage[] = []
   ) => {
+    const current = stateRef.current;
+    if (current.storagePreparing || current.storageProgress || (loading && !current.sessionId)) return;
     const text = prompt.trim();
     if ((!text && attachedImages.length === 0) || !route.outputDir) return;
     if (stateRef.current.isCompacting) throw new Error("Wait for native Pi compaction to finish.");
@@ -682,7 +738,12 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       ],
       timestamp: Date.now()
     };
-    const pending = { id: ++promptSequenceRef.current, sessionId: stateRef.current.sessionId, cancelled: false };
+    const pending = {
+      id: ++promptSequenceRef.current,
+      sessionId: stateRef.current.sessionId,
+      cancelled: false,
+      originalMessages: stateRef.current.messages
+    };
     pendingPromptRef.current = pending;
     setError(null);
     setState((current) => ({
@@ -747,10 +808,24 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       if (pending.cancelled) await electronPiSessionClient.abort(route.outputDir, sessionId);
     } catch (sendError) {
       if (pendingPromptRef.current?.id === pending.id) pendingPromptRef.current = null;
+      if (pending.cancelled) return;
+      if (sendError instanceof Error && sendError.name === "AbortError") {
+        setState((current) => ({
+          ...current,
+          messages: pending.originalMessages,
+          storagePreparing: false,
+          storageProgress: null,
+          agentRunning: false,
+          streamingMessage: null,
+          phase: null,
+          phaseText: "ready"
+        }));
+        return;
+      }
       setError(sendError instanceof Error ? sendError.message : String(sendError));
-      setState((current) => ({ ...current, agentRunning: false, phase: null, phaseText: "error" }));
+      setState((current) => ({ ...current, storagePreparing: false, storageProgress: null, agentRunning: false, phase: null, phaseText: "error" }));
     }
-  }, [ensureSession, reloadProviderSettings, route.languagePair, route.lineReviewPath, route.outputDir, route.sourceKind, route.sourcePath, route.translationPath]);
+  }, [ensureSession, loading, reloadProviderSettings, route.languagePair, route.lineReviewPath, route.outputDir, route.sourceKind, route.sourcePath, route.translationPath]);
 
   const handleCompact = useCallback(async (customInstructions?: string) => {
     const current = stateRef.current;
@@ -806,9 +881,46 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     const pending = pendingPromptRef.current;
     if (pending) pending.cancelled = true;
     const sessionId = pending?.sessionId || stateRef.current.sessionId;
+    const current = stateRef.current;
+    const coldStoragePreparing = current.storagePreparing
+      || Boolean(current.storageProgress)
+      || (loading && !current.agentRunning && !current.isCompacting);
+    if (coldStoragePreparing) {
+      ++loadEpochRef.current;
+      setState((current) => ({
+        ...current,
+        messages: pending?.originalMessages ?? current.messages,
+        storagePreparing: true,
+        storageProgress: null,
+        agentRunning: true,
+        streamingMessage: null,
+        phase: null,
+        phaseText: "Stopping..."
+      }));
+      try {
+        if (sessionId) {
+          await electronPiSessionClient.abort(route.outputDir, sessionId);
+        }
+      } catch (abortError) {
+        setError(abortError instanceof Error ? abortError.message : String(abortError));
+      } finally {
+        setLoading(false);
+        if (pendingPromptRef.current === pending) pendingPromptRef.current = null;
+        setState((current) => ({
+          ...current,
+          storagePreparing: false,
+          storageProgress: null,
+          agentRunning: false,
+          streamingMessage: null,
+          phase: null,
+          phaseText: "ready"
+        }));
+      }
+      return;
+    }
     if (!sessionId) {
       if (pendingPromptRef.current === pending) pendingPromptRef.current = null;
-      setState((current) => ({ ...current, agentRunning: false, streamingMessage: null, phase: null, phaseText: "ready" }));
+      setState((current) => ({ ...current, storagePreparing: false, storageProgress: null, agentRunning: false, streamingMessage: null, phase: null, phaseText: "ready" }));
       return;
     }
     setState((current) => ({
@@ -836,7 +948,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     } finally {
       if (pendingPromptRef.current === pending) pendingPromptRef.current = null;
     }
-  }, [route.outputDir]);
+  }, [loading, route.outputDir]);
 
   const sendInput = useCallback(async (
     text: string,
@@ -869,7 +981,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     if (!route.outputDir || stateRef.current.agentRunning || stateRef.current.isCompacting) return;
     const epoch = ++loadEpochRef.current;
     setError(null);
-    setState((current) => ({ ...current, sessionId: "", messages: [], streamingMessage: null, queuedSteer: [], queuedFollowUp: [], queuedNextTurn: [], lastSequence: 0 }));
+    setState((current) => ({ ...current, sessionId: "", messages: [], streamingMessage: null, storagePreparing: false, storageProgress: null, queuedSteer: [], queuedFollowUp: [], queuedNextTurn: [], lastSequence: 0 }));
     try {
       const session = await electronPiSessionClient.createSession(route.outputDir);
       if (loadEpochRef.current !== epoch) return;
@@ -887,7 +999,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     if (!route.outputDir || stateRef.current.agentRunning || stateRef.current.isCompacting || sessionId === stateRef.current.sessionId) return;
     const epoch = ++loadEpochRef.current;
     setError(null);
-    setState((current) => ({ ...current, sessionId, messages: [], streamingMessage: null, queuedSteer: [], queuedFollowUp: [], queuedNextTurn: [], lastSequence: 0 }));
+    setState((current) => ({ ...current, sessionId, messages: [], streamingMessage: null, storagePreparing: false, storageProgress: null, queuedSteer: [], queuedFollowUp: [], queuedNextTurn: [], lastSequence: 0 }));
     try {
       await electronPiSessionClient.selectSession(route.outputDir, sessionId);
       await loadSelectedSession(sessionId, epoch);
@@ -916,6 +1028,8 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       queuedSteer: [],
       queuedFollowUp: [],
       queuedNextTurn: [],
+      storagePreparing: false,
+      storageProgress: null,
       lastSequence: 0
     }));
     if (bootstrap.activeSessionId) await loadSelectedSession(bootstrap.activeSessionId, epoch);
@@ -982,6 +1096,8 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
 
   return {
     loading,
+    storagePreparing: state.storagePreparing,
+    storageProgress: state.storageProgress,
     error,
     messages: state.messages,
     streamState,

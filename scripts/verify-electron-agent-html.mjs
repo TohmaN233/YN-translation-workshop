@@ -25,6 +25,9 @@ async function buildVerifier(entryPoint, outputName) {
   // just as the packaged main process resolves dist/main/proofreadPrescanWorker.js.
   await copyFile(path.join(root, "dist/main/proofreadPrescanWorker.js"), path.join(tempDir, "proofreadPrescanWorker.js"));
   await copyFile(path.join(root, "dist/main/translationValidationWorker.js"), path.join(tempDir, "translationValidationWorker.js"));
+  for (const worker of ["sessionIndexWorker.js", "sessionMaintenanceWorker.js", "sessionHostReplayWorker.js"]) {
+    await copyFile(path.join(root, "dist/main", worker), path.join(tempDir, worker));
+  }
   const outfile = path.join(tempDir, outputName);
   await build({
     absWorkingDir: root,

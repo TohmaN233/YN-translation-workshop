@@ -10,7 +10,7 @@ import {
   type SlashCommandInfo
 } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
-import type { PiSessionSummary, PiWorkflowPromptMetadata } from "../../../shared/agent/piSessionContract.ts";
+import type { PiSessionStorageProgress, PiSessionSummary, PiWorkflowPromptMetadata } from "../../../shared/agent/piSessionContract.ts";
 import { electronPiSessionClient, type YnAgentRoute } from "./electronPiSessionClient";
 import { agentUiStrings, normalizeAgentUiLocale, type AgentUiLocale } from "./i18n";
 import { MessageView } from "./MessageView";
@@ -38,6 +38,15 @@ function phaseLabel(phase: AgentPhase, fallback: string, locale: AgentUiLocale):
   if (phase?.kind === "running_command") return ui.runningCommand;
   if (locale === "zh-CN" && /^Stopping/i.test(fallback)) return ui.stopping;
   return fallback || ui.thinking;
+}
+
+function storageProgressLabel(progress: PiSessionStorageProgress | null, locale: AgentUiLocale): string {
+  const ui = agentUiStrings[locale];
+  if (!progress) return ui.preparingSession;
+  const stage = ui.storageStages[progress.phase];
+  if (progress.totalBytes <= 0) return ui.preparingSession;
+  const percent = Math.max(0, Math.min(100, Math.floor((progress.processedBytes / progress.totalBytes) * 100)));
+  return ui.storageProgress.replace("{stage}", stage).replace("{percent}", String(percent));
 }
 
 function assistantText(message: AgentMessage | null | undefined): string {
@@ -141,6 +150,8 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
   const ui = agentUiStrings[locale];
   const {
     loading,
+    storagePreparing,
+    storageProgress,
     error,
     messages,
     streamState,
@@ -227,12 +238,23 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
     () => buildQueuedInputs(queuedSteer, queuedFollowUp, queuedNextTurn),
     [queuedFollowUp, queuedNextTurn, queuedSteer]
   );
-  const visiblePhaseText = subagentProgress.running > 0
-    ? ui.subagentsRunning.replace("{count}", String(subagentProgress.running))
-    : isCompacting ? ui.compactingContext : phaseLabel(agentPhase, agentPhaseText, locale);
+  const storageStatus = storagePreparing && /^Stopping/i.test(agentPhaseText)
+    ? phaseLabel(agentPhase, agentPhaseText, locale)
+    : storageProgressLabel(storageProgress, locale);
+  const sessionPreparing = loading || storagePreparing;
+  const storagePreparationActive = storagePreparing || Boolean(storageProgress);
+  const initialSessionLoading = loading && !conversationId;
+  const showPreparationNotice = storagePreparationActive || initialSessionLoading;
+  const visiblePhaseText = storagePreparing
+    ? storageStatus
+    : loading
+      ? ui.loadingSession
+    : subagentProgress.running > 0
+      ? ui.subagentsRunning.replace("{count}", String(subagentProgress.running))
+      : isCompacting ? ui.compactingContext : phaseLabel(agentPhase, agentPhaseText, locale);
   const agentBusy = agentRunning || isCompacting;
   const subagentsRunning = subagentProgress.running > 0;
-  const sessionBusy = agentBusy || subagentsRunning;
+  const sessionBusy = agentBusy || subagentsRunning || sessionPreparing;
 
   const slashCommands = useMemo<SlashCommandInfo[]>(() => {
     const commands: SlashCommandInfo[] = [
@@ -240,7 +262,9 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
       { name: "session", description: ui.slash.session },
       { name: "copy", description: ui.slash.copy }
     ];
-    if (agentRunning) {
+    if (sessionPreparing) {
+      commands.push({ name: "stop", description: ui.stopStoragePreparation });
+    } else if (agentRunning) {
       commands.push(
         { name: "stop", description: ui.slash.stopRun },
         { name: "steer", description: ui.slash.steer, argumentHint: "<message>" },
@@ -258,7 +282,7 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
       );
     }
     return commands;
-  }, [agentRunning, conversationId, isCompacting, messages.length, subagentsRunning, ui]);
+  }, [agentRunning, conversationId, isCompacting, messages.length, sessionPreparing, subagentsRunning, ui]);
 
   const handleBuiltinCommand = useCallback(async (input: string): Promise<BuiltinSlashCommandResult> => {
     const match = input.trim().match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/);
@@ -279,29 +303,29 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
           : { handled: true, error: ui.commandResult.copyFailed };
       }
       if (command === "compact") {
-        if (agentRunning || subagentsRunning) return { handled: true, error: ui.commandResult.stopBeforeCompact };
+        if (agentRunning || subagentsRunning || sessionPreparing) return { handled: true, error: ui.commandResult.stopBeforeCompact };
         if (isCompacting) return { handled: true, error: ui.commandResult.compactionRunning };
         await handleCompact(argument || undefined);
         return { handled: true };
       }
       if (command === "model") {
-        if (agentRunning) return { handled: true, error: ui.commandResult.stopBeforeModel };
+        if (agentRunning || sessionPreparing) return { handled: true, error: ui.commandResult.stopBeforeModel };
         chatInputRef.current?.openModelPicker();
         return { handled: true };
       }
       if (command === "settings" || command === "login") {
-        if (agentRunning) return { handled: true, error: ui.commandResult.stopBeforeSettings };
+        if (agentRunning || sessionPreparing) return { handled: true, error: ui.commandResult.stopBeforeSettings };
         setSessionPanelOpen(false);
         setProviderSettingsOpen(true);
         return { handled: true };
       }
       if (command === "new") {
-        if (agentRunning || subagentsRunning) return { handled: true, error: ui.commandResult.stopBeforeNew };
+        if (agentRunning || subagentsRunning || sessionPreparing) return { handled: true, error: ui.commandResult.stopBeforeNew };
         await handleNewConversation();
         return { handled: true, message: ui.commandResult.sessionCreated };
       }
       if (command === "stop" || command === "abort" || command === "cancel") {
-        if (!agentRunning && !subagentsRunning) return { handled: true, error: ui.commandResult.noActiveWork };
+        if (!agentRunning && !subagentsRunning && !sessionPreparing) return { handled: true, error: ui.commandResult.noActiveWork };
         await handleAbort();
         return { handled: true, message: ui.commandResult.stopping };
       }
@@ -324,12 +348,12 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
         error: commandError instanceof Error ? commandError.message : String(commandError)
       };
     }
-  }, [agentRunning, handleAbort, handleCompact, handleFollowUp, handleNewConversation, handleSteer, isCompacting, messages, streamState.streamingMessage, subagentsRunning, ui.commandResult]);
+  }, [agentRunning, handleAbort, handleCompact, handleFollowUp, handleNewConversation, handleSteer, isCompacting, messages, sessionPreparing, streamState.streamingMessage, subagentsRunning, ui.commandResult]);
 
   const handleClose = async () => {
     if (isCompacting) return;
     await closeAgentSurface({
-      agentRunning: agentRunning || subagentsRunning,
+      agentRunning: sessionBusy,
       abort: handleAbort,
       close: () => {
         if (window.YnPiWebAgentEmbedded?.close) {
@@ -532,7 +556,7 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
     <section className="ynAgentTranscript" ref={scrollContainerRef} aria-live="polite">
       <div className="ynAgentTranscriptInner">
         {loading && messages.length === 0 && !streamState.streamingMessage ? (
-          <div className="ynAgentEmpty">{ui.loadingSession}</div>
+          <div className="ynAgentEmpty">{storagePreparing ? storageStatus : ui.loadingSession}</div>
         ) : isNew && messages.length === 0 && !agentBusy ? (
           <div className="ynAgentEmpty">
             <div className="ynAgentEmptyBrand">YN Agent OS</div>
@@ -699,7 +723,25 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
                   ))}
                 </div>
               )}
-              {chatInputElement}
+              {showPreparationNotice && (
+                <div role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "14px 16px", color: "var(--text-dim)", fontSize: 13 }}>
+                  <LoaderCircle size={15} aria-hidden="true" />
+                  <span>{storagePreparing ? storageStatus : ui.loadingSession}</span>
+                  {storagePreparationActive && (
+                    <button className="ynAgentInputAction ynAgentInputStop" type="button" onClick={() => void handleAbort()} aria-label={ui.stopStoragePreparation} title={ui.stopStoragePreparation}>
+                      <Square size={12} fill="currentColor" />
+                      {ui.stopStoragePreparation}
+                    </button>
+                  )}
+                </div>
+              )}
+              <fieldset
+                disabled={storagePreparationActive || initialSessionLoading}
+                data-agent-composer-preserved="true"
+                style={{ display: "block", maxWidth: 900, width: "100%", minWidth: 0, margin: "0 auto", border: 0, padding: 0 }}
+              >
+                {chatInputElement}
+              </fieldset>
             </footer>
           </>
         )}

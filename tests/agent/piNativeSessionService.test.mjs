@@ -1309,7 +1309,9 @@ await test("Stop preserves an incomplete generated workflow and its system-promp
     assert.equal(resumed.hostState.workflowSuspended, false, "typed continuation must reactivate completion gating before Host progress");
     assert.equal(resumePersistenceFailures, 1, "the verifier must exercise one transient resume persistence failure");
     const persistedAfterRetry = await loadYnSessionHostState(
-      await new PiSessionRepository(workspaceDir).open(session.id),
+      // Inspect committed native entries through the active storage owner. A
+      // competing cold owner cannot remain valid while that writer appends.
+      resumed.session,
       session.id
     );
     assert.notEqual(persistedAfterRetry?.workflowSuspended, true, "a retry after transient persistence failure must commit the resumed Host state");

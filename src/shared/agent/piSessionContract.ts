@@ -100,6 +100,14 @@ export interface PiSessionEventEnvelope {
   event: PiSessionRuntimeEvent;
 }
 
+export interface PiSessionStorageProgress {
+  phase: "scan" | "verify" | "backup" | "publish" | "index" | "replay" | "complete";
+  processedBytes: number;
+  totalBytes: number;
+  originalBytes?: number;
+  compactedBytes?: number;
+}
+
 export interface PiSessionRunState {
   sessionId: string;
   sequence: number;
@@ -142,6 +150,7 @@ export interface PiSessionCompactionResult {
 }
 
 export type PiSessionRuntimeEvent = AgentEvent
+  | { type: "storage_progress"; progress: PiSessionStorageProgress }
   | { type: "settled"; nextTurnCount: number }
   | { type: "abort"; clearedSteer: AgentMessage[]; clearedFollowUp: AgentMessage[] }
   | { type: "queue_update"; steer: AgentMessage[]; followUp: AgentMessage[]; nextTurn: AgentMessage[] }

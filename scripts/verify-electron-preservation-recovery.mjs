@@ -19,6 +19,9 @@ for (const [entry, name] of [["scripts/verify-electron-preservation-recovery-mai
 await copyFile(path.join(root, "dist/main/translationValidationWorker.js"), path.join(directory, "translationValidationWorker.js"));
 await copyFile(path.join(root, "dist/main/proofreadPrescanWorker.js"), path.join(directory, "proofreadPrescanWorker.js"));
 await copyFile(path.join(root, "dist/main/sourcePreparationWorker.js"), path.join(directory, "sourcePreparationWorker.js"));
+for (const worker of ["sessionIndexWorker.js", "sessionMaintenanceWorker.js", "sessionHostReplayWorker.js"]) {
+  await copyFile(path.join(root, "dist/main", worker), path.join(directory, worker));
+}
 const result = await new Promise((resolve, reject) => {
   const child = spawn(electronPath, ["--disable-gpu", "--no-sandbox", `--user-data-dir=${path.join(directory, "user-data")}`, path.join(directory, "main.mjs")], {
     cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "true",

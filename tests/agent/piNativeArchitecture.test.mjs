@@ -99,7 +99,7 @@ await test("product parent and child runtimes are built on Pi core Agent and Pi 
   assert.match(childRunner, /new PiSessionRepository\([^)]*outputDir\)\.createChild\(/);
   assert.doesNotMatch(childRunner, /InMemorySessionRepo/);
   assert.match(childSupervisor, /record\.control = undefined/);
-  assert.match(childSupervisor, /openChild\(record\.id\)/);
+  assert.match(childSupervisor, /withChildSessionRead\(record\.id,/);
   assert.match(childSupervisor, /record\.results = \[\]/);
   assert.match(repository, /childRepo = new JsonlSessionRepo\(/);
   assert.match(repository, /await this\.childRepo\.create\(/);

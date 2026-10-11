@@ -59,8 +59,20 @@ for (const requiredEntry of [
   "/assets/fonts/NotoSansSC-Regular.ttf",
   "/assets/fonts/OFL.txt",
   "/node_modules/pdfjs-dist/package.json",
+  "/node_modules/pdfjs-dist/legacy/build/pdf.mjs",
+  "/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+  "/node_modules/pdfjs-dist/LICENSE",
   "/node_modules/pdf-lib/package.json",
+  "/node_modules/pdf-lib/cjs/index.js",
+  "/node_modules/pdf-lib/LICENSE.md",
   "/node_modules/@pdf-lib/fontkit/package.json",
+  "/node_modules/@pdf-lib/fontkit/dist/fontkit.umd.js",
+  "/node_modules/@pdf-lib/fontkit/README.md",
+  "/node_modules/@pdf-lib/standard-fonts/lib/index.js",
+  "/node_modules/@pdf-lib/standard-fonts/lib/Helvetica.compressed.json",
+  "/node_modules/@pdf-lib/upng/cjs/UPNG.js",
+  "/node_modules/pako/index.js",
+  "/node_modules/pako/lib/inflate.js",
   "/node_modules/@napi-rs/canvas/package.json",
   "/node_modules/cheerio/package.json",
   "/node_modules/electron-updater/package.json",
@@ -71,6 +83,29 @@ for (const requiredEntry of [
   "/node_modules/@earendil-works/pi-telemetry/package.json",
 ]) {
   assert.ok(archiveEntries.has(requiredEntry), `Packaged app is missing ${requiredEntry}`);
+}
+const sourceMaps = [...archiveEntries].filter(entry => /\/node_modules\/.*\.[cm]?[jt]s\.map$/u.test(entry));
+assert.deepEqual(sourceMaps, [], "Packaged app contains dependency debug source maps");
+const typeDeclarations = [...archiveEntries].filter(entry => /\/node_modules\/.*\.d\.[cm]?ts$/u.test(entry));
+assert.deepEqual(typeDeclarations, [], "Packaged app contains compile-time dependency declarations");
+const unusedPdfBuilds = [...archiveEntries].filter(entry =>
+  /^\/node_modules\/pdfjs-dist\/(?:build|web|image_decoders)(?:\/|$)/u.test(entry)
+  || /^\/node_modules\/pdfjs-dist\/legacy\/(?:web|image_decoders)(?:\/|$)/u.test(entry)
+  || /^\/node_modules\/pdfjs-dist\/legacy\/build\/(?:pdf\.sandbox.*|.*\.min\.mjs)$/u.test(entry)
+  || /^\/node_modules\/pdf-lib\/(?:dist|es|src|ts3\.4)(?:\/|$)/u.test(entry)
+  || /^\/node_modules\/@pdf-lib\/fontkit\/dist\/(?:fontkit\.es.*|fontkit\.umd\.min\.js)$/u.test(entry)
+  || /^\/node_modules\/@pdf-lib\/standard-fonts\/(?:dist|es)(?:\/|$)/u.test(entry)
+  || /^\/node_modules\/@pdf-lib\/upng\/dist(?:\/|$)/u.test(entry)
+  || entry === "/node_modules/@pdf-lib/upng/UPNG.js"
+  || /^\/node_modules\/pako\/dist(?:\/|$)/u.test(entry));
+assert.deepEqual(unusedPdfBuilds, [], "Packaged app contains unused PDF browser or alternate builds");
+for (const directory of ["cmaps", "standard_fonts", "wasm"]) {
+  assert.ok([...archiveEntries].some(entry => entry.startsWith(`/node_modules/pdfjs-dist/${directory}/`)),
+    `Packaged app is missing PDF.js ${directory} resources`);
+}
+for (const nativeFile of ["skia.win32-x64-msvc.node", "icudtl.dat"]) {
+  assert.ok(existsSync(path.join(`${asarPath}.unpacked`, "node_modules", "@napi-rs", "canvas-win32-x64-msvc", nativeFile)),
+    `Packaged app is missing unpacked native PDF resource: ${nativeFile}`);
 }
 for (const entry of agentApiFiles) {
   assert.ok(archiveEntries.has(`/${entry}`), `Packaged app is missing ${entry}`);
@@ -99,7 +134,7 @@ const packedYaml = JSON.parse(
   extractFile(asarPath, path.join("node_modules", "js-yaml", "package.json")).toString("utf8"),
 );
 const packedMain = extractFile(asarPath, path.join("dist", "main", "main.js")).toString("utf8");
-for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js", "dist/main/translationValidationWorker.js", "dist/main/sourcePreparationWorker.js", "dist/main/sessionIndexWorker.js", "dist/main/sessionMaintenanceWorker.js", "dist/main/sessionHostReplayWorker.js", "dist/main/pdfWorker.js", "assets/fonts/NotoSansSC-Regular.ttf", "assets/fonts/OFL.txt", "README.md", "README.en.md", "THIRD_PARTY_NOTICES.md"]) {
+for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js", "dist/main/translationValidationWorker.js", "dist/main/sourcePreparationWorker.js", "dist/main/sessionIndexWorker.js", "dist/main/sessionMaintenanceWorker.js", "dist/main/sessionHostReplayWorker.js", "dist/main/pdfWorker.js", "assets/fonts/NotoSansSC-Regular.ttf", "assets/fonts/OFL.txt", "docs/pdf.md", "docs/pdf.en.md", "README.md", "README.en.md", "THIRD_PARTY_NOTICES.md"]) {
   assert.equal(
     createHash("sha256").update(extractFile(asarPath, path.normalize(entry))).digest("hex"),
     createHash("sha256").update(readFileSync(path.join(rootDir, entry))).digest("hex"),
@@ -158,6 +193,7 @@ console.log(
       webReferenceParser: packedCheerio.version,
       productionYaml: packedYaml.version,
       piDependencies: packedPiDependencies,
+      pdfPackaging: "Node runtime and native resources verified; debug maps and unused builds excluded",
       agentApiFiles: "verified in archive and accessible unpacked paths",
       checksums: "verified",
     },

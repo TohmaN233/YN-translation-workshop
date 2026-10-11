@@ -82,7 +82,24 @@
       "README.en.md",
       "LICENSE",
       "THIRD_PARTY_NOTICES.md",
-      "package.json"
+      "package.json",
+      "!node_modules/**/*.{js,mjs,cjs,ts,mts,cts}.map",
+      "!node_modules/**/*.d.{ts,mts,cts}",
+      "!node_modules/pdfjs-dist/{build,web,image_decoders}{,/**/*}",
+      "!node_modules/pdfjs-dist/legacy/{web,image_decoders}{,/**/*}",
+      "!node_modules/pdfjs-dist/legacy/build/{pdf.sandbox*,*.min.mjs}",
+      "!node_modules/pdfjs-dist/{webpack.mjs,legacy/webpack.mjs}",
+      "!node_modules/pdf-lib/{dist,es,src,ts3.4}{,/**/*}",
+      "!node_modules/@pdf-lib/fontkit/dist/{fontkit.es*,fontkit.umd.min.js}",
+      "!node_modules/@pdf-lib/standard-fonts/{dist,es}{,/**/*}",
+      "!node_modules/@pdf-lib/upng/dist{,/**/*}",
+      "!node_modules/@pdf-lib/upng/UPNG.js",
+      "!node_modules/pako/dist{,/**/*}",
+      {
+        "from": "node_modules/@pdf-lib/fontkit",
+        "to": "node_modules/@pdf-lib/fontkit",
+        "filter": ["README.md"]
+      }
     ],
     "asarUnpack": [
       "translation-protocol/**/*",

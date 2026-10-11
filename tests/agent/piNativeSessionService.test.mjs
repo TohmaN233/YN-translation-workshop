@@ -1042,6 +1042,9 @@ await test("an ordinary parent turn keeps a running background workflow and its 
     assert.deepEqual(promptContexts[1], { workflowIntent: "translation", fullWorkflow: true });
   } finally {
     unsubscribe();
+    // The synthetic live-child probe has no actual worker. Restore its settled
+    // state before invoking the production disposal/owner release boundary.
+    for (const context of captured) context.subagents.hasRunning = () => false;
     await service.disposeWorkspace(workspaceDir);
     await rm(workspaceDir, { recursive: true, force: true });
   }

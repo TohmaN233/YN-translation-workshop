@@ -1,7 +1,7 @@
 import { BookOpen, Check, ChevronDown, FileText, FolderOpen, Languages, LoaderCircle, Settings2, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { builtinTaskDefaults, type BuiltinTaskKind, type BuiltinTaskSettings } from "../shared/builtinTasks.ts";
+import { builtinTaskDefaults, restoreTaskInputTranslationPath, type BuiltinTaskKind, type BuiltinTaskSettings } from "../shared/builtinTasks.ts";
 import { normalizeCustomPreserveRules } from "../shared/validation/customPreserveRules.ts";
 
 type Locale = "zh-CN" | "en-US";
@@ -38,27 +38,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function samePath(left: string, right: string): boolean {
   const normalize = (value: string) => value.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLocaleLowerCase();
   return normalize(left) === normalize(right);
-}
-
-function restoreTaskInputTranslationPath(
-  projectState: Record<string, unknown>,
-  settings: BuiltinTaskSettings
-): BuiltinTaskSettings {
-  const persistedInput = asRecord(projectState.builtinTaskInputSettings);
-  const expectedPath = projectState.builtinTaskTranslationPath;
-  if (
-    projectState.translationBindingOrigin === "canonical"
-    && persistedInput
-    && typeof expectedPath === "string"
-    && expectedPath.trim()
-    && samePath(settings.translationPath ?? "", expectedPath)
-  ) {
-    return {
-      ...settings,
-      translationPath: typeof persistedInput.translationPath === "string" ? persistedInput.translationPath : ""
-    };
-  }
-  return settings;
 }
 
 function copyFor(locale: Locale) {

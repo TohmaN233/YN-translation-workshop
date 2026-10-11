@@ -8,10 +8,13 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 
 [中文](README.md) · [Complete guide and technical manual](https://tohman233.github.io/YN-translation-workshop/) · [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases)
 
+External agents such as Codex can use the [official Agent API](docs/agent-api.en.md) to prepare projects, organize references, translate or proofread in the background. The agent shows the project location, model and lazy-mode settings for your confirmation before starting, without opening YN's main window.
+
 ## What's new in 2.1.10
 
 - Fix oversized session loading, compact older sessions with verified backups, and reuse verified recovery state to avoid replaying history before chat; add loading progress and cancellation.
 - Stabilize translation, review, and proofreading child prompt and tool prefixes for cache reuse across chunks. Context still resets after each chunk, with unchanged Host scope validation.
+- Add a background Agent API: confirm the location and settings, then reuse lazy-mode preparation and execution; query status, stop, resume and answer questions.
 
 ## What's new in 2.1.9
 

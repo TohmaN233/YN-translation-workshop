@@ -963,16 +963,25 @@ export class PiNativeSessionService {
   async disposeWorkspace(workspaceDir: string): Promise<void> {
     this.cancelWorkspaceOperationReservations(workspaceDir);
     const sessionIds = this.workspaceSessionIds(workspaceDir);
-    await Promise.all(sessionIds.map((sessionId) => this.abort(workspaceDir, sessionId)));
+    const outcomes = await Promise.allSettled(sessionIds.map((sessionId) => this.abort(workspaceDir, sessionId)));
+    const errors: unknown[] = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
     await this.withTransitions(this.workspaceSessionResources(workspaceDir, sessionIds), async () => {
       const prefix = `${workspaceKey(workspaceDir)}::`;
       const sessions = [...this.active.entries()].filter(([key]) => key.startsWith(prefix));
       for (const [key, active] of sessions) {
-        active.unsubscribe();
-        active.runtime.dispose();
-        await active.session.close(BACKGROUND_CONTEXT);
-        this.active.delete(key);
-        this.events.delete(key);
+        if (active.running || active.compacting || active.subagents.hasRunning()) {
+          errors.push(new Error(`Cannot release Pi session ${active.sessionId}: native work did not settle after Stop.`));
+          continue;
+        }
+        const releaseErrors: unknown[] = [];
+        try { active.unsubscribe(); } catch (error) { releaseErrors.push(error); }
+        try { active.runtime.dispose(); } catch (error) { releaseErrors.push(error); }
+        try { await active.session.close(BACKGROUND_CONTEXT); } catch (error) { releaseErrors.push(error); }
+        if (!releaseErrors.length) {
+          this.active.delete(key);
+          this.events.delete(key);
+        }
+        errors.push(...releaseErrors);
       }
       for (const key of this.coldStorageSequences.keys()) {
         if (key.startsWith(prefix)) {
@@ -981,6 +990,7 @@ export class PiNativeSessionService {
         }
       }
     });
+    if (errors.length) throw new AggregateError(errors, `Pi workspace disposal failed: ${errors.map(error => error instanceof Error ? error.message : String(error)).join("; ")}`);
   }
 
   private async prepareRuntime(

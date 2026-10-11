@@ -130,6 +130,9 @@ import {
   saveAgentProviderConfig
 } from "./ipc/agentProviderHandlers.ts";
 import { checkForUpdatesManually, initializeAutoUpdates, repositoryUrl, scheduleStartupUpdateCheck } from "./updateService.ts";
+import { createAgentApi, AgentApiError, agentApiError, assertAgentApiTaskSession, settleAgentApiWorkspace, type AgentApiModel } from "./agentApi.ts";
+import { serveAgentApiStdio } from "./agentApiStdio.ts";
+import { connectAgentApiPipe } from "./agentApiTransport.ts";
 
 interface GenerateLineHtmlArgs {
   sourcePath: string;
@@ -255,8 +258,40 @@ interface HtmlCandidate {
 type BilingualFileKind = "txt" | "epub";
 
 const isDev = process.env.TRANSLATION_WORKSHOP_DEV === "1";
-const electronVerificationHeadless = process.env.YN_ELECTRON_VERIFY_HEADLESS === "1";
+const agentApiPipe = process.argv.find(argument => argument.startsWith("--agent-api-pipe="))?.slice("--agent-api-pipe=".length);
+const agentApiMode = agentApiPipe !== undefined || process.argv.includes("--agent-api");
+let agentApiConnection: ReturnType<typeof connectAgentApiPipe> | undefined;
+const getAgentApiConnection = () => agentApiConnection ??= connectAgentApiPipe(agentApiPipe!);
+async function exitAgentApiError(error: unknown): Promise<void> {
+  const packet = `${JSON.stringify({ type: "fatal", error: agentApiError(error) })}\n`;
+  try {
+    if (agentApiPipe !== undefined) {
+      const socket = await getAgentApiConnection();
+      await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.end(packet, resolve); });
+    } else await new Promise<void>((resolve, reject) => process.stdout.write(packet, error => error ? reject(error) : resolve()));
+  } catch (transportError) { console.error("[agent-api:fatal-delivery]", transportError); }
+  app.exit(1);
+}
+const electronVerificationHeadless = agentApiMode || process.env.YN_ELECTRON_VERIFY_HEADLESS === "1";
 const electronVerificationOffscreen = process.env.YN_ELECTRON_VERIFY_OFFSCREEN === "1";
+if (agentApiMode) {
+  // stdout belongs exclusively to the machine-readable protocol.
+  console.log = console.info = console.debug = console.warn = console.error.bind(console);
+}
+// A headless process and GUI must never own the same project's Pi writers.
+const hasInstanceLock = app.requestSingleInstanceLock({ agentApiMode });
+const unsupportedAgentStdio = agentApiMode && agentApiPipe === undefined && process.platform === "win32";
+if (!hasInstanceLock || unsupportedAgentStdio) {
+  if (agentApiMode) void exitAgentApiError(new AgentApiError(!hasInstanceLock ? "instance_in_use" : "stdio_unavailable",
+    !hasInstanceLock ? "YN is already running. Close it before starting the Agent API."
+      : "Use node agent-tools/yn-agent-server.mjs <YN application EXE> for the Windows Agent API."));
+  else app.exit(1);
+}
+app.on("second-instance", (_event, _argv, _cwd, data) => {
+  if (agentApiMode || (data as { agentApiMode?: boolean }).agentApiMode) return;
+  const window = BrowserWindow.getAllWindows()[0];
+  if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); }
+});
 const portableSmokeMarkerPath = (() => {
   const prefix = "--yn-portable-smoke=";
   const argument = process.argv.find((value) => value.startsWith(prefix));
@@ -3824,6 +3859,7 @@ async function openBuiltinTaskHtml(outputPath: string, outputDir: string): Promi
   const tab = [...htmlViewerTabs.values()].find((item) => sameFilePath(item.filePath, outputPath));
   if (!tab) throw new Error("Prepared task HTML did not open.");
   if (tab.loadPromise) await tab.loadPromise;
+  if (agentApiMode) return;
   await tab.view.webContents.executeJavaScript(`(async () => {
     if (window.__ynAgentChatPiWebEmbedded?.open) { await window.__ynAgentChatPiWebEmbedded.open(); return; }
     const frame = document.getElementById('fileFrame');
@@ -3943,29 +3979,49 @@ piNativeSessionService.configureTaskPreparationHost(createBuiltinTaskPreparation
 }));
 
 const startingBuiltinTasks = new Set<string>();
-ipcMain.handle("tasks:start", async (_event, args: StartBuiltinTaskRequest) => {
+async function startBuiltinTask(args: StartBuiltinTaskRequest, options?: {
+  signal: AbortSignal; model: AgentApiModel; onSession(sessionId: string): void;
+}) {
   const settings = await validateBuiltinTaskSettings(args);
+  options?.signal.throwIfAborted();
   const translationPreparationPrompt = args.task === "translation" ? builtinTranslationPreparationPrompt(args.preservationInstructions) : undefined;
   const key = path.resolve(settings.outputDir).toLowerCase();
   if (startingBuiltinTasks.has(key)) throw new Error("A task is already being prepared for this project.");
   startingBuiltinTasks.add(key);
+  let sessionId: string | undefined;
+  let stopTask: Promise<void> | undefined;
+  const requestStop = () => {
+    if (sessionId && !stopTask) {
+      stopTask = piNativeSessionService.abort(settings.outputDir, sessionId);
+      void stopTask.catch(error => console.error("[builtin-task:stop] Failed", { outputDir: settings.outputDir, sessionId }, error));
+    }
+  };
+  options?.signal.addEventListener("abort", requestStop, { once: true });
   try {
-    const model = await builtinModelSelection(settings.outputDir);
+    const model = options?.model ?? await builtinModelSelection(settings.outputDir);
+    options?.signal.throwIfAborted();
     if (piNativeSessionService.hasActiveWork(settings.outputDir)) throw new Error("Finish or stop the current project Agent task before starting another.");
     await patchProjectState(settings.outputDir, args.task === "assets"
       ? { materials: settings.materials, locale: settings.locale }
       : { ...settings, builtinTaskInputSettings: settings,
         translationBindingOrigin: settings.translationPath ? "user" : null });
     await writeRecentProjectDir(app.getPath("userData"), settings.outputDir);
+    options?.signal.throwIfAborted();
     const session = await piNativeSessionService.createSession(settings.outputDir);
+    sessionId = session.id;
+    await patchProjectState(settings.outputDir, { builtinTaskSessionId: session.id, builtinTaskKind: args.task });
+    options?.onSession(session.id);
+    options?.signal.throwIfAborted();
     let outputPath: string | undefined;
     if (args.task !== "assets") {
       const generated = await generateBuiltinTaskReview(settings, args.task, session.id);
+      options?.signal.throwIfAborted();
       outputPath = generated.outputPath;
       await patchProjectState(settings.outputDir, { lastLineReviewHtml: outputPath, lineReviewPath: outputPath,
         translationPath: generated.translationPath, translationBindingOrigin: "canonical", builtinTaskTranslationPath: generated.translationPath });
       await openBuiltinTaskHtml(outputPath, settings.outputDir);
     }
+    options?.signal.throwIfAborted();
     const prompt = args.task === "assets"
       ? `Organize the project's reference materials into editable glossary and character drafts using importTaskAssets. Read the supplied references, finish all draft batches, read and review both draft collections, correct/delete inaccurate records, then checkTaskAssetDraft and commitTaskAssets. Retain established formal translations and resolve draft conflicts before committing. Do not claim completion before successful commit; do not start translation.\n${settings.materials || settings.workDescription || "Use the current project files and existing source as references."}`
       : args.task === "translation"
@@ -3974,7 +4030,8 @@ ipcMain.handle("tasks:start", async (_event, args: StartBuiltinTaskRequest) => {
     await piNativeSessionService.prompt({ outputDir: settings.outputDir, sessionId: session.id, ...model, prompt,
       languagePair: settings.languagePair, lineReviewPath: outputPath,
       taskPreparation: { intent: args.task, autoApplyProofreadSuggestions: args.task === "proofread" ? args.autoApplyProofreadSuggestions === true : undefined } });
-    if (args.task === "assets") {
+    options?.signal.throwIfAborted();
+    if (args.task === "assets" && !agentApiMode) {
       // Show the console only after the session accepts the task. Initialization
       // failures remain visible in the homepage instead of leaving a blank window.
       await openAgentChatWindow({ args: { outputDir: settings.outputDir, locale: settings.locale, languagePair: settings.languagePair },
@@ -3982,10 +4039,20 @@ ipcMain.handle("tasks:start", async (_event, args: StartBuiltinTaskRequest) => {
     }
     return { outputPath, sessionId: session.id };
   } catch (error) {
+    // Stop must settle even if cancellation interrupted storage acceptance.
+    if (options && sessionId) {
+      requestStop();
+      try { await stopTask; }
+      catch (stopError) { throw new AggregateError([error, stopError], `Task initialization failed: ${String(error)}; Stop failed: ${String(stopError)}`); }
+    }
     console.error("[builtin-task:start] Failed", { task: args.task, outputDir: settings.outputDir }, error);
     throw error;
-  } finally { startingBuiltinTasks.delete(key); }
-});
+  } finally {
+    options?.signal.removeEventListener("abort", requestStop);
+    startingBuiltinTasks.delete(key);
+  }
+}
+ipcMain.handle("tasks:start", (_event, args: StartBuiltinTaskRequest) => startBuiltinTask(args));
 
 ipcMain.handle("html:openReviewHtml", async (_event, args: OpenReviewHtmlArgs) => {
   if (!args.htmlPath) {
@@ -4693,9 +4760,78 @@ async function ensureAgentIpcRegistered(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  if (!hasInstanceLock || unsupportedAgentStdio) return;
   await recordPortableSmoke("app-ready");
   configureGlobalAgentDataDir(app.getPath("userData"));
   configureWebReferenceBrowserFetch((url, init) => session.defaultSession.fetch(url, init));
+  if (agentApiMode) {
+    await ensureAgentIpcRegistered();
+    const api = createAgentApi({
+      version: app.getVersion(), cwd: process.cwd(), readProject: readProjectState,
+      model: builtinModelSelection, start: startBuiltinTask,
+      sessions: outputDir => piNativeSessionService.listSessions(outputDir),
+      state: (outputDir, sessionId) => piNativeSessionService.getRunState(outputDir, sessionId),
+      lastReply: (outputDir, sessionId) => {
+        const events = piNativeSessionService.listRecentEvents(outputDir, sessionId);
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          const { event } = events[index];
+          if (event.type === "message_end" && event.message.role === "assistant") {
+            const reply = event.message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+            if (reply) return reply;
+          }
+        }
+        return undefined;
+      },
+      stop: (outputDir, sessionId) => piNativeSessionService.abort(outputDir, sessionId),
+      resume: async (outputDir, sessionId, model, signal, message) => {
+        let stopTask: Promise<void> | undefined;
+        const requestStop = () => {
+          stopTask ??= piNativeSessionService.abort(outputDir, sessionId);
+          void stopTask.catch(error => console.error("[agent-api:resume-stop]", error));
+        };
+        signal.addEventListener("abort", requestStop, { once: true });
+        try {
+          signal.throwIfAborted();
+          const project = await readProjectState(outputDir);
+          assertAgentApiTaskSession(project, sessionId);
+          if (message === undefined && piNativeSessionService.hasActiveWork(outputDir)) {
+            throw new AgentApiError("busy", "Finish or stop the current project Agent task before resuming another workflow.");
+          }
+          const lineReviewPath = project.lineReviewPath ?? project.lastLineReviewHtml;
+          if (typeof lineReviewPath === "string" && lineReviewPath) await openBuiltinTaskHtml(lineReviewPath, outputDir);
+          signal.throwIfAborted();
+          const accepted = await piNativeSessionService.prompt({ outputDir, sessionId, ...model,
+            ...(typeof lineReviewPath === "string" ? { lineReviewPath } : {}),
+            prompt: message ?? "Resume the existing YN task in this Pi session. Use resumeYnWorkflow for a suspended complete workflow, reconcile existing artifacts through Host before claiming work, and continue only its unfinished tasks. If preparation is unfinished, continue its existing draft/check/commit or source-rule trial and startPreparedWorkflow path. Preserve accepted evidence and user settings." });
+          signal.throwIfAborted();
+          return accepted;
+        } catch (error) {
+          if (signal.aborted) {
+            requestStop();
+            try { await stopTask; }
+            catch (stopError) { throw new AggregateError([error, stopError], `Resume failed: ${String(error)}; Stop failed: ${String(stopError)}`); }
+          }
+          throw error;
+        } finally { signal.removeEventListener("abort", requestStop); }
+      },
+      dispose: async outputDir => {
+        await settleAgentApiWorkspace({
+          dispose: () => piNativeSessionService.disposeWorkspace(outputDir),
+          flush: [...htmlViewerTabs.values()]
+            .filter(tab => sameFilePath(tab.workspaceDir, normalizeProjectFolder(outputDir).workspaceDir))
+            .map(tab => () => flushHtmlViewerTabState(tab)),
+          drain: drainHtmlSidecarStateWrites
+        });
+      }
+    });
+    const socket = agentApiPipe !== undefined ? await getAgentApiConnection() : undefined;
+    await serveAgentApiStdio({ api, input: socket ?? process.stdin, output: socket ?? process.stdout, version: app.getVersion() });
+    if (socket) await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.end(resolve); });
+    // All native writers and HTML sidecars have settled. Exit through Electron,
+    // without invoking the visible-window save/confirmation lifecycle.
+    app.exit(0);
+    return;
+  }
   initializeAutoUpdates();
   configureApplicationMenu();
   await ensureAgentIpcRegistered();
@@ -4773,15 +4909,16 @@ app.whenReady().then(async () => {
     stack: error instanceof Error ? error.stack : undefined
   }).catch(() => undefined);
   console.error("[startup] Application initialization failed", error);
-  app.exit(1);
+  if (agentApiMode) await exitAgentApiError(error);
+  else app.exit(1);
 });
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
+  if (!agentApiMode && process.platform !== "darwin") {
     app.quit();
   }
 });
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  if (!agentApiMode && BrowserWindow.getAllWindows().length === 0) {
     void createWindow();
   }
 });

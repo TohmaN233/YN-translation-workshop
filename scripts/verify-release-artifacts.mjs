@@ -45,6 +45,8 @@ assert.match(appUpdate, /^owner:\s*TohmaN233$/m, "Packaged update owner is incor
 assert.match(appUpdate, /^repo:\s*YN-translation-workshop$/m, "Packaged update repository is incorrect");
 
 const archiveEntries = new Set(listPackage(asarPath).map((entry) => entry.replaceAll("\\", "/")));
+const agentApiFiles = ["agent-tools/yn-agent-server.mjs", "agent-tools/yn-agent-client.mjs", "agent-tools/yn-agent-transport.mjs",
+  "docs/agent-api.md", "docs/agent-api.en.md"];
 for (const requiredEntry of [
   "/dist/main/main.js",
   "/dist/main/proofreadPrescanWorker.js",
@@ -62,6 +64,13 @@ for (const requiredEntry of [
   "/node_modules/@earendil-works/pi-telemetry/package.json",
 ]) {
   assert.ok(archiveEntries.has(requiredEntry), `Packaged app is missing ${requiredEntry}`);
+}
+for (const entry of agentApiFiles) {
+  assert.ok(archiveEntries.has(`/${entry}`), `Packaged app is missing ${entry}`);
+  const unpackedPath = path.join(`${asarPath}.unpacked`, entry);
+  assert.ok(existsSync(unpackedPath), `External Agents cannot access unpacked ${entry}`);
+  assert.equal(createHash("sha256").update(readFileSync(unpackedPath)).digest("hex"),
+    createHash("sha256").update(readFileSync(path.join(rootDir, entry))).digest("hex"), `Unpacked Agent API file is stale: ${entry}`);
 }
 const packagedScripts = [...archiveEntries].filter((entry) => entry.startsWith("/scripts/"));
 assert.deepEqual(packagedScripts, [], "Packaged app contains development-only scripts");
@@ -142,6 +151,7 @@ console.log(
       webReferenceParser: packedCheerio.version,
       productionYaml: packedYaml.version,
       piDependencies: packedPiDependencies,
+      agentApiFiles: "verified in archive and accessible unpacked paths",
       checksums: "verified",
     },
     null,

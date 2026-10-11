@@ -25,6 +25,19 @@ export interface StartBuiltinTaskRequest {
   preservationInstructions?: string;
 }
 
+/** Restore the input binding after lazy preparation replaced it with canonical TXT. */
+export function restoreTaskInputTranslationPath(projectState: Record<string, unknown>, settings: BuiltinTaskSettings): BuiltinTaskSettings {
+  const input = projectState.builtinTaskInputSettings;
+  const expectedPath = projectState.builtinTaskTranslationPath;
+  const normalize = (value: string) => value.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLocaleLowerCase();
+  if (projectState.translationBindingOrigin === "canonical" && input && typeof input === "object" && !Array.isArray(input)
+    && typeof expectedPath === "string" && expectedPath.trim() && normalize(settings.translationPath ?? "") === normalize(expectedPath)) {
+    const translationPath = (input as Record<string, unknown>).translationPath;
+    return { ...settings, translationPath: typeof translationPath === "string" ? translationPath : "" };
+  }
+  return settings;
+}
+
 export function builtinTranslationPreparationPrompt(instructions?: string): string {
   if (instructions !== undefined && typeof instructions !== "string") throw new Error("Preservation instructions must be a string.");
   const prompt = "Check the confirmed parameters against representative source content and control-token examples. Use inspectTaskSettings to obtain the internal shared parameter path; updateTaskSettings only when content contradicts the settings. Inspect /n, backslash escapes, tags and code prefixes, and trial narrow preservation rules including existing rules. Then startPreparedWorkflow saves the same HTML parameter form and starts exactly its normal translation prompt. Do not translate during this preflight or create another translation entry. Keep ordinary prose translatable.";

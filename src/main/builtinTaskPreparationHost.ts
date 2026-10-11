@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { PiSessionPromptRequest } from "../shared/agent/piSessionContract.ts";
-import { builtinTaskDefaults, type BuiltinTaskSettings, type StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
+import { builtinTaskDefaults, restoreTaskInputTranslationPath, type BuiltinTaskSettings, type StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
 import { normalizeCustomPreserveRules, type CanonicalCustomPreserveRule } from "../shared/validation/customPreserveRules.ts";
 import type { YnTaskPreparationContext, YnTaskPreparationHost } from "./agent/piNative/taskPreparation.ts";
 import { scanSourcePreparation, type SourcePreparationScanReport } from "./agent/sourcePreparationScan.ts";
@@ -83,16 +83,8 @@ export async function validateBuiltinTaskSettings(input: StartBuiltinTaskRequest
 export function createBuiltinTaskPreparationHost(navigation: BuiltinTaskNavigation): YnTaskPreparationHost {
   const settingsFor = async (context: YnTaskPreparationContext) => {
     const state = await readProjectState(context.outputDir);
-    const original = state.builtinTaskInputSettings;
-    const canonicalStillBound = state.translationBindingOrigin === "canonical"
-      && typeof state.translationPath === "string" && typeof state.builtinTaskTranslationPath === "string"
-      && path.resolve(state.translationPath).toLowerCase() === path.resolve(state.builtinTaskTranslationPath).toLowerCase();
-    return validateBuiltinTaskSettings({ task: context.intent, settings: {
-      ...state,
-      ...(canonicalStillBound && original && typeof original === "object" && !Array.isArray(original)
-        ? { translationPath: (original as Record<string, unknown>).translationPath } : {}),
-      outputDir: context.outputDir
-    } as BuiltinTaskSettings });
+    return validateBuiltinTaskSettings({ task: context.intent, settings: restoreTaskInputTranslationPath(state,
+      { ...state, outputDir: context.outputDir } as BuiltinTaskSettings) });
   };
   return {
     async inspectSettings(context) {

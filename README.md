@@ -8,10 +8,13 @@
 
 [English](README.en.md) · [完整教程与技术手册](https://tohman233.github.io/YN-translation-workshop/) · [发布下载](https://github.com/TohmaN233/YN-translation-workshop/releases)
 
+也可以让 Codex 等外部 Agent 通过[官方 Agent API](docs/agent-api.md)在后台准备项目、整理资料、翻译或校对。Agent 会先展示项目位置、模型和懒人模式参数，询问你确认后再启动，无需打开 YN 主窗口。
+
 ## 2.1.10 更新
 
 - 修复超大会话读取失败；旧会话自动压缩并保留备份，复用已核验的恢复结果，避免发消息时重复重放历史；后台加载支持进度和停止。
 - 固定翻译、审阅和校对子 Agent 的提示词与工具声明前缀，提高分块之间的缓存复用；每块仍清空上下文，Host 保持原有范围校验。
+- 新增后台 Agent API，先确认位置和参数，再复用懒人模式准备项目并启动；支持状态、停止、续跑和用户答复。
 
 ## 2.1.9 更新
 

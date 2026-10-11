@@ -198,6 +198,7 @@ try {
   const growthReopened = await repository.open(growthMetadata.id);
   const replayProgress = [];
   const growthRestored = await loadYnSessionHostState(growthReopened, growthMetadata.id, {
+    skipDerivedRestore: true,
     onReplayProgress: (processedEntries, totalEntries) => replayProgress.push({ processedEntries, totalEntries })
   });
   assert.equal(growthRestored?.translationAlignment.ranges[growthDocumentId]?.length, growthScopeCount + 1);
@@ -244,6 +245,7 @@ try {
   const coldWorkerSession = await repository.open(workerMetadata.id);
   const workerProgress = [];
   const workerRestored = await loadYnSessionHostState(coldWorkerSession, workerMetadata.id, {
+    skipDerivedRestore: true,
     onReplayProgress: (processedEntries, totalEntries) => workerProgress.push({ processedEntries, totalEntries })
   });
   assert.equal(getYnHostStateLoadDiagnostics(coldWorkerSession)?.replayThread, "worker");

@@ -208,7 +208,7 @@ try {
       translationAlignment: migratedLegacyStop.translationAlignment
     });
   }
-  const boundedHistory = await loadYnSessionHostState(reopened, metadata.id);
+  const boundedHistory = await loadYnSessionHostState(reopened, metadata.id, {skipDerivedRestore:true});
   assert.equal(boundedHistory?.domainRun?.progressRevision, 520);
   const loadDiagnostics = getYnHostStateLoadDiagnostics(reopened);
   assert.ok(loadDiagnostics?.reconstructedStateCount >= 520, "the test must reconstruct a long checkpoint/delta chain");

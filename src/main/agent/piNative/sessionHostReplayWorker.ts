@@ -2,6 +2,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/harness/context";
 import { StorageBackedSession, type JsonlSessionMetadata } from "@earendil-works/pi-agent-core/node";
 import { IndexedJsonlStorage } from "./indexedJsonlStorage.ts";
+import { registerDiskSession, unregisterDiskSession } from "./sessionAccess.ts";
 import {
   replayYnSessionHostState,
   type YnHostStateReplayResult
@@ -12,6 +13,7 @@ interface ReplayWorkerInput {
   metadata: JsonlSessionMetadata;
   ownerSessionId: string;
   projectRoot?: string;
+  skipDerivedRestore?: boolean;
 }
 
 function serializeError(value: unknown): Record<string, unknown> {
@@ -45,7 +47,9 @@ async function run(): Promise<void> {
       throw new Error(`Pi session storage identity changed during Host-state replay: ${input.metadata.id}.`);
     }
     session = new StorageBackedSession(input.metadata, storage);
+    registerDiskSession(session,storage);
     result = await replayYnSessionHostState(session, input.ownerSessionId, {
+      ...(input.skipDerivedRestore ? {skipDerivedRestore:true} : {}),
       ...(input.projectRoot ? { projectRoot: input.projectRoot } : {}),
       onReplayProgress: (processedEntries, totalEntries) => {
         parentPort!.postMessage({ type: "progress", processedEntries, totalEntries });
@@ -56,6 +60,7 @@ async function run(): Promise<void> {
   }
 
   try {
+    if (session) unregisterDiskSession(session);
     if (session) await session.close(BACKGROUND_CONTEXT);
     else if (storage) await storage.close(BACKGROUND_CONTEXT);
   } catch (cleanupError) {

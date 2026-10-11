@@ -10,7 +10,7 @@ You can keep the Agent disabled and use only the line-by-line web frontend, or l
 
 ## What's new in 2.1.10
 
-- Fix oversized session loading, automatically compact older sessions with verified backups, and add background loading progress and cancellation.
+- Fix oversized session loading, compact older sessions with verified backups, and reuse verified recovery state to avoid replaying history before chat; add loading progress and cancellation.
 
 ## What's new in 2.1.9
 

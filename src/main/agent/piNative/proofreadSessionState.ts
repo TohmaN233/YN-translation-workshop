@@ -11,11 +11,13 @@ import { StorageBackedSession, type Entry, type JsonlSessionMetadata, type Sessi
 import { decodeProjectPaths, encodeProjectPaths } from "../../projectPaths.ts";
 import {
   applyJsonDelta,
+  applyJsonDeltaInPlace,
   createJsonDelta,
   hostStateHash,
   validateJsonDeltaOperations,
   type JsonDeltaOperation
 } from "./hostStateDelta.ts";
+import { advanceHostRestorePoint, type HostRestorePoint } from "./hostRestorePoint.ts";
 
 import type { ProofreadPrescanSummary } from "./proofreadPrescan.ts";
 import { normalizeTaskPreparationState, type YnTaskPreparationState } from "./taskPreparation.ts";
@@ -47,6 +49,8 @@ export interface YnHostStateLoadDiagnostics {
   elapsedMs: number;
   maxReplayStepMs: number;
   replayThread?: "main" | "worker";
+  restorePoint?: "index" | "verified-prefix" | "full-replay";
+  verifiedPrefixStateCount?: number;
 }
 
 export interface YnHostStateReplayProgress {
@@ -65,12 +69,15 @@ export interface YnHostStateReplayResult {
   state?: YnSessionHostState;
   cursor?: YnHostStateReplayCursor;
   diagnostics: YnHostStateLoadDiagnostics;
+  restorePoint?: HostRestorePoint;
 }
 
 export interface YnHostStateLoadOptions {
   projectRoot?: string;
   throwIfCancelled?: () => void;
   onReplayProgress?: (processedEntries: number, totalEntries: number) => void;
+  /** Internal full-replay fallback when a certified suffix cannot recover a legacy tombstone. */
+  skipDerivedRestore?: boolean;
 }
 
 export function getYnHostStateLoadDiagnostics(session: Session): YnHostStateLoadDiagnostics | undefined {
@@ -322,10 +329,10 @@ const isEmptyHostState = (state: YnSessionHostState) => (
  * Host types in bounded pages, merge by durable sequence, and advance one
  * shared cursor so interleaved audit entries never change chain ordering.
  */
-async function* iterateHostStateEntries(session: Session): AsyncGenerator<Entry> {
+async function* iterateHostStateEntries(session: Session, afterSeq?: number): AsyncGenerator<Entry> {
   const branch = await session.branch(PI_SESSION_BRANCH, BACKGROUND_CONTEXT);
   if (!branch) return;
-  let cursor: { seq: number } | undefined;
+  let cursor: { seq: number } | undefined = afterSeq === undefined ? undefined : {seq:afterSeq};
   while (true) {
     const [legacy, deltas] = await Promise.all([
       branch.findEntries({ type: "custom", customType: YN_HOST_STATE_CUSTOM_TYPE, order: "oldestFirst", limit: 16, cursor }, BACKGROUND_CONTEXT),
@@ -338,6 +345,121 @@ async function* iterateHostStateEntries(session: Session): AsyncGenerator<Entry>
   }
 }
 
+async function findHostRestorePoint(session: Session, ownerSessionId: string, options: YnHostStateLoadOptions): Promise<{point?: HostRestorePoint; source: "index" | "verified-prefix" | "full-replay"; verifiedPrefixStateCount?: number}> {
+  const disk = getDiskSessionAccess(session);
+  if (!disk) return {source:"full-replay"};
+  const branch = await session.branch(PI_SESSION_BRANCH,BACKGROUND_CONTEXT);
+  const tip = await branch?.getTipId(BACKGROUND_CONTEXT);
+  if (!tip) return {source:"full-replay"};
+  const structure = (await disk.storage.scanBranchStructure({start:tip,order:"oldestFirst",type:"custom"},BACKGROUND_CONTEXT))
+    .filter(e => e.customType === YN_HOST_STATE_CUSTOM_TYPE || e.customType === YN_HOST_STATE_DELTA_CUSTOM_TYPE);
+  options.throwIfCancelled?.();
+  const cached = await disk.storage.getHostRestorePoint();
+  if (cached) {
+    // An old empty Stop marker needs the latest nonempty facts from the native
+    // chain. A cache cannot establish their recency/completeness independently
+    // of the historical entries, so use the complete verified replay here.
+    if (isEmptyHostState(cached.current)) {
+      console.info("Pi Host restore point requires complete legacy tombstone recovery",{path:disk.path,anchorId:cached.anchorId});
+      return {source:"full-replay"};
+    }
+    const anchor = structure.find(e => e.id === cached.anchorId && e.seq === cached.anchorSeq);
+    let reason: string | undefined;
+    if (!anchor) reason = "anchor is not on the selected native branch";
+    else if (cached.version !== 1 || cached.ownerSessionId !== ownerSessionId || !Number.isInteger(cached.deltasSinceCheckpoint)
+      || cached.deltasSinceCheckpoint < 0 || ![1,2].includes(cached.runtimeContractVersion)) reason = "invalid restore cursor metadata";
+    else {
+      const native = (await disk.storage.getEntries([anchor.id],BACKGROUND_CONTEXT)).get(anchor.id)!;
+      try {
+        const metadata = await disk.storage.getHostMetadata(anchor.id);
+        const nativeData = native.type === "custom" ? native.data as Record<string,any> : {};
+        const index = structure.findIndex(e => e.id === anchor.id);
+        const expectedPrevious = structure[index-1]?.id, expectedBeforePrevious = structure[index-2]?.id;
+        if (!metadata || (native.customType === YN_HOST_STATE_CUSTOM_TYPE ? 1 : nativeData.runtimeContractVersion ?? 1) !== cached.runtimeContractVersion
+          || (native.customType === YN_HOST_STATE_DELTA_CUSTOM_TYPE && nativeData.projectPathsVersion === 1) !== cached.relativePaths
+          || metadata.deltasSinceCheckpoint !== cached.deltasSinceCheckpoint) reason = "restore cursor metadata differs from native anchor";
+        else if (expectedPrevious !== cached.previousAnchor?.id || expectedBeforePrevious !== cached.beforePreviousAnchor?.id) reason = "restore window does not contain the adjacent native Host predecessors";
+        const state = normalizeYnSessionHostState(cached.current,ownerSessionId);
+        const hash = hostStateHash(state);
+        const nativeHash = native.type === "custom" && native.customType === YN_HOST_STATE_DELTA_CUSTOM_TYPE
+          ? (native.data as Record<string,unknown>).stateHash
+          : native.type === "custom" ? hostStateHash(normalizeYnSessionHostState(native.data,ownerSessionId)) : undefined;
+        if (hash !== cached.currentHash || hash !== nativeHash) reason = "materialized state hash differs from native anchor";
+        if (!reason) {
+          const witnesses = [
+            cached.previous ? {...cached.previousAnchor,state:cached.previous} : undefined,
+            cached.beforePrevious ? {...cached.beforePreviousAnchor,state:cached.beforePrevious} : undefined,
+            cached.latestProofreadEvidence,
+            cached.latestAlignmentEvidence
+          ].filter((w): w is {id:string;hash:string;state:YnSessionHostState} => w !== undefined) ;
+          for (const witness of witnesses) {
+            if (!witness.id || !witness.hash || !structure.some(e => e.id === witness.id && e.seq < anchor.seq)) { reason = "legacy replay witness is not a native ancestor"; break; }
+            const witnessEntry = (await disk.storage.getEntries([witness.id],BACKGROUND_CONTEXT)).get(witness.id)!;
+            const witnessHash = witnessEntry.type === "custom" && witnessEntry.customType === YN_HOST_STATE_DELTA_CUSTOM_TYPE
+              ? (witnessEntry.data as Record<string,unknown>).stateHash
+              : witnessEntry.type === "custom" ? hostStateHash(normalizeYnSessionHostState(witnessEntry.data,ownerSessionId)) : undefined;
+            if (hostStateHash(normalizeYnSessionHostState(witness.state,ownerSessionId)) !== witness.hash || witness.hash !== witnessHash) { reason = "legacy replay witness hash differs from native ancestor"; break; }
+          }
+          if (!reason && cached.latestProofread) {
+            const proofreadMetadata = await disk.storage.getHostMetadata(cached.latestProofreadEvidence?.id ?? anchor.id);
+            if (proofreadMetadata?.relativePaths !== cached.latestProofreadRelativePaths) reason = "legacy proofreading path metadata differs from native witness";
+          }
+          if (!reason && cached.latestAlignment) {
+            const alignmentMetadata = await disk.storage.getHostMetadata(cached.latestAlignmentEvidence?.id ?? anchor.id);
+            if (alignmentMetadata?.relativePaths !== cached.latestAlignmentRelativePaths) reason = "legacy alignment path metadata differs from native witness";
+          }
+          if (!reason && cached.latestProofread && hostStateHash(cached.latestProofread) !== hostStateHash(cached.latestProofreadEvidence?.state.proofread ?? cached.current.proofread)) reason = "legacy proofreading evidence differs from its native witness";
+          if (!reason && cached.latestAlignment && hostStateHash(cached.latestAlignment) !== hostStateHash(cached.latestAlignmentEvidence?.state.translationAlignment ?? cached.current.translationAlignment)) reason = "legacy alignment evidence differs from its native witness";
+        }
+      } catch (error) { reason = `invalid materialized state: ${error instanceof Error ? error.message : String(error)}`; }
+    }
+    if (!reason) return {point:cached,source:"index"};
+    console.info("Pi Host restore point invalidated",{path:disk.path,reason});
+  }
+  const throughSeq = await disk.storage.getVerifiedHostPrefix();
+  if (throughSeq === undefined) return {source:"full-replay"};
+  const certifiedIds = await disk.storage.getCertifiedHostEntryIds(structure.map(e => e.id));
+  const certified = structure.filter(e => certifiedIds.has(e.id));
+  // Legacy v1 tombstone semantics require the complete recovery window.
+  if (certified.length === 0 || certified.some(e => e.customType === YN_HOST_STATE_CUSTOM_TYPE)) return {source:"full-replay"};
+  const boundary = Math.max(0,certified.length - 3);
+  let start = boundary;
+  let checkpoint: Extract<Entry,{type:"custom"}> | undefined;
+  for (;start >= 0;start--) {
+    options.throwIfCancelled?.();
+    const e = (await disk.storage.getEntries([certified[start]!.id],BACKGROUND_CONTEXT)).get(certified[start]!.id)!;
+    if (e.type === "custom" && (e.data as Record<string,unknown>).mode === "checkpoint") {checkpoint=e;break;}
+  }
+  if (!checkpoint) throw new Error("The verified Host prefix has no native checkpoint.");
+  let state = cloneJson((checkpoint.data as Record<string,any>).state) as YnSessionHostState;
+  let point: HostRestorePoint | undefined;
+  let deltaCount = 0;
+  for (let i=start;i<certified.length;i++) {
+    if ((i-start) % 16 === 0) await yieldToEventLoop();
+    options.throwIfCancelled?.();
+    const entry = i === start ? checkpoint : (await disk.storage.getEntries([certified[i]!.id],BACKGROUND_CONTEXT)).get(certified[i]!.id)!;
+    if (entry.type !== "custom") throw new Error("Invalid certified Host entry.");
+    const data = entry.data as Record<string,any>;
+    if (i !== start) state = data.mode === "checkpoint" ? cloneJson(data.state) : applyJsonDeltaInPlace(state,data.operations,data.schemaVersion);
+    deltaCount = data.mode === "checkpoint" ? 0 : deltaCount + 1;
+    // Historical bytes and every intermediate hash were already certified by
+    // the published receipt. Only the final bounded window needs materializing.
+    if (i >= boundary) {
+      const normalized = normalizeYnSessionHostState(state,ownerSessionId);
+      const hash = hostStateHash(normalized);
+      if (hash !== data.stateHash) throw new Error(`Certified Host restore anchor hash mismatch at ${entry.id}.`);
+      point = advanceHostRestorePoint(point,{id:entry.id,seq:entry.seq,data},normalized,hash);
+      point.deltasSinceCheckpoint = deltaCount;
+    }
+  }
+  if (!point) throw new Error("Missing certified Host restore window.");
+  point.incompleteLegacyRecoveryWindow = true;
+  // An actual empty Stop tombstone needs older evidence; never guess it from
+  // the suffix. The ordinary complete replay remains the explicit fallback.
+  if (isEmptyHostState(point.current)) return {source:"full-replay"};
+  return {point,source:"verified-prefix",verifiedPrefixStateCount:certified.length};
+}
+
 export async function replayYnSessionHostState(
   session: Session,
   ownerSessionId: string,
@@ -345,19 +467,21 @@ export async function replayYnSessionHostState(
 ): Promise<YnHostStateReplayResult> {
   const started = performance.now();
   options.throwIfCancelled?.();
-  let current: YnSessionHostState | undefined;
-  let previous: YnSessionHostState | undefined;
-  let beforePrevious: YnSessionHostState | undefined;
-  let latestProofread: ProofreadHostState | undefined;
-  let latestAlignment: TranslationAlignmentHostState | undefined;
+  const restored = options.skipDerivedRestore ? {source:"full-replay" as const} : await findHostRestorePoint(session,ownerSessionId,options);
+  let restorePoint = restored.point;
+  let current = restorePoint?.current;
+  let previous = restorePoint?.previous;
+  let beforePrevious = restorePoint?.beforePrevious;
+  let latestProofread = restorePoint?.latestProofread;
+  let latestAlignment = restorePoint?.latestAlignment;
   let reconstructedStateCount = 0;
   let peakRetainedStateCount = 0;
-  let currentHash = "";
-  let relativePaths = false;
-  let latestProofreadRelativePaths = false;
-  let latestAlignmentRelativePaths = false;
-  let deltasSinceCheckpoint = 0;
-  let currentRuntimeContractVersion = 1;
+  let currentHash = restorePoint?.currentHash ?? "";
+  let relativePaths = restorePoint?.relativePaths ?? false;
+  let latestProofreadRelativePaths = restorePoint?.latestProofreadRelativePaths ?? false;
+  let latestAlignmentRelativePaths = restorePoint?.latestAlignmentRelativePaths ?? false;
+  let deltasSinceCheckpoint = restorePoint?.deltasSinceCheckpoint ?? 0;
+  let currentRuntimeContractVersion = restorePoint?.runtimeContractVersion ?? 1;
   let replayStepStarted = performance.now();
   let maxReplayStepMs = 0;
   let processedEntries = 0;
@@ -367,7 +491,10 @@ export async function replayYnSessionHostState(
     options.onReplayProgress?.(processedEntries, 0);
     lastProgressAt = Date.now();
   };
-  const retain = (next: YnSessionHostState): void => {
+  const retain = (next: YnSessionHostState, entry: Entry): void => {
+    const incomplete = restorePoint?.incompleteLegacyRecoveryWindow;
+    restorePoint = advanceHostRestorePoint(restorePoint,{id:entry.id,seq:entry.seq,data:entry.type === "custom" ? entry.data as Record<string,any> : {}},next,currentHash);
+    if (incomplete) restorePoint.incompleteLegacyRecoveryWindow = true;
     beforePrevious = previous;
     previous = current;
     current = next;
@@ -382,7 +509,7 @@ export async function replayYnSessionHostState(
       latestAlignment
     ].filter(Boolean)).size);
   };
-  for await (const entry of iterateHostStateEntries(session)) {
+  for await (const entry of iterateHostStateEntries(session,restorePoint?.anchorSeq)) {
     processedEntries += 1;
     reportProgress();
     if (entry.type !== "custom") continue;
@@ -402,7 +529,7 @@ export async function replayYnSessionHostState(
       currentHash = hostStateHash(next);
       deltasSinceCheckpoint = 0;
       currentRuntimeContractVersion = 1;
-      retain(next);
+      retain(next,entry);
       continue;
     }
     if (entry.customType !== YN_HOST_STATE_DELTA_CUSTOM_TYPE) continue;
@@ -426,7 +553,7 @@ export async function replayYnSessionHostState(
       }
       deltasSinceCheckpoint = 0;
       currentRuntimeContractVersion = entryRuntimeContractVersion;
-      retain(next);
+      retain(next,entry);
       continue;
     }
     if (entry.data.mode !== "delta" || !Array.isArray(entry.data.operations)) {
@@ -448,7 +575,11 @@ export async function replayYnSessionHostState(
     }
     deltasSinceCheckpoint += 1;
     currentRuntimeContractVersion = entryRuntimeContractVersion;
-    retain(next);
+    retain(next,entry);
+  }
+  if (restorePoint?.incompleteLegacyRecoveryWindow && current && isEmptyHostState(current)) {
+    console.info("Pi Host restore point requires complete legacy recovery",{ownerSessionId,anchorId:restorePoint.anchorId});
+    return replayYnSessionHostState(session,ownerSessionId,{...options,skipDerivedRestore:true});
   }
   // A newer local/bounded contract is authoritative even when an old Stop
   // tombstone and full-workflow snapshot remain immediately behind it.
@@ -465,6 +596,8 @@ export async function replayYnSessionHostState(
   options.throwIfCancelled?.();
   reportProgress(true);
   const diagnostics: YnHostStateLoadDiagnostics = {
+    restorePoint: restored.source,
+    ...(restored.verifiedPrefixStateCount === undefined ? {} : {verifiedPrefixStateCount:restored.verifiedPrefixStateCount}),
     reconstructedStateCount,
     peakRetainedStateCount,
     skippedStaleWorkflowRevivalCount,
@@ -480,6 +613,10 @@ export async function replayYnSessionHostState(
       stateHash: currentHash,
       deltasSinceCheckpoint
     } : undefined;
+  if (restorePoint) {
+    const disk = getDiskSessionAccess(session);
+    if (disk && (restored.source !== "index" || reconstructedStateCount > 0)) await disk.storage.setHostRestorePoint(restorePoint);
+  }
   if (!current) return { diagnostics };
   const loaded = current.domainRun
     || !isEmptyProofreadState(current.proofread)
@@ -495,12 +632,13 @@ export async function replayYnSessionHostState(
       };
   const historicalRoot = (session.metadata as { cwd?: string }).cwd;
   const projectRoot = options.projectRoot ?? historicalRoot;
+  const {proofread: _proofread,translationAlignment: _alignment,...hostFields} = loaded;
   const rebound = projectRoot ? {
-    ...decodeProjectPaths(loaded, projectRoot, relativePaths ? undefined : historicalRoot),
+    ...decodeProjectPaths(hostFields, projectRoot, relativePaths ? undefined : historicalRoot),
     proofread: decodeProjectPaths(loaded.proofread, projectRoot, (loaded.proofread === latestProofread ? latestProofreadRelativePaths : relativePaths) ? undefined : historicalRoot),
     translationAlignment: decodeProjectPaths(loaded.translationAlignment, projectRoot, (loaded.translationAlignment === latestAlignment ? latestAlignmentRelativePaths : relativePaths) ? undefined : historicalRoot)
   } : loaded;
-  return { state: rebound, ...(cursor ? { cursor } : {}), diagnostics };
+  return { state: rebound, ...(cursor ? { cursor } : {}), ...(restorePoint ? {restorePoint} : {}), diagnostics };
 }
 
 const HOST_STATE_WORKER_THRESHOLD_BYTES = 1024 * 1024;
@@ -543,6 +681,7 @@ interface HostStateReplayWorkerInput {
   metadata: JsonlSessionMetadata;
   ownerSessionId: string;
   projectRoot?: string;
+  skipDerivedRestore?: boolean;
 }
 
 function runHostStateReplayWorker(
@@ -625,7 +764,11 @@ export async function loadYnSessionHostState(
     ? await hasIndexedHostStateEntry(session, disk)
     : false;
   let result: YnHostStateReplayResult;
-  if (disk && hasHostState) {
+  // Opening the registered storage already verified the full source digest.
+  // Its bounded materialization/prefix can be restored directly without a
+  // second reader, index parse, source fingerprint or worker result copy.
+  const hasRestoreSource = disk && !options.skipDerivedRestore && await disk.storage.hasHostRestoreSource();
+  if (disk && hasHostState && !hasRestoreSource) {
     result = await session.mutate(async () => {
       options.throwIfCancelled?.();
       // This queued storage read checks the registered source identity before
@@ -636,11 +779,13 @@ export async function loadYnSessionHostState(
         path: disk.path,
         metadata: session.metadata as JsonlSessionMetadata,
         ownerSessionId,
+        ...(options.skipDerivedRestore ? {skipDerivedRestore:true} : {}),
         ...(options.projectRoot ? { projectRoot: options.projectRoot } : {})
       }, options);
       await disk.storage.getStats(BACKGROUND_CONTEXT);
       options.throwIfCancelled?.();
       workerResult.diagnostics.replayThread = "worker";
+      if (workerResult.restorePoint) await disk.storage.setHostRestorePoint(workerResult.restorePoint);
       installReplayResult(session, workerResult);
       return workerResult;
     }, BACKGROUND_CONTEXT);
@@ -663,7 +808,9 @@ export async function appendYnSessionHostState(
   options: AppendYnSessionHostStateOptions = {}
 ): Promise<void> {
   const projectRoot = options.projectRoot ?? (session.metadata as { cwd?: string }).cwd;
-  const normalized = normalizeYnSessionHostState(projectRoot ? encodeProjectPaths(cloneJson(state), projectRoot) : cloneJson(state), state.ownerSessionId);
+  // Both path projection and normalization construct private objects. An
+  // additional JSON clone here only duplicates the full large review state.
+  const normalized = normalizeYnSessionHostState(projectRoot ? encodeProjectPaths(state, projectRoot) : state, state.ownerSessionId);
   const stateHash = hostStateHash(normalized);
   const cursor = hostStatePersistenceCursors.get(session as object);
   if (cursor && cursor.ownerSessionId !== normalized.ownerSessionId) {
@@ -709,6 +856,14 @@ export async function appendYnSessionHostState(
     stateHash,
     deltasSinceCheckpoint: nextDeltaCount
   });
+  const disk = getDiskSessionAccess(session);
+  if (disk) {
+    const branch = await session.branch(PI_SESSION_BRANCH,BACKGROUND_CONTEXT);
+    const tip = await branch?.getTipId(BACKGROUND_CONTEXT);
+    if (tip) {
+      await disk.storage.advanceOwnedHostRestorePoint(tip,normalized,stateHash,entry);
+    }
+  }
 }
 
 export { createTranslationAlignmentHostState };

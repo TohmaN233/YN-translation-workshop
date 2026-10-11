@@ -206,8 +206,17 @@ export function applyJsonDelta<T>(
   operations: unknown,
   schemaVersion: JsonDeltaSchemaVersion = 3
 ): T {
+  return applyDelta(base,operations,schemaVersion,false);
+}
+
+/** Only for historical bytes already certified by an exact published source digest. */
+export function applyJsonDeltaInPlace<T>(base: T, operations: unknown, schemaVersion: JsonDeltaSchemaVersion = 3): T {
+  return applyDelta(base,operations,schemaVersion,true);
+}
+
+function applyDelta<T>(base: T, operations: unknown, schemaVersion: JsonDeltaSchemaVersion, mutate: boolean): T {
   validateJsonDeltaOperations(operations, schemaVersion);
-  let root: unknown = cloneJson(base);
+  let root: unknown = mutate ? base : cloneJson(base);
   for (let index = 0; index < operations.length; index += 1) {
     const operation = operations[index];
     if (operation.path.length === 0) {

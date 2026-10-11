@@ -19,11 +19,27 @@ function userMessage(text) {
   return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
 }
 
+const fixtureRepositories = new Map();
+function fixtureRepository(workspace) {
+  const repository = new PiSessionRepository(workspace);
+  fixtureRepositories.set(workspace,repository);
+  return repository;
+}
+async function closeFixtureRepository(workspace) {
+  const repository = fixtureRepositories.get(workspace);
+  if (repository) { await repository.close(); fixtureRepositories.delete(workspace); }
+}
+
 async function seedLongConversation(repository, sessionId, turns = 14) {
   const session = await repository.open(sessionId);
-  for (let turn = 0; turn < turns; turn += 1) {
-    await appendSessionMessage(session, userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
-    await appendSessionMessage(session, fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
+  try {
+    for (let turn = 0; turn < turns; turn += 1) {
+      await appendSessionMessage(session, userMessage(`user-${turn}: ${"u".repeat(5_000)}`));
+      await appendSessionMessage(session, fauxAssistantMessage(fauxText(`assistant-${turn}: ${"a".repeat(5_000)}`)));
+    }
+  } finally {
+    // Hand the durable session to the service before its compaction mutates it.
+    await repository.closeSession(sessionId);
   }
 }
 
@@ -54,7 +70,7 @@ const service = new PiNativeSessionService({
 
 try {
   const created = await service.createSession(workspaceDir);
-  const repository = new PiSessionRepository(workspaceDir);
+  const repository = fixtureRepository(workspaceDir);
   await seedLongConversation(repository, created.id);
   const selected = await service.createSession(workspaceDir);
   await service.selectSession(workspaceDir, selected.id);
@@ -101,6 +117,7 @@ try {
 
   console.log("ok native Pi manual compaction persists JSONL memory and rebuilds context");
 } finally {
+  await closeFixtureRepository(workspaceDir);
   await service.disposeWorkspace(workspaceDir);
   await rm(workspaceDir, { recursive: true, force: true });
 }
@@ -128,7 +145,7 @@ const automaticService = new PiNativeSessionService({
 
 try {
   const created = await automaticService.createSession(automaticWorkspace);
-  const repository = new PiSessionRepository(automaticWorkspace);
+  const repository = fixtureRepository(automaticWorkspace);
   await seedLongConversation(repository, created.id);
   const settled = new Promise((resolve) => {
     const unsubscribe = automaticService.subscribeEvents((entry) => {
@@ -179,6 +196,7 @@ try {
 
   console.log("ok native Pi threshold compaction runs before the next accepted turn");
 } finally {
+  await closeFixtureRepository(automaticWorkspace);
   await automaticService.disposeWorkspace(automaticWorkspace);
   await rm(automaticWorkspace, { recursive: true, force: true });
 }
@@ -197,7 +215,7 @@ const childThresholdModels = createModels();
 childThresholdModels.setProvider(childThresholdFaux.provider);
 
 try {
-  const repository = new PiSessionRepository(childThresholdWorkspace);
+  const repository = fixtureRepository(childThresholdWorkspace);
   const session = await repository.create();
   const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 22; turn += 1) {
@@ -232,6 +250,7 @@ try {
 
   console.log("ok child Pi runtime threshold-compacts before a new assignment prompt");
 } finally {
+  await closeFixtureRepository(childThresholdWorkspace);
   await rm(childThresholdWorkspace, { recursive: true, force: true });
 }
 
@@ -248,7 +267,7 @@ const resetChildModels = createModels();
 resetChildModels.setProvider(resetChildFaux.provider);
 
 try {
-  const repository = new PiSessionRepository(resetChildWorkspace);
+  const repository = fixtureRepository(resetChildWorkspace);
   const session = await repository.create();
   const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 22; turn += 1) {
@@ -284,6 +303,7 @@ try {
 
   console.log("ok reset child ignores discarded JSONL history during threshold checks");
 } finally {
+  await closeFixtureRepository(resetChildWorkspace);
   await rm(resetChildWorkspace, { recursive: true, force: true });
 }
 
@@ -302,7 +322,7 @@ const resetChildActiveModels = createModels();
 resetChildActiveModels.setProvider(resetChildActiveFaux.provider);
 
 try {
-  const repository = new PiSessionRepository(resetChildActiveWorkspace);
+  const repository = fixtureRepository(resetChildActiveWorkspace);
   const session = await repository.create();
   const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 22; turn += 1) {
@@ -341,6 +361,7 @@ try {
 
   console.log("ok reset child compacts only its active post-reset assignment branch");
 } finally {
+  await closeFixtureRepository(resetChildActiveWorkspace);
   await rm(resetChildActiveWorkspace, { recursive: true, force: true });
 }
 
@@ -359,7 +380,7 @@ const deferredParentModels = createModels();
 deferredParentModels.setProvider(deferredParentFaux.provider);
 
 try {
-  const repository = new PiSessionRepository(deferredParentWorkspace);
+  const repository = fixtureRepository(deferredParentWorkspace);
   const session = await repository.create();
   const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 22; turn += 1) {
@@ -397,6 +418,7 @@ try {
 
   console.log("ok parent Pi threshold compaction defers only while child runtimes are active");
 } finally {
+  await closeFixtureRepository(deferredParentWorkspace);
   await rm(deferredParentWorkspace, { recursive: true, force: true });
 }
 
@@ -427,7 +449,7 @@ const overflowService = new PiNativeSessionService({
 
 try {
   const created = await overflowService.createSession(overflowWorkspace);
-  const repository = new PiSessionRepository(overflowWorkspace);
+  const repository = fixtureRepository(overflowWorkspace);
   await seedLongConversation(repository, created.id, 8);
   const states = [];
   const unsubscribeState = overflowService.subscribeState((_workspace, state) => states.push(state));
@@ -472,6 +494,7 @@ try {
 
   console.log("ok native Pi context overflow compacts and resumes inside the same turn");
 } finally {
+  await closeFixtureRepository(overflowWorkspace);
   await overflowService.disposeWorkspace(overflowWorkspace);
   await rm(overflowWorkspace, { recursive: true, force: true });
 }
@@ -500,7 +523,7 @@ const successfulOverflowModels = createModels();
 successfulOverflowModels.setProvider(successfulOverflowFaux.provider);
 
 try {
-  const repository = new PiSessionRepository(successfulOverflowWorkspace);
+  const repository = fixtureRepository(successfulOverflowWorkspace);
   const session = await repository.create();
   const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 2; turn += 1) {
@@ -531,6 +554,7 @@ try {
 
   console.log("ok successful oversized Pi response compacts without retrying from an assistant tail");
 } finally {
+  await closeFixtureRepository(successfulOverflowWorkspace);
   await rm(successfulOverflowWorkspace, { recursive: true, force: true });
 }
 
@@ -562,7 +586,7 @@ const lengthOverflowModels = createModels();
 lengthOverflowModels.setProvider(lengthOverflowFaux.provider);
 
 try {
-  const repository = new PiSessionRepository(lengthOverflowWorkspace);
+  const repository = fixtureRepository(lengthOverflowWorkspace);
   const session = await repository.create();
   const metadata = await Promise.resolve(session.metadata);
   for (let turn = 0; turn < 4; turn += 1) {
@@ -595,5 +619,6 @@ try {
 
   console.log("ok native Pi zero-output length overflow removes the assistant tail before retry");
 } finally {
+  await closeFixtureRepository(lengthOverflowWorkspace);
   await rm(lengthOverflowWorkspace, { recursive: true, force: true });
 }

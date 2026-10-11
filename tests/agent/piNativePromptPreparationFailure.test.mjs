@@ -5,7 +5,7 @@ import path from 'node:path';
 import {createModels,fauxProvider,fauxAssistantMessage,fauxText} from '@earendil-works/pi-ai';
 import {PiNativeSessionService} from '../../src/main/agent/piNative/sessionService.ts';
 import {PiSessionAgentRuntime} from '../../src/main/agent/piNative/sessionAgentRuntime.ts';
-import {appendYnSessionHostState,loadYnSessionHostState} from '../../src/main/agent/piNative/proofreadSessionState.ts';
+import {appendYnSessionHostState,loadYnSessionHostState,proofreadDocumentHostState} from '../../src/main/agent/piNative/proofreadSessionState.ts';
 import {PiSessionRepository} from '../../src/main/agent/piNative/sessionRepository.ts';
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
 for(const fault of ['first-save','timing-log']){
@@ -37,6 +37,9 @@ for(const fault of ['first-save','timing-log']){
   await service.prompt({...request,prompt:'Workflow: yn-translation-v1.\nWork in the background.'});
   await entered.promise;await [...service.active.values()][0].promptTask;
   const first=[...service.active.values()][0];assert.equal(first.subagents.hasRunning(),true);
+  // A warm no-change turn intentionally performs no Host write. Inject the
+  // failure into real unsaved work so this verifies the persistence boundary.
+  if(fault==='first-save')proofreadDocumentHostState(first.hostState.proofread,'fault-fixture.txt').sampledLines.push(1);
   armed=true;await assert.rejects(service.prompt({...request,prompt:'What is the progress?'}),new RegExp(`Injected ${fault} failure`));
   const active=[...service.active.values()][0];
   assert.equal(active.running,false);assert.equal(active.subagents.hasRunning(),false);

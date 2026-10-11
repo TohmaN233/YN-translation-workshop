@@ -43,6 +43,10 @@ await test("Pi child sessions persist as reopenable JSONL without entering the p
     await access(childMetadata.path);
     assert.deepEqual((await repository.listMetadata()).map((item) => item.id), ["parent-session"]);
 
+    // This is a cold reopen/delete fixture. Release both original native
+    // owners before another repository takes over their durable files.
+    await repository.close();
+
     const reopened = await reopenedRepository.openChildForParent("child-session", "parent-session");
     const context = await readSessionConversation(reopened);
     assert.deepEqual(context.messages.map((message) => message.role), ["user"]);
@@ -137,6 +141,7 @@ await test("opening a legacy parent session removes embedded child transcripts w
     // must never be modified by the legacy transcript slimming migration.
     const legacyMessages = (await readSessionConversation(parent)).messages;
     await repository.closeSession(parentMetadata.id);
+    await repository.closeChildSession(childMetadata.id);
     const legacyParentText = [
       { type: "session", version: 3, id: parentMetadata.id, cwd: workspaceDir,
         timestamp: new Date(parentMetadata.createdAt).toISOString() },

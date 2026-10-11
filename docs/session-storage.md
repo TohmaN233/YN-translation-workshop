@@ -39,19 +39,39 @@ Keep the backup. The derived index is rebuilt when the source changes.
 
 ## Loading, cancellation and concurrency
 
-Large-file indexing, migration and cold Host replay run in worker threads. The
-interface reports their stage and progress and allows Stop. A first upgrade or
-cold replay of a very large session can take minutes; subsequent active turns
-reuse the current owner. Cold replay still
-verifies every owner, runtime version, baseline and reconstructed state hash.
-It retains a bounded history window, not every historical full state. Warm
-runtime owners continue to reuse their current Host state and persistence cursor.
+Large-file indexing, migration and an unverified historical replay run in worker
+threads. The interface reports their stage and progress and allows Stop. The
+first lossless upgrade verifies all historical Host states once. Its verified
+native anchor and bounded recovery window are reused on subsequent cold opens;
+new tail entries still undergo every owner, runtime version, baseline and
+reconstructed state hash check. Already upgraded sessions use their published
+receipt's exact verified byte prefix to establish the same recovery point.
+An invalid or unavailable recovery point explicitly falls back to full native
+replay; it never authorizes unverified history. Ordinary chat does not redo the
+completed historical verification on every first message.
 
-The `.yn-index.json` sidecar stores only derived metadata and offsets. Its
+Empty Stop tombstones written by releases before 2.0.0 require a complete native
+replay to recover the latest nonempty evidence. Their historical recovery cannot
+be decided from cached fallback sections. Current Stop operations retain their
+Host evidence and do not use this legacy exception.
+
+Warm runtime owners reuse their current Host state, persistence cursor and the
+last successfully persisted snapshot. Unchanged Host state causes no additional
+state hash pass or native Host write. An unsaved mutation is still snapshotted
+and serialized through the same ordered writer. Storage progress ends before
+provider selection starts. Native `yn_prompt_preparation` entries record separate
+storage-open, Host-restore, model-selection, runtime-setup and initial persistence
+times; they are excluded from model context.
+
+The `.yn-index.json` sidecar stores derived metadata, offsets and a bounded Host
+recovery materialization. Native JSONL remains the sole authority. Cached state
+and recovery witnesses must match their native branch anchors. Its
 checksum and the complete source SHA256 are checked before reuse; a stale or
 corrupt index is rebuilt with an observable reason. Source identity is checked
 around reads and writes. Appends are serialized and fsynced before the in-memory
-index advances. An append failure disables writes until explicit reopen.
+index advances. A stale index from an interrupted owner can retain its recovery
+point only after its exact original source prefix is verified; new tail entries
+are then replayed. An append failure disables writes until explicit reopen.
 
 Inspecting a live child conversation uses the current native Session owner.
 It does not create a competing writer or close the running Session. Changed

@@ -9,6 +9,9 @@ import type { CommittedWrite } from "@earendil-works/pi-agent-core/node";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/pi-agent-core/harness/context";
 import { readJsonlRecords, TornJsonlTailError } from "./jsonlRecords.ts";
 import { applyJsonDelta, createJsonDelta, hostStateHash } from "./hostStateDelta.ts";
+import { buildJsonlDiskIndex, sourceIdentity, writeJsonlDiskIndex } from "./indexedJsonlStorage.ts";
+import { advanceHostRestorePoint, type HostRestorePoint } from "./hostRestorePoint.ts";
+import type { YnSessionHostState } from "./proofreadSessionState.ts";
 
 export interface PiSessionStorageProgress {
   phase: "scan" | "verify" | "backup" | "publish" | "index" | "replay" | "complete";
@@ -220,6 +223,30 @@ export async function compactPiSessionFile(filePath: string, options: PiSessionS
     }
     const originalHash = originalBytesDigest.digest("hex");
     await outputHandle.sync(); await outputHandle.close();
+    // The metadata pass checks native identity and Host runtime monotonicity.
+    // Reuse its byte index after publishing; do not reconstruct the chain again.
+    const candidateIndex = await buildJsonlDiskIndex(temp,context);
+    const mainAncestors = new Set<string>();
+    const mainTip = candidateIndex.values.find(v => v.namespace === "pi.branch.tip" && v.key === "main");
+    if (mainTip) {
+      const tipHandle = await open(temp,"r");
+      try {
+        const buffer = Buffer.alloc(mainTip.ref.length);
+        const read = await tipHandle.read(buffer,0,buffer.length,mainTip.ref.offset);
+        if (read.bytesRead !== buffer.length) throw new Error("Candidate branch tip changed during indexing.");
+        const tx = JSON.parse(buffer.toString("utf8"));
+        const tipWrite = (Array.isArray(tx) ? tx : [tx])[mainTip.ref.writeIndex];
+        const byId = new Map(candidateIndex.entries.map(e => [e.id,e]));
+        let id: string | null = tipWrite.value;
+        while (id !== null) {
+          const entry = byId.get(id);
+          if (!entry) throw new Error("Candidate native main branch has a missing ancestor.");
+          mainAncestors.add(id); id = entry.parentId;
+        }
+      } finally { await tipHandle.close(); }
+    }
+    let restorePoint: HostRestorePoint | undefined;
+    const canSeedRestorePoint = !candidateIndex.entries.some(e => mainAncestors.has(e.id) && e.customType === "yn.host-state.v1");
     // Independently validate the rewritten native transactions and every Host hash on each branch.
     rolling = undefined; rollingId = undefined;
     const parents = new Map<string, string | undefined>();
@@ -249,6 +276,9 @@ export async function compactPiSessionFile(filePath: string, options: PiSessionS
                 for (const w of chain.reverse()) previous = verifyHost(w, previous);
               }
               const state = verifyHost(entry, previous);
+              if (canSeedRestorePoint && mainAncestors.has(entry.id)) {
+                restorePoint = advanceHostRestorePoint(restorePoint,{id:entry.id,seq:entry.seq,data:entry.data},state as YnSessionHostState,entry.data.stateHash);
+              }
               candidateSemantic.update(signature(entry, state));
               rolling = state; rollingId = entry.id;
               outputHosts.set(entry.id, { offset: record.offset, length: record.length, writeIndex, previous: previousId });
@@ -306,11 +336,17 @@ export async function compactPiSessionFile(filePath: string, options: PiSessionS
     finally { await publishedReceiptHandle.close(); }
     await rename(publishedReceiptTemp, receiptPath);
     receiptPublished = true;
+    candidateIndex.identity = sourceIdentity(await stat(filePath));
+    candidateIndex.sourceFingerprint = compactedHash;
+    candidateIndex.verifiedHostHistory = {version:1,sourceFingerprint:compactedHash,committedBytes:outputBytes,throughSeq:candidateIndex.nextSeq - 1};
+    if (restorePoint) candidateIndex.hostRestorePoint = restorePoint;
+    await writeJsonlDiskIndex(filePath,candidateIndex);
     progress("complete", outputBytes, outputBytes);
     return publishedReceipt;
   } finally {
     await inputHandle.close(); await outputHandle.close();
     await unlink(temp).catch((error) => { if (error.code !== "ENOENT") throw error; });
+    await unlink(`${temp}.yn-index.json`).catch((error) => { if (error.code !== "ENOENT") throw error; });
     if (receiptTemp && (!sourcePublished || receiptPublished)) await unlink(receiptTemp).catch((error) => { if (error.code !== "ENOENT") throw error; });
     if (publishedReceiptTemp) await unlink(publishedReceiptTemp).catch((error) => { if (error.code !== "ENOENT") throw error; });
   }

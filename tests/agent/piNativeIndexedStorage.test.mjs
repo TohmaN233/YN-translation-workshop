@@ -44,7 +44,7 @@ try {
   await indexedSession.close(ctx); await memory.close(ctx);
   const progress=[];
   let reopened = await IndexedJsonlStorage.open(f.file,ctx,{onProgress:p=>progress.push(p)});
-  assert(progress.some(p=>p.phase === "rebuild")); // Commits make the original sidecar stale.
+  assert(progress.some(p=>p.phase === "cache-hit")); // Clean close certifies owned appends and refreshes the derived sidecar.
   await reopened.close(ctx); progress.length=0;
   reopened = await IndexedJsonlStorage.open(f.file,ctx,{onProgress:p=>progress.push(p)});
   assert(progress.some(p=>p.phase === "cache-hit"));
@@ -54,7 +54,7 @@ try {
   assert.equal((await reopened.getEntries([entries[0].id],ctx)).get(entries[0].id).message.content[0].text,"日文🙂");
   await appendFile(f.file,'{"kind":"value","op":"set","namespace":"external","key":"","value":3,"seq":1000}\n');
   await assert.rejects(reopened.getStats(ctx),JsonlSourceChangedError);
-  await reopened.close(ctx);
+  await assert.rejects(reopened.close(ctx),JsonlSourceChangedError,'close reports the external change while still releasing its handle');
   reopened=await IndexedJsonlStorage.open(f.file,ctx,{onProgress:()=>{}});
   assert.equal((await reopened.getValue(value("external"),ctx)).value,3);
   await reopened.close(ctx);

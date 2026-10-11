@@ -9,16 +9,24 @@ import {
   type UsageRow, type Value, type StoredValue, type ValueList, type ListReadOptions, type ListElement,
 } from "@earendil-works/pi-agent-core/node";
 import { readJsonlRecords, parseNativeTransaction, TornJsonlTailError, type NativeJsonlHeader } from "./jsonlRecords.ts";
+import type { HostRestorePoint } from "./hostRestorePoint.ts";
+import { advanceHostRestorePoint } from "./hostRestorePoint.ts";
+import type { YnSessionHostState } from "./proofreadSessionState.ts";
+import { validateJsonDeltaOperations } from "./hostStateDelta.ts";
 
 export interface JsonlSourceIdentity { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }
 export interface JsonlWriteRef { offset: number; length: number; writeIndex: number; seq: number }
-export type IndexedEntry = EntryStructure & JsonlWriteRef;
+export interface IndexedHostMetadata { runtimeContractVersion: number; relativePaths: boolean; deltasSinceCheckpoint: number; stateHash?: string }
+export type IndexedEntry = EntryStructure & JsonlWriteRef & { hostMetadata?: IndexedHostMetadata };
 export interface IndexedValue { namespace: string; key: string; ref: JsonlWriteRef }
 export interface IndexedList { namespace: string; key: string; refs: JsonlWriteRef[] }
 export interface JsonlDiskIndex {
   version: 1; header: NativeJsonlHeader; identity: JsonlSourceIdentity; committedBytes: number;
   sourceFingerprint: string; entries: IndexedEntry[]; usage: (JsonlWriteRef & { id: string })[];
   values: IndexedValue[]; lists: IndexedList[]; stats: SessionStats; nextSeq: number;
+  hostRestorePoint?: HostRestorePoint;
+  hostMetadataVersion?: 2;
+  verifiedHostHistory?: { version: 1; sourceFingerprint: string; committedBytes: number; throughSeq: number };
 }
 export interface JsonlIndexProgress { phase: "scan" | "cache-hit" | "rebuild" | "complete"; bytes?: number; totalBytes?: number; reason?: string }
 export class JsonlSourceChangedError extends Error {
@@ -58,18 +66,26 @@ function decodedMemoryBudget(root: unknown): number {
 }
 
 const digestIndex = (index: JsonlDiskIndex) => createHash("sha256").update(JSON.stringify(index)).digest("hex");
-async function fingerprint(path: string, totalBytes: number, context: Context, progress: (p: JsonlIndexProgress) => void): Promise<string> {
+export async function writeJsonlDiskIndex(path: string, index: JsonlDiskIndex): Promise<void> {
+  const sidecar = `${path}.yn-index.json`, temp = `${sidecar}.${randomUUID()}.tmp`;
+  try { await writeFile(temp,JSON.stringify({index,indexDigest:digestIndex(index)}),{flag:"wx"}); await rename(temp,sidecar); }
+  catch(error) { try {await unlink(temp);} catch(cleanup) { if((cleanup as NodeJS.ErrnoException).code !== "ENOENT") throw new AggregateError([error,cleanup],"Pi index sidecar write and cleanup failed."); } throw error; }
+}
+async function fingerprint(path: string, totalBytes: number, context: Context, progress: (p: JsonlIndexProgress) => void, prefix?: {bytes:number;hash?:string}): Promise<string> {
   const hash = createHash("sha256"); let scanned = 0, lastProgress = Date.now();
+  const prefixDigest = prefix ? createHash("sha256") : undefined;
   for await (const bytes of createReadStream(path, {highWaterMark: 1024 * 1024, signal: context.abortSignal})) {
+    if (prefix && prefixDigest && scanned < prefix.bytes) prefixDigest.update(bytes.subarray(0,Math.min(bytes.length,prefix.bytes-scanned)));
     hash.update(bytes); scanned += bytes.length;
     if (Date.now() - lastProgress >= 250) { progress({phase:"scan",bytes:scanned,totalBytes}); lastProgress = Date.now(); }
   }
+  if (prefix && prefixDigest) prefix.hash = prefixDigest.digest("hex");
   return hash.digest("hex");
 }
 function cacheShape(index: JsonlDiskIndex): boolean {
   return index?.version === 1 && index.header?.v === 4 && Array.isArray(index.entries) && Array.isArray(index.usage)
     && Array.isArray(index.values) && Array.isArray(index.lists) && Number.isSafeInteger(index.nextSeq)
-    && index.nextSeq > 0 && index.committedBytes === index.identity?.size && typeof index.sourceFingerprint === "string";
+    && index.nextSeq > 0 && index.committedBytes === index.identity?.size && typeof index.sourceFingerprint === "string" && index.hostMetadataVersion === 2;
 }
 export async function buildJsonlDiskIndex(path: string, context: Context = BACKGROUND_CONTEXT, progress: (p: JsonlIndexProgress) => void = () => {}): Promise<JsonlDiskIndex> {
   context.abortSignal?.throwIfAborted();
@@ -85,9 +101,18 @@ export async function buildJsonlDiskIndex(path: string, context: Context = BACKG
     if (!cacheShape(cached.index) || digestIndex(cached.index) !== cached.indexDigest) reason = "invalid sidecar metadata or checksum";
     else if (!sameSourceIdentity(before,cached.index.identity)) reason = "source identity/size/mtime changed";
     else {
-      const actual = await fingerprint(path,before.size,context,progress);
+      let receipt: Record<string,any> | undefined;
+      try {receipt=JSON.parse(await readFile(`${path}.storage-upgrade.json`,"utf8"));}
+      catch(error) {if((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;}
+      const prefix = receipt?.version === 1 && receipt.status === "published" && receipt.verified === true && receipt.sessionId === cached.index.header.id
+        && Number.isSafeInteger(receipt.compactedBytes) && receipt.compactedBytes > 0 && receipt.compactedBytes <= before.size ? {bytes:Number(receipt.compactedBytes),hash:undefined as string | undefined} : undefined;
+      const actual = await fingerprint(path,before.size,context,progress,prefix);
       if (!sameSourceIdentity(before,sourceIdentity(await stat(path)))) throw new Error(`Pi JSONL source changed during fingerprint validation: ${path}`);
       if (actual === cached.index.sourceFingerprint) {
+        if (cached.index.verifiedHostHistory && (!prefix || prefix.hash !== receipt!.compactedHash || cached.index.verifiedHostHistory.committedBytes !== prefix.bytes || cached.index.verifiedHostHistory.sourceFingerprint !== prefix.hash)) {
+          delete cached.index.verifiedHostHistory;
+          progress({phase:"scan",bytes:before.size,totalBytes:before.size,reason:"Host prefix certification invalidated: published receipt or native prefix does not match"});
+        }
         progress({phase:"cache-hit",bytes:before.size,totalBytes:before.size});
         progress({phase:"complete",bytes:before.size,totalBytes:before.size});
         return cached.index;
@@ -97,17 +122,55 @@ export async function buildJsonlDiskIndex(path: string, context: Context = BACKG
   }
   progress({phase:"rebuild",reason,totalBytes:before.size});
   const values = new Map<string,IndexedValue>(), lists = new Map<string,IndexedList>();
+  const hostVersions = new Map<string, number>();
+  const hostDeltaCounts = new Map<string,number>();
+  let receipt: Record<string, any> | undefined;
+  try { receipt = JSON.parse(await readFile(`${path}.storage-upgrade.json`,"utf8")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error; }
+  let certifiedPrefixHash: string | undefined;
+  let certifiedThroughSeq = 0;
+  const validCachedPrefix = cached && cacheShape(cached.index) && digestIndex(cached.index) === cached.indexDigest ? cached.index : undefined;
+  let cachedPrefixHash: string | undefined;
   let index: JsonlDiskIndex | undefined; const hash = createHash("sha256"); let lastProgress = Date.now();
   for await (const r of readJsonlRecords(path,context)) {
     hash.update(r.bytes);
     if (r.kind === "header") {
-      index = {version:1,header:r.header,identity:before,committedBytes:r.length,sourceFingerprint:"",entries:[],usage:[],values:[],lists:[],stats:{messageCount:0,usage:emptyIndexedUsage()},nextSeq:1};
+      index = {version:1,hostMetadataVersion:2,header:r.header,identity:before,committedBytes:r.length,sourceFingerprint:"",entries:[],usage:[],values:[],lists:[],stats:{messageCount:0,usage:emptyIndexedUsage()},nextSeq:1};
     } else {
       const current = index!;
       r.writes.forEach((w,writeIndex) => {
         const ref = {offset:r.offset,length:r.length,writeIndex,seq:w.seq};
         switch (w.kind) {
-          case "entry": current.entries.push({...entryStructure(w),...ref}); if(w.type === "message") current.stats.messageCount++; break;
+          case "entry": {
+            let version = w.parentId === null ? 1 : hostVersions.get(w.parentId) ?? 1;
+            let deltaCount = w.parentId === null ? 0 : hostDeltaCounts.get(w.parentId) ?? 0;
+            let metadata: IndexedHostMetadata | undefined;
+            if (w.type === "custom" && ["yn.host-state.v1", "yn.host-state.v2"].includes(w.customType)) {
+              const data = w.data as Record<string, any>;
+              if (!data || typeof data !== "object" || data.ownerSessionId !== current.header.id) throw new Error(`Invalid Host state owner at entry ${w.id}.`);
+              if (w.customType === "yn.host-state.v1") {
+                if (data.schemaVersion !== 1 || version > 1) throw new Error(`Invalid or backwards Host runtime contract at entry ${w.id}.`);
+                version = 1;
+                deltaCount = 0;
+              } else {
+                const nextVersion = data.runtimeContractVersion ?? 1;
+                if (![2,3].includes(data.schemaVersion) || !Number.isInteger(nextVersion) || nextVersion < version || nextVersion > 2) throw new Error(`Invalid or backwards Host runtime contract at entry ${w.id}.`);
+                if (typeof data.stateHash !== "string") throw new Error(`Invalid Host state hash at entry ${w.id}.`);
+                if (data.mode === "checkpoint") {
+                  if (data.state?.schemaVersion !== 1 || data.state?.ownerSessionId !== current.header.id) throw new Error(`Invalid Host checkpoint state at entry ${w.id}.`);
+                } else if (data.mode === "delta") {
+                  if (typeof data.baseHash !== "string") throw new Error(`Invalid Host delta base at entry ${w.id}.`);
+                  validateJsonDeltaOperations(data.operations,data.schemaVersion);
+                } else throw new Error(`Invalid Host delta mode at entry ${w.id}.`);
+                version = nextVersion;
+                deltaCount = data.mode === "delta" ? deltaCount + 1 : 0;
+              }
+              metadata = {runtimeContractVersion:version,relativePaths:w.customType === "yn.host-state.v2" && data.projectPathsVersion === 1,deltasSinceCheckpoint:deltaCount,...(typeof data.stateHash === "string" ? {stateHash:data.stateHash} : {})};
+            }
+            hostVersions.set(w.id, version);
+            hostDeltaCounts.set(w.id,deltaCount);
+            current.entries.push({...entryStructure(w),...ref,...(metadata ? {hostMetadata:metadata} : {})}); if(w.type === "message") current.stats.messageCount++; break;
+          }
           case "usage": current.usage.push({...ref,id:w.id}); current.stats.usage = addIndexedUsage(current.stats.usage,w.usage); break;
           case "value": if(w.op === "delete") values.delete(`${w.namespace}\0${w.key}`); else values.set(`${w.namespace}\0${w.key}`,{namespace:w.namespace,key:w.key,ref}); break;
           case "list": {
@@ -121,6 +184,8 @@ export async function buildJsonlDiskIndex(path: string, context: Context = BACKG
       });
       current.committedBytes = r.offset + r.length;
     }
+    if (r.offset + r.length === receipt?.compactedBytes) { certifiedPrefixHash = hash.copy().digest("hex"); certifiedThroughSeq = index!.nextSeq - 1; }
+    if (r.offset + r.length === validCachedPrefix?.committedBytes) cachedPrefixHash = hash.copy().digest("hex");
     if (Date.now() - lastProgress >= 250) {progress({phase:"scan",bytes:index!.committedBytes,totalBytes:before.size}); lastProgress = Date.now();}
   }
   if (!index) throw new Error(`Missing Pi JSONL header: ${path}`);
@@ -129,15 +194,20 @@ export async function buildJsonlDiskIndex(path: string, context: Context = BACKG
   if (!sameSourceIdentity(before,after) || index.committedBytes !== after.size) throw new Error(`Pi JSONL source changed during indexing: ${path}`);
   index.nextSeq = Math.max(index.nextSeq,index.header.nextSeq ?? 1);
   index.values = [...values.values()]; index.lists = [...lists.values()]; index.sourceFingerprint = hash.digest("hex");
-  const temp = `${sidecar}.${randomUUID()}.tmp`;
-  try { await writeFile(temp,JSON.stringify({index,indexDigest:digestIndex(index)}),{flag:"wx"}); await rename(temp,sidecar); }
-  catch(error) { try {await unlink(temp);} catch(cleanup) { if((cleanup as NodeJS.ErrnoException).code !== "ENOENT") throw new AggregateError([error,cleanup],"Pi index sidecar write and cleanup failed."); } throw error; }
+  if (receipt?.version === 1 && receipt.status === "published" && receipt.verified === true && receipt.sessionId === index.header.id && receipt.compactedHash === certifiedPrefixHash) {
+    index.verifiedHostHistory = {version:1,sourceFingerprint:certifiedPrefixHash!,committedBytes:receipt.compactedBytes,throughSeq:certifiedThroughSeq};
+  }
+  if (validCachedPrefix && validCachedPrefix.header.id === index.header.id && cachedPrefixHash === validCachedPrefix.sourceFingerprint && validCachedPrefix.hostRestorePoint) {
+    index.hostRestorePoint = validCachedPrefix.hostRestorePoint;
+    progress({phase:"scan",bytes:after.size,totalBytes:after.size,reason:"verified existing index prefix; appended Host tail requires replay"});
+  }
+  await writeJsonlDiskIndex(path,index);
   progress({phase:"complete",bytes:after.size,totalBytes:after.size}); return index;
 }
 
 async function indexInWorker(path: string, context: Context, onProgress?: (p: JsonlIndexProgress) => void): Promise<JsonlDiskIndex> {
   context.abortSignal?.throwIfAborted();
-  const report = (p: JsonlIndexProgress) => { if (onProgress) onProgress(p); else if (p.phase === "rebuild") console.info("Pi JSONL index rebuild", {path,...p}); };
+  const report = (p: JsonlIndexProgress) => { if (onProgress) onProgress(p); else if (p.phase === "rebuild" || p.reason) console.info("Pi JSONL index validation", {path,...p}); };
   // Scheduling threshold only: small sessions use the same async streaming builder without worker startup latency.
   const sourceSize = (await stat(path)).size;
   let sidecarSize = 0;
@@ -170,7 +240,7 @@ async function indexInWorker(path: string, context: Context, onProgress?: (p: Js
   });
 }
 
-/** Native v4 JSONL remains authoritative. Only metadata and byte references live in memory. */
+/** Native v4 JSONL remains authoritative; the index holds byte references and one bounded verified Host replay window. */
 export class IndexedJsonlStorage implements Storage {
   readonly path: string;
   readonly header: NativeJsonlHeader;
@@ -188,6 +258,7 @@ export class IndexedJsonlStorage implements Storage {
   private state: "open" | "closing" | "closed" = "open";
   private appendFailure: JsonlAppendFailedError | undefined;
   private closePromise: Promise<void> | undefined;
+  private indexDirty = false;
   constructor(path: string, handle: FileHandle, index: JsonlDiskIndex) {
     this.path = path; this.handle = handle; this.index = index; this.header = index.header;
     for (const e of index.entries) this.entries.set(e.id, e);
@@ -255,7 +326,16 @@ export class IndexedJsonlStorage implements Storage {
       const ref = { offset, length, writeIndex, seq: w.seq };
       switch (w.kind) {
         case "entry": {
-          const meta = { ...entryStructure(w), ...ref }; this.entries.set(w.id, meta); this.index.entries.push(meta);
+          let metadata: IndexedHostMetadata | undefined;
+          if (w.type === "custom" && ["yn.host-state.v1","yn.host-state.v2"].includes(w.customType)) {
+            let parent = w.parentId === null ? undefined : this.entries.get(w.parentId);
+            while (parent && !parent.hostMetadata) parent = parent.parentId === null ? undefined : this.entries.get(parent.parentId);
+            const data = w.data as Record<string,any>;
+            metadata = {runtimeContractVersion:w.customType === "yn.host-state.v1" ? 1 : data.runtimeContractVersion ?? 1,
+              relativePaths:w.customType === "yn.host-state.v2" && data.projectPathsVersion === 1,
+              deltasSinceCheckpoint:data.mode === "delta" ? (parent?.hostMetadata?.deltasSinceCheckpoint ?? 0) + 1 : 0,...(typeof data.stateHash === "string" ? {stateHash:data.stateHash} : {})};
+          }
+          const meta = { ...entryStructure(w), ...ref, ...(metadata ? {hostMetadata:metadata} : {}) }; this.entries.set(w.id, meta); this.index.entries.push(meta);
           if (w.type === "message") this.index.stats.messageCount++; break;
         }
         case "usage": this.usageIds.add(w.id); this.index.usage.push({ ...ref, id: w.id }); this.index.stats.usage = addIndexedUsage(this.index.stats.usage, w.usage); break;
@@ -296,6 +376,7 @@ export class IndexedJsonlStorage implements Storage {
           if (!sameSourceIdentity(identity, sourceIdentity(await stat(this.path)))) throw new JsonlSourceChangedError(this.path);
           this.apply(serialized, offset, bytes.length);
           this.index.committedBytes += bytes.length; this.index.identity = identity;
+          this.indexDirty = true;
         } catch (error) { this.appendFailure = new JsonlAppendFailedError(this.path, error); throw this.appendFailure; }
       }
       return { ...prepared.result, stats: structuredClone(this.index.stats) };
@@ -361,19 +442,84 @@ export class IndexedJsonlStorage implements Storage {
     });
   }
   async getStats(context: Context): Promise<SessionStats> { return this.read(context, () => structuredClone(this.index.stats)); }
+  getHostRestorePoint(context: Context = BACKGROUND_CONTEXT): Promise<HostRestorePoint | undefined> {
+    return this.read(context, () => this.index.hostRestorePoint ? structuredClone(this.index.hostRestorePoint) : undefined);
+  }
+  hasHostRestoreSource(context: Context = BACKGROUND_CONTEXT): Promise<boolean> {
+    return this.read(context, () => Boolean(this.index.hostRestorePoint || this.index.verifiedHostHistory));
+  }
+  getVerifiedHostPrefix(context: Context = BACKGROUND_CONTEXT): Promise<number | undefined> {
+    return this.read(context, () => this.index.verifiedHostHistory?.throughSeq);
+  }
+  getCertifiedHostEntryIds(ids: string[], context: Context = BACKGROUND_CONTEXT): Promise<Set<string>> {
+    return this.read(context, () => new Set(ids.filter(id => {
+      const entry = this.entries.get(id), prefix = this.index.verifiedHostHistory;
+      return Boolean(entry && prefix && entry.offset + entry.length <= prefix.committedBytes);
+    })));
+  }
+  getHostMetadata(id: string, context: Context = BACKGROUND_CONTEXT): Promise<IndexedHostMetadata | undefined> {
+    return this.read(context, () => this.entries.get(id)?.hostMetadata ? {...this.entries.get(id)!.hostMetadata!} : undefined);
+  }
+  /** Caller has validated the anchor and every state represented by this replay window. */
+  setHostRestorePoint(point: HostRestorePoint, context: Context = BACKGROUND_CONTEXT): Promise<void> {
+    return this.read(context, () => {
+      const anchor = this.entries.get(point.anchorId);
+      if (!anchor || anchor.seq !== point.anchorSeq || point.ownerSessionId !== this.header.id) throw new Error("Host restore point does not match its native storage anchor.");
+      this.index.hostRestorePoint = structuredClone(point);
+      this.indexDirty = true;
+    });
+  }
+  /** Advance the private verified window after an owned successful persistence.
+   * Historical witnesses are immutable; copy only the newly supplied state. */
+  advanceOwnedHostRestorePoint(tipId: string, state: YnSessionHostState, stateHash: string, data: Record<string,any>, context: Context = BACKGROUND_CONTEXT): Promise<void> {
+    return this.read(context, () => {
+      let anchor = this.entries.get(tipId);
+      while (anchor && !anchor.hostMetadata) anchor = anchor.parentId === null ? undefined : this.entries.get(anchor.parentId);
+      if (!anchor || anchor.hostMetadata?.stateHash !== stateHash) return;
+      let previous = anchor.parentId === null ? undefined : this.entries.get(anchor.parentId);
+      while (previous && !previous.hostMetadata) previous = previous.parentId === null ? undefined : this.entries.get(previous.parentId);
+      const prior = this.index.hostRestorePoint;
+      if (previous && previous.id !== prior?.anchorId) return;
+      const next = advanceHostRestorePoint(prior,{id:anchor.id,seq:anchor.seq,data},structuredClone(state),stateHash);
+      if (prior?.incompleteLegacyRecoveryWindow) next.incompleteLegacyRecoveryWindow = true;
+      this.index.hostRestorePoint = next;
+      this.indexDirty = true;
+    });
+  }
+  private async refreshIndex(): Promise<void> {
+    if (!this.indexDirty || this.appendFailure) return;
+    // A changed external file is never certified by the closing owner.
+    if (!sameSourceIdentity(this.index.identity,sourceIdentity(await stat(this.path)))) {
+      console.info("Pi derived index refresh skipped",{path:this.path,reason:"source identity changed outside the storage owner"});
+      throw new JsonlSourceChangedError(this.path);
+    }
+    const before = this.index.identity;
+    this.index.sourceFingerprint = await fingerprint(this.path,before.size,BACKGROUND_CONTEXT,()=>{});
+    if (!sameSourceIdentity(before,sourceIdentity(await stat(this.path)))) throw new JsonlSourceChangedError(this.path);
+    await writeJsonlDiskIndex(this.path,{...this.index,values:[...this.values.values()],lists:[...this.lists.values()]});
+    this.indexDirty = false;
+  }
+  flushDerivedIndex(context: Context = BACKGROUND_CONTEXT): Promise<void> { return this.read(context, () => this.refreshIndex()); }
   captureForkNextSeq(context: Context): Promise<number> {
     if (this.state !== "open") return Promise.reject(new Error("IndexedJsonlStorage is closed"));
     const result = this.commitQueue.then(async () => { await this.checkAdmitted(context); return this.index.nextSeq; });
     this.commitQueue = result.then(() => undefined, () => undefined); return result;
   }
-  /** Diagnostics report cache occupancy only; no history payloads are retained in the index. */
+  /** Transaction cache occupancy; the separately bounded Host restore window is not a transcript cache. */
   getCacheDiagnostics(): { transactions: number; estimatedBytes: number; maxBytes: number } { return {transactions:this.cache.size,estimatedBytes:this.cacheBytes,maxBytes:this.cacheLimitBytes}; }
   close(_context: Context = BACKGROUND_CONTEXT): Promise<void> {
     if (this.closePromise) return this.closePromise;
     // Queued commits remain authorized; closing rejects newly submitted commits.
     const tail = this.commitQueue;
     this.state = "closing";
-    this.closePromise = tail.then(async () => { this.state = "closing"; this.cache.clear(); this.cacheBytes = 0; await this.handle.close(); this.state = "closed"; });
+    this.closePromise = tail.then(async () => {
+      this.state = "closing"; this.cache.clear(); this.cacheBytes = 0;
+      let failure: unknown;
+      try { if (!this.appendFailure) await this.checkAdmitted(BACKGROUND_CONTEXT); await this.refreshIndex(); } catch (error) { failure = error; }
+      try { await this.handle.close(); } catch (error) { failure = failure === undefined ? error : new AggregateError([failure,error],"Pi index refresh and storage close failed."); }
+      this.state = "closed";
+      if (failure !== undefined) throw failure;
+    });
     return this.closePromise;
   }
 }

@@ -5,6 +5,9 @@ import path from "node:path";
 
 import { PiNativeSessionService } from "../../src/main/agent/piNative/sessionService.ts";
 import { PiSessionRepository } from "../../src/main/agent/piNative/sessionRepository.ts";
+import { appendYnSessionHostState, createProofreadHostState } from "../../src/main/agent/piNative/proofreadSessionState.ts";
+import { createTranslationAlignmentHostState } from "../../src/main/agent/piNative/translationAlignmentState.ts";
+import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 
 let passed = 0;
 let failed = 0;
@@ -102,6 +105,40 @@ await test("cold prompt preparation passes Stop to session storage without repla
   } finally {
     PiSessionRepository.prototype.open = originalOpen;
     await service.disposeWorkspace(workspaceDir);
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+await test("first prompt clears storage preparation before provider selection starts", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-storage-ready-provider-"));
+  const repository = new PiSessionRepository(workspaceDir);
+  const seed = await repository.create("storage-ready");
+  await appendYnSessionHostState(seed, {
+    schemaVersion: 1, ownerSessionId: seed.metadata.id,
+    proofread: createProofreadHostState(), translationAlignment: createTranslationAlignmentHostState()
+  });
+  await repository.close();
+  const provider = fauxProvider();
+  const models = createModels(); models.setProvider(provider.provider);
+  const selected = deferred(); const release = deferred();
+  const events = [];
+  const service = new PiNativeSessionService({
+    createModelSelection: async () => {
+      selected.resolve(); await release.promise;
+      return { models, model: provider.getModel(), providerId: provider.provider.id, modelId: provider.getModel().id };
+    }
+  });
+  const unsubscribe = service.subscribeEvents(event => events.push(event));
+  let prompting;
+  try {
+    await service.loadMessages(workspaceDir, seed.metadata.id);
+    prompting = service.prompt({ outputDir: workspaceDir, sessionId: seed.metadata.id, prompt: "Hello", providerId: provider.provider.id, modelId: provider.getModel().id });
+    await selected.promise;
+    assert.equal(events.filter(event => event.event.type === "storage_progress").at(-1)?.event.progress.phase, "complete",
+      "finished Host restore must not leave preparing-storage visible during provider preparation");
+  } finally {
+    release.resolve(); if (prompting) await prompting;
+    unsubscribe(); await service.disposeWorkspace(workspaceDir);
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });

@@ -234,7 +234,7 @@ interface ActiveSession {
     translationAlignment: TranslationAlignmentHostState;
   };
   persistHostState: (options?: { force?: boolean }) => Promise<void>;
-  hostPersistence: { tail: Promise<void> };
+  hostPersistence: { tail: Promise<void>; lastPersisted?: string };
   subagents: YnSubagentSupervisor;
   promptOperation?: PromptOperation;
   promptTask?: Promise<void>;
@@ -273,6 +273,12 @@ interface PreparedRuntime {
   active: ActiveSession;
   previous?: ActiveSession;
   retirePreviousSubagents: boolean;
+  preparationTimings: {
+    storageOpenMs: number;
+    hostRestoreMs: number;
+    modelSelectionMs: number;
+    runtimeSetupMs: number;
+  };
 }
 
 function isWorkflowFailureReport(message: AgentMessage): boolean {
@@ -666,11 +672,13 @@ export class PiNativeSessionService {
         active.phase = "turn";
         active.error = undefined;
         try {
+          const persistenceStarted = performance.now();
           await active.persistHostState();
           await active.runtime.appendCustomEntry("yn_prompt_preparation", {
             timestamp: Date.now(),
             hostStateSource: prepared.previous ? "owned" : "replayed",
             elapsedMs: performance.now() - preparationStarted,
+            stages: { ...prepared.preparationTimings, hostPersistenceMs: performance.now() - persistenceStarted },
             ...(!prepared.previous ? { hostReplay: getYnHostStateLoadDiagnostics(active.session) } : {})
           });
         } catch (error) {
@@ -990,6 +998,7 @@ export class PiNativeSessionService {
     const coldController = previous ? undefined : this.registerColdStorageController(key);
     let session: Session | undefined;
     try {
+      const storageStarted = performance.now();
       if (coldController && !coldController.signal.aborted) {
         this.emitStorageProgress(request.outputDir, request.sessionId, { phase: "scan", processedBytes: 0, totalBytes: 0 });
       }
@@ -999,7 +1008,10 @@ export class PiNativeSessionService {
           if (!coldController.signal.aborted) this.emitStorageProgress(request.outputDir, request.sessionId, progress);
         }
       } : undefined);
-      return await this.prepareOwnedRuntime(request, purpose, previous, session, queuedCarryover, preparationHandoff);
+      const storageOpenMs = performance.now() - storageStarted;
+      const prepared = await this.prepareOwnedRuntime(request, purpose, previous, session, queuedCarryover, preparationHandoff);
+      prepared.preparationTimings.storageOpenMs = storageOpenMs;
+      return prepared;
     } catch (error) {
       // A failed provider/tool preparation never transfers this new handle to
       // the active owner. Keep an existing owner's session usable on rejection.
@@ -1022,6 +1034,7 @@ export class PiNativeSessionService {
     // cursor. Replaying every historical checkpoint here blocks each message
     // for the lifetime of the project; only a cold owner needs that replay.
     const reservation = this.sessionOperationReservations.get(sessionKey(request.outputDir, request.sessionId));
+    const restoreStarted = performance.now();
     const persistedHostState = previous ? undefined : await loadYnSessionHostState(session, request.sessionId, {
       projectRoot: request.outputDir,
       throwIfCancelled: () => {
@@ -1036,11 +1049,18 @@ export class PiNativeSessionService {
         });
       }
     });
+    const hostRestoreMs = performance.now() - restoreStarted;
+    if (!previous) {
+      this.emitStorageProgress(request.outputDir, request.sessionId, { phase: "complete", processedBytes: 0, totalBytes: 0 });
+    }
+    const selectionStarted = performance.now();
     const selection = await (this.options.createModelSelection ?? createPiModelSelection)({
       workspaceDir: request.outputDir,
       providerId: request.providerId,
       modelId: request.modelId
     });
+    const modelSelectionMs = performance.now() - selectionStarted;
+    const setupStarted = performance.now();
     if (purpose === "prompt" && request.images?.length && !selection.model.input.includes("image")) {
       throw new Error(`Model ${selection.model.name} does not accept image input.`);
     }
@@ -1330,11 +1350,13 @@ export class PiNativeSessionService {
     const appendHostState = this.options.appendHostState ?? appendYnSessionHostState;
     let runtime: PiSessionAgentRuntime | undefined;
     let activeRuntime: ActiveSession | undefined;
-    let lastPersisted = persistedHostState ? JSON.stringify(persistedHostState) : undefined;
     // Child callbacks can still use the old owner's writer while an ordinary
     // parent turn replaces its runtime. Both writers must share one ordered
     // delta chain on the same native Session.
-    const hostPersistence = previous?.hostPersistence ?? { tail: Promise.resolve() };
+    const hostPersistence = previous?.hostPersistence ?? {
+      tail: Promise.resolve(),
+      lastPersisted: persistedHostState ? JSON.stringify(persistedHostState) : undefined
+    };
     const persistHostState = (options: { force?: boolean } = {}): Promise<void> => {
       const state = {
         schemaVersion: 1 as const,
@@ -1349,12 +1371,12 @@ export class PiNativeSessionService {
         translationAlignment: hostState.translationAlignment
       };
       const serialized = JSON.stringify(state);
-      if (!options.force && serialized === lastPersisted) return hostPersistence.tail;
+      if (!options.force && serialized === hostPersistence.lastPersisted) return hostPersistence.tail;
       const snapshot = JSON.parse(serialized) as YnSessionHostState;
       const write = hostPersistence.tail
         .catch(() => undefined)
         .then(async () => {
-          if (!options.force && serialized === lastPersisted) return;
+          if (!options.force && serialized === hostPersistence.lastPersisted) return;
           await appendHostState(session, snapshot, {
             ...options,
               projectRoot: request.outputDir,
@@ -1362,7 +1384,7 @@ export class PiNativeSessionService {
               appendCustomEntry: (customType, data) => runtime!.appendCustomEntry(customType, data)
             } : {})
           });
-          lastPersisted = serialized;
+          hostPersistence.lastPersisted = serialized;
         });
       hostPersistence.tail = write;
       return write;
@@ -1667,7 +1689,9 @@ export class PiNativeSessionService {
     }
     for (const entry of active.queuedUserOrder) entry.pendingNative = false;
     active.queuedNextTurn = [...queuedCarryover];
-    return { active, previous, retirePreviousSubagents };
+    return { active, previous, retirePreviousSubagents, preparationTimings: {
+      storageOpenMs: 0, hostRestoreMs, modelSelectionMs, runtimeSetupMs: performance.now() - setupStarted
+    } };
   }
 
   private commitPreparedRuntime(key: string, prepared: PreparedRuntime): ActiveSession {

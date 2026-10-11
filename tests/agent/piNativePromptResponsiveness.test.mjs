@@ -29,14 +29,15 @@ try {
  faux.setResponses([
   fauxAssistantMessage(fauxToolCall('remember',{line:81}),{stopReason:'toolUse'}),fauxAssistantMessage(fauxText('first done')),
   fauxAssistantMessage(fauxToolCall('remember',{line:82}),{stopReason:'toolUse'}),fauxAssistantMessage(fauxText('second done')),
-  fauxAssistantMessage(fauxText('third done'))
+  fauxAssistantMessage(fauxText('third done')),
+  fauxAssistantMessage(fauxText('fourth done'))
  ]);
  const models=createModels();models.setProvider(faux.provider);
- let holdNextWrite=false,writing=0,maxWriting=0,entered;
+ let holdNextWrite=false,writing=0,maxWriting=0,appendCalls=0,entered;
  const heldSnapshots=[];
  service=new PiNativeSessionService({
   appendHostState:async(...args)=>{
-   writing++;maxWriting=Math.max(maxWriting,writing);
+   writing++;appendCalls++;maxWriting=Math.max(maxWriting,writing);
    try {if(holdNextWrite){holdNextWrite=false;heldSnapshots.push(args[1]);entered();await new Promise(r=>{release=r;});}await appendYnSessionHostState(...args);}finally{writing--;}
   },
   createModelSelection:async()=>({models,model:faux.getModel(),providerId:faux.provider.id,modelId:faux.getModel().id}),
@@ -63,12 +64,15 @@ try {
  assert.equal(maxWriting,1,'replacement must not race an unfinished old-owner delta append');
  assert.ok(!heldSnapshots[0].proofread.documents['chapter.txt'].sampledLines.includes(1002),'a queued write must retain its own immutable snapshot');
  release();await oldWrite;await replacing;
+ const writesBeforeUnchangedTurn=appendCalls;
+ await turn();
+ assert.equal(appendCalls,writesBeforeUnchangedTurn,'a warm runtime must share the durable serialized baseline and avoid rehashing or rewriting unchanged Host evidence');
  await service.disposeWorkspace(root);service=undefined;
  repository=new PiSessionRepository(root);const cold=await repository.open('responsive-owner');
  const loaded=await loadYnSessionHostState(cold,cold.metadata.id);
  assert.deepEqual(loaded.proofread.documents['chapter.txt'].sampledLines,[...Array.from({length:82},(_,i)=>i+1),999,1001,1002]);
  const telemetry=(await readSessionEntries(cold)).filter(e=>e.type==='custom'&&e.customType==='yn_prompt_preparation');
- assert.deepEqual(telemetry.map(e=>e.data.hostStateSource),['replayed','owned','owned']);
+ assert.deepEqual(telemetry.map(e=>e.data.hostStateSource),['replayed','owned','owned','owned']);
  assert.ok(telemetry.every(e=>Number.isFinite(e.data.elapsedMs)));
  assert.ok(!(await readSessionConversation(cold)).messages.some(m=>m.customType==='yn_prompt_preparation'),'preparation timing must stay outside model context');
  console.log('ok successive actual Pi service prompts reuse warm Host state and persist unsaved mutations');

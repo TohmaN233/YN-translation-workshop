@@ -966,8 +966,8 @@ await test("disabled glossary candidates stay readable but are absent from the c
     assert.equal(Object.hasOwn(validate.parameters.properties, "glossaryCandidates"), false);
     assert.equal(Object.hasOwn(validate.parameters.properties, "characterFacts"), true);
     const runtimeSpec = subagentRunner.createPiTranslationRuntimeSpec(context, progress);
-    assert.match(runtimeSpec.taskPrompt, /New glossary-candidate collection is disabled/i);
-    assert.doesNotMatch(runtimeSpec.taskPrompt, /include evidence-backed glossary candidates/i);
+    assert.match(runtimeSpec.systemPrompt.join("\n"), /New glossary-candidate collection is disabled/i);
+    assert.doesNotMatch(runtimeSpec.systemPrompt.join("\n"), /include evidence-backed glossary candidates/i);
     const candidateSearch = await searchProjectText.execute("candidates-off-search", {
       path: "AI_translation/_workspace/glossary_candidates.json",
       query: "arrived"
@@ -2514,14 +2514,16 @@ await test("translation children execute the host-owned Pi prompt and receive va
         ? [message.content]
         : message.content.filter((block) => block.type === "text").map((block) => block.text))
       .join("\n");
+    const systemPrompt = getCurrentSystemPrompt(firstContext.messages);
     assert.match(userPrompt, /readAssignedSource/);
     assert.match(userPrompt, /writeAssignedTranslation/);
     assert.match(userPrompt, /language pair en->ja/);
-    assert.match(userPrompt, /Project style: literary mystery/);
-    assert.match(userPrompt, /Work description: Preserve the narrator's restrained voice\./);
+    assert.match(systemPrompt, /Project style\nliterary mystery/);
+    assert.match(systemPrompt, /Work description\nPreserve the narrator's restrained voice\./);
     assert.doesNotMatch(userPrompt, /Simplified Chinese/);
-    assert.match(userPrompt, /Every non-empty output line must be the actual translation of its matching source line/);
-    assert.match(userPrompt, /Never write progress narration.*generic placeholder prose/s);
+    assert.match(systemPrompt, /Every non-empty output line must be the actual translation of its matching source line/);
+    assert.match(systemPrompt, /Never write progress narration.*generic placeholder prose/s);
+    assert.doesNotMatch(userPrompt, /Project style|Work description|generic placeholder prose/);
     assert.ok(userPrompt.length < 2_800, `translation child prompt is still bloated (${userPrompt.length} chars)`);
     assert.doesNotMatch(userPrompt, /readProjectFile|readSourceLines|writeTranslationChunk/);
     assert.doesNotMatch(getCurrentSystemPrompt(firstContext.messages), /Current workflow glossary candidates|用語|Alice: calm/);

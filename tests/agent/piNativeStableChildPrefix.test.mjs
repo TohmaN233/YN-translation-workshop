@@ -22,6 +22,10 @@ try {
   const proofreadProgress = () => ({contextRead:false,findingsWritten:false,findingsCount:0});
   assert.deepEqual(wireTools(createPiProofreadSubagentTools(context(1,500),'proof',proofreadProgress())),wireTools(createPiProofreadSubagentTools(context(501,1000),'proof',proofreadProgress())),'proofread tool declarations must remain stable');
   const spec = createPiTranslationRuntimeSpec(context(501,1000),{});
+  assert.match(spec.systemPrompt.join('\n'),/Read the complete translationReference/,'fixed execution protocol belongs before the changing assignment');
+  assert.match(spec.systemPrompt.join('\n'),/Do not bulk-read the indexed glossary/);
+  assert.doesNotMatch(spec.taskPrompt,/Read the complete translationReference|Project style:|generic placeholder prose/,'assignment message must not duplicate the fixed protocol or project rules');
+  assert.match(spec.taskPrompt,/L501-L1000/);
   const tools = spec.tools('prefix-worker');
   const read = tools.find(t=>t.name==='readAssignedSource');
   const write = tools.find(t=>t.name==='writeAssignedTranslation');

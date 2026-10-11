@@ -4519,6 +4519,19 @@ export function createPiTranslationRuntimeSpec(
       "For each page, call readAssignedSource and writeAssignedTranslation before requesting the next page. Omitted ranges automatically advance to the next unread page; paging never changes assignment ownership or its final review boundary."
     ]
     : ["Call readAssignedSource once for the exact assigned range before writeAssignedTranslation."];
+  const fullTranslationInstructions = [
+    "Read the complete translationReference from the first result. Use projectReferences.directMatches when present. Do not bulk-read the indexed glossary, character bible, or glossary candidates; exact-search one source term only for a real uncovered ambiguity. For the bound source document, use only readAssignedSource and readTranslationContext so context stays line-aware and centered on the assignment. Other project files and prior translations remain readable on demand.",
+    ...(glossaryCandidatesEnabled ? [] : [
+      "New glossary-candidate collection is disabled. Existing candidate entries in projectReferences remain read-only consistency references, but do not construct or report new candidate discoveries. The selected formal glossary, when present, remains authoritative."
+    ]),
+    "Write every returned sourceBlocks item with writeAssignedTranslation in the exact block format described by that tool result. Repair only Host-reported lines with repairAssignedTranslation.",
+    discoveryInstruction,
+    ...(glossaryCandidatesEnabled || characterFactsEnabled ? [
+      "Report only proper names, named organizations/places/titles, coined setting terms, and character facts. Do not propose ordinary dictionary words or everyday phrases. glossaryCandidates.aliases means alternate target-language renderings only; report a source-language nickname or abbreviation as its own source candidate. Mark unresolved gender/pronouns as unknown with source-line evidence so the parent can research them; never guess."
+    ] : []),
+    "Every non-empty output line must be the actual translation of its matching source line. Never write progress narration, labels such as 'translation below', summaries, or generic placeholder prose such as （本段译文）, 本行译文, 译文待补, or 'translation goes here' into the translation artifact.",
+    "Do not modify the source file or return the translation only in chat. A successful validateAssignedTranslation call returns directly to the Host; do not spend another model turn on a prose confirmation."
+  ];
   const boundedRepairPrompt = [
     context.task.instruction?.trim()
       ? `Parent-delegated bounded repair: ${context.task.instruction.trim()}`
@@ -4576,25 +4589,15 @@ export function createPiTranslationRuntimeSpec(
         ? `Parent-delegated objective: ${context.task.instruction.trim()}`
         : "",
       `Translate ${assignmentDescription(context.task)}, exact assigned range L${context.task.fromLine}-L${context.task.toLine}, according to language pair ${context.request.languagePair}.`,
-      ...(context.request.style?.trim() ? [`Project style: ${context.request.style.trim()}`] : []),
-      ...(context.request.workDescription?.trim() ? [`Work description: ${context.request.workDescription.trim()}`] : []),
-      ...(customPreserveRuleContext(context.request) ? [customPreserveRuleContext(context.request)] : []),
-    "Aligned formal glossary pairs (explicit aliases included) are not residue.",
-      ...sourceInstruction,
-      "Read the complete translationReference from the first result. Use projectReferences.directMatches when present. Do not bulk-read the indexed glossary, character bible, or glossary candidates; exact-search one source term only for a real uncovered ambiguity. For the bound source document, use only readAssignedSource and readTranslationContext so context stays line-aware and centered on the assignment. Other project files and prior translations remain readable on demand.",
-      ...(glossaryCandidatesEnabled ? [] : [
-        "New glossary-candidate collection is disabled. Existing candidate entries in projectReferences remain read-only consistency references, but do not construct or report new candidate discoveries. The selected formal glossary, when present, remains authoritative."
-      ]),
-      "Write every returned sourceBlocks item with writeAssignedTranslation in the exact block format described by that tool result. Repair only Host-reported lines with repairAssignedTranslation.",
-      discoveryInstruction,
-      ...(glossaryCandidatesEnabled || characterFactsEnabled ? [
-        "Report only proper names, named organizations/places/titles, coined setting terms, and character facts. Do not propose ordinary dictionary words or everyday phrases. glossaryCandidates.aliases means alternate target-language renderings only; report a source-language nickname or abbreviation as its own source candidate. Mark unresolved gender/pronouns as unknown with source-line evidence so the parent can research them; never guess."
-      ] : []),
-      "Every non-empty output line must be the actual translation of its matching source line. Never write progress narration, labels such as 'translation below', summaries, or generic placeholder prose such as （本段译文）, 本行译文, 译文待补, or 'translation goes here' into the translation artifact.",
-      "Do not modify the source file or return the translation only in chat. A successful validateAssignedTranslation call returns directly to the Host; do not spend another model turn on a prose confirmation."
-        ].join("\n"),
+      ...sourceInstruction
+        ].filter(Boolean).join("\n"),
     tools: () => createPiTranslationSubagentTools(context, progress),
-    systemPrompt: ["You are a Pi translation subagent for YN Translation Workshop."],
+    systemPrompt: [
+      "You are a Pi translation subagent for YN Translation Workshop.",
+      ...(context.executionMode === "bounded_repair" || context.executionMode === "chunk_review_repair"
+        ? []
+        : ["## Translation execution protocol", ...fullTranslationInstructions])
+    ],
     async execute(runtime, session, taskPrompt, onRetry) {
       const existingArtifact = await validateExistingAssignedRange(context);
       const chunkReviewRepair = context.executionMode === "chunk_review_repair";

@@ -1,3 +1,4 @@
+import { readPdfProtectedLines, assertPdfProtectedWrite } from "../../pdfDocuments.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -20,6 +21,7 @@ const AUDIT_STORE = path.join(".translation-workshop", "translation-reuse-audits
 const AUDIT_BACKUPS = path.join(".translation-workshop", "translation-reuse-backups");
 const AUDIT_VERDICTS = path.join(".translation-workshop", "translation-reuse-audit-verdicts");
 const DETERMINISTIC_RETRANSLATION_CODES = new Set([
+  "pdf_protected_content_mismatch",
   "line_count_mismatch",
   "placeholder_mismatch",
   "tag_mismatch",
@@ -700,6 +702,7 @@ async function prepareTranslationReuseAuditInStore(
     }
     const options: ValidationOptions = {
       ...input.validationOptions,
+      pdfProtectedLines: await readPdfProtectedLines(input.sourcePath,input.outputDir) ?? input.validationOptions?.pdfProtectedLines,
       languagePair: input.languagePair ?? input.validationOptions?.languagePair
     };
     const stripPreservedPayload = createTranslationPreservedPayloadStripper(options);
@@ -737,9 +740,16 @@ async function prepareTranslationReuseAuditInStore(
       codes.push(code);
       prescanByLine.set(signal.line, codes);
     }
+    const protectedRows = new Map(options.pdfProtectedLines?.map(row => [row.line,row.text]));
     const lines = sourceLines.map((source, index): TranslationReuseLineRecord => {
       const line = index + 1;
       const translation = candidateLines[index] ?? "";
+      if (protectedRows.has(line)) {
+        const exact = source === translation;
+        return {line, deterministicDisposition: exact ? "automatic_reuse" : "must_retranslate",
+          deterministicCodes: exact ? [] : ["pdf_protected_content_mismatch"], semanticSignals: [],
+          verdict: exact ? "reuse" : "retranslate", reason: exact ? "Host-protected PDF content retained exactly." : "Protected PDF code/math differs from its source."};
+      }
       if (!source.trim() && !translation.trim()) {
         return {
           line,
@@ -1319,6 +1329,8 @@ export async function applyTranslationReuseAudits(input: {
           if (!source.trim()) return "";
           return retained.has(lineIndex + 1) ? candidateLines[lineIndex] ?? "" : "";
         });
+        await assertPdfProtectedWrite(record.document.sourcePath, input.outputDir,
+          retainedLines.map(line => ({line,text:nextLines[line-1]})));
         const backupPath = await ensureHashBoundCandidateBackup(
           input.outputDir,
           candidateText,

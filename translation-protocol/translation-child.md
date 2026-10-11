@@ -15,6 +15,9 @@ or placeholder prose inside the artifact.
   terminology, or scene continuity.
 - Translate human-language text naturally for the requested style without
   altering code-like fragments.
+- PDF code and mathematical formulas are not translatable. Copy Host-protected
+  rows exactly, including comments, spacing and symbols; translate surrounding
+  prose. Preserved source language in those rows is intentional.
 
 ## Discoveries
 

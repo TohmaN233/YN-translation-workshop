@@ -15,7 +15,7 @@ External agents such as Codex can use the [official Agent API](docs/agent-api.en
 - Fix oversized session loading, compact older sessions with verified backups, and reuse verified recovery state to avoid replaying history before chat; add loading progress and cancellation.
 - Stabilize translation, review, and proofreading child prompt and tool prefixes for cache reuse across chunks. Context still resets after each chunk, with unchanged Host scope validation.
 - Add a background Agent API: confirm the location and settings, then reuse lazy-mode preparation and execution; query status, stop, resume and answer questions.
-- Support text-layer PDFs with extracted text, page/image references on demand for vision models, and one-click HTML export preserving page sizes, images and table lines. See the [PDF guide](docs/pdf.en.md).
+- Support text-layer PDFs with extracted text, page/image references on demand for vision models, Host protection of identified code and mathematical formulas, and one-click translated PDF export. See the [PDF guide](docs/pdf.en.md).
 
 ## What's new in 2.1.9
 

@@ -285,6 +285,8 @@ export async function writeTranslationChunk(args: WriteTranslationChunkArgs): Pr
   }
 
   const candidatePath = resolveWriteCandidatePath(args);
+  await (await import("../pdfDocuments.ts")).assertPdfProtectedWrite(args.sourcePaths[0], args.outputDir,
+    chunkLines.map((text, index) => ({ line: fromLine + index, text })));
   if (candidatePath === resolveTranslationCandidatePath(args)) {
     assertCandidatePath(args.outputDir, candidatePath);
   } else {
@@ -371,6 +373,7 @@ export async function writeTranslationLines(args: WriteTranslationLinesArgs): Pr
     toLine,
     lines: []
   });
+  await (await import("../pdfDocuments.ts")).assertPdfProtectedWrite(args.sourcePaths[0], args.outputDir, entries);
   if (candidatePath === resolveTranslationCandidatePath(args)) {
     assertCandidatePath(args.outputDir, candidatePath);
   } else {

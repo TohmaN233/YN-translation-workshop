@@ -1,6 +1,6 @@
 import type { PdfBox, PdfTextBlock } from "./pdfTypes.ts";
 
-interface PdfTextItem { str: string; transform: number[]; width: number; height: number; dir: string; hasEOL: boolean; color?: [number, number, number] }
+interface PdfTextItem { str: string; transform: number[]; width: number; height: number; dir: string; hasEOL: boolean; color?: [number, number, number]; protection?: "code" | "math"; paintOperations?: number[] }
 
 /** Keep PDF reading order, merging adjacent runs and wrapped lines only inside one column. */
 export function pdfTextBlocks(items: Array<PdfTextItem | { type: string }>, viewport: { transform: number[] }, page: number): PdfTextBlock[] {
@@ -16,23 +16,25 @@ export function pdfTextBlocks(items: Array<PdfTextItem | { type: string }>, view
     const size = Math.max(1, Math.hypot(item.transform[2], item.transform[3]));
     const block = { x: a * tx + c * ty + e, y: b * tx + d * ty + f - size,
       width: Math.max(item.width, 1), height: size * 1.25, fontSize: size,
-      line: 0, page, text: item.str.replace(/[\r\n]+/g, " "), endsLine: item.hasEOL, color: item.color };
+      line: 0, page, text: item.str.replace(/[\r\n]+/g, " "), endsLine: item.hasEOL, color: item.color,
+      protection: item.protection, paintOperations: item.protection ? item.paintOperations : undefined };
     const prior = rows.at(-1);
     const sameRow = prior && Math.abs(prior.y - block.y) < size * 0.35
       && block.x >= prior.x && block.x - (prior.x + prior.width) < size * 1.5
       && JSON.stringify(prior.color) === JSON.stringify(block.color);
-    if (sameRow) {
+    if (sameRow && prior.protection === block.protection) {
       const gap = block.x - (prior.x + prior.width);
       prior.text += (gap > size * 0.2 && !/\s$/.test(prior.text) ? " " : "") + block.text;
       prior.width = Math.max(prior.width, block.x + block.width - prior.x);
       prior.height = Math.max(prior.height, block.height);
       prior.endsLine = block.endsLine;
+      if (prior.protection) prior.paintOperations = [...new Set([...(prior.paintOperations ?? []), ...(block.paintOperations ?? [])])];
     } else rows.push(block);
   }
   const paragraphs: PdfTextBlock[] = [];
   for (const row of rows) {
     const prior = paragraphs.at(-1);
-    const wrapped = prior && Math.abs(prior.fontSize - row.fontSize) < row.fontSize * 0.1
+    const wrapped = prior && !prior.protection && !row.protection && Math.abs(prior.fontSize - row.fontSize) < row.fontSize * 0.1
       && Math.abs(prior.x - row.x) < row.fontSize * 0.75
       && row.y > prior.y && row.y - (prior.y + prior.height) < row.fontSize * 0.5
       && row.y - (prior.y + prior.height) > -row.fontSize * 0.35

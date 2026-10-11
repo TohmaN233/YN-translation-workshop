@@ -2,7 +2,7 @@ import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, Menu, sess
 import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -72,7 +72,7 @@ import { writeTextFileAtomically, writeTextFilesAtomically } from "./atomicFile.
 import { withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
 import { readEpubText } from "./epubReader.ts";
 import { createTranslatedEpub } from "./epubWriter.ts";
-import { preparePdfDocument, createTranslatedPdf, configurePdfResourceDirectory, readPdfReferenceImage } from "./pdfDocuments.ts";
+import { preparePdfDocument, createTranslatedPdf, configurePdfResourceDirectory, readPdfReferenceImage, assertPdfProtectedWrite, readPdfProtectedLines, isPdfSourceProjection } from "./pdfDocuments.ts";
 import { collectSourceTreeFiles } from "./sourceFileTree.ts";
 import { upgradeLegacyReviewHtmlTree } from "./reviewHtmlUpgrade.ts";
 import { containedProjectRoot, portableReviewHtml, readReviewHtml, writeReviewHtml } from "./reviewHtmlPortability.ts";
@@ -1415,14 +1415,14 @@ async function writeHtmlSidecarState(statePath: string, state: unknown): Promise
 
 async function updateHtmlSidecarState(
   statePath: string,
-  update: (current: Record<string, unknown>) => Record<string, unknown>
+  update: (current: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>
 ): Promise<Record<string, unknown>> {
   const key = path.resolve(statePath).toLowerCase();
   const previous = htmlStateWriteQueues.get(key) ?? Promise.resolve();
   let updated: Record<string, unknown> = {};
   const current = previous.catch(() => undefined).then(async () => {
     const existing = await readJsonObject(statePath) ?? {};
-    updated = update(existing);
+    updated = await update(existing);
     await mkdir(path.dirname(statePath), { recursive: true });
     await writeTextFileAtomically(statePath, projectJson(statePath, updated));
   });
@@ -1706,6 +1706,26 @@ async function lineReviewRouting(lineReviewPath: string): Promise<{ sourcePaths:
       value
     ])).values()]
   };
+}
+
+// Populated while HTML is already being read for injection; general text saves
+// never reparse a large page just to check that it has no PDF protection.
+const pdfReviewBindings = new Map<string, string[]>();
+async function assertPdfLineReviewState(htmlPath: string, value: unknown, changedLines?: number[]): Promise<void> {
+  const key = path.resolve(htmlPath).toLowerCase();
+  let sources = pdfReviewBindings.get(key);
+  if (!sources) {
+    sources = (await lineReviewRouting(htmlPath)).sourcePaths.filter(source => isPdfSourceProjection(source));
+    pdfReviewBindings.set(key, sources);
+  }
+  if (!sources.length) return;
+  const edits = value && typeof value === "object" ? (value as Record<string, unknown>).edits : undefined;
+  if (!edits || typeof edits !== "object" || Array.isArray(edits)) return;
+  const touched = changedLines?.length ? new Set(changedLines) : undefined;
+  const entries = Object.entries(edits).filter(([line]) => !touched || touched.has(Number(line)))
+    .map(([line, text]) => ({line:Number(line), text:String(text)}));
+  const workspace = workspaceDirFromKnownPath(htmlPath);
+  for (const source of sources) await assertPdfProtectedWrite(source, workspace ? path.dirname(workspace) : path.dirname(htmlPath), entries);
 }
 
 async function openLineReviewRouting(lineReviewPath: string): Promise<{
@@ -2690,7 +2710,7 @@ async function backupFile(targetPath: string, outputDir?: string): Promise<strin
   return backupPath;
 }
 
-async function writeBoundTranslationText(args: WriteTextFileArgs): Promise<{
+async function writeBoundTranslationText(args: WriteTextFileArgs, sourcePaths: string[] = []): Promise<{
   ok: true;
   path: string;
   backupPath?: string;
@@ -2706,6 +2726,8 @@ async function writeBoundTranslationText(args: WriteTextFileArgs): Promise<{
   const resolvedTargetPath = path.resolve(targetPath);
   await mkdir(path.dirname(resolvedTargetPath), { recursive: true });
   return withTranslationCandidateLock(resolvedTargetPath, async () => {
+    for (const sourcePath of sourcePaths) await assertPdfProtectedWrite(sourcePath, args.outputDir || path.dirname(resolvedTargetPath),
+      splitTextLines(text).map((text, index) => ({ line: index+1, text })), true);
     const backupPath = await backupFile(resolvedTargetPath, args.outputDir);
     await writeTextFileAtomically(resolvedTargetPath, text);
     return { ok: true, path: resolvedTargetPath, backupPath };
@@ -3219,6 +3241,10 @@ async function injectHtmlSidecarState(filePath: string, contents: Electron.WebCo
       ? "proposal"
       : "";
   if (!kind) return;
+  if (kind === "line") {
+    const match = html.match(/<script id=["']reviewData["'] type=["']application\/json["']>([\s\S]*?)<\/script>/i);
+    if (match) pdfReviewBindings.set(path.resolve(filePath).toLowerCase(), normalizedLineReviewRouting(JSON.parse(match[1]).workflow?.paths ?? {}).sourcePaths.filter(isPdfSourceProjection));
+  }
   const statePath = await htmlSidecarStatePath(filePath, kind);
   const sidecarState = statePath ? await readJsonObject(statePath) : undefined;
   if (!sidecarState) return;
@@ -3289,6 +3315,7 @@ async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promi
   // has been applied. Attaching first exposes one stale frame and lets callers
   // observe the old translation before the state mutation finishes.
   const { key, tab } = await loadHtmlViewerTab(targetPath);
+  await assertPdfLineReviewState(normalizedPath, args.lineState, lines);
   const stateJson = JSON.stringify(args.lineState ?? {});
   const lineJson = JSON.stringify(line);
   const linesJson = JSON.stringify(lines);
@@ -3982,7 +4009,8 @@ async function finishBuiltinWorkflow(context: YnTaskPreparationContext, settings
         const live = await openLineReviewRouting(lineReviewPath);
         if (live) assertLineReviewRoutingBinding(live, routing);
         return { ...routing, lineReviewPath, statePath: await htmlSidecarStatePath(lineReviewPath, "line"),
-          validationOptions: { languagePair: settings.languagePair, customPreserveRules: settings.customPreserveRules } };
+          validationOptions: { languagePair: settings.languagePair, customPreserveRules: settings.customPreserveRules,
+            pdfProtectedLines: await readPdfProtectedLines(routing.sourcePath, context.outputDir) } };
       }));
     }
   });
@@ -4340,6 +4368,7 @@ ipcMain.handle("html:applyProposalLineReviewStates", async (event, args: ApplyPr
     const updates = await Promise.all(prepared.map(async (item) => {
       const currentState = await readJsonObject(item.statePath) ?? {};
       assertExpectedLineRevisions(currentState, item.expectedLineRevisions, item.changedLines);
+      await assertPdfLineReviewState(item.lineReviewPath, item.lineState, item.changedLines);
       return {
         ...item,
         state: mergeCanonicalLineReviewState(
@@ -4417,7 +4446,8 @@ ipcMain.handle("html:persistState", async (event, args: {
     let mutationAccepted = true;
     const canonicalState = await updateHtmlSidecarState(
       statePath,
-      (current) => {
+      async (current) => {
+        await assertPdfLineReviewState(filePath, args.state, changedLines);
         const stateKey = path.resolve(statePath).toLowerCase();
         const sequences = htmlStateMutationSequences.get(stateKey) ?? new Map<string, number>();
         htmlStateMutationSequences.set(stateKey, sequences);
@@ -4463,7 +4493,7 @@ ipcMain.handle("html:writeBatchLineReviewTxt", async (event) => {
       path: write.targetPath,
       text: write.text,
       outputDir: write.outputDir
-    });
+    }, (await lineReviewRouting(write.childPath)).sourcePaths);
     written.push({
       path: result.path,
       backupPath: result.backupPath,
@@ -4597,8 +4627,11 @@ ipcMain.handle("clipboard:writeText", async (_event, text: string) => {
   return writeClipboardTextVerified(clipboard, text);
 });
 
-ipcMain.handle("files:writeTextFile", async (_event, args: WriteTextFileArgs) => {
-  return writeBoundTranslationText(args);
+ipcMain.handle("files:writeTextFile", async (event, args: WriteTextFileArgs) => {
+  const frameUrl = event.senderFrame?.url;
+  const lineReviewPath = frameUrl?.startsWith("file:") ? fileURLToPath(frameUrl)
+    : [...htmlViewerTabs.values()].find(tab => tab.view.webContents.id === event.sender.id)?.filePath;
+  return writeBoundTranslationText(args, lineReviewPath ? (await lineReviewRouting(lineReviewPath)).sourcePaths : []);
 });
 
 ipcMain.handle("files:readTextFile", async (_event, args: ReadTextFileArgs) => {
@@ -4675,6 +4708,7 @@ ipcMain.handle("files:writeAuditWhitelistFile", async (_event, args: WriteAuditW
       changedLines,
       ["auditVisible"]
     );
+    await assertPdfLineReviewState(normalizedLineReviewPath, canonicalState, changedLines);
     const whitelistText = await readMergedWhitelistText();
     await writeTextFilesAtomically([
       { targetPath: statePath, text: `${projectJson(statePath, canonicalState)}\n` },

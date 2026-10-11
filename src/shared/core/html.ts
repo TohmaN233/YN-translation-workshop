@@ -1097,11 +1097,11 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 49;
+export const LINE_REVIEW_PROTOCOL_VERSION = 50;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 19;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
-export const PROMPT_SETTINGS_VERSION = 44;
+export const PROMPT_SETTINGS_VERSION = 45;
 
 export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   const locale = options.locale ?? "zh-CN";
@@ -1523,6 +1523,7 @@ const unsubscribeLineReviewState = invokeBridge()?.onLineReviewStateUpdate?.((pa
 });
 setTimeout(() => { void save(); }, 0);
 function rowValue(row) {
+  if (row.pdfProtection) return row.source;
   const syncedValue = syncedLines[row.line - 1];
   return state.edits[row.line] ?? (syncedValue !== undefined ? syncedValue : row.translation ?? "");
 }
@@ -1564,7 +1565,7 @@ function render() {
     return '<article class="row ' + statusClass + auditClass + jumpClass + matchClass + '" data-line="' + row.line + '">' +
       '<div class="line">' + row.line + '</div>' +
       '<div class="cell source">' + escapeHtml(row.source) + '</div>' +
-      '<div class="cell target" contenteditable="true" spellcheck="false">' + escapeHtml(rowValue(row)) + '</div>' +
+      '<div class="cell target" contenteditable="' + (row.pdfProtection ? 'false' : 'true') + '" spellcheck="false"' + (row.pdfProtection ? ' title="PDF: code / math preserved by Host"' : '') + '>' + escapeHtml(rowValue(row)) + '</div>' +
       '<button class="audit-marker' + markerClass + '" type="button" title="' + escapeHtml(markerTitle) + '">' + escapeHtml(markerText) + '</button>' +
       '</article>';
   }).join("");
@@ -3907,7 +3908,7 @@ function applyGlossaryItems(scope, items) {
   const rows = scope === "page" ? pageRows() : data.rows;
   for (const row of rows) {
     const lineNo = row.line;
-    if (state.status[lineNo] === "manual") continue;
+    if (state.status[lineNo] === "manual" || row.pdfProtection) continue;
     let value = rowValue(row);
     const replaced = replaceByLongestGlossaryItems(value, items, preserveRegexes);
     value = replaced.text;

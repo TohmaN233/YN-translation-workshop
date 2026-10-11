@@ -59,6 +59,7 @@ import { listCurrentTranslationReuseAudits } from "./translationReuseAudit.ts";
 import { createYnDomainTools } from "./ynDomainTools.ts";
 import { parseFolderTranslationOrder } from "./folderTranslationPlan.ts";
 import { resolvePiSourceManifest } from "./sourceManifest.ts";
+import { preflightPdfRequest } from "../../pdfDocuments.ts";
 import { ynInterfaceContextStore } from "./interfaceContextStore.ts";
 import { readProjectAssets } from "../projectAssets.ts";
 import { ensureYnWorkflowWorkspace } from "../workspaceAssets.ts";
@@ -259,6 +260,7 @@ interface OrderedQueuedMessage {
 }
 
 interface SessionOperationReservation {
+  preparationController?: AbortController;
   cancelled: boolean;
   stopSettlement?: Promise<void>;
 }
@@ -521,7 +523,7 @@ export class PiNativeSessionService {
     if (this.closingSessions.has(key)) throw new Error(`Pi session ${sessionId} is already closing.`);
     this.closingSessions.add(key);
     const reservation = this.sessionOperationReservations.get(key);
-    if (reservation) reservation.cancelled = true;
+    if (reservation) { reservation.cancelled = true; reservation.preparationController?.abort(new DOMException("PDF session preparation was stopped.", "AbortError")); }
     try {
       await this.abort(workspaceDir, sessionId);
       return await this.withWorkspaceSessionTransition(workspaceDir, sessionId, async () => {
@@ -645,7 +647,7 @@ export class PiNativeSessionService {
     if (this.sessionOperationReservations.has(key)) {
       throw new Error("Pi session is already running. Use Steer or Follow-up.");
     }
-    const reservation: SessionOperationReservation = { cancelled: false };
+    const reservation: SessionOperationReservation = { cancelled: false, preparationController: new AbortController() };
     this.sessionOperationReservations.set(key, reservation);
     let preparationFailureActive: ActiveSession | undefined;
     try {
@@ -823,7 +825,7 @@ export class PiNativeSessionService {
       || activeBeforeStop?.compactionTask
     );
     if (!hasActiveWork) return;
-    if (reservation) reservation.cancelled = true;
+    if (reservation) { reservation.cancelled = true; reservation.preparationController?.abort(new DOMException("PDF session preparation was stopped.", "AbortError")); }
     let settleStop!: () => void;
     let failStop!: (error: unknown) => void;
     const stopReservation: SessionOperationReservation = {
@@ -1020,7 +1022,7 @@ export class PiNativeSessionService {
         }
       } : undefined);
       const storageOpenMs = performance.now() - storageStarted;
-      const prepared = await this.prepareOwnedRuntime(request, purpose, previous, session, queuedCarryover, preparationHandoff);
+      const prepared = await this.prepareOwnedRuntime(request, purpose, previous, session, queuedCarryover, preparationHandoff, this.sessionOperationReservations.get(key)?.preparationController?.signal ?? coldController?.signal);
       prepared.preparationTimings.storageOpenMs = storageOpenMs;
       return prepared;
     } catch (error) {
@@ -1039,7 +1041,8 @@ export class PiNativeSessionService {
     previous: ActiveSession | undefined,
     session: Session,
     queuedCarryover: AgentMessage[],
-    preparationHandoff?: YnTaskPreparationState
+    preparationHandoff?: YnTaskPreparationState,
+    preparationSignal?: AbortSignal
   ): Promise<PreparedRuntime> {
     // The current owner already holds the live Host state and its durable Pi
     // cursor. Replaying every historical checkpoint here blocks each message
@@ -1064,6 +1067,13 @@ export class PiNativeSessionService {
     if (!previous) {
       this.emitStorageProgress(request.outputDir, request.sessionId, { phase: "complete", processedBytes: 0, totalBytes: 0 });
     }
+    // Reject old/unprotected or drifted PDF projections before a paid provider turn.
+    if (purpose === "prompt") {
+      await preflightPdfRequest(request, preparationSignal);
+      const preparation = preparationHandoff ?? previous?.hostState.taskPreparation ?? persistedHostState?.taskPreparation;
+      if (preparation?.pendingRequest && !preparation.completed) await preflightPdfRequest(preparation.pendingRequest, preparationSignal);
+    }
+    preparationSignal?.throwIfAborted();
     const selectionStarted = performance.now();
     const selection = await (this.options.createModelSelection ?? createPiModelSelection)({
       workspaceDir: request.outputDir,
@@ -2330,7 +2340,7 @@ export class PiNativeSessionService {
   private cancelWorkspaceOperationReservations(workspaceDir: string): void {
     const prefix = `${workspaceKey(workspaceDir)}::`;
     for (const [key, reservation] of this.sessionOperationReservations) {
-      if (key.startsWith(prefix)) reservation.cancelled = true;
+      if (key.startsWith(prefix)) { reservation.cancelled = true; reservation.preparationController?.abort(new DOMException("PDF workspace preparation was stopped.", "AbortError")); }
     }
   }
 

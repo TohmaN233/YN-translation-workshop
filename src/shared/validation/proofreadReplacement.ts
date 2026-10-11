@@ -4,7 +4,7 @@ import { validateTranslationCandidate, type ValidationFinding, type ValidationOp
 export function validateProofreadReplacement(
   sourceText: string,
   suggestedFix: string,
-  options: Pick<ValidationOptions, "customPreserveRules" | "extractPlaceholders" | "extractTags" | "locale"> = {},
+  options: Pick<ValidationOptions, "customPreserveRules" | "extractPlaceholders" | "extractTags" | "locale" | "pdfProtectedLines"> = {},
   line = 1
 ): ValidationFinding[] {
   // A replacement is one physical row, including at its trailing boundary.
@@ -13,9 +13,10 @@ export function validateProofreadReplacement(
     return [{ code: "line_count_mismatch", severity: "blocking", line,
       detail: `Line ${line}: suggestedFix must be one complete replacement row without physical newlines.` }];
   }
-  return validateTranslationCandidate(sourceText, suggestedFix, { ...options, detectUntranslated: false })
+  return validateTranslationCandidate(sourceText, suggestedFix, { ...options, lineOffset: line - 1, detectUntranslated: false })
     .blocking.filter(finding => (
       finding.code === "placeholder_mismatch"
+      || finding.code === "pdf_protected_content_mismatch"
       || finding.code === "custom_preserve_mismatch" || finding.code === "tag_mismatch"
     )).map(finding => ({
       ...finding,

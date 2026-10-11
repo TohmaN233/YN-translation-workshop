@@ -51,6 +51,7 @@ function proofreadCode(code: ValidationCode): ProofreadDeterministicSignal["code
   if (code === "likely_untranslated") return "H4";
   if (code === "character_pronoun_mismatch") return "H8";
   if (code === "length_anomaly") return "H9";
+  if (code === "pdf_protected_content_mismatch") return "M0";
   return undefined;
 }
 
@@ -110,6 +111,7 @@ export function buildProofreadDeterministicSignals(args: {
     (completedLines, totalLines) => args.onProgress?.({ phase: "validation", completedLines, totalLines })
   );
   const signals: ProofreadDeterministicSignal[] = [];
+  const protectedRows = new Set((args.validationOptions.pdfProtectedLines ?? []).map(entry => entry.line - (args.validationOptions.lineOffset ?? 0)));
   for (const finding of [...validation.blocking, ...validation.warnings]) {
     const code = proofreadCode(finding.code);
     if (!code || !finding.line) continue;
@@ -117,6 +119,7 @@ export function buildProofreadDeterministicSignals(args: {
   }
 
   for (let index = 0; index < translationLines.length; index += 1) {
+    if (protectedRows.has(index + 1)) continue;
     if (index % 1000 === 0) args.onProgress?.({ phase: "signals", completedLines: index, totalLines: sourceLines.length });
     const translation = translationLines[index] ?? "";
     const contamination = AI_CONTAMINATION_PATTERNS.find((pattern) => pattern.test(translation));
@@ -145,6 +148,7 @@ export function buildProofreadDeterministicSignals(args: {
     languagePair: args.validationOptions.languagePair
   });
   for (const check of alignmentAudit.checks) {
+    if (protectedRows.has(check.line)) continue;
     for (const signal of check.signals) {
       signals.push({ line: check.line, code: "M0", evidence: alignmentEvidence(signal) });
     }

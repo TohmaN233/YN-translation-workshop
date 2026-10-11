@@ -39,6 +39,7 @@ console.log(JSON.stringify({browserViewBaseline:true,electron:process.versions.e
     await build({ absWorkingDir: root, entryPoints: [`src/main/agent/piNative/${worker}.ts`], bundle: true,
       platform: "node", format: "esm", outfile: path.join(tempDir, `${worker}.js`), external });
   }
+  await build({ absWorkingDir: root, entryPoints: ["src/main/pdfBindingWorker.ts"], bundle: true, platform: "node", format: "esm", outfile: path.join(tempDir, "pdfBindingWorker.js") });
   await build({ absWorkingDir: root, entryPoints: ["src/main/pdfWorker.ts"], bundle: true, platform: "node", format: "esm", outfile: path.join(tempDir, "pdfWorker.js"), external });
   const result = await new Promise(resolve => {
     const child = spawn(electronPath, ["--disable-gpu", "--disable-gpu-compositing", "--in-process-gpu", "--no-sandbox", `--user-data-dir=${userDataDir}`, path.join(tempDir, "main.mjs")], {

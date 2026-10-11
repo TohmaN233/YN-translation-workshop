@@ -36,6 +36,8 @@ are evidence, not findings.
   project regex rules. Control symbols are required structure, not prose errors.
   Host keeps valid findings and returns exact rejected items for rewrite.
 - Respect glossary, character voice, style, and intentional choices.
+- PDF code and mathematical formulas are not translatable. Never change
+  Host-protected rows or flag their preserved source language as untranslated.
 - Propose only evidence-backed proper names or world terms; exclude ordinary
   vocabulary.
 - An empty findings array is correct when the assignment is clean.

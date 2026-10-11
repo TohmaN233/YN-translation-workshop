@@ -19,7 +19,7 @@ const output = path.join(fixture, "main.mjs");
 await build({ absWorkingDir: root, entryPoints: ["scripts/verify-electron-agent-api-main.ts"], bundle: true,
   platform: "node", format: "esm", outfile: output, external,
   banner: { js: 'import { createRequire as __ynCreateRequire } from "node:module"; const require = __ynCreateRequire(import.meta.url);' } });
-for (const name of ["sourcePreparationWorker", "translationValidationWorker", "proofreadPrescanWorker", "sessionIndexWorker", "sessionMaintenanceWorker", "sessionHostReplayWorker", "pdfWorker"]) {
+for (const name of ["sourcePreparationWorker", "translationValidationWorker", "proofreadPrescanWorker", "sessionIndexWorker", "sessionMaintenanceWorker", "sessionHostReplayWorker", "pdfBindingWorker", "pdfWorker"]) {
   await copyFile(path.join(root, "dist", "main", `${name}.js`), path.join(fixture, `${name}.js`));
 }
 let stderr = "";

@@ -23,6 +23,7 @@ import {
   type SourceEntry
 } from "../agent/artifactDiscovery.ts";
 import { buildCandidateImportPlan, buildRepairPrompt } from "../agent/importCandidate.ts";
+import { readPdfProtectedLines } from "../pdfDocuments.ts";
 import { readWorkflowTranslationValidationAssets } from "../agent/projectAssets.ts";
 import { resolveProjectPath } from "../agent/projectPathGuard.ts";
 import { rememberTranslationSegments } from "../agent/translationMemory.ts";
@@ -132,6 +133,7 @@ export function registerAgentArtifactIpc(): void {
     const validation = validateTranslationCandidate(sourceText, candidateText, {
       locale: args.locale === "en-US" ? "en-US" : "zh-CN",
       languagePair: args.languagePair,
+      pdfProtectedLines: await readPdfProtectedLines(sourcePath, args.projectDir),
       customPreserveRules: await artifactPreserveRules(args),
       glossaryEntries,
       characterEntries,
@@ -164,7 +166,8 @@ export function registerAgentArtifactIpc(): void {
       glossaryEntries,
       characterEntries,
       styleForbiddenTerms,
-      await artifactPreserveRules(args)
+      await artifactPreserveRules(args),
+      await readPdfProtectedLines(sourcePath, args.projectDir)
     );
     if (plan.ok) {
       await rememberTranslationSegments({
@@ -191,7 +194,7 @@ export function registerAgentArtifactIpc(): void {
     ]);
     const locale = args.locale === "en-US" ? "en-US" : "zh-CN";
     const plan = buildCandidateImportPlan(sourceText, candidateText, locale, args.languagePair,
-      undefined, undefined, undefined, await artifactPreserveRules(args));
+      undefined, undefined, undefined, await artifactPreserveRules(args), await readPdfProtectedLines(sourcePath, args.projectDir));
     return buildRepairPrompt(sourceText, candidateText, plan.validation, locale);
   });
 }

@@ -1,3 +1,4 @@
+import { PDF_PRESERVATION_INSTRUCTIONS, hasPdfTaskSource } from "../../../shared/validation/pdfPreservation.ts";
 import path from "node:path";
 
 import {
@@ -156,6 +157,7 @@ export function buildYnSystemPrompt(
     "Ask a concise normal-language question only when required information is genuinely missing.",
     "If a Host tool says to ask the user or wait for an explicit continuation, stop this turn. Do not retry the same gated tool.",
     PRESERVED_TERMINOLOGY_INSTRUCTIONS,
+    ...(hasPdfTaskSource(request.sourcePath, request.folderSourceDocuments) ? [PDF_PRESERVATION_INSTRUCTIONS] : []),
     "",
     ...boundDocument(request),
     ...(request.languagePair?.trim() || request.style?.trim() || request.workDescription?.trim() ? [

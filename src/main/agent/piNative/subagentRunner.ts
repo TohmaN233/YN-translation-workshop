@@ -1,3 +1,5 @@
+import type { PdfProtectedLine } from "../../../shared/validation/pdfPreservation.ts";
+import { readPdfProtectedLines } from "../../pdfDocuments.ts";
 import { readSessionContext, readSessionEntries, appendSessionCustomEntry } from "./sessionAccess.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
@@ -1558,7 +1560,7 @@ async function validateAssignedRange(context: PiTranslationSubagentContext, tool
   const candidateSlice = candidate.slice(from, context.task.toLine);
   const sourceText = sourceSlice.length ? sourceSlice.join("\n") + "\n" : "";
   const candidateText = candidateSlice.length ? candidateSlice.join("\n") + "\n" : "";
-  const validationOptions = await createYnTranslationValidationOptions(context.request);
+  const validationOptions = await createYnTranslationValidationOptions(context.request, undefined, context.task.fromLine, context.signal);
   // A single model page is bounded by the existing 500-row contract. Larger
   // logical assignments must not run a document-sized scan on the main thread.
   const validation = sourceSlice.length <= MAX_TRANSLATION_MODEL_PAGE_LINES
@@ -2654,7 +2656,7 @@ export function createPiTranslationSubagentTools(
         const proposedValidation = validateTranslationCandidate(
           source.join("\n"),
           proposedLines.join("\n"),
-          await createYnTranslationValidationOptions(context.request)
+          await createYnTranslationValidationOptions(context.request, undefined, range.fromLine, context.signal)
         );
         const structurallyRejectedLines = new Set<number>(missing);
         for (const line of invalidBlockLines) structurallyRejectedLines.add(line);
@@ -2673,12 +2675,14 @@ export function createPiTranslationSubagentTools(
           if (!structurallyRejectedLines.has(line)) return text;
           // Retain an existing human/model candidate during repair, but never
           // manufacture copied-source filler for a missing translation.
-          return existing[line - 1] ?? "";
+          const protectedLine = proposedValidation.blocking.some(finding => finding.line === index+1 && finding.code === "pdf_protected_content_mismatch");
+          // Host-preserved code/math is deterministic original content, not copied-prose filler.
+          return protectedLine ? source[index] : existing[line - 1] ?? "";
         });
         const persistedValidation = validateTranslationCandidate(
           source.join("\n"),
           persistedLines.join("\n"),
-          await createYnTranslationValidationOptions(context.request)
+          await createYnTranslationValidationOptions(context.request, undefined, range.fromLine, context.signal)
         );
         throwIfAborted(context.signal, signal);
         const sparseEntries = selectedRepairLines.length > 0
@@ -3023,7 +3027,8 @@ function inspectAssignedFinding(
   task: PiProofreadSubagentTask,
   sourceLines: string[],
   translationLines: string[],
-  customPreserveRules: PiSessionPromptRequest["customPreserveRules"]
+  customPreserveRules: PiSessionPromptRequest["customPreserveRules"],
+  pdfProtectedLines?: PdfProtectedLine[]
 ): { ok: true; prepared: Record<string, unknown> } | { ok: false; id: string; sourceLine: number; reason: string } {
   const sourceLine = Number(finding.sourceLine);
   const id = finding.id || "(missing id)";
@@ -3072,7 +3077,7 @@ function inspectAssignedFinding(
     };
   }
   const failures = validateProofreadReplacement(sourceText, finding.suggestedFix,
-    { customPreserveRules }, sourceLine);
+    { customPreserveRules, pdfProtectedLines }, sourceLine);
   if (failures.length) {
     return { ok: false, id, sourceLine,
       reason: failures.map(failure => `${failure.code}: ${failure.detail}`).join("; ") };
@@ -3421,9 +3426,10 @@ export function createPiProofreadSubagentTools(
           acceptedByIdentity.set(proofreadFindingIdentity({ id, sourceLine }), finding);
         }
         const rejected: Array<{ id: string; sourceLine: number; reason: string }> = [];
+        const pdfProtectedLines = await readPdfProtectedLines(sourcePath(context.request), context.request.outputDir, context.signal);
         for (const finding of input.findings) {
           if (excludedLines.has(Number(finding.sourceLine))) continue;
-          const inspected = inspectAssignedFinding(finding, context.task, sourceLines, translationLines, context.request.customPreserveRules);
+          const inspected = inspectAssignedFinding(finding, context.task, sourceLines, translationLines, context.request.customPreserveRules, pdfProtectedLines);
           if (!inspected.ok) {
             rejected.push({ id: inspected.id, sourceLine: inspected.sourceLine, reason: inspected.reason });
             continue;

@@ -12,7 +12,7 @@ import { builtinTaskDefaults } from "../src/shared/builtinTasks.ts";
 import { resolveProofreadReportPath } from "../src/main/agent/writeProofreadFindings.ts";
 import { resolveTranslationCandidatePath } from "../src/main/agent/writeTranslationChunk.ts";
 import { createZipBuffer } from "../src/main/zipWriter.ts";
-import { PDFDocument, StandardFonts } from "pdf-lib";
+import { PDFDocument, StandardFonts, beginMarkedContent, endMarkedContent } from "pdf-lib";
 import { readPdfLayout } from "../src/main/pdfDocuments.ts";
 import { resolveReviewHtmlPaths } from "../src/main/reviewHtmlPortability.ts";
 import { upgradeLegacyReviewHtmlTree } from "../src/main/reviewHtmlUpgrade.ts";
@@ -350,6 +350,39 @@ async function run() {
   await waitFor(() => manualView!.webContents.executeJavaScript("document.body.innerText"),value=>/PDF (已导出|exported)/.test(value),"manual legacy folder child PDF export");
   assert((await PDFDocument.load(await readFile(path.join(fixture,"AI_translation","mixed-pdf","chapter","図版.translated.pdf")))).getPageCount()===1,"Manual PDF child must export its current edit");
   console.log("[builtin-verifier] manual-mixed-pdf-and-legacy-upgrade-completed");
+  const safePdf = await PDFDocument.create(), safePage = safePdf.addPage([600,800]), safeFont = await safePdf.embedFont(StandardFonts.Helvetica);
+  safePage.drawText("Surrounding prose.",{x:40,y:740,size:12,font:safeFont});
+  safePage.pushOperators(beginMarkedContent("Code"));safePage.drawText("const count = 3;",{x:40,y:700,size:12,font:safeFont});safePage.pushOperators(endMarkedContent());
+  safePage.pushOperators(beginMarkedContent("Formula"));safePage.drawText("E = mc2",{x:40,y:660,size:12,font:safeFont});safePage.pushOperators(endMarkedContent());
+  const safePdfPath=path.join(fixture,"host-protected.pdf");await writeFile(safePdfPath,await safePdf.save());
+  main!.webContents.on("console-message", (...args:any[])=>console.log("[protected-pdf-renderer]",...args.slice(1)));
+  console.log("[builtin-verifier] generating-protected-pdf");
+  const safeReview=await main!.webContents.executeJavaScript(`window.workshop.generateLineReview(${JSON.stringify({...settings,sourcePath:safePdfPath,sourceKind:"file",fileType:"pdf",translationPath:""})})`);
+  await main!.webContents.executeJavaScript(`window.workshop.openReviewHtml(${JSON.stringify({htmlPath:safeReview.outputPath,outputDir:fixture})})`);
+  console.log("[builtin-verifier] protected-pdf-generated-and-opened",safeReview.outputPath);
+  const safeView=await viewFor(safeReview.outputPath);
+  safeView!.webContents.on("console-message", (...args:any[])=>console.log("[protected-pdf-view]",...args.slice(1)));
+  const safeState=await waitFor(() => safeView!.webContents.executeJavaScript(`typeof workflow === "undefined" || typeof data === "undefined" ? null : ({sourcePath:workflow.paths.validationSourcePath,targetPath:workflow.paths.editableTranslationPath,
+    values:data.rows.map(row=>rowValue(row)),protected:data.rows.filter(row=>row.pdfProtection).map(row=>row.line),editable:[...document.querySelectorAll('.target')].map(element=>element.contentEditable)})`), value=>Boolean(value?.values?.length), "protected PDF page script ready");
+  assert(safeState.protected.length===2&&safeState.editable[1]==="false"&&safeState.values[1]==="const count = 3;","PDF code/math rows must display original content and be read-only");
+  const safeText="周围的正文。\nconst count = 3;\nE = mc2";
+  await safeView!.webContents.executeJavaScript(`window.workshopHtml.writeTextFile(${JSON.stringify({path:safeState.targetPath,text:safeText,outputDir:fixture})})`);
+  const denied=await safeView!.webContents.executeJavaScript(`window.workshopHtml.writeTextFile(${JSON.stringify({path:safeState.targetPath,text:"周围的正文。\nlet count = 4;\nE = mc2",outputDir:fixture})}).then(()=>false,error=>String(error))`);
+  assert(String(denied).includes("protected code"),"Actual manual TXT IPC must enforce protected rows");
+  assert(await readFile(safeState.targetPath,"utf8")===safeText,"Rejected manual PDF text save must retain previous output");
+  const truncated=await safeView!.webContents.executeJavaScript(`window.workshopHtml.writeTextFile(${JSON.stringify({path:safeState.targetPath,text:"周围的正文。",outputDir:fixture})}).then(()=>false,error=>String(error))`);
+  assert(String(truncated).includes("retain all"),"Manual TXT save must not bypass protection by deleting the protected rows");
+  const badCandidate=path.join(fixture,"bad-pdf-candidate.txt");await writeFile(badCandidate,"周围的正文。\nchanged\nE = mc2");
+  const importPlan=await safeView!.webContents.executeJavaScript(`window.workshopHtml.buildAgentImportPlan(${JSON.stringify({projectDir:fixture,sourcePath:safeState.sourcePath,candidatePath:badCandidate,languagePair:"en->zh-CN"})})`);
+  assert(importPlan.ok===false&&importPlan.validation.blocking.some((finding:any)=>finding.code==="pdf_protected_content_mismatch"),"Actual candidate import IPC must enforce the same PDF protection");
+  const badState={edits:{"2":"changed"},status:{"2":"edited"},revisions:{"2":1}};
+  const stateDenied=await safeView!.webContents.executeJavaScript(`window.workshopHtml.persistHtmlState(${JSON.stringify({kind:"line",lineReviewPath:safeReview.outputPath,state:badState,changedLines:[2]})}).then(()=>false,error=>String(error))`);
+  assert(String(stateDenied).includes("protected code"),"Actual sidecar persistence must reject protected edits");
+  const safeReport=resolveProofreadReportPath({outputDir:fixture,sourcePaths:[safeState.sourcePath],documentId:path.basename(safeState.sourcePath),kind:"findings_json"});
+  await mkdir(path.dirname(safeReport),{recursive:true});await writeFile(safeReport,JSON.stringify({schemaVersion:"1.0",documentId:path.basename(safeState.sourcePath),sourcePath:safeState.sourcePath,translationPath:safeState.targetPath,generatedAt:new Date().toISOString(),mode:"split",findings:[{id:"bad-formula",severity:"major",type:"H1",sourceLine:2,translationLine:2,sourceText:safeState.values[1],currentTranslation:safeState.values[1],suggestedFix:"changed",rationale:"rewrite"}]}));
+  const applyDenied=await safeView!.webContents.executeJavaScript(`window.workshopHtml.applyProposalLineReviewStates(${JSON.stringify({documents:[{reportPath:safeReport,documentId:path.basename(safeState.sourcePath),sourcePath:safeState.sourcePath,translationPath:safeState.targetPath,lineReviewPath:safeReview.outputPath,lineState:badState,changedLines:[2],expectedLineRevisions:{"2":0}}]})}).then(result=>result,error=>String(error))`);
+  assert(String(applyDenied).includes("protected code"),"Actual proofreading application must reject protected edits without adding prose checks");
+  console.log("[builtin-verifier] pdf-host-protected-manual-txt-import-sidecar-and-apply-completed");
   const materialsProject = path.join(fixture, "materials-first", "new-project");
   // Reproduce a project selected and autosaved before references are prepared.
   // Previously only the absent-property state was covered, masking this failure.

@@ -10,9 +10,13 @@ Manual HTML generation, built-in AI tasks and the official Agent API accept PDF 
 
 Source reads expose a lightweight page/figure index. A vision model requests an image only when the passage mentions a figure/table or needs visual evidence; images are not attached to every chunk. Figure labels can resolve across pages. Page references cover vector diagrams and tables. Text-only models can translate text and receive an explicit error if they request an image.
 
+Code and mathematical formulas are not translatable. Extraction identifies protected blocks from PDF Code/Formula structure tags, mathematical fonts and explicit code/equation syntax. HTML displays the original and locks the matching target rows. The Host requires exact equality when writing translations, submitting proofreading fixes, importing candidates and exporting. Clearing editable regex rules cannot disable this protection. Comments, indentation and mathematical symbols are protected too; they do not trigger untranslated-language or glossary-conflict checks. Surrounding prose is translated normally. Export keeps original glyphs in the page image rather than redrawing code or formulas with the prose font.
+
+PDFs may lack semantic code/math information, so arbitrary unmarked content cannot be guaranteed detectable. Detected code/formulas sharing inseparable text paints with prose reject extraction explicitly; tag or separate them first. Old PDF projections without this protection cannot start or commit. Regenerate HTML from the original PDF; old projections and translations are retained rather than overwritten.
+
 ## Layout and current limits
 
-Export retains page count and sizes, text positions and colors, images and table lines. Target text remains selectable and uses bundled Noto Sans SC. Original typefaces, bold/italic styling and exact spacing are not preserved. Non-text graphics become page backgrounds rendered at up to 2x, with a maximum 3000-pixel long edge, rather than original vectors. The complete embedded font adds several MB to the output.
+Export retains page count and sizes, text positions and colors, images and table lines. Target prose remains selectable and uses bundled Noto Sans SC. Original prose typefaces, bold/italic styling and exact spacing are not preserved. Non-text graphics and protected code/formulas become page backgrounds rendered at up to 2x, with a maximum 3000-pixel long edge, rather than selectable text or original vectors. The complete embedded font adds several MB to the output.
 
 Text wraps and moderately shrinks inside its original box. Overflow reports the page and row, leaves the previous export intact and requires shortening that translation; it never clips or drops text. Check pagination, tables and formulas after exporting.
 

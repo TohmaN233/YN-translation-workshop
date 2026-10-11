@@ -7,8 +7,9 @@ import { createCanvas, loadImage, DOMMatrix, ImageData, Path2D } from "@napi-rs/
 import { PDFDocument, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { pdfTextBlocks, wrapPdfText } from "./pdfLayout.ts";
+import { protectPdfText, type PdfTextPaint } from "./pdfProtection.ts";
 import { decodeProjectPaths, encodeProjectPaths } from "./projectPaths.ts";
-import { PDF_LAYOUT_VERSION, validatePdfLayout, type PdfLayout, type PdfReference, type PdfWorkerOperation } from "./pdfTypes.ts";
+import { PDF_LAYOUT_VERSION, pdfProtectionHash, validatePdfLayout, type PdfLayout, type PdfReference, type PdfWorkerOperation } from "./pdfTypes.ts";
 
 const digest = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 Object.assign(globalThis, { DOMMatrix, ImageData, Path2D });
@@ -59,7 +60,7 @@ function imageReferences(ops: { fnArray: number[]; argsArray: any[] }, viewport:
 
 function textColors(ops: { fnArray: number[]; argsArray: any[] }) {
   let color: [number, number, number] = [0,0,0];
-  const stack: typeof color[] = [], paints: Array<{ text: string; color: typeof color }> = [];
+  const stack: typeof color[] = [], paints: PdfTextPaint[] = [];
   for (let i = 0; i < ops.fnArray.length; i++) {
     const op = ops.fnArray[i], args = ops.argsArray[i];
     if (op === pdfjs.OPS.save) stack.push([...color]);
@@ -68,7 +69,7 @@ function textColors(ops: { fnArray: number[]; argsArray: any[] }) {
     else if (op === pdfjs.OPS.setTextRenderingMode && args[0] === 3) throw new Error("PDF contains hidden OCR text. Remove the scanned text image or convert it to a native text PDF before translation.");
     else if (op === pdfjs.OPS.setTextRenderingMode && args[0] >= 4) throw new Error("PDF uses text as a clipping mask; this layout cannot be reconstructed safely.");
     else if (op === pdfjs.OPS.showText || op === pdfjs.OPS.showSpacedText) {
-      paints.push({ text: args[0].filter((glyph: any) => typeof glyph === "object").map((glyph: any) => glyph.unicode ?? "").join(""), color: [...color] });
+      paints.push({ text: args[0].filter((glyph: any) => typeof glyph === "object").map((glyph: any) => glyph.unicode ?? "").join(""), color: [...color], operator: i });
     }
   }
   return paints;
@@ -80,27 +81,16 @@ async function extract() {
   const directory = path.join(path.dirname(input.sourcePath), `pdf-${hash.slice(0, 16)}-v${PDF_LAYOUT_VERSION}`);
   await mkdir(directory, { recursive: true });
   const layout: PdfLayout = { version: PDF_LAYOUT_VERSION, originalPath: input.originalPath, originalHash: hash,
-    sourcePath: input.sourcePath, sourceHash: "", blocks: [], pages: [], references: [] };
+    sourcePath: input.sourcePath, sourceHash: "", protectionHash: "", blocks: [], pages: [], references: [] };
   try {
     for (let number = 1; number <= pdf.numPages; number++) {
       const page = await pdf.getPage(number), viewport = page.getViewport({ scale: 1 });
-      const content = await page.getTextContent();
-      const ops = await page.getOperatorList();
+      const content = await page.getTextContent({ includeMarkedContent: true });
+      const ops = await page.getOperatorList({ annotationMode: pdfjs.AnnotationMode.DISABLE });
       const paints = textColors(ops);
-      let paintIndex = 0, paintOffset = 0;
-      const styledItems = content.items.map(item => {
-        if (!("str" in item) || !item.str.trim()) return item;
-        const text = item.str.replace(/\s/g, "");
-        for (let index = paintIndex; index < paints.length; index++) {
-          const painted = paints[index].text.replace(/\s/g, ""), offset = painted.indexOf(text, index === paintIndex ? paintOffset : 0);
-          if (offset < 0) continue;
-          paintIndex = index; paintOffset = offset + text.length;
-          if (paintOffset >= painted.length) { paintIndex++; paintOffset = 0; }
-          return { ...item, color: paints[index].color };
-        }
-        return item;
-      });
-      const blocks = pdfTextBlocks(styledItems, viewport, number);
+      const protectedText = protectPdfText(content, await page.getStructTree(), paints,
+        id => page.commonObjs.has(id) ? String(page.commonObjs.get(id).name ?? "") : "", number);
+      const blocks = pdfTextBlocks(protectedText.items, viewport, number);
       const images = imageReferences(ops, viewport, number);
       if (!blocks.length && images.some(image => image.width*image.height > viewport.width*viewport.height*0.65)) {
         throw new Error(`PDF page ${number} appears to be scanned and has no text layer. OCR is required before translation.`);
@@ -125,14 +115,53 @@ async function extract() {
       const scale = Math.min(2, 3000 / Math.max(viewport.width, viewport.height));
       const renderedViewport = page.getViewport({ scale });
       const canvas = createCanvas(Math.ceil(renderedViewport.width), Math.ceil(renderedViewport.height));
+      const renderedPaints: Array<{ index: number; text: string }> = [];
       await page.render({ canvas: canvas as any, canvasContext: canvas.getContext("2d") as any, viewport: renderedViewport,
-        annotationMode: pdfjs.AnnotationMode.DISABLE }).promise;
+        annotationMode: pdfjs.AnnotationMode.DISABLE,
+        operationsFilter: (index, list) => {
+          if (list.fnArray[index] === pdfjs.OPS.showText || list.fnArray[index] === pdfjs.OPS.showSpacedText) {
+            renderedPaints.push({ index, text: list.argsArray[index][0].filter((glyph: any) => typeof glyph === "object").map((glyph: any) => glyph.unicode ?? "").join("") });
+          }
+          return true;
+        } }).promise;
       const preview = canvas.toBuffer("image/png");
       const previewPath = path.join(directory, `page-${number}.png`);
       await atomic(previewPath, preview);
       const textPaint = new Set([pdfjs.OPS.showText, pdfjs.OPS.showSpacedText, pdfjs.OPS.nextLineShowText, pdfjs.OPS.nextLineSetSpacingShowText]);
-      await page.render({ canvas: canvas as any, canvasContext: canvas.getContext("2d") as any, viewport: renderedViewport,
-        annotationMode: pdfjs.AnnotationMode.DISABLE, operationsFilter: (index, list) => !textPaint.has(list.fnArray[index]) }).promise;
+      // Execute the full text stream so preceding prose still advances the cursor.
+      // Hide only prose glyph painting; skipping showText would shift later formulas.
+      if (protectedText.retained.size && (renderedPaints.length !== paints.length || paints.some((paint, index) => paint.text !== renderedPaints[index].text))) {
+        throw new Error(`PDF page ${number}: rendered glyph ownership differs from extraction; protected export is unsafe.`);
+      }
+      const retainedRenderOps = new Set(paints.flatMap((paint, index) => protectedText.retained.has(paint.operator) ? [renderedPaints[index].index] : []));
+      const fonts = [...new Set(protectedText.items.map(item => page.commonObjs.get(item.fontName)))];
+      if (protectedText.retained.size && fonts.some(font => font.isType3Font || font.isInvalidPDFjsFont)) {
+        throw new Error(`PDF page ${number}: protected content uses an unsupported glyph painter; safe text separation is required.`);
+      }
+      const missingFiles = fonts.map(font => font.missingFile);
+      const missingDescriptors = fonts.map(font => Object.getOwnPropertyDescriptor(font, "missingFile"));
+      const altered: Array<{ list: any; index: number; glyphs: any[] }> = [];
+      try {
+        await page.render({ canvas: canvas as any, canvasContext: canvas.getContext("2d") as any, viewport: renderedViewport,
+          annotationMode: pdfjs.AnnotationMode.DISABLE, operationsFilter: (index, list) => {
+            if (!textPaint.has(list.fnArray[index])) return true;
+            if (!protectedText.retained.size) return false;
+            if (list.fnArray[index] !== pdfjs.OPS.showText && list.fnArray[index] !== pdfjs.OPS.showSpacedText) {
+              throw new Error(`PDF page ${number}: unsupported text operation in a protected page.`);
+            }
+            const keep = retainedRenderOps.has(index);
+            fonts.forEach((font, i) => Object.defineProperty(font, "missingFile", { value: keep ? missingFiles[i] : false, configurable: true }));
+            if (!keep) {
+              const glyphs = list.argsArray[index][0];
+              altered.push({ list, index, glyphs });
+              list.argsArray[index][0] = glyphs.map((glyph: any) => typeof glyph === "object" ? { ...glyph, isInFont: false } : glyph);
+            }
+            return true;
+          } }).promise;
+      } finally {
+        fonts.forEach((font, i) => { if (missingDescriptors[i]) Object.defineProperty(font, "missingFile", missingDescriptors[i]!); else delete font.missingFile; });
+        for (const entry of altered) entry.list.argsArray[entry.index][0] = entry.glyphs;
+      }
       const background = canvas.toBuffer("image/png");
       const backgroundPath = path.join(directory, `background-${number}.png`);
       await atomic(backgroundPath, background);
@@ -143,7 +172,9 @@ async function extract() {
     if (!layout.blocks.length) throw new Error("PDF contains no extractable text. OCR is required before translation.");
     const text = layout.blocks.map(block => block.text).join("\n");
     layout.sourceHash = digest(text);
+    layout.protectionHash = pdfProtectionHash(layout);
     if (digest(await readFile(input.originalPath)) !== hash) throw new Error("PDF changed during extraction; no projection was committed.");
+    validatePdfLayout(layout);
     await atomic(input.sourcePath, text);
     // Commit the manifest last: incomplete image extraction never becomes usable.
     await atomic(input.sourcePath + ".pdf-layout.json", JSON.stringify(encodeProjectPaths(layout, input.projectRoot)));
@@ -160,6 +191,9 @@ async function exportPdf() {
   if (input.lines.length !== layout.blocks.length || input.lines.some((line, i) => typeof line !== "string" || /[\r\n]/.test(line) || (layout.blocks[i].text.trim() && !line.trim()))) {
     throw new Error("PDF export requires one non-empty translated line per source block, without extra physical line breaks.");
   }
+  for (const block of layout.blocks) if (block.protection && input.lines[block.line-1] !== block.text) {
+    throw new Error(`PDF page ${block.page} L${block.line}: protected ${block.protection} must remain exactly identical to its source.`);
+  }
   const pdf = await PDFDocument.create();
   pdf.registerFontkit(fontkit);
   const font = await pdf.embedFont(await readFile(input.fontPath), { subset: false });
@@ -175,6 +209,7 @@ async function exportPdf() {
     if (digest(background) !== pageLayout.backgroundHash) throw new Error(`PDF page ${pageLayout.page} background asset changed.`);
     page.drawImage(await pdf.embedPng(background), { x: 0, y: 0, width: pageLayout.width, height: pageLayout.height });
     for (const block of blocksByPage.get(pageLayout.page) ?? []) {
+      if (block.protection) continue; // Original glyphs, subscripts and code indentation remain in the background.
       const text = input.lines[block.line - 1];
       for (const character of text) if (!characterSet.has(character.codePointAt(0)!)) {
         throw new Error(`PDF L${block.line}: bundled font cannot render ${JSON.stringify(character)}.`);

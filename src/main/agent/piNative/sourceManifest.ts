@@ -1,3 +1,4 @@
+import { NonRetryableAssignmentError } from "./assignmentFailure.ts";
 import { lstat, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -6,6 +7,7 @@ import type { PiSessionPromptRequest, PiSourceSelection } from "../../../shared/
 import { splitTextLines } from "../../../shared/validation/translationValidator.ts";
 import { collectSourceTreeFiles, IGNORED_SOURCE_DIRECTORIES } from "../../sourceFileTree.ts";
 import { readRequiredWorkflowText, withRequiredWorkflowFile } from "../requiredWorkflowFile.ts";
+import { preflightPdfRequest, readPdfLayout, isPdfSourceProjection } from "../../pdfDocuments.ts";
 
 export interface PiSourceDocument {
   id: string;
@@ -168,11 +170,12 @@ export function resolvePiReadablePath(
   return extractedDocument ? path.resolve(extractedDocument.path) : inputPath;
 }
 
-async function sourceDocument(id: string, filePath: string): Promise<PiSourceDocument> {
+async function sourceDocument(id: string, filePath: string, outputDir: string): Promise<PiSourceDocument> {
   const info = await withRequiredWorkflowFile(filePath, () => lstat(filePath));
   if (info.isSymbolicLink()) throw new Error(`Source manifest entries cannot be symbolic links: ${filePath}`);
   if (!info.isFile()) throw new Error(`Source manifest entry is not a file: ${filePath}`);
   const text = await readRequiredWorkflowText(filePath);
+  await preflightPdfRequest({ sourcePath: filePath, outputDir });
   return { id, path: path.resolve(filePath), lineCount: splitTextLines(text).length };
 }
 
@@ -240,17 +243,24 @@ async function explicitFolderDocuments(
       if (proof.kind === "text-lines" && (originalExtension !== ".txt" || comparablePath(filePath) !== comparablePath(originalPath))) {
         throw new Error(`Unprojected text source must use its original TXT path: ${id}.`);
       }
+      if (proof.kind === "pdf-text") {
+        if (!isPdfSourceProjection(filePath)) throw new NonRetryableAssignmentError(`PDF source lacks a protected project projection: ${filePath}. Generate a new review from the original PDF.`);
+        const layout = await readPdfLayout(filePath, request.outputDir);
+        if (!layout || comparablePath(layout.originalPath) !== comparablePath(originalPath)
+          || layout.originalHash !== proof.originalHash || layout.sourceHash !== proof.projectionHash) throw new NonRetryableAssignmentError(`PDF source provenance changed for ${id}. Restore its binding before resuming.`);
+      } else {
       const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
       if (digest(await withRequiredWorkflowFile(originalPath, () => readFile(originalPath))) !== proof.originalHash
         || digest(await withRequiredWorkflowFile(filePath, () => readFile(filePath))) !== proof.projectionHash) {
         throw new Error(`Source projection is stale for ${id}; prepare the task again.`);
+      }
       }
     }
     const extension = path.extname(filePath).toLowerCase();
     if (!SUPPORTED_SOURCE_EXTENSIONS.has(extension)) {
       throw new Error(`Unsupported extracted source file type ${extension || "(none)"}: ${filePath}.`);
     }
-    documents.push(await sourceDocument(id, filePath));
+    documents.push(await sourceDocument(id, filePath, request.outputDir));
   }
   return documents;
 }
@@ -273,7 +283,7 @@ export async function resolvePiSourceManifest(request: PiSessionPromptRequest): 
     return {
       kind: "file",
       rootPath,
-      documents: [await sourceDocument(path.basename(rootPath), rootPath)]
+      documents: [await sourceDocument(path.basename(rootPath), rootPath, request.outputDir)]
     };
   }
   if (!rootInfo.isDirectory()) throw new Error(`The selected source is not a folder: ${rootPath}`);
@@ -281,7 +291,7 @@ export async function resolvePiSourceManifest(request: PiSessionPromptRequest): 
   const discoveredFiles = request.folderSourceSelection === "prepared-inputs" ? [] : await collectFolderFiles(rootPath);
   const documentsById = new Map<string, PiSourceDocument>();
   for (const file of discoveredFiles) {
-    documentsById.set(file.id, await sourceDocument(file.id, file.path));
+    documentsById.set(file.id, await sourceDocument(file.id, file.path, request.outputDir));
   }
   for (const document of extractedDocuments) documentsById.set(document.id, document);
   const documents = [...documentsById.values()].sort((left, right) => left.id.localeCompare(right.id));

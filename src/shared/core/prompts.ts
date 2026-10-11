@@ -1,3 +1,4 @@
+import { PDF_PRESERVATION_INSTRUCTIONS, hasPdfTaskSource } from "../validation/pdfPreservation.ts";
 import { YN_DEFAULT_SPLIT_SIZE, type PiFolderSourceDocument } from "../agent/piSessionContract.ts";
 import { PROOFREAD_STRUCTURE_INSTRUCTIONS } from "../agent/proofreadInstructions.ts";
 import { PRESERVED_TERMINOLOGY_INSTRUCTIONS } from "../agent/workspaceAssetContract.ts";
@@ -240,6 +241,7 @@ export function buildTranslatePrompt(options: TranslatePromptOptions): string {
   return [
     ...taskHeader("translate", defaults.languagePair, defaults.style),
     PRESERVED_TERMINOLOGY_INSTRUCTIONS,
+    ...(hasPdfTaskSource(options.sourcePath, options.advanced?.folderSourceDocuments) ? [PDF_PRESERVATION_INSTRUCTIONS] : []),
     "",
     "Task settings:",
     `- ${folderBatch ? "Source folder" : "Source path"}: ${valueOrNone(options.sourcePath)}`,
@@ -272,6 +274,7 @@ export function buildProofreadPrompt(options: ProofreadPromptOptions): string {
   return [
     ...taskHeader("proofread", defaults.languagePair, defaults.style),
     PRESERVED_TERMINOLOGY_INSTRUCTIONS,
+    ...(hasPdfTaskSource(options.sourcePath, options.advanced?.folderSourceDocuments) ? [PDF_PRESERVATION_INSTRUCTIONS] : []),
     "",
     "Task settings:",
     folderBatch

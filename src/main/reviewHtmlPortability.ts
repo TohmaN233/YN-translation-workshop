@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { decodeProjectPaths, encodeProjectPaths, PROJECT_PATH_FIELDS, PROJECT_PATH_FIELD_PATTERN } from "./projectPaths.ts";
 import { writeTextFileAtomically } from "./atomicFile.ts";
 import { buildPrompt } from "../shared/core/prompts.ts";
+import { readPdfProtectedLines } from "./pdfDocuments.ts";
 
 const payloadPattern = /(<script id="(reviewData|proposalData|batchData)" type="application\/json">)([\s\S]*?)(<\/script>)/i;
 const decoderPattern = /\n?<script id="yn-project-paths">[\s\S]*?<\/script>/i;
@@ -107,5 +108,19 @@ export async function readReviewHtml(file: string): Promise<string> {
 }
 
 export async function writeReviewHtml(file: string, html: string): Promise<void> {
+  const resolved = resolveReviewHtmlPaths(html, file), match = payloadPattern.exec(resolved);
+  if (match?.[2] === "reviewData") {
+    const data = JSON.parse(match[3]), paths = data.workflow?.paths;
+    const protections = paths?.outputDir ? await readPdfProtectedLines(paths.validationSourcePath, paths.outputDir) : undefined;
+    if (protections) {
+      const protectedRows = new Map(protections.map(entry => [entry.line, entry]));
+      for (const row of data.rows) {
+        const protection = protectedRows.get(row.line);
+        if (protection && row.source !== protection.text) throw new Error(`PDF HTML protected source changed at L${row.line}.`);
+        row.pdfProtection = protection?.kind;
+      }
+      html = resolved.replace(payloadPattern, (_match, open, _kind, _json, close) => open + JSON.stringify(data).replace(/</g, "\\u003c") + close);
+    }
+  }
   await writeTextFileAtomically(file, portableReviewHtml(html, file));
 }

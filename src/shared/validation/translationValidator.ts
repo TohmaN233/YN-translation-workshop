@@ -14,6 +14,7 @@ import {
   normalizeCustomPreserveRules,
   type CustomPreserveRule
 } from "./customPreserveRules.ts";
+import type { PdfProtectedLine } from "./pdfPreservation.ts";
 
 export type ValidationSeverity = "blocking" | "warning";
 
@@ -21,6 +22,7 @@ export type ValidationCode =
   | "line_count_mismatch"
   | "placeholder_mismatch"
   | "custom_preserve_mismatch"
+  | "pdf_protected_content_mismatch"
   | "tag_mismatch"
   | "generic_translation_placeholder"
   | "repeated_short_candidate"
@@ -59,6 +61,8 @@ export type SourceLanguageKey = "ja" | "ko" | "en" | "zh";
 export interface ValidationOptions {
   /** Absolute-line offset for a validated document range; counts remain range-local. */
   lineOffset?: number;
+  /** Immutable original PDF code/math rows supplied by the Host layout. */
+  pdfProtectedLines?: PdfProtectedLine[];
   /** UI locale for human-readable finding details. Defaults to zh-CN. */
   locale?: "zh-CN" | "en-US";
   /**
@@ -1162,10 +1166,17 @@ export function validateTranslationCandidate(
 
   const sourceLines = splitTextLines(sourceText);
   const candidateLines = splitTextLines(candidateText);
+  const pdfProtectedLines = new Map<number, PdfProtectedLine>();
+  for (const entry of options.pdfProtectedLines ?? []) {
+    if (!Number.isInteger(entry.line) || entry.line < 1 || typeof entry.text !== "string" || /[\r\n]/.test(entry.text)
+      || !["code", "math"].includes(entry.kind) || pdfProtectedLines.has(entry.line)) throw new Error("Invalid Host PDF protection binding.");
+    pdfProtectedLines.set(entry.line, entry);
+  }
   const repeatedShortCandidateLines = new Set<number>();
   const repeatedCandidateRunLines = new Set<number>();
   const repeatedCandidateGroups = new Map<string, { sources: Set<string>; lines: number[] }>();
   for (let index = 0; index < Math.min(sourceLines.length, candidateLines.length); index += 1) {
+    if (pdfProtectedLines.has(index + 1 + lineOffset)) continue;
     const sourceCore = proseCore(stripPayload(sourceLines[index]));
     const candidateCore = proseCore(stripPayload(candidateLines[index]));
     if (sourceCore.length < 24 || candidateCore.length === 0 || candidateCore.length > 12) continue;
@@ -1181,10 +1192,12 @@ export function validateTranslationCandidate(
     for (const line of group.lines) repeatedShortCandidateLines.add(line);
   }
   for (let start = 0; start < Math.min(sourceLines.length, candidateLines.length);) {
+    if (pdfProtectedLines.has(start + 1 + lineOffset)) { start++; continue; }
     const candidateCore = proseCore(stripPayload(candidateLines[start]));
     const key = candidateCore.normalize("NFKC").toLocaleLowerCase();
     let end = start + 1;
     while (key && end < Math.min(sourceLines.length, candidateLines.length)) {
+      if (pdfProtectedLines.has(end + 1 + lineOffset)) break;
       const next = proseCore(stripPayload(candidateLines[end]))
         .normalize("NFKC")
         .toLocaleLowerCase();
@@ -1227,6 +1240,14 @@ export function validateTranslationCandidate(
     const lineNo = localLineNo + lineOffset;
     const src = sourceLines[i];
     const cand = candidateLines[i];
+    const protectedLine = pdfProtectedLines.get(lineNo);
+    if (protectedLine) {
+      if (src !== protectedLine.text) throw new Error(`PDF protected source binding changed at L${lineNo}.`);
+      if (cand !== src) blocking.push({ code: "pdf_protected_content_mismatch", severity: "blocking", line: lineNo,
+        detail: locale === "zh-CN" ? `第 ${lineNo} 行：PDF ${protectedLine.kind === "code" ? "代码" : "数学公式"}必须与原文完全一致，不得翻译或改写。`
+          : `Line ${lineNo}: PDF ${protectedLine.kind} must remain exactly identical to the source; translation or rewriting is forbidden.` });
+      continue;
+    }
     const normalizedSource = characterMatchers.length > 0 ? comparableTerm(src) : "";
     const normalizedCandidate = glossaryEntries.length > 0 || characterMatchers.length > 0 ? comparableTerm(cand) : "";
     const sourceCharacters = characterMatchers

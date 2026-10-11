@@ -13,6 +13,7 @@ import {
 } from "../../shared/validation/translationValidator.ts";
 import { splitTextLines } from "../../shared/validation/translationValidator.ts";
 import type { CustomPreserveRule } from "../../shared/validation/customPreserveRules.ts";
+import type { PdfProtectedLine } from "../../shared/validation/pdfPreservation.ts";
 
 export interface CandidateImportPlan {
   ok: boolean;
@@ -37,7 +38,8 @@ export function buildCandidateImportPlan(
   glossaryEntries?: Array<{ source?: string; target?: string; aliases?: string[] }>,
   characterEntries?: Array<{ name?: string; target?: string; aliases?: string[] }>,
   styleForbiddenTerms?: string[],
-  customPreserveRules?: CustomPreserveRule[]
+  customPreserveRules?: CustomPreserveRule[],
+  pdfProtectedLines?: PdfProtectedLine[]
 ): CandidateImportPlan {
   const validation = validateTranslationCandidate(sourceText, candidateText, {
     locale,
@@ -45,7 +47,8 @@ export function buildCandidateImportPlan(
     glossaryEntries,
     characterEntries,
     styleForbiddenTerms,
-    customPreserveRules
+    customPreserveRules,
+    pdfProtectedLines
   });
   if (!validation.ok) {
     return { ok: false, validation, edits: {}, status: {}, lineCount: validation.sourceLineCount };

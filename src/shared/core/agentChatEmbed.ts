@@ -408,7 +408,7 @@ export function agentChatEmbedScript(): string {
         if (document.projection !== undefined) {
           const proof = document.projection;
           if (!proof || typeof proof !== "object" || Array.isArray(proof)
-            || (proof.kind !== "bilingual-pairs" && proof.kind !== "epub-text" && proof.kind !== "text-lines")
+            || (proof.kind !== "bilingual-pairs" && proof.kind !== "epub-text" && proof.kind !== "pdf-text" && proof.kind !== "text-lines")
             || typeof proof.originalHash !== "string" || !/^[a-f0-9]{64}$/.test(proof.originalHash)
             || typeof proof.projectionHash !== "string" || !/^[a-f0-9]{64}$/.test(proof.projectionHash)) {
             throw new Error("Invalid workflow source projection provenance.");

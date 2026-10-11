@@ -17,7 +17,7 @@ interface BuiltinTaskEntryProps {
 }
 
 const sourceFilters = [
-  { name: "Source files", extensions: ["txt", "epub"] },
+  { name: "Source files", extensions: ["txt", "epub", "pdf"] },
   { name: "All files", extensions: ["*"] }
 ];
 const referenceFilters = [
@@ -304,12 +304,13 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
   async function chooseSourceFile(field: "sourcePath" | "translationPath") {
     setError("");
     try {
-      const selected = await window.workshop.openFile(sourceFilters);
+      const selected = await window.workshop.openFile(field === "translationPath" ? [{name:"Aligned translations",extensions:["txt","epub"]}] : sourceFilters);
       if (!selected) return;
       const patch: Partial<BuiltinTaskSettings> = { [field]: selected };
       if (field === "sourcePath") {
         patch.sourceKind = "file";
         if (selected.toLowerCase().endsWith(".epub")) patch.fileType = "epub";
+        else if (selected.toLowerCase().endsWith(".pdf")) patch.fileType = "pdf";
         else if (selected.toLowerCase().endsWith(".txt")) patch.fileType = "txt";
       }
       patchDraft(patch);
@@ -548,7 +549,7 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
                 <label className="builtinTaskField">
                   <span>{text.fileType}</span>
                   <select value={draft.fileType} onChange={(event) => patchDraft({ fileType: event.target.value as BuiltinTaskSettings["fileType"] })}>
-                    <option value="auto">auto</option><option value="txt">TXT</option><option value="epub">EPUB</option>
+                    <option value="auto">auto</option><option value="txt">TXT</option><option value="epub">EPUB</option><option value="pdf">PDF</option>
                   </select>
                 </label>
                 {draft.inputMode === "bilingual" ? <>

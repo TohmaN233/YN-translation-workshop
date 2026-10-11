@@ -164,6 +164,7 @@ contextBridge.exposeInMainWorld("workshopHtml", {
   writeBatchLineReviewTxt: () => ipcRenderer.invoke("html:writeBatchLineReviewTxt"),
   writeAuditWhitelistFile: (args: { outputDir?: string; documentId?: string; sourcePath?: string; lines?: number[]; lineReviewPath?: string; lineState?: unknown; changedLines?: number[] }) => ipcRenderer.invoke("files:writeAuditWhitelistFile", args),
   writeEpubFile: (args: { templatePath: string; lines: string[]; outputDir?: string; mode?: "all" | "pair-position"; replacePosition?: number; pairSize?: number }) => ipcRenderer.invoke("files:writeEpubFile", args),
+  writePdfFile: (args: { templatePath: string; sourcePath: string; lines: string[]; outputDir: string }) => ipcRenderer.invoke("files:writePdfFile", args),
   generateProposalReview: (args: unknown) => ipcRenderer.invoke("html:generateProposalReview", args),
   openReviewHtml: (args: unknown) => ipcRenderer.invoke("html:openReviewHtml", args),
   buildPrompt: (args: unknown) => ipcRenderer.invoke("prompts:build", args),

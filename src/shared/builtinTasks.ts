@@ -9,7 +9,7 @@ export interface BuiltinTaskSettings extends PromptAdvancedOptions {
   translationPath?: string;
   glossaryPath?: string;
   locale: "zh-CN" | "en-US";
-  fileType: "auto" | "txt" | "epub";
+  fileType: "auto" | "txt" | "epub" | "pdf";
   inputMode: "separate" | "bilingual";
   sourcePosition: number;
   translationPosition: number;

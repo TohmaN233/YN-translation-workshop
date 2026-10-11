@@ -8,7 +8,7 @@ const root = process.cwd();
 const tempDir = await mkdtemp(path.join(root, ".tmp-electron-builtin-tasks-"));
 const userDataDir = await mkdtemp(path.join(root, ".tmp-electron-builtin-user-"));
 try {
-  const external = ["electron", "electron-updater", "electron-updater/*", "extract-zip", "@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "@earendil-works/pi-agent-core", "@earendil-works/pi-agent-core/*"];
+  const external = ["pdfjs-dist", "pdfjs-dist/*", "pdf-lib", "@pdf-lib/fontkit", "@napi-rs/canvas", "electron", "electron-updater", "electron-updater/*", "extract-zip", "@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "@earendil-works/pi-agent-core", "@earendil-works/pi-agent-core/*"];
   // Independent upstream baseline: no YN imports or product window lifecycle.
   const baselinePath = path.join(tempDir, "browser-view-baseline.mjs");
   await writeFile(baselinePath, `import { app, BrowserWindow, BrowserView } from "electron";
@@ -39,6 +39,7 @@ console.log(JSON.stringify({browserViewBaseline:true,electron:process.versions.e
     await build({ absWorkingDir: root, entryPoints: [`src/main/agent/piNative/${worker}.ts`], bundle: true,
       platform: "node", format: "esm", outfile: path.join(tempDir, `${worker}.js`), external });
   }
+  await build({ absWorkingDir: root, entryPoints: ["src/main/pdfWorker.ts"], bundle: true, platform: "node", format: "esm", outfile: path.join(tempDir, "pdfWorker.js"), external });
   const result = await new Promise(resolve => {
     const child = spawn(electronPath, ["--disable-gpu", "--disable-gpu-compositing", "--in-process-gpu", "--no-sandbox", `--user-data-dir=${userDataDir}`, path.join(tempDir, "main.mjs")], {
       cwd: root, windowsHide: true, env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "true", YN_ELECTRON_VERIFY_HEADLESS: "1", YN_ELECTRON_VERIFY_OFFSCREEN: "1" }, stdio: ["ignore", "pipe", "pipe"]

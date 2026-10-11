@@ -38,6 +38,7 @@ export function extractedWorkshopTextPath(
 }
 
 export function materializeTranslationWorkingPath(outputDir: string, selectedPath: string): string {
+  if (/\.pdf$/i.test(selectedPath)) throw new Error("PDF translation inputs require an aligned TXT; an independently typeset PDF cannot preserve source block alignment.");
   if (!isEpubPath(selectedPath)) return path.resolve(selectedPath);
   return extractedWorkshopTextPath(workshopDirFromOutput(outputDir), selectedPath, "translation");
 }

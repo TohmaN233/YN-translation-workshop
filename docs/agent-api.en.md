@@ -21,6 +21,8 @@ For references, ask to “organize these materials into YN's glossary and charac
 
 New projects default to `Translation` in the source's parent directory. Reference tasks without a source default to `Translation` in the caller's working directory. Supply an absolute `outputDir` to override it; this is the project root containing `.translation-workshop`. Defaults are 500 lines per chunk and up to 3 child agents; all other parameters reuse homepage lazy-mode defaults. Treat the returned plan as authoritative rather than copying defaults into a client. Proofreading requires an existing translation.
 
+`fileType` accepts `auto`, `txt`, `epub` and `pdf`. PDFs need selectable text; YN extracts a read-only text projection and uses the same translation workflow. For proofreading, select the aligned translated TXT. Open the generated HTML in YN and click **Export PDF** after the task; the API does not automatically export final files. See the [PDF guide](pdf.en.md).
+
 ## Launch and transport
 
 Close other YN instances first to avoid competing Host writers. Node.js 22.19 or later is required. Pass the **installed application's EXE**, not its installer, or the application in a complete unpacked directory to the official launcher:

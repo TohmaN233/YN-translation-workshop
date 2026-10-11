@@ -16,6 +16,9 @@ import { extractedWorkshopTextPath, resolveUserFolderTranslationPath, workshopDi
 import { resolveTranslationCandidatePath, withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
 import { writeTextFileAtomically } from "./atomicFile.ts";
 import { readEpubText } from "./epubReader.ts";
+import { preparePdfDocument, readPdfLayout } from "./pdfDocuments.ts";
+import { RequiredWorkflowFileError } from "./agent/requiredWorkflowFile.ts";
+import { NonRetryableAssignmentError } from "./agent/piNative/assignmentFailure.ts";
 import { collectSourceTreeFiles } from "./sourceFileTree.ts";
 
 export interface BuiltinTaskDocument {
@@ -67,6 +70,7 @@ async function matchesInitialReceipt(root: string, folder: string, document: Bui
 }
 async function documentText(file: string, workspace: string, bytes?: Buffer): Promise<string> {
   const snapshot = bytes ?? await readFile(file);
+  if (/\.pdf$/i.test(file)) return (await preparePdfDocument(file, workspace)).text;
   if (!/\.epub$/i.test(file)) return snapshot.toString("utf8");
   const text = await readEpubText(file, workspace, hash(snapshot));
   if (hash(await readFile(file)) !== hash(snapshot)) throw new Error(`Input changed while EPUB text was being extracted: ${file}.`);
@@ -108,24 +112,40 @@ async function existingSourceProjections(workspace: string, reviewPath?: string)
 }
 
 /** Built-in tasks use separate UTF-8 source/target files; selected inputs stay read-only. */
-export async function prepareBuiltinTaskDocuments(settings: BuiltinTaskSettings, priorReviewPath?: string): Promise<BuiltinTaskDocuments> {
+export async function prepareBuiltinTaskDocuments(settings: BuiltinTaskSettings, priorReviewPath?: string, signal?: AbortSignal): Promise<BuiltinTaskDocuments> {
+  signal?.throwIfAborted();
   const workspace = workshopDirFromOutput(settings.outputDir);
   const previousProjections = await existingSourceProjections(workspace, priorReviewPath);
-  const allowed = settings.fileType === "epub" ? /\.epub$/i : settings.fileType === "txt" ? /\.txt$/i : /\.(txt|epub)$/i;
+  const allowed = settings.fileType === "pdf" ? /\.pdf$/i : settings.fileType === "epub" ? /\.epub$/i : settings.fileType === "txt" ? /\.txt$/i : /\.(txt|epub|pdf)$/i;
   const inputs = settings.sourceKind === "folder"
     ? (await collectSourceTreeFiles(settings.sourcePath, (file) => allowed.test(file))).map((file) => ({ id: file.relativePath, path: file.path }))
     : [{ id: path.basename(settings.sourcePath), path: settings.sourcePath }];
-  if (!inputs.length) throw new Error("No supported TXT or EPUB source documents were found.");
+  if (!inputs.length) throw new Error("No supported TXT, EPUB or PDF source documents were found.");
   const documents: BuiltinTaskDocument[] = [];
   for (const input of inputs) {
-    const originalBytes = await readFile(input.path);
-    const text = await documentText(input.path, workspace, originalBytes);
+    signal?.throwIfAborted();
+    const originalBytes = await readFile(input.path, { signal });
+    const priorPdf = /\.pdf$/i.test(input.path) && previousProjections.get(input.path);
+    if (priorPdf) {
+      const layout = await readPdfLayout(priorPdf.path, settings.outputDir);
+      if (!layout) throw new RequiredWorkflowFileError(priorPdf.path + ".pdf-layout.json");
+      if (layout.originalHash !== hash(originalBytes)) throw new NonRetryableAssignmentError(`Bound PDF source changed: ${input.id}. Start a new task.`);
+    }
+    const pdfDocument = /\.pdf$/i.test(input.path) ? await preparePdfDocument(input.path, workspace, { signal }) : undefined;
+    if (pdfDocument && pdfDocument.originalHash !== hash(originalBytes)) throw new Error(`PDF changed while preparing ${input.id}.`);
+    const text = pdfDocument?.text ?? await documentText(input.path, workspace, originalBytes);
     const bilingual = settings.inputMode === "bilingual" ? parseBilingualPairs(text, settings) : undefined;
     const sourceText = bilingual?.sourceText ?? text;
     if (!splitTextLines(sourceText).length) throw new Error(`Source document is empty: ${input.id}.`);
     let sourcePath = input.path;
     let projection: PiFolderSourceDocument["projection"];
-    if (bilingual || /\.epub$/i.test(input.path)) {
+    if (pdfDocument) {
+      if (bilingual) throw new Error("PDF input requires separate source/translation mode.");
+      sourcePath = pdfDocument.sourcePath;
+      const previous = previousProjections.get(input.path);
+      if (previous && (previous.path !== sourcePath || JSON.stringify(previous.rows) !== JSON.stringify(splitTextLines(sourceText)))) throw new Error(`Built-in PDF source changed: ${input.id}. Start a new task.`);
+      projection = { kind: "pdf-text", originalHash: hash(originalBytes), projectionHash: hash(sourceText) };
+    } else if (bilingual || /\.epub$/i.test(input.path)) {
       // Retain the original stem, including non-ASCII names, for native candidate/report identity.
       const previous = previousProjections.get(input.path);
       if (previous) {
@@ -148,7 +168,10 @@ export async function prepareBuiltinTaskDocuments(settings: BuiltinTaskSettings,
       const selected = settings.sourceKind === "folder"
         ? resolveUserFolderTranslationPath(settings.translationPath, input.id)
         : settings.translationPath;
-      if (selected) { translationText = await documentText(selected, workspace); inputTranslationPath = selected; }
+      if (selected) {
+        if (/\.pdf$/i.test(selected)) throw new Error("For PDF proofreading, select the aligned translated TXT produced by YN, not an independently typeset PDF.");
+        translationText = await documentText(selected, workspace); inputTranslationPath = selected;
+      }
     }
     const translationPath = resolveTranslationCandidatePath({ outputDir: settings.outputDir, sourcePaths: [sourcePath], documentId: input.id });
     documents.push({ id: input.id, originalPath: input.path, sourcePath, sourceText, translationPath, initialTranslationText: translationText, inputTranslationPath, projection });
@@ -171,17 +194,18 @@ export async function prepareBuiltinTaskDocuments(settings: BuiltinTaskSettings,
   };
 }
 
-export async function generateBuiltinTaskReview(settings: BuiltinTaskSettings, intent: "translation" | "proofread", reviewId?: string) {
+export async function generateBuiltinTaskReview(settings: BuiltinTaskSettings, intent: "translation" | "proofread", reviewId?: string, signal?: AbortSignal) {
   if (reviewId !== undefined && !/^[a-z0-9_-]+$/i.test(reviewId)) throw new Error("Invalid built-in review identity.");
   const workspace = workshopDirFromOutput(settings.outputDir);
   const batchName = `builtin-${reviewId ?? randomUUID()}`;
   const outputPath = path.join(workspace, "html", `${batchName}.html`);
-  const prepared = await prepareBuiltinTaskDocuments(settings, outputPath);
+  const prepared = await prepareBuiltinTaskDocuments(settings, outputPath, signal);
   const glossaryEntries = settings.glossaryPath ? parseGlossaryText(await readFile(settings.glossaryPath, "utf8")) : [];
   if (settings.glossaryPath && !glossaryEntries.length) throw new Error("The selected glossary contains no parseable entries.");
   await mkdir(path.dirname(outputPath), { recursive: true });
   const files: BatchLineReviewIndexFile[] = [];
   for (const document of prepared.documents) {
+    signal?.throwIfAborted();
     const translationText = await withTranslationCandidateLock(document.translationPath, async () => {
       const existing = await optionalText(document.translationPath);
       const initial = document.initialTranslationText ?? "";

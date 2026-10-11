@@ -24,9 +24,9 @@
     "verify:real-provider-agent": "node --experimental-strip-types scripts/verify-real-provider-agent-smoke.mjs",
     "toy:agent-artifacts": "npm run setup:toy-agent-artifacts && npm run verify:toy-agent-artifacts && npm run dev",
     "typecheck": "tsc --noEmit",
-    "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=esm --outfile=dist/main/main.js --external:electron --external:electron-updater --external:electron-updater/* --external:extract-zip --external:cheerio --external:cheerio/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* && npm run build:preload",
+    "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=esm --outfile=dist/main/main.js --external:electron --external:electron-updater --external:electron-updater/* --external:extract-zip --external:cheerio --external:cheerio/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:pdfjs-dist --external:pdf-lib --external:@pdf-lib/fontkit --external:@napi-rs/canvas && npm run build:preload",
     "build:preload": "esbuild src/main/preload.ts --bundle --platform=node --format=cjs --outfile=dist/main/preload.cjs --external:electron && npm run build:prescan-worker",
-    "build:prescan-worker": "esbuild src/main/agent/piNative/proofreadPrescanWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/proofreadPrescanWorker.js && esbuild src/main/agent/sourcePreparationWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/sourcePreparationWorker.js && esbuild src/main/agent/piNative/translationValidationWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/translationValidationWorker.js && esbuild src/main/agent/piNative/sessionIndexWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/sessionIndexWorker.js --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* && esbuild src/main/agent/piNative/sessionMaintenanceWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/sessionMaintenanceWorker.js --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* && esbuild src/main/agent/piNative/sessionHostReplayWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/sessionHostReplayWorker.js --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/*",
+    "build:prescan-worker": "esbuild src/main/agent/piNative/proofreadPrescanWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/proofreadPrescanWorker.js && esbuild src/main/agent/sourcePreparationWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/sourcePreparationWorker.js && esbuild src/main/agent/piNative/translationValidationWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/translationValidationWorker.js && esbuild src/main/agent/piNative/sessionIndexWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/sessionIndexWorker.js --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* && esbuild src/main/agent/piNative/sessionMaintenanceWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/sessionMaintenanceWorker.js --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* && esbuild src/main/agent/piNative/sessionHostReplayWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/sessionHostReplayWorker.js --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-agent-core/* --external:@earendil-works/pi-ai --external:@earendil-works/pi-ai/* && esbuild src/main/pdfWorker.ts --bundle --platform=node --format=esm --outfile=dist/main/pdfWorker.js --external:pdfjs-dist --external:pdfjs-dist/* --external:pdf-lib --external:@pdf-lib/fontkit --external:@napi-rs/canvas",
     "dev": "concurrently -k -n renderer,electron \"npm run dev:renderer\" \"npm run dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1",
     "dev:electron": "npm run build:main && wait-on http://127.0.0.1:5173 && cross-env TRANSLATION_WORKSHOP_DEV=1 electron .",
@@ -77,6 +77,7 @@
       "translation-protocol/**/*",
       "agent-tools/**/*",
       "docs/agent-api*.md",
+      "docs/pdf*.md",
       "README.md",
       "README.en.md",
       "LICENSE",
@@ -86,7 +87,8 @@
     "asarUnpack": [
       "translation-protocol/**/*",
       "agent-tools/**/*",
-      "docs/agent-api*.md"
+      "docs/agent-api*.md",
+      "node_modules/@napi-rs/**/*"
     ],
     "win": {
       "icon": "build/icon.ico",
@@ -129,9 +131,13 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.99.1",
     "@earendil-works/pi-ai": "0.99.1",
+    "@napi-rs/canvas": "1.0.11",
+    "@pdf-lib/fontkit": "1.1.1",
     "cheerio": "^1.2.0",
     "electron-updater": "^6.8.9",
     "extract-zip": "^2.0.1",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "6.4.299",
     "react-markdown": "^10.1.0",
     "typebox": "1.1.38",
     "undici": "^6.27.0"

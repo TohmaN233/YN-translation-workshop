@@ -8,17 +8,18 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { connectYnAgent } from "../agent-tools/yn-agent-client.mjs";
 import { createZipBuffer } from "../src/main/zipWriter.ts";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = await mkdtemp(path.join(root, ".tmp-electron-agent-api-"));
 const evidenceDir = path.join(root, "artifacts", "agent-api"); await mkdir(evidenceDir, { recursive: true });
 const electron = path.join(root, "node_modules", "electron", "dist", "electron.exe");
-const external = ["electron", "electron-updater", "electron-updater/*", "extract-zip", "cheerio", "cheerio/*", "@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "@earendil-works/pi-agent-core", "@earendil-works/pi-agent-core/*"];
+const external = ["pdfjs-dist", "pdfjs-dist/*", "pdf-lib", "@pdf-lib/fontkit", "@napi-rs/canvas", "electron", "electron-updater", "electron-updater/*", "extract-zip", "cheerio", "cheerio/*", "@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "@earendil-works/pi-agent-core", "@earendil-works/pi-agent-core/*"];
 const output = path.join(fixture, "main.mjs");
 await build({ absWorkingDir: root, entryPoints: ["scripts/verify-electron-agent-api-main.ts"], bundle: true,
   platform: "node", format: "esm", outfile: output, external,
   banner: { js: 'import { createRequire as __ynCreateRequire } from "node:module"; const require = __ynCreateRequire(import.meta.url);' } });
-for (const name of ["sourcePreparationWorker", "translationValidationWorker", "proofreadPrescanWorker", "sessionIndexWorker", "sessionMaintenanceWorker", "sessionHostReplayWorker"]) {
+for (const name of ["sourcePreparationWorker", "translationValidationWorker", "proofreadPrescanWorker", "sessionIndexWorker", "sessionMaintenanceWorker", "sessionHostReplayWorker", "pdfWorker"]) {
   await copyFile(path.join(root, "dist", "main", `${name}.js`), path.join(fixture, `${name}.js`));
 }
 let stderr = "";
@@ -102,8 +103,12 @@ try {
     { path: "content.opf", data: Buffer.from('<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book"><metadata/><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>') },
     { path: "chapter.xhtml", data: Buffer.from('<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><p>Hello {name}</p></body></html>') }
   ]));
+  const pdfPath = path.join(fixture, "source.pdf"), pdf = await PDFDocument.create();
+  pdf.addPage([600,800]).drawText("Hello {name}", {x:40,y:740,size:12,font:await pdf.embedFont(StandardFonts.Helvetica)});
+  await writeFile(pdfPath, await pdf.save());
   for (const [name, settings] of [["folder", { ...base, sourcePath: folder, folderTranslationOrder: "{a.txt b.txt}", subagentEnabled: false }],
-    ["bilingual", { ...base, sourcePath: bilingual, inputMode: "bilingual" }], ["epub", { ...base, sourcePath: epub, fileType: "epub" }]]) {
+    ["bilingual", { ...base, sourcePath: bilingual, inputMode: "bilingual" }], ["epub", { ...base, sourcePath: epub, fileType: "epub" }],
+    ["pdf", { ...base, sourcePath: pdfPath, fileType: "pdf" }]]) {
     const planned = await yn.call("plan", { task: "translation", settings: { ...settings, outputDir: path.join(fixture, name) } });
     if (name === "folder") assert.equal(planned.settings.folderTranslationOrder, "{a.txt b.txt}");
     const started = await yn.call("start", { planId: planned.planId, confirmed: true }); records.push(await terminal(started));
@@ -126,7 +131,7 @@ try {
   await yn.close();
   const accepted = JSON.parse(await readFile(path.join(fixture, "acceptance.json"), "utf8"));
   assert.equal(accepted.code, 0); assert.equal(accepted.visibleWindows, 0); assert.equal(accepted.nativeOwners, 0);
-  assert.equal(accepted.parityChecks, 5); assert.ok(accepted.maxWindows > 0); assert.equal(accepted.paidCalls, 0);
+  assert.equal(accepted.parityChecks, 6); assert.ok(accepted.maxWindows > 0); assert.equal(accepted.paidCalls, 0);
   eofClient = await openStdioLauncher(); await eofClient.ready;
   const eofPlan = await eofClient.call("plan", { task: "assets", settings: { outputDir: path.join(fixture, "eof"), materials: "Alice is a mage." } });
   const unfinished = await eofClient.call("start", { planId: eofPlan.planId, confirmed: true });

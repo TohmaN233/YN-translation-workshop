@@ -183,8 +183,11 @@ import {
   recordTranslationReuseAuditBatch
 } from "./translationReuseAudit.ts";
 import type { YnInterfaceContextSnapshot } from "../../../shared/agent/ynInterfaceContext.ts";
+import { createPdfReferenceTools } from "./pdfReferenceTools.ts";
+import { pdfReferencesForRange } from "../../pdfDocuments.ts";
 
 export interface YnDomainToolContext {
+  supportsImages?: () => boolean;
   request: PiSessionPromptRequest;
   publishCustomMessage: (message: AgentMessage) => Promise<void>;
   subagents: YnSubagentSupervisor;
@@ -4464,6 +4467,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     });
   };
   const tools: YnDomainAgentTool[] = [
+    ...createPdfReferenceTools(() => activeTranslationChunkReview?.bound ?? request, () => context.supportsImages?.() === true).map(tool => ({ ...tool, requiresSourceManifest: true as const })),
     {
       name: "recordTranslationPreservedTerms",
       label: "Record user-preserved terms",
@@ -5761,7 +5765,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         if (context.domainRun?.kind === "proofread" && !context.domainRun.suspended) {
           context.domainRun.recordProofreadParentRead("source", range.fromLine, range.toLine);
         }
-        return textResult({ ...range, totalLines: lines.length, lines: lines.slice(range.fromLine - 1, range.toLine) });
+        return textResult({ ...range, totalLines: lines.length, lines: lines.slice(range.fromLine - 1, range.toLine),
+          pdfReferences: await pdfReferencesForRange(sourcePath(readRequest), readRequest.outputDir, range.fromLine, range.toLine) });
       }
     },
     {

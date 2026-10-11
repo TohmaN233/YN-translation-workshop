@@ -24,7 +24,7 @@ import { BuiltinTaskEntry } from "./BuiltinTaskEntry.tsx";
 import "./styles.css";
 
 type Locale = "zh-CN" | "en-US";
-type FileType = "auto" | "txt" | "epub";
+type FileType = "auto" | "txt" | "epub" | "pdf";
 type InputMode = "separate" | "bilingual";
 type AgentTaskKind = "translate" | "proofread";
 type ProofreadMode = "split" | "montecarlo";
@@ -195,13 +195,14 @@ function preserveRuleDrafts(value: unknown): CustomPreserveRuleDraft[] {
   }));
 }
 const sourceFileFilters = [
-  { name: "All source files", extensions: ["txt", "epub"] },
+  { name: "All source files", extensions: ["txt", "epub", "pdf"] },
+  { name: "PDF documents", extensions: ["pdf"] },
   { name: "EPUB books", extensions: ["epub"] },
   { name: "Text files", extensions: ["txt"] },
   { name: "All files", extensions: ["*"] }
 ];
 const documentFileFilters = [
-  { name: "All supported documents", extensions: ["txt", "md", "json", "epub"] },
+  { name: "All supported documents", extensions: ["txt", "md", "json", "epub", "pdf"] },
   { name: "EPUB books", extensions: ["epub"] },
   { name: "Markdown reports", extensions: ["md"] },
   { name: "JSON glossary", extensions: ["json"] },
@@ -647,7 +648,7 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
           [key]: selected,
           ...(key === "sourcePath" ? { sourceKind: "file" as const } : {}),
           fileType: key === "sourcePath"
-            ? (lower.endsWith(".epub") ? "epub" : lower.endsWith(".txt") ? "txt" : form.fileType)
+            ? (lower.endsWith(".pdf") ? "pdf" : lower.endsWith(".epub") ? "epub" : lower.endsWith(".txt") ? "txt" : form.fileType)
             : form.fileType,
           sourcePosition: form.inputMode === "bilingual" ? 2 : form.sourcePosition,
           translationPosition: form.inputMode === "bilingual" ? 1 : form.translationPosition
@@ -1409,6 +1410,7 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
                 <option value="auto">auto</option>
                 <option value="txt">txt</option>
                 <option value="epub">epub</option>
+                <option value="pdf">pdf</option>
               </select>
             </label>
             <label className="field">

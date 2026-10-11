@@ -1,7 +1,6 @@
 # Third-Party Notices
 
-This project includes Agent runtime and UI design work informed by the following
-MIT-licensed projects.
+This project includes the following third-party runtime, document and UI components.
 
 ## Pi
 
@@ -41,6 +40,18 @@ subject to the following conditions:
 
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
+
+## PDF components
+
+- PDF.js 6.4.299: https://github.com/mozilla/pdf.js — Apache-2.0. License distributed in `node_modules/pdfjs-dist/LICENSE`.
+- pdf-lib 1.17.1: https://github.com/Hopding/pdf-lib — MIT, copyright 2019 Andrew Dillon. License distributed in `node_modules/pdf-lib/LICENSE.md`.
+- @pdf-lib/fontkit 1.1.1: https://github.com/Hopding/fontkit — MIT. License declared in the distributed package README.
+- @napi-rs/canvas 1.0.11: https://github.com/Brooooooklyn/canvas — MIT, copyright 2020 lynweklm@gmail.com. License distributed in `node_modules/@napi-rs/canvas/LICENSE`.
+- Noto Sans SC: https://github.com/google/fonts/tree/main/ofl/notosanssc — SIL Open Font License 1.1, copyright 2014–2021 Adobe. Static weight-400 font, provenance and full license distributed in `assets/fonts/`.
+
+PDF layout mapping was informed by BabelDOC's intermediate-layout design
+(https://github.com/funstory-ai/BabelDOC). BabelDOC code and its translation engine
+are not bundled or copied.
 
 ## pi-web
 

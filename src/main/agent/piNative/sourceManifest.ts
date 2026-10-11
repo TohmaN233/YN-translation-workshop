@@ -214,7 +214,7 @@ async function explicitFolderDocuments(
     const originalPath = path.resolve(rootPath, ...id.split("/"));
     if (!isInsidePath(rootPath, originalPath)) throw new Error(`Invalid folder source document id: ${entry.id}.`);
     const originalExtension = path.extname(originalPath).toLowerCase();
-    if (originalExtension !== ".epub" && !(originalExtension === ".txt" && (entry.projection?.kind === "bilingual-pairs" || entry.projection?.kind === "text-lines"))) {
+    if (originalExtension !== ".epub" && !(originalExtension === ".pdf" && entry.projection?.kind === "pdf-text") && !(originalExtension === ".txt" && (entry.projection?.kind === "bilingual-pairs" || entry.projection?.kind === "text-lines"))) {
       if (preparedSelection) throw new Error(`Invalid prepared source document type: ${id}.`);
       continue;
     }
@@ -233,7 +233,7 @@ async function explicitFolderDocuments(
     }
     if (entry.projection) {
       const proof = entry.projection;
-      if (!["bilingual-pairs", "epub-text", "text-lines"].includes(proof.kind)
+      if (!["bilingual-pairs", "epub-text", "pdf-text", "text-lines"].includes(proof.kind)
         || !/^[a-f0-9]{64}$/.test(proof.originalHash) || !/^[a-f0-9]{64}$/.test(proof.projectionHash)) {
         throw new Error(`Invalid source projection provenance for ${id}.`);
       }

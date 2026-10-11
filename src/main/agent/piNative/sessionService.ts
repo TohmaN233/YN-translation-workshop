@@ -297,6 +297,7 @@ function ownedSubagentIds(active: ActiveSession | undefined): Set<string> {
 export interface PiNativeSessionServiceOptions {
   createModelSelection?: typeof createPiModelSelection;
   createTools?: (context: {
+    supportsImages?: () => boolean;
     request: PiSessionPromptRequest;
     publishCustomMessage: (message: AgentMessage) => Promise<void>;
     subagents: YnSubagentSupervisor;
@@ -1571,6 +1572,7 @@ export class PiNativeSessionService {
     const preparation = hostState.taskPreparation;
     const preparing = purpose === "prompt" && preparation !== undefined && !preparation.started && !preparation.completed;
     if (preparing && !this.taskPreparationHost) throw new Error("YN task preparation Host is not configured.");
+    toolContext.supportsImages = () => (runtime?.getModel() ?? selection.model).input.includes("image");
     const rawTools = purpose === "prompt" ? [
       ...await this.options.createTools?.(toolContext) ?? [],
       ...(preparing ? createTaskPreparationTools({ state: preparation!, request: runtimeRequest, host: this.taskPreparationHost!, persist: persistHostState }) : [])

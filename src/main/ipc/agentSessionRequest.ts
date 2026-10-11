@@ -158,7 +158,7 @@ function folderSourceDocuments(value: unknown): PiFolderSourceDocument[] | undef
       const proof = document.projection;
       if (!proof || typeof proof !== "object" || Array.isArray(proof)) throw new Error(`Invalid folder source projection at ${index}.`);
       const value = proof as Record<string, unknown>;
-      if ((value.kind !== "bilingual-pairs" && value.kind !== "epub-text" && value.kind !== "text-lines")
+      if ((value.kind !== "bilingual-pairs" && value.kind !== "epub-text" && value.kind !== "pdf-text" && value.kind !== "text-lines")
         || typeof value.originalHash !== "string" || !/^[a-f0-9]{64}$/.test(value.originalHash)
         || typeof value.projectionHash !== "string" || !/^[a-f0-9]{64}$/.test(value.projectionHash)) {
         throw new Error(`Invalid folder source projection provenance at ${index}.`);

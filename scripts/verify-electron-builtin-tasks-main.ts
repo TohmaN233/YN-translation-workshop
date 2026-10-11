@@ -12,6 +12,12 @@ import { builtinTaskDefaults } from "../src/shared/builtinTasks.ts";
 import { resolveProofreadReportPath } from "../src/main/agent/writeProofreadFindings.ts";
 import { resolveTranslationCandidatePath } from "../src/main/agent/writeTranslationChunk.ts";
 import { createZipBuffer } from "../src/main/zipWriter.ts";
+import { PDFDocument, StandardFonts } from "pdf-lib";
+import { readPdfLayout } from "../src/main/pdfDocuments.ts";
+import { resolveReviewHtmlPaths } from "../src/main/reviewHtmlPortability.ts";
+import { upgradeLegacyReviewHtmlTree } from "../src/main/reviewHtmlUpgrade.ts";
+import { LINE_REVIEW_PROTOCOL_VERSION } from "../src/shared/core/html.ts";
+import { resolvePiSourceManifest } from "../src/main/agent/piNative/sourceManifest.ts";
 
 const root = process.cwd();
 const fixture = await mkdtemp(path.join(os.tmpdir(), "yn-electron-builtin-"));
@@ -295,6 +301,55 @@ async function run() {
   const folderSidecars = await Promise.all((await readdir(stateDir)).filter(file => file.startsWith("line-") && file.endsWith(".json")).map(file => readFile(path.join(stateDir, file), "utf8")));
   assert(folderSidecars.some(text => text.includes(folderEdit)), "Closing folder HTML must await iframe pending editor flush");
   assert(await readFile(epubTarget, "utf8") === initialTranslation, "Folder iframe edit flush must never write canonical TXT");
+  const pdfPath = path.join(fixture, "source.pdf"), pdf = await PDFDocument.create();
+  pdf.addPage([600,800]).drawText(original, {x:40,y:740,size:12,font:await pdf.embedFont(StandardFonts.Helvetica)});
+  const pdfBytes = await pdf.save(); await writeFile(pdfPath, pdfBytes);
+  provider.setResponses([fauxAssistantMessage(fauxToolCall("inspectTaskSources", {}, { id: "pdf-scan" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("inspectTaskSources", { rules }, { id: "pdf-trial" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("startPreparedWorkflow", { customPreserveRules: rules }, { id: "pdf-start" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("completeFixtureWorkflow", {}, { id: "pdf-translate" }), { stopReason: "toolUse" }), fauxAssistantMessage(fauxText("PDF fixture translated."))]);
+  const pdfTask = await start(main!, "translation", { ...settings, sourcePath: pdfPath, sourceKind: "file", inputMode: "separate", fileType: "pdf", translationPath: "", subagentEnabled: false });
+  await terminal(pdfTask.sessionId);
+  const pdfRequest = requests.at(-1), pdfView = await viewFor(pdfTask.outputPath);
+  assert(await readFile(pdfRequest.sourcePath, "utf8") === original, "PDF must enter the same native workflow as a UTF-8 projection");
+  assert((await readFile(pdfPath)).equals(Buffer.from(pdfBytes)), "PDF input must stay read-only");
+  const pdfPacket = await pdfView!.webContents.executeJavaScript("window.translationWorkshopTaskParameters.prepare('translate')");
+  assert(pdfPacket.prompt === pdfRequest.prompt, "PDF one-click prompt must equal manual HTML prompt");
+  for (const key of Object.keys(pdfPacket.metadata)) assert(JSON.stringify(pdfPacket.metadata[key]) === JSON.stringify(pdfRequest[key]), `PDF HTML metadata differs: ${key}`);
+  assert((await readPdfLayout(pdfRequest.sourcePath, fixture))?.pages.length === 1, "PDF layout must be bound to the native source");
+  await pdfView!.webContents.executeJavaScript("document.getElementById('syncTranslation').click()");
+  await waitFor(() => pdfView!.webContents.executeJavaScript("document.querySelector('.row .target').textContent"), value => value === initialTranslation, "PDF canonical translation loaded");
+  await pdfView!.webContents.executeJavaScript("document.getElementById('exportPdf').click()");
+  await waitFor(() => pdfView!.webContents.executeJavaScript("document.body.innerText"), value => /PDF (已导出|exported)/.test(value), "actual PDF export button and IPC");
+  const exportedPdf = path.join(fixture, "AI_translation", "source.translated.pdf");
+  assert((await PDFDocument.load(await readFile(exportedPdf))).getPageCount() === 1, "Actual HTML export must create a readable PDF");
+  await screenshot(pdfView!.webContents, "builtin-pdf-export.png");
+  console.log("[builtin-verifier] pdf-native-workflow-and-actual-html-export-completed");
+  const mixedFolder = path.join(fixture,"mixed-pdf"), nestedPdf = path.join(mixedFolder,"chapter","図版.pdf");
+  await mkdir(path.dirname(nestedPdf),{recursive:true});await writeFile(nestedPdf,pdfBytes);
+  await writeFile(path.join(mixedFolder,"text.txt"),original);
+  await writeFile(path.join(mixedFolder,"chapter","物語.epub"),epubBytes);
+  const manualPdf = await main!.webContents.executeJavaScript(`window.workshop.generateLineReview(${JSON.stringify({...settings,sourcePath:mixedFolder,sourceKind:"folder",translationPath:"",fileType:"auto",advanced:{...settings,folderTranslationOrder:""}})})`);
+  const manualHtml = await readFile(manualPdf.outputPath,"utf8");
+  const index = JSON.parse(resolveReviewHtmlPaths(manualHtml,manualPdf.outputPath).match(/<script id="batchData" type="application\/json">([\s\S]*?)<\/script>/)![1]);
+  assert(index.files.length === 3,"Manual mixed folder must include TXT, EPUB and PDF");
+  const childPath = path.resolve(path.dirname(manualPdf.outputPath),index.files.find((file:any)=>file.sourceName.endsWith(".pdf")).outputPath);
+  const childHtml = await readFile(childPath,"utf8");
+  await writeFile(childPath,childHtml.replace(`translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`,"translation-workshop-line-review-v48"));
+  await upgradeLegacyReviewHtmlTree(manualPdf.outputPath);
+  const upgradedChild = resolveReviewHtmlPaths(await readFile(childPath,"utf8"),childPath);
+  const reviewData = JSON.parse(upgradedChild.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/)![1]);
+  assert(reviewData.workflow.advanced.folderSourceDocuments.some((document:any)=>document.id === "chapter/図版.pdf" && document.projection?.kind === "pdf-text"),"Manual legacy upgrade must retain PDF provenance");
+  assert(upgradedChild.includes('id="exportPdf"'),"Manual folder PDF child must retain export after legacy upgrade");
+  await main!.webContents.executeJavaScript(`window.workshop.openReviewHtml(${JSON.stringify({htmlPath:childPath,outputDir:fixture})})`);
+  const manualView = await viewFor(childPath);
+  const manualPacket = await manualView!.webContents.executeJavaScript("window.translationWorkshopTaskParameters.prepare('translate')");
+  const manualManifest = await resolvePiSourceManifest({outputDir:fixture,sessionId:'manual-pdf',sourcePath:mixedFolder,sourceSelection:{kind:'folder',path:mixedFolder},...manualPacket.metadata});
+  assert(manualManifest.documents.length === 3 && manualManifest.documents.some(document=>document.id==='chapter/図版.pdf'),"Actual manual HTML parameter packet must produce the native mixed-source manifest");
+  await manualView!.webContents.executeJavaScript(`(() => { const target=document.querySelector('.row .target'); target.textContent=${JSON.stringify(initialTranslation)}; target.dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('exportPdf').click(); })()`);
+  await waitFor(() => manualView!.webContents.executeJavaScript("document.body.innerText"),value=>/PDF (已导出|exported)/.test(value),"manual legacy folder child PDF export");
+  assert((await PDFDocument.load(await readFile(path.join(fixture,"AI_translation","mixed-pdf","chapter","図版.translated.pdf")))).getPageCount()===1,"Manual PDF child must export its current edit");
+  console.log("[builtin-verifier] manual-mixed-pdf-and-legacy-upgrade-completed");
   const materialsProject = path.join(fixture, "materials-first", "new-project");
   // Reproduce a project selected and autosaved before references are prepared.
   // Previously only the absent-property state was covered, masking this failure.

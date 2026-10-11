@@ -91,14 +91,16 @@ function folderPromptWorkflowOverride(
   const sourcePaths = files.map((file, index) => {
     const indexedSourcePath = file.sourcePath?.trim();
     const extractedSourcePath = validationSourcePath(childHtml[index] ?? "");
-    return (/\.epub$/i.test(indexedSourcePath ?? "") ? extractedSourcePath : indexedSourcePath)
+    return (/\.(epub|pdf)$/i.test(indexedSourcePath ?? "") ? extractedSourcePath : indexedSourcePath)
       || extractedSourcePath
       || (sourceRoot ? path.join(sourceRoot, documentIds[index]!) : undefined);
   });
   const folderSourceDocuments = sourcePaths.every(Boolean)
     ? files.map((_file, index) => ({
       id: documentIds[index]!,
-      path: sourcePaths[index]!
+      path: sourcePaths[index]!,
+      ...(folderWorkflow.advanced?.folderSourceDocuments?.find(document => document.id === documentIds[index])?.projection
+        ? { projection: folderWorkflow.advanced.folderSourceDocuments.find(document => document.id === documentIds[index])!.projection } : {})
     }))
     : undefined;
   return {
@@ -112,7 +114,8 @@ function folderPromptWorkflowOverride(
       ...folderWorkflow.advanced,
       folderTranslationOrder: folderWorkflow.advanced?.folderTranslationOrder?.trim()
         || formatFolderTranslationOrder(documentIds),
-      folderSourceDocuments
+      folderSourceDocuments,
+      folderSourceSelection: folderWorkflow.advanced?.folderSourceSelection
     }
   };
 }

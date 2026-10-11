@@ -121,6 +121,8 @@ try {
   assert.ok(marker.translationValidationHeartbeatTicks > 0, "Packaged translation validation blocked the main event loop");
   assert.equal(marker.sourcePreparationWorkerVerified, true, "Packaged source preparation worker did not finish its background scan");
   assert.ok(marker.sourcePreparationHeartbeatTicks > 0, "Packaged source preparation blocked the main event loop");
+  assert.equal(marker.pdfWorkerVerified, true, "Packaged PDF extraction/reference/export failed");
+  assert.ok(marker.pdfHeartbeatTicks > 0, "Packaged PDF processing blocked the main event loop");
   assert.match(String(marker.rendererUrl), /dist\/renderer\/index\.html/i, "Packaged smoke marker did not report the packaged renderer");
 
   const exitDeadline = Date.now() + 15_000;
@@ -146,6 +148,8 @@ try {
     translationValidationHeartbeatTicks: marker.translationValidationHeartbeatTicks,
     sourcePreparationWorkerVerified: marker.sourcePreparationWorkerVerified,
     sourcePreparationHeartbeatTicks: marker.sourcePreparationHeartbeatTicks,
+    pdfWorkerVerified: marker.pdfWorkerVerified,
+    pdfHeartbeatTicks: marker.pdfHeartbeatTicks,
     cleanExit: true
   }, null, 2));
 } catch (error) {

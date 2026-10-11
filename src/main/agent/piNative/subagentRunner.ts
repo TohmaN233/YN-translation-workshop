@@ -85,6 +85,8 @@ import {
   type TranslationReuseAuditEntryInput
 } from "./translationReuseAudit.ts";
 import { createTranslationAlignmentAudit } from "./translationAlignmentState.ts";
+import { createPdfReferenceTools } from "./pdfReferenceTools.ts";
+import { pdfReferencesForRange } from "../../pdfDocuments.ts";
 
 interface PiSubagentTaskBase {
   documentId?: string;
@@ -247,6 +249,7 @@ export interface PiGeneralSubagentResult extends PiSubagentResult {
 }
 
 interface PiSubagentContext<TTask extends PiSubagentTaskBase> {
+  supportsImages?: () => boolean;
   request: PiSessionPromptRequest;
   task: TTask;
   subagentId?: string;
@@ -658,7 +661,7 @@ function priorProofreadExactSearches(
 }
 
 function createPiSubagentReadOnlyProjectTools(
-  context: Pick<PiSubagentContext<PiSubagentTaskBase>, "request" | "signal">,
+  context: Pick<PiSubagentContext<PiSubagentTaskBase>, "request" | "signal" | "supportsImages">,
   options: {
     indexedReferenceReads?: "search-only";
     proofreadSearchCache?: PiProofreadExactSearchCache;
@@ -699,6 +702,7 @@ function createPiSubagentReadOnlyProjectTools(
     return indexedReferencePaths.get(process.platform === "win32" ? resolved.toLowerCase() : resolved);
   };
   return [
+    ...createPdfReferenceTools(() => context.request, () => context.supportsImages?.() === true),
     {
       name: "listProjectDir",
       label: "List directory",
@@ -2506,6 +2510,7 @@ export function createPiTranslationSubagentTools(
                   : {})
               }),
           totalLines: lines.length,
+          pdfReferences: await pdfReferencesForRange(sourcePath(context.request), context.request.outputDir, range.fromLine, range.toLine),
           assignment: {
             fromLine: context.task.fromLine,
             toLine: context.task.toLine,
@@ -3271,6 +3276,7 @@ export function createPiProofreadSubagentTools(
           fromLine: checkpointFrom,
           toLine: checkpointTo,
           totalLines: sourceLines.length,
+          pdfReferences: await pdfReferencesForRange(sourcePath(context.request), context.request.outputDir, checkpointFrom, checkpointTo),
           assignmentComplete: progress.referenceRead,
           nextFromLine: progress.referenceRead ? undefined : progress.nextAssignedLine,
           assignedLines,
@@ -3926,6 +3932,7 @@ export async function createPiTranslationReviewSubagentWorker(
     providerId: initialContext.workerProviderId?.trim() || initialContext.request.providerId,
     modelId: initialContext.workerModelId?.trim() || initialContext.request.modelId
   });
+  initialContext.supportsImages = () => selection.model.input.includes("image");
   const session = await new PiSessionRepository(initialContext.request.outputDir).createChild(
     subagentId,
     initialContext.request.sessionId
@@ -3971,6 +3978,7 @@ export async function createPiTranslationReviewSubagentWorker(
       async runAssignment(context) {
         if (disposed) throw new Error(`Pi translation review worker ${subagentId} is disposed.`);
         throwIfAborted(initialContext.signal, context.signal);
+        context.supportsImages = () => runtime.getModel().input.includes("image");
         const spec = createPiTranslationReviewRuntimeSpec(context);
         const assignmentLabel = context.task.label?.trim() || label;
         lastContext = context;
@@ -4089,6 +4097,7 @@ export async function createPiTranslationAuditSubagentWorker(
     modelId: initialContext.task.modelId?.trim()
       || (taskProviderId ? undefined : initialContext.request.subagentModelId || initialContext.request.modelId)
   });
+  initialContext.supportsImages = () => selection.model.input.includes("image");
   const session = await new PiSessionRepository(initialContext.request.outputDir).createChild(
     subagentId,
     initialContext.request.sessionId
@@ -4131,6 +4140,7 @@ export async function createPiTranslationAuditSubagentWorker(
       async runAssignment(context) {
         if (disposed) throw new Error(`Pi translation audit worker ${subagentId} is disposed.`);
         throwIfAborted(initialContext.signal, context.signal);
+        context.supportsImages = () => runtime.getModel().input.includes("image");
         activeSignal = context.signal;
         const spec = createPiTranslationAuditRuntimeSpec(context);
         if (assignmentsStarted > 0) runtime.resetContext();
@@ -4317,6 +4327,7 @@ async function runPiSubagentRuntime<
     providerId: taskProviderId || context.request.subagentProviderId || context.request.providerId,
     modelId: taskModelId || (taskProviderId ? undefined : context.request.subagentModelId || context.request.modelId)
   });
+  context.supportsImages = () => selection.model.input.includes("image");
   throwIfAborted(context.signal);
   const session = await new PiSessionRepository(context.request.outputDir).createChild(
     subagentId,
@@ -4989,6 +5000,7 @@ export async function createPiTranslationSubagentWorker(
     modelId: initialContext.task.modelId?.trim()
       || (taskProviderId ? undefined : initialContext.request.subagentModelId || initialContext.request.modelId)
   });
+  initialContext.supportsImages = () => selection.model.input.includes("image");
   throwIfAborted(initialContext.signal);
   const session = await new PiSessionRepository(initialContext.request.outputDir).createChild(
     subagentId,
@@ -5108,6 +5120,7 @@ export async function createPiTranslationSubagentWorker(
         if (disposed) throw new Error(`Pi translation worker ${subagentId} is disposed.`);
         if (activeContext) throw new Error(`Pi translation worker ${subagentId} already owns an active assignment.`);
         throwIfAborted(initialContext.signal, context.signal);
+        context.supportsImages = () => (runtime?.getModel() ?? selection.model).input.includes("image");
         let stagingPath: string | undefined;
         let retainStagingAfterRun = Boolean(context.task.stagingCandidatePath?.trim());
         const assignmentDocumentId = context.task.documentId || documentId(context.request);
@@ -5843,6 +5856,7 @@ export async function createPiProofreadSubagentWorker(
     modelId: initialContext.workerModelId?.trim() || initialContext.task?.modelId?.trim()
       || (taskProviderId ? undefined : initialContext.request.subagentModelId || initialContext.request.modelId)
   });
+  initialContext.supportsImages = () => selection.model.input.includes("image");
   throwIfAborted(initialContext.signal);
   const session = await new PiSessionRepository(initialContext.request.outputDir).createChild(
     subagentId,
@@ -5926,6 +5940,7 @@ export async function createPiProofreadSubagentWorker(
         if (disposed) throw new Error(`Pi proofread worker ${subagentId} is disposed.`);
         if (activeContext) throw new Error(`Pi proofread worker ${subagentId} already owns an active assignment.`);
         throwIfAborted(initialContext.signal, context.signal);
+        context.supportsImages = () => (runtime?.getModel() ?? selection.model).input.includes("image");
         activeContext = context;
         lastContext = context;
         try {

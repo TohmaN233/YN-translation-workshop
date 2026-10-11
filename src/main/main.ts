@@ -72,6 +72,7 @@ import { writeTextFileAtomically, writeTextFilesAtomically } from "./atomicFile.
 import { withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
 import { readEpubText } from "./epubReader.ts";
 import { createTranslatedEpub } from "./epubWriter.ts";
+import { preparePdfDocument, createTranslatedPdf, configurePdfResourceDirectory, readPdfReferenceImage } from "./pdfDocuments.ts";
 import { collectSourceTreeFiles } from "./sourceFileTree.ts";
 import { upgradeLegacyReviewHtmlTree } from "./reviewHtmlUpgrade.ts";
 import { containedProjectRoot, portableReviewHtml, readReviewHtml, writeReviewHtml } from "./reviewHtmlPortability.ts";
@@ -134,12 +135,14 @@ import { createAgentApi, AgentApiError, agentApiError, assertAgentApiTaskSession
 import { serveAgentApiStdio } from "./agentApiStdio.ts";
 import { connectAgentApiPipe } from "./agentApiTransport.ts";
 
+configurePdfResourceDirectory(app.getAppPath());
+
 interface GenerateLineHtmlArgs {
   sourcePath: string;
   translationPath?: string;
   outputDir: string;
   glossaryPath?: string;
-  fileType: "auto" | "txt" | "epub";
+  fileType: "auto" | "txt" | "epub" | "pdf";
   pageSize: number;
   startPage?: number;
   locale: UiLocale;
@@ -2060,7 +2063,7 @@ async function buildSynchronizedBatchChild(args: {
       `Cannot synchronize ${args.documentId}: source has ${sourceLineCount} lines but translation has ${translationLineCount}.`
     );
   }
-  const editableTranslationPath = translationDocument.kind === "epub"
+  const editableTranslationPath = translationDocument.kind !== "txt"
     ? translationDocument.promptPath
     : args.translationPath;
   const promptSourcePath = embeddedWorkflowPath(workflow, "promptSourcePath")
@@ -2280,7 +2283,7 @@ async function generateProposalLineReview(
   const translationDocument = routing.translationPath
     ? await readTranslationDocumentForWorkflow(routing.translationPath, workspaceDir)
     : undefined;
-  const editableTranslationPath = translationDocument?.kind === "epub"
+  const editableTranslationPath = translationDocument !== undefined && translationDocument.kind !== "txt"
     ? translationDocument.promptPath
     : routing.translationPath;
   const lineReviewPath = proposalLineReviewArtifactPath(outputDir, routing);
@@ -2524,11 +2527,11 @@ function buildReportFormatRepairPrompt(reportPath: string, locale: UiLocale): st
   ].join("\n");
 }
 
-function resolveLineFileType(filePath: string, fileType: GenerateLineHtmlArgs["fileType"]): "txt" | "epub" {
+function resolveLineFileType(filePath: string, fileType: GenerateLineHtmlArgs["fileType"]): "txt" | "epub" | "pdf" {
   const ext = path.extname(filePath).toLowerCase();
   const resolved = fileType === "auto" ? (ext === ".epub" ? "epub" : ext === ".txt" ? "txt" : ext.replace(".", "")) : fileType;
-  if (resolved !== "txt" && resolved !== "epub") {
-    throw new Error(`Line review supports txt and epub files. ${resolved || "unknown"} is not supported here.`);
+  if (resolved !== "txt" && resolved !== "epub" && resolved !== "pdf") {
+    throw new Error(`Line review supports txt, epub and pdf files. ${resolved || "unknown"} is not supported here.`);
   }
   return resolved;
 }
@@ -2557,8 +2560,8 @@ async function writeExtractedPromptText(
 }
 
 function assertLineFolderMode(fileType: GenerateLineHtmlArgs["fileType"]): void {
-  if (fileType !== "auto" && fileType !== "txt" && fileType !== "epub") {
-    throw new Error(`Folder generation supports txt and epub files. ${fileType} is not supported here.`);
+  if (fileType !== "auto" && fileType !== "txt" && fileType !== "epub" && fileType !== "pdf") {
+    throw new Error(`Folder generation supports txt, epub and pdf files. ${fileType} is not supported here.`);
   }
 }
 
@@ -2598,6 +2601,7 @@ async function isDirectory(targetPath: string | undefined): Promise<boolean> {
 
 async function readLineDocument(filePath: string, fileType: GenerateLineHtmlArgs["fileType"], workspaceDir: string): Promise<string> {
   const resolved = resolveLineFileType(filePath, fileType);
+  if (resolved === "pdf") return (await preparePdfDocument(filePath, workspaceDir)).text;
   if (resolved === "txt") {
     return readFile(filePath, "utf8");
   }
@@ -2609,8 +2613,13 @@ async function readLineDocumentForWorkflow(
   fileType: GenerateLineHtmlArgs["fileType"],
   workspaceDir: string,
   role: "source" | "translation"
-): Promise<{ text: string; kind: "txt" | "epub"; promptPath?: string }> {
+): Promise<{ text: string; kind: "txt" | "epub" | "pdf"; promptPath?: string; projection?: { kind: "pdf-text"; originalHash: string; projectionHash: string } }> {
   const kind = resolveLineFileType(filePath, fileType);
+  if (kind === "pdf") {
+    if (role === "translation") throw new Error("For PDF proofreading, select the aligned translated TXT produced by YN, not an independently typeset PDF.");
+    const pdf = await preparePdfDocument(filePath, workspaceDir);
+    return { text: pdf.text, kind, promptPath: pdf.sourcePath, projection: { kind: "pdf-text", originalHash: pdf.originalHash, projectionHash: pdf.sourceHash } };
+  }
   const text = await readLineDocument(filePath, kind, workspaceDir);
   const promptPath = kind === "epub" ? await writeExtractedPromptText(workspaceDir, filePath, role, text) : undefined;
   return { text, kind, promptPath };
@@ -2619,7 +2628,7 @@ async function readLineDocumentForWorkflow(
 async function readTranslationDocumentForWorkflow(
   filePath: string,
   workspaceDir: string
-): Promise<{ text: string; kind: "txt" | "epub"; promptPath?: string }> {
+): Promise<{ text: string; kind: "txt" | "epub" | "pdf"; promptPath?: string }> {
   return readLineDocumentForWorkflow(filePath, "auto", workspaceDir, "translation");
 }
 
@@ -2704,9 +2713,9 @@ async function writeBoundTranslationText(args: WriteTextFileArgs): Promise<{
 }
 
 async function collectLineFiles(folderPath: string, fileType: GenerateLineHtmlArgs["fileType"], workspaceDir: string): Promise<FolderLineFile[]> {
-  const allowed = fileType === "epub" ? /\.epub$/i : fileType === "txt" ? /\.txt$/i : /\.(txt|epub)$/i;
+  const allowed = fileType === "pdf" ? /\.pdf$/i : fileType === "epub" ? /\.epub$/i : fileType === "txt" ? /\.txt$/i : /\.(txt|epub|pdf)$/i;
   const entries = await collectSourceTreeFiles(folderPath, (filePath) => allowed.test(filePath));
-  return Promise.all(entries.map(async (entry) => {
+  const readEntry = async (entry: typeof entries[number]) => {
     const text = await readLineDocument(entry.path, fileType, workspaceDir);
     return {
       name: path.basename(entry.path),
@@ -2714,7 +2723,12 @@ async function collectLineFiles(folderPath: string, fileType: GenerateLineHtmlAr
       path: entry.path,
       lineCount: splitLines(text).length
     };
-  }));
+  };
+  // Preserve existing light input concurrency; PDF renderers own substantial native memory.
+  const lightFiles = await Promise.all(entries.filter(entry => !/\.pdf$/i.test(entry.path)).map(readEntry));
+  const byPath = new Map(lightFiles.map(file => [file.path, file]));
+  for (const entry of entries.filter(entry => /\.pdf$/i.test(entry.path))) byPath.set(entry.path, await readEntry(entry));
+  return entries.map(entry => byPath.get(entry.path)!);
 }
 
 async function collectTranslationLineFiles(folderPath: string, workspaceDir: string): Promise<FolderLineFile[]> {
@@ -2729,7 +2743,7 @@ async function collectBilingualFiles(folderPath: string, fileType: GenerateLineH
 
 function folderPromptAdvanced(
   advanced: PromptAdvancedOptions | undefined,
-  documents: Array<{ id: string; path: string }>
+  documents: NonNullable<PromptAdvancedOptions["folderSourceDocuments"]>
 ): PromptAdvancedOptions {
   return {
     ...advanced,
@@ -3643,7 +3657,7 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
       args.translationPath ? collectTranslationLineFiles(args.translationPath, workspaceDir) : Promise.resolve([])
     ]);
     if (sourceFiles.length === 0) {
-      throw new Error("No .txt or .epub files were found in the source folder.");
+      throw new Error("No .txt, .epub or .pdf files were found in the source folder.");
     }
     const matches = matchFolderFiles(sourceFiles, translationFiles);
     const preparedMatches = await Promise.all(matches.map(async (match) => ({
@@ -3652,7 +3666,8 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
     })));
     const folderAdvanced = folderPromptAdvanced(args.advanced, preparedMatches.map(({ match, sourceDocument }) => ({
       id: match.sourceName,
-      path: sourceDocument.promptPath ?? match.sourcePath
+      path: sourceDocument.promptPath ?? match.sourcePath,
+      ...(sourceDocument.projection ? { projection: sourceDocument.projection } : {})
     })));
     const indexFiles: BatchLineReviewIndexFile[] = [];
     for (const [index, prepared] of preparedMatches.entries()) {
@@ -3661,7 +3676,7 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
         ? await readTranslationDocumentForWorkflow(match.translationPath, workspaceDir)
         : undefined;
       const selectedTranslationPath = match.status === "matched" ? match.translationPath : undefined;
-      const editableSnapshotPath = !selectedTranslationPath && sourceDocument.kind === "epub"
+      const editableSnapshotPath = !selectedTranslationPath && sourceDocument.kind !== "txt"
         ? await writeExtractedPromptText(
           workspaceDir,
           match.sourcePath,
@@ -3670,9 +3685,9 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
         )
         : undefined;
       const translationPaths = workflowTranslationPaths({
-        sourceIsEpub: sourceDocument.kind === "epub",
+        sourceIsEpub: sourceDocument.kind !== "txt",
         selectedTranslationPath,
-        selectedTranslationIsEpub: translationDocument?.kind === "epub",
+        selectedTranslationIsEpub: translationDocument !== undefined && translationDocument.kind !== "txt",
         selectedTranslationWorkingPath: translationDocument?.promptPath,
         editableSnapshotPath
       });
@@ -3757,7 +3772,7 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
   const translationDocument = args.translationPath
     ? await readTranslationDocumentForWorkflow(args.translationPath, workspaceDir)
     : undefined;
-  const editableSnapshotPath = !args.translationPath && sourceDocument.kind === "epub"
+  const editableSnapshotPath = !args.translationPath && sourceDocument.kind !== "txt"
     ? await writeExtractedPromptText(
       workspaceDir,
       args.sourcePath,
@@ -3766,9 +3781,9 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
     )
     : undefined;
   const translationPaths = workflowTranslationPaths({
-    sourceIsEpub: sourceDocument.kind === "epub",
+    sourceIsEpub: sourceDocument.kind !== "txt",
     selectedTranslationPath: args.translationPath,
-    selectedTranslationIsEpub: translationDocument?.kind === "epub",
+    selectedTranslationIsEpub: translationDocument !== undefined && translationDocument.kind !== "txt",
     selectedTranslationWorkingPath: translationDocument?.promptPath,
     editableSnapshotPath
   });
@@ -4014,7 +4029,7 @@ async function startBuiltinTask(args: StartBuiltinTaskRequest, options?: {
     options?.signal.throwIfAborted();
     let outputPath: string | undefined;
     if (args.task !== "assets") {
-      const generated = await generateBuiltinTaskReview(settings, args.task, session.id);
+      const generated = await generateBuiltinTaskReview(settings, args.task, session.id, options?.signal);
       options?.signal.throwIfAborted();
       outputPath = generated.outputPath;
       await patchProjectState(settings.outputDir, { lastLineReviewHtml: outputPath, lineReviewPath: outputPath,
@@ -4685,6 +4700,14 @@ ipcMain.handle("files:writeAuditWhitelistFile", async (_event, args: WriteAuditW
   return payload;
 });
 
+ipcMain.handle("files:writePdfFile", async (_event, args: { templatePath: string; sourcePath: string; lines: string[]; outputDir: string }) => {
+  if (![args.templatePath, args.sourcePath, args.outputDir].every(value => typeof value === "string" && path.isAbsolute(value))
+    || !args.templatePath.toLowerCase().endsWith(".pdf") || !Array.isArray(args.lines)) throw new Error("PDF export requires absolute project/template/projection bindings and translated lines.");
+  const result = await createTranslatedPdf({ templatePath: args.templatePath, sourcePath: args.sourcePath,
+    translatedLines: args.lines, projectRoot: args.outputDir });
+  return { ok: true, path: result.outputPath, pages: result.pages };
+});
+
 ipcMain.handle("files:writeEpubFile", async (_event, args: WriteEpubFileArgs) => {
   const templatePath = args.templatePath;
   if (!templatePath || !path.isAbsolute(templatePath)) {
@@ -4886,6 +4909,23 @@ app.whenReady().then(async () => {
       clearInterval(sourcePreparationHeartbeat);
       await rm(sourcePreparationFixture);
     }
+    const { PDFDocument, StandardFonts } = await import("pdf-lib");
+    const pdfFixtureRoot = path.join(path.dirname(portableSmokeMarkerPath), `pdf-${process.pid}`);
+    await mkdir(pdfFixtureRoot, { recursive: true });
+    let pdfHeartbeatTicks = 0;
+    const pdfHeartbeat = setInterval(() => { pdfHeartbeatTicks += 1; }, 10);
+    try {
+      const pdfPath = path.join(pdfFixtureRoot, "source.pdf"), pdf = await PDFDocument.create();
+      pdf.addPage([600,800]).drawText("PDF sample", { x:40, y:740, size:22, font: await pdf.embedFont(StandardFonts.Helvetica) });
+      await writeFile(pdfPath, await pdf.save());
+      const extracted = await preparePdfDocument(pdfPath, path.join(pdfFixtureRoot, ".translation-workshop"));
+      if (extracted.text !== "PDF sample") throw new Error("Packaged PDF extraction failed.");
+      const image = await readPdfReferenceImage(extracted.sourcePath, pdfFixtureRoot, "p1-page", 1);
+      if (!image.data) throw new Error("Packaged PDF lazy reference failed.");
+      const exported = await createTranslatedPdf({ templatePath:pdfPath, sourcePath:extracted.sourcePath,
+        projectRoot:pdfFixtureRoot, translatedLines:["PDF 示例"] });
+      if (!pdfHeartbeatTicks || (await PDFDocument.load(await readFile(exported.outputPath))).getPageCount() !== 1) throw new Error("Packaged PDF layout export failed.");
+    } finally { clearInterval(pdfHeartbeat); await rm(pdfFixtureRoot, { recursive: true, force: true }); }
     await writeFile(portableSmokeMarkerPath, `${JSON.stringify({
       version: app.getVersion(),
       pid: process.pid,
@@ -4897,7 +4937,9 @@ app.whenReady().then(async () => {
       sourcePreparationWorkerVerified: true,
       sourcePreparationHeartbeatTicks,
       translationValidationWorkerVerified: true,
-      translationValidationHeartbeatTicks
+      translationValidationHeartbeatTicks,
+      pdfWorkerVerified: true,
+      pdfHeartbeatTicks
     }, null, 2)}\n`, "utf8");
     app.quit();
     return;

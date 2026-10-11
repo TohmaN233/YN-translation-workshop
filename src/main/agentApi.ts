@@ -186,7 +186,7 @@ export function createAgentApi(deps: AgentApiDependencies) {
       const settings = builtinTaskDefaults({ ...current, sourceKind: sourceInfo ? (sourceInfo.isDirectory() ? "folder" : "file")
         : project.sourceKind === "folder" ? "folder" : "file" });
       if (params.task === "translation" && !settings.reuseExistingTranslation) settings.translationPath = "";
-      for (const [key, allowed] of [["locale", ["zh-CN", "en-US"]], ["fileType", ["auto", "txt", "epub"]],
+      for (const [key, allowed] of [["locale", ["zh-CN", "en-US"]], ["fileType", ["auto", "txt", "epub", "pdf"]],
         ["inputMode", ["separate", "bilingual"]], ["proofreadMode", ["split", "montecarlo"]]] as const) {
         if (!allowed.includes(settings[key] as never)) throw new AgentApiError("invalid_request", `Invalid ${key}.`);
       }

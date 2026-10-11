@@ -205,6 +205,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     exportTxt: "\u5bfc\u51fa TXT",
     saveTxt: "\u5199\u5165 TXT",
     exportEpub: "\u5bfc\u51fa EPUB",
+    exportPdf: "导出 PDF",
     exportTxtMode: "TXT \u683c\u5f0f",
     exportTxtMono: "\u5355\u8bed",
     exportTxtBilingual: "\u53cc\u8bed",
@@ -387,6 +388,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     exportTxt: "Export TXT",
     saveTxt: "Save TXT",
     exportEpub: "Export EPUB",
+    exportPdf: "Export PDF",
     exportTxtMode: "TXT format",
     exportTxtMono: "Mono",
     exportTxtBilingual: "Bilingual",
@@ -846,6 +848,7 @@ function aiToolsHtml(t: Record<string, string>, workflow: ReturnType<typeof work
           <label class="compact-select">${t.exportTxtMode ?? "TXT"} <select id="exportTxtMode"><option value="translation">${t.exportTxtMono ?? "Mono"}</option><option value="bilingual">${t.exportTxtBilingual ?? "Bilingual"}</option></select></label>
           <button id="exportTxt" type="button">${t.exportTxt ?? "Export TXT"}</button>
           ${sourceIsEpub ? `<button id="exportEpub" type="button">${t.exportEpub ?? "Export EPUB"}</button>` : ""}
+          ${/\.pdf$/i.test(sourcePath) ? `<button id="exportPdf" type="button">${t.exportPdf ?? "Export PDF"}</button>` : ""}
           <button id="saveTxt" type="button"${canSaveTxt ? "" : " hidden"}>${t.saveTxt ?? "Save TXT"}</button>
           <label class="compact-select">${t.lanSyncPin ?? "6-digit PIN"} <input id="lanSyncPin" type="text" inputmode="numeric" autocomplete="off" maxlength="6" pattern="\\d{6}" placeholder="000000" style="width:92px"></label>
           <button id="startLanSync" type="button">${t.lanSync ?? "LAN sync"}</button>
@@ -1094,7 +1097,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 48;
+export const LINE_REVIEW_PROTOCOL_VERSION = 49;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 19;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
@@ -3278,7 +3281,7 @@ function projectTranslationBindingPath() {
 function boundPromptTranslationPath() {
   const projectPath = projectTranslationBindingPath();
   if (projectPath) {
-    if (/\.epub$/i.test(projectPath)) return workflow.paths?.promptTranslationPath || "";
+    if (/\.(epub|pdf)$/i.test(projectPath)) return workflow.paths?.promptTranslationPath || "";
     if (workflow.paths?.promptSourceKind === "folder") return projectPath;
     return projectPath;
   }
@@ -3301,7 +3304,7 @@ function applyProjectTranslationBinding(value) {
   const paths = workflowPaths();
   if (origin === "user" && nextPath) {
     paths.translationPath = nextPath;
-    if (!/\.epub$/i.test(nextPath)) paths.promptTranslationPath = nextPath;
+    if (!/\.(epub|pdf)$/i.test(nextPath)) paths.promptTranslationPath = nextPath;
     state.translationPromptPath = paths.promptTranslationPath || nextPath;
   } else if (origin === "canonical" && nextPath) {
     paths.translationPath = nextPath;
@@ -3434,6 +3437,19 @@ document.getElementById("syncTranslationInput")?.addEventListener("change", asyn
 document.getElementById("exportTxt")?.addEventListener("click", downloadTxt);
 document.getElementById("saveTxt")?.addEventListener("click", writeCurrentTranslationFile);
 document.getElementById("exportEpub")?.addEventListener("click", writeCurrentEpubCopy);
+document.getElementById("exportPdf")?.addEventListener("click", async () => {
+  const button = document.getElementById("exportPdf");
+  button.disabled = true;
+  try {
+    const bridge = writeBridge();
+    if (!bridge?.writePdfFile) throw new Error(data.locale === "en-US" ? "Open this HTML in YN to export PDF." : "请在 YN 内打开此 HTML 后导出 PDF。");
+    setAiStatus(data.locale === "en-US" ? "Preparing PDF…" : "正在排版 PDF…");
+    const result = await bridge.writePdfFile({ templatePath: workflow.paths.sourcePath, sourcePath: workflow.paths.validationSourcePath,
+      lines: currentTargetLines(), outputDir: workflow.paths.outputDir });
+    setAiStatus((data.locale === "en-US" ? "PDF exported: " : "PDF 已导出：") + result.path);
+  } catch (error) { setAiStatus((data.locale === "en-US" ? "PDF export failed: " : "PDF 导出失败：") + (error?.message || String(error))); }
+  finally { button.disabled = false; }
+});
 let glossaryEntries = workflow.glossaryEntries || [];
 let glossaryCandidateEntries = [];
 let glossaryView = "formal";

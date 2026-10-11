@@ -37,7 +37,7 @@ export interface PiFolderSourceDocument {
   path: string;
   /** Host-generated separated text, bound to the selected input and projected bytes. */
   projection?: {
-    kind: "bilingual-pairs" | "epub-text" | "text-lines";
+    kind: "bilingual-pairs" | "epub-text" | "pdf-text" | "text-lines";
     originalHash: string;
     projectionHash: string;
   };

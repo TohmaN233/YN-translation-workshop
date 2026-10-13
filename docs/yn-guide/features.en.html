@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="preload" as="image" href="assets/app-icon.png"/><meta name="description" content="AI translation and proofreading for long-form fiction and game localization. TXT, EPUB and text-layer PDF, editable line review, glossary consistency and verifiable recovery."/><meta name="robots" content="index,follow"/><meta http-equiv="Content-Security-Policy" content="default-src &#x27;self&#x27; data:; script-src &#x27;self&#x27;; style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27;; img-src &#x27;self&#x27; data: https://img.shields.io;"/><link rel="canonical" href="https://tohman233.github.io/YN-translation-workshop/features.en.html"/><link rel="alternate" hrefLang="zh-CN" href="https://tohman233.github.io/YN-translation-workshop/features.html"/><link rel="alternate" hrefLang="en" href="https://tohman233.github.io/YN-translation-workshop/features.en.html"/><link rel="icon" href="assets/app-icon.png"/><title>Features and settings · YN Translation Workshop 2.2.0</title><link rel="stylesheet" href="styles.css"/><script src="content.js" defer=""></script><script src="app.js" defer=""></script></head><body data-page="features" data-locale="en" data-version="2.2.0"><header class="topbar"><a class="brand" href="index.en.html"><img src="assets/app-icon.png" alt="YN"/><strong>YN Translation Workshop</strong></a><button class="search-trigger" type="button" data-search-open="true">Search docs</button><div class="topmeta"><span>2.2.0</span><a href="features.html" hrefLang="zh-CN">中文</a><button type="button" class="menu-button" data-menu="true" aria-label="Navigation">☰</button></div></header><aside class="sidebar" aria-label="Documentation navigation"><section class="nav-section"><p class="nav-label">Project</p><a class="nav-link" href="index.en.html">Overview</a></section><section class="nav-section"><p class="nav-label">Using YN</p><a class="nav-link" href="guides.en.html">First run</a><a class="nav-link active" href="features.en.html">Features and settings</a><a class="nav-link" href="pdf.en.html">PDF translation</a><a class="nav-link" href="agent-api.en.html">Background Agent API</a></section><section class="nav-section"><p class="nav-label">Examples and evidence</p><a class="nav-link" href="examples.en.html">Project examples</a><a class="nav-link" href="quality.en.html">Quality and reliability</a></section><section class="nav-section"><p class="nav-label">Technical reference</p><a class="nav-link" href="workflows.en.html">Workflows and recovery</a><a class="nav-link" href="harness.en.html">Harness architecture</a><a class="nav-link" href="development.en.html">Development and validation</a><a class="nav-link" href="functions.en.html">Function reference</a><a class="nav-link" href="terminology.en.html">Agent terminology</a><a class="nav-link" href="changelog.en.html">Changelog</a></section><div class="sidebar-foot">Docs for 2.2.0 · 2026-10-13</div></aside><main class="layout"><article class="content" id="content" data-source="docs/features.en.md"><h1 id="features-and-settings">Features and settings</h1>
+<h2 id="1-projects-inputs-and-bindings">1. Projects, inputs, and bindings</h2>
+<ul>
+<li>Create, load, save, and switch isolated projects. Settings, workflow state, assets, and sessions live under each project&#x27;s <code>.translation-workshop/</code> directory.</li>
+<li>The recent-project pointer follows the project actually opened or saved.</li>
+<li>Supports TXT files, folders, EPUB, text-layer PDF, and adjacent-line bilingual TXT / EPUB.</li>
+<li>EPUB becomes UTF-8 working text; ruby extraction keeps base text only, while the original EPUB remains export and repack metadata.</li>
+<li>Separate-file mode binds source and translation independently. Bilingual mode assigns the first or second adjacent position to each language.</li>
+<li>Folder mode matches source and translation documents and maintains one authoritative batch index.</li>
+<li>Ordered folder stages support barriers. <code>A, {B, C}, D</code> completes A, runs B/C in parallel, then starts D.</li>
+<li>Translation and report outputs rebind to the current project&#x27;s <code>AI_translation/</code> and <code>report/</code> directories when projects change.</li>
+<li>One canonical chunk size drives translation and proofreading. Translation and review Worker counts are ceilings that shrink to actual demand.</li>
+<li>Custom preserve rules protect variables, event codes, tags, control codes, and other immutable payloads. Invalid regular expressions fail visibly.</li>
+<li>Chinese/English UI, HTML themes, a project Agent-proxy switch, and persistent project settings.</li>
+</ul>
+<h2 id="2-line-by-line-translation-and-review-frontend">2. Line-by-line translation and review frontend</h2>
+<ul>
+<li>A complete manual workflow from reading and row editing through search and safe write-back, with no Agent required.</li>
+<li>Single-file pages and folder indexes with one canonical child HTML / sidecar identity per batch document.</li>
+<li>Aligned source and translation rows, direct candidate editing, human-edit state, and disk refresh.</li>
+<li>Pagination, page jump, full-text search, scroll restoration, last-focused-row location, and file tabs.</li>
+<li>Issue severity, row highlighting, explicit clearing, read-only mechanical evidence, and ignore handling.</li>
+<li>Ask the Agent about bounded context from a selected row without loading the whole document into chat.</li>
+<li>Accept, reject, or manually edit actionable proofreading suggestions.</li>
+<li>Apply accepted proposals in one action and synchronize every canonical child in a folder batch.</li>
+<li>Export TXT or write to the bound translation after binding, baseline, sidecar, line-count, and conflict checks.</li>
+<li>Timestamped backups before overwrite. Source files are always read-only.</li>
+<li>Legacy HTML upgrades through explicit protocol markers when opened; users do not need to regenerate every page.</li>
+</ul>
+<h2 id="3-terminology-characters-style-and-memory">3. Terminology, characters, style, and memory</h2>
+<ul>
+<li><strong>Approved glossary</strong>: the project&#x27;s canonical glossary. A selected external glossary remains authoritative for overlapping terms while nonconflicting canonical entries stay available. Importing accepted candidates consolidates the existing canonical glossary, the external glossary, and the candidates; conflicts reject the whole operation, and only a successful merge switches the project binding to canonical.</li>
+<li><strong>Glossary candidates</strong>: evidence-backed names, targets, and aliases discovered only inside a Worker&#x27;s owned rows.</li>
+<li><strong>Character bible</strong>: reusable names, gender, pronouns, forms of address, relationships, and voice facts.</li>
+<li><strong>Style guide</strong>: title-level tone, expression, and formatting constraints.</li>
+<li><strong>Translation memory</strong>: search across accepted source/translation segments.</li>
+<li>Glossary input supports JSON, Tab, <code>=&gt;</code>, <code>-&gt;</code>, <code>=</code>, and comma-separated records.</li>
+<li>The line-review page can edit and delete approved terms, preview/search/delete AI candidates before import, and search and replace translation matches.</li>
+<li>Each assignment receives only directly matched full structured records. Missing ambiguity uses exact-term search.</li>
+<li>Disabling candidate collection blocks new discoveries but keeps existing candidates readable.</li>
+<li>Approved targets take priority, followed by the first established candidate/character target; later differing observations remain evidence. Only internally conflicting new discoveries without an established target close the claim gate for Parent resolution and precise repair.</li>
+<li>Candidate assets, character facts, DomainRun state, and Host persistence commit or roll back together.</li>
+</ul>
+<h2 id="4-models-providers-and-agent-sessions">4. Models, Providers, and Agent sessions</h2>
+<ul>
+<li>ChatGPT, Claude, and Grok OAuth, plus OpenAI-compatible APIs, API keys, and explicit model catalogs.</li>
+<li>Provider, OAuth profile, selected model, and default thinking level are user-level settings shared across projects.</li>
+<li>Agent proxying is off by default and is used only when explicitly enabled for the current project.</li>
+<li>Session list, session creation and switching, a separate Agent window, streaming output, and Markdown rendering.</li>
+<li>Thinking, Function calls, and subagents appear as structured conversation blocks rather than leaked protocol text.</li>
+<li>Image attachments appear only when the selected catalog model advertises image input.</li>
+<li>Input, output, cache-token, and estimated-cost telemetry; product-backed commands include <code>/compact</code>, copy, Provider settings, and new session.</li>
+<li>Send Steer while work is active and queue Follow-up after it settles. Stop terminates active runtimes and Worker pools.</li>
+<li>Parent and Child use the same Pi Agent runtime, <code>AgentMessage[]</code>, and Pi JSONL sessions.</li>
+<li>Long sessions use native Pi compaction. Full Child conversations stay in Child JSONL; the Parent stores only lightweight state and a session reference.</li>
+<li>Large sessions load on demand. Older v4 sessions automatically compact repeated state on opening and retain a verified gzip backup of the original file; see <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/docs/session-storage.md">session storage</a>.</li>
+</ul>
+<h2 id="5-full-initial-translation-workflow">5. Full initial-translation Workflow</h2>
+<ul>
+<li>The Parent reads current interface bindings and Host state, chooses real concurrency within the project ceiling, and owns final consolidation.</li>
+<li>The Host plans real debt from the authoritative manifest, file stages, canonical chunk size, reuse mask, and accepted evidence. The model cannot invent documents or ranges.</li>
+<li>Persistent translation Workers dynamically claim non-overlapping assignments, avoiding long per-file private queues.</li>
+<li>Each assignment owns only exact writable lines. Bounded adjacent context can be read without expanding write ownership.</li>
+<li>Translation first enters Host-managed staging, whose path, hash, and pending-review state are persisted immediately.</li>
+<li>Mandatory line-count, blank-line, placeholder, tag, control-code, custom-preserve, and line-identity validation.</li>
+<li>A separate read-only review pool checks every mechanical-risk row and stable samples of normal rows.</li>
+<li>Review returns only exact failures and short executable instructions. Passing rows do not generate per-line prose.</li>
+<li>Failures return to the same translation Worker for bounded exact repair instead of restarting a whole chunk.</li>
+<li>No progress or exhausted repair hands hash-current staging and exact failed rows to the Parent while preserving accepted rows and evidence.</li>
+<li>Terminology conflicts become a priority repair wave inside the same batch. Normal claims cannot pass an active priority wave.</li>
+<li>One full-artifact mechanical validation runs after all assignments. Remaining warnings receive paired Parent semantic checks.</li>
+<li>Only true-positive warnings become exact repair debt. False positives persist as hash-bound evidence.</li>
+<li>Stop, crash, and restart recover from durable staging, ownership, evidence, and Pi sessions.</li>
+</ul>
+<h2 id="6-existing-translation-audit-and-selective-reuse">6. Existing-translation audit and selective reuse</h2>
+<ul>
+<li>Reuse is off by default. Before the first full-run write, the Host creates a SHA-256 backup and clears the old candidate once.</li>
+<li>When enabled, mechanical screening covers every aligned row. Line-count, blank-line, placeholder, tag, and obvious placeholder-text failures go directly to retranslation.</li>
+<li>Wrong language, source copying, abnormal length, repeated targets, AI contamination, and asset signals are risk evidence, not automatic rejection.</li>
+<li>Low-risk aligned target-language rows are reused automatically. Only sparse high-risk rows enter read-only semantic audit.</li>
+<li>Audit returns only <code>reuse</code> or <code>retranslate</code> and does not spend another model turn restating counts.</li>
+<li>One batch-level user decision transactionally retains accepted rows and clears retranslation rows.</li>
+<li>The later queue contains only real retranslation debt. Retained rows are not resent to make coverage contiguous.</li>
+<li>Cold recovery binds owner, document, source hash, and retained baseline, so output written by the current run is not mistaken for old input.</li>
+</ul>
+<h2 id="7-full-proofreading-workflow">7. Full proofreading Workflow</h2>
+<ul>
+<li>Before any semantic Worker starts, the Host runs deterministic H3/H4/H7/H8/H9 scans over all aligned rows in every manifest document.</li>
+<li>Evidence binds source, candidate, glossary, character-bible, and style hashes. Any input change invalidates stale evidence.</li>
+<li>Deterministic signals are evidence for contextual judgment, not automatic findings.</li>
+<li><strong>Split review</strong> semantically checks every owned row. Chunk size is only a dispatch and persistence boundary.</li>
+<li><strong>Monte Carlo</strong> uses Host-planned, non-overlapping HOT / WARM / COLD strata with real coverage tracking.</li>
+<li>After minimum rounds, convergence requires two consecutive rounds with no new findings. At the round limit, the user can add three rounds, switch to HOT split review, or stop with current results.</li>
+<li>Proofread Workers are read-only and may submit only evidence-bound structured findings and proper-name candidates.</li>
+<li>Folder mode prescans all files before entering one cross-file staged assignment queue.</li>
+<li>Findings replace their scope atomically and deduplicate. Each requires a global row, category, evidence, and complete replacement line.</li>
+<li>Proofreading prompts include project preservation rules and treat control codes, tags, and placeholders as required structure. Submission uses translation&#x27;s structural checks to reject missing or changed symbols, count changes, and physical newlines.</li>
+<li>No-op fixes, out-of-range rows, routine target-language punctuation differences, and malformed submissions are rejected.</li>
+<li>Single-file and folder runs persist exactly one Findings JSON. The product renders human review HTML from that JSON.</li>
+</ul>
+<h2 id="8-harness-host-and-reliability">8. Harness, Host, and reliability</h2>
+<ul>
+<li><strong>Runtime</strong> owns model calls, Function calls, continuation, Steer / Follow-up queues, Provider retry, and compaction.</li>
+<li><strong>Harness</strong> assembles runtime, system prompt, Function set, durable state, and completion conditions into a continuing Agent environment.</li>
+<li><strong>Host</strong> owns manifests, assignments, stages, write ownership, locks, hashes, validators, transactions, and completion gates.</li>
+<li>General investigation, local repair, full translation, and full proofreading use different typed operation scopes.</li>
+<li>Complete batches reserve atomically before Workers start. Duplicate active batches fail before model runtime creation.</li>
+<li>Parent and Child may read required references, but only Host-granted document, range, or exact-line ownership can write artifacts.</li>
+<li>Staging promotion, domain revision, alignment evidence, and Host JSONL persistence form one rollback-capable transaction boundary.</li>
+<li>Correctable Function input errors stay in the same Pi turn. Unretryable internal or persistence failures stop the entire workflow, retain artifacts and review evidence, and report the error.</li>
+<li>A workflow completes only when the Host settles tasks, repair debt, evidence, artifacts, and final validation.</li>
+<li>Critical phases, Workers, assignments, Provider errors, staging, and hashes remain observable and durable.</li>
+</ul>
+<h3 id="reliability-mechanisms">Reliability mechanisms</h3>
+<ul>
+<li>Models perform semantic work; deterministic Host code controls identity, scope, concurrent writes, and completion.</li>
+<li>Partial output stays in staging instead of overwriting the canonical artifact.</li>
+<li>Translation and independent review use separate pools. Failures return precisely, and no-progress retries stop.</li>
+<li>Recovery evidence binds current content hashes. Stale grants and stale evidence cannot remain active.</li>
+<li>Shared-asset updates and artifact promotion use transactions. If compensation cannot be confirmed, drafts, backups and diagnostics are retained and the workflow stops.</li>
+</ul>
+<h3 id="reducing-repeated-context">Reducing repeated context</h3>
+<ul>
+<li>Host code plans chunks and risk scans instead of asking a model to reread whole files and plan them.</li>
+<li>Assignments receive directly matched assets and short context; missing terms use exact search.</li>
+<li>Mechanical screening, placeholders, line counts, and deterministic proofreading signals consume no model reasoning.</li>
+<li>Independent review reports failures only and produces no per-line explanation for accepted rows.</li>
+<li>The Parent never embeds full Child transcripts; it reads lightweight state and structured discoveries.</li>
+<li>Existing-translation reuse sends only sparse risky rows to semantic audit.</li>
+<li>Hash-bound acceptance and warning evidence survive unrelated edits, avoiding full-document rereview.</li>
+</ul>
+<h2 id="9-web-and-local-references">9. Web and local references</h2>
+<ul>
+<li>The Agent can read explicitly supplied HTTP(S) pages and cache readable content.</li>
+<li>Wikipedia uses the MediaWiki API. Ordinary pages use main-content extraction.</li>
+<li>Parent and Children reuse cached references instead of redownloading them for every assignment.</li>
+<li>Explicit absolute paths outside the project, old translations, and backups may be read as references.</li>
+<li>All artifact writes remain bound to project identity and exact Host ownership.</li>
+</ul>
+<h2 id="10-lan-and-remote-operation">10. LAN and remote operation</h2>
+<ul>
+<li>Open a work HTML in the desktop app, start LAN sync, and choose a six-digit PIN.</li>
+<li>Phones, tablets, and other computers can open folder indexes and single-file pages.</li>
+<li>Remote users can search, page, edit translations, accept or reject proposals, synchronize pages, and use the Agent panel.</li>
+<li>Remote Prompt, Steer, and Follow-up use the desktop&#x27;s same durable Pi session rather than a separate remote transcript.</li>
+<li>SSE provides low-latency display only. After disconnects or proxy buffering, the browser converges from canonical Pi messages.</li>
+<li>The desktop app must remain running. LAN exposes the current shared work session, not arbitrary directory browsing.</li>
+<li>Public tunneling is not built in. Cloudflare Tunnel, ngrok, or a similar tool can target the displayed local address.</li>
+<li>A public URL exposes the workbench entry point. Use an unguessable PIN, never publish the URL, and stop both tunnel and LAN sync when finished.</li>
+</ul>
+<h2 id="11-updates-recovery-and-compatibility">11. Updates, recovery, and compatibility</h2>
+<ul>
+<li>Installed builds can check GitHub Releases, download updates, and restart into installation. Portable builds open the release download.</li>
+<li>Legacy line-review HTML, proposal HTML, and project fields have explicit upgrade paths.</li>
+<li>Legacy chunk settings are read once during migration and then replaced by the canonical setting.</li>
+<li>Stop terminates active runtimes while preserving hash-current staging, review evidence, and unfinished debt.</li>
+<li>Explicit resume continues the same Pi session and Host batch rather than starting a fake replacement run.</li>
+<li>Provider transport failures preserve redacted cause, Provider, model, session, and retry records for diagnosis.</li>
+</ul>
+<h2 id="12-pdf-and-background-agent-access">12. PDF and background Agent access</h2>
+<p>Text-layer PDFs become line-based working text. Host-prefilled code and formulas remain locked, images are viewed on demand, and the current HTML translation can be exported as a PDF. No OCR is included; complex reading order and inseparable content have limits. See the <a href="pdf.en.html">PDF guide</a>.</p>
+<p>The <a href="agent-api.en.html">official Agent API</a> previews location, model and settings before confirmation, then reuses homepage preparation and execution. It uses YN-configured providers, not the external agent&#x27;s current chat model.</p>
+<p><a href="features.html">中文</a> · <a href="guides.en.html">First run</a> · <a href="index.en.html">Project</a></p></article></main><aside class="toc"><strong>On this page</strong><div id="toc-links"><a href="#1-projects-inputs-and-bindings" class="level-2">1. Projects, inputs, and bindings</a><a href="#2-line-by-line-translation-and-review-frontend" class="level-2">2. Line-by-line translation and review frontend</a><a href="#3-terminology-characters-style-and-memory" class="level-2">3. Terminology, characters, style, and memory</a><a href="#4-models-providers-and-agent-sessions" class="level-2">4. Models, Providers, and Agent sessions</a><a href="#5-full-initial-translation-workflow" class="level-2">5. Full initial-translation Workflow</a><a href="#6-existing-translation-audit-and-selective-reuse" class="level-2">6. Existing-translation audit and selective reuse</a><a href="#7-full-proofreading-workflow" class="level-2">7. Full proofreading Workflow</a><a href="#8-harness-host-and-reliability" class="level-2">8. Harness, Host, and reliability</a><a href="#reliability-mechanisms" class="level-3">Reliability mechanisms</a><a href="#reducing-repeated-context" class="level-3">Reducing repeated context</a><a href="#9-web-and-local-references" class="level-2">9. Web and local references</a><a href="#10-lan-and-remote-operation" class="level-2">10. LAN and remote operation</a><a href="#11-updates-recovery-and-compatibility" class="level-2">11. Updates, recovery, and compatibility</a><a href="#12-pdf-and-background-agent-access" class="level-2">12. PDF and background Agent access</a></div></aside><dialog class="search-dialog" id="search-dialog"><div class="search-head"><input type="search" id="global-search" placeholder="Search title or topic" aria-label="Search documentation"/><button type="button" data-search-close="true" aria-label="Close search">×</button></div><div class="search-results" id="search-results"></div></dialog><dialog class="lightbox" id="lightbox"><button type="button" data-lightbox-close="true" aria-label="Close image">×</button><img alt="Enlarged product screenshot"/></dialog><footer class="doc-footer"><a href="https://github.com/TohmaN233/YN-translation-workshop/releases">Downloads</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/docs/features.en.md">Markdown source</a> · MIT</footer></body></html>

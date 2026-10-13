@@ -272,6 +272,9 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
   const [prompt, setPrompt] = useState("");
   const [promptKind, setPromptKind] = useState<AgentTaskKind>("translate");
   const [status, setStatus] = useState("");
+  const [lineHtmlBusy, setLineHtmlBusy] = useState(false);
+  const [lineHtmlStatus, setLineHtmlStatus] = useState("");
+  const lineHtmlActive = useRef(false);
   const [lastOutput, setLastOutput] = useState("");
   const [candidates, setCandidates] = useState<Array<{ path: string; size: number; modifiedAt: string }>>([]);
   const [reportCandidates, setReportCandidates] = useState<Array<{ path: string; size: number; modifiedMs: number; score: number; reasons: string[] }>>([]);
@@ -845,16 +848,29 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
   }
 
   async function generateLineHtml() {
+    if (lineHtmlActive.current) return;
+    const showGenerationStatus = (message: string) => { setStatus(message); setLineHtmlStatus(message); };
     if (!form.sourcePath || !form.outputDir) {
-      setStatus(t.requiredSourceOutput);
+      showGenerationStatus(t.requiredSourceOutput);
       return;
     }
+    lineHtmlActive.current = true;
+    setLineHtmlBusy(true);
+    showGenerationStatus(t.htmlGenerating);
+    let unsubscribe: (() => void) | undefined;
     try {
+      const requestId = crypto.randomUUID();
+      unsubscribe = window.workshop.onLineReviewGenerationProgress(progress => {
+        if (progress.requestId !== requestId) return;
+        const filename = progress.sourcePath.split(/[\\/]/).pop() || progress.sourcePath;
+        showGenerationStatus(t.htmlPdfProgress.replace("{file}", filename).replace("{page}", String(progress.page)).replace("{total}", String(progress.totalPages)));
+      });
       const sourcePosition = bilingualPositionMode ? (form.sourcePosition === 1 ? 1 : 2) : form.sourcePosition;
       const translationPosition = bilingualPositionMode
         ? (form.translationPosition === sourcePosition ? (sourcePosition === 1 ? 2 : 1) : (form.translationPosition === 2 ? 2 : 1))
         : form.translationPosition;
       const result = await window.workshop.generateLineReview({
+        requestId,
         sourcePath: form.sourcePath,
         translationPath: form.translationPath || undefined,
         outputDir: form.outputDir,
@@ -870,14 +886,19 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
       });
       setLastOutput(result.outputPath);
       if (result.fileCount) {
-        setStatus(`${t.batchHtmlGenerated} ${result.matchedCount ?? 0}/${result.fileCount} ${t.batchMatched}, ${result.warningCount ?? 0} ${t.batchWarnings}`);
+        showGenerationStatus(`${t.batchHtmlGenerated} ${result.matchedCount ?? 0}/${result.fileCount} ${t.batchMatched}, ${result.warningCount ?? 0} ${t.batchWarnings}`);
       } else {
-        setStatus(t.htmlGenerated);
+        showGenerationStatus(t.htmlGenerated);
       }
       await saveProject(result.outputPath, "line");
-      await window.workshop.openPath(result.outputPath);
+      const openError = await window.workshop.openPath(result.outputPath);
+      if (openError) throw new Error(openError);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      showGenerationStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      unsubscribe?.();
+      lineHtmlActive.current = false;
+      setLineHtmlBusy(false);
     }
   }
 
@@ -1514,12 +1535,14 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
           </section>
 
           <div className="actions">
-            <IconButton icon={<FileText size={18} />} label={t.generateLineHtml} onClick={generateLineHtml} primary />
+            <IconButton icon={<FileText size={18} />} label={lineHtmlBusy ? t.htmlGenerating : t.generateLineHtml} onClick={generateLineHtml} disabled={lineHtmlBusy} primary />
             <IconButton icon={<Languages size={18} />} label={t.generateTranslatePrompt} onClick={generateTranslatePrompt} />
             <IconButton icon={<ShieldCheck size={18} />} label={t.generateProofreadPrompt} onClick={generateProofreadPrompt} />
             <IconButton icon={<RefreshCw size={18} />} label={t.syncTranslation} onClick={syncTranslations} />
             <IconButton icon={<ExternalLink size={18} />} label={t.openOutput} onClick={() => form.outputDir && window.workshop.openPath(form.outputDir)} disabled={!form.outputDir} />
           </div>
+
+          {lineHtmlStatus && <div className="statusBar" role="status" aria-live="polite" data-line-html-status="true"><span>{lineHtmlStatus}</span></div>}
 
           <Field label={t.proofreadReport} value={form.reportPath} onChange={(value) => patch({ reportPath: value })} onPick={() => pickFile("reportPath")} buttonText={t.select} />
           <div className="actions compact">

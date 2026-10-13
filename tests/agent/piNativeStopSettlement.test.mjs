@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {mkdtemp,rm,writeFile,readFile,stat} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {Type} from 'typebox';
@@ -51,6 +51,12 @@ for(const mode of ['publish','stop','suspend','dispose','persistence-failure']){
    }
    else await bounded(stopTask,'Stop deadlocked on Host publication');
    assert.equal(active.running,false);assert.equal(active.subagents.hasRunning(),false);
+   if(!armed){
+    const file=active.session.metadata.path;
+    const index=JSON.parse(await readFile(file+'.yn-index.json','utf8')).index;
+    assert.ok(index.hostRestorePoint,'active Stop must persist the final Host restore window');
+    assert.equal(index.committedBytes,(await stat(file)).size,'Stop returns only after the final native tail is indexed');
+   }
   }
   assert.equal(publicationFinished,true);assert.equal(provider.state.callCount,1);
   if(mode==='persistence-failure')assert.equal(active.hostState.workflowSuspended,true);

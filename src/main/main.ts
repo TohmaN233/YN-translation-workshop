@@ -1,9 +1,9 @@
 import { app, BrowserView, BrowserWindow, clipboard, dialog, ipcMain, Menu, session, shell, webContents, type MenuItemConstructorOptions } from "electron";
-import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -34,6 +34,7 @@ import { formatFolderTranslationOrder } from "./agent/piNative/folderTranslation
 import { setPiSessionHtmlViewerTabsRef, subscribePiSessionBroadcast } from "./agent/piNative/broadcast.ts";
 import { openAgentChatWindow } from "./agent/piNative/agentChatWindowHost.ts";
 import { piNativeSessionService } from "./agent/piNative/sessionService.ts";
+import { registerDesktopShutdown } from "./desktopShutdown.ts";
 import type { PiSessionPromptRequest } from "../shared/agent/piSessionContract.ts";
 import { builtinTranslationPreparationPrompt, type BuiltinTaskSettings, type StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
 import type { YnTaskPreparationContext } from "./agent/piNative/taskPreparation.ts";
@@ -77,6 +78,7 @@ import { collectSourceTreeFiles } from "./sourceFileTree.ts";
 import { upgradeLegacyReviewHtmlTree } from "./reviewHtmlUpgrade.ts";
 import { containedProjectRoot, portableReviewHtml, readReviewHtml, writeReviewHtml } from "./reviewHtmlPortability.ts";
 import { decodeProjectPaths, encodeProjectPaths } from "./projectPaths.ts";
+import { commitLineReviewStateInWorker } from "./lineReviewStateWorkerService.ts";
 import {
   discoverProjectReviewTargets,
   readRecentProjectDir,
@@ -138,6 +140,7 @@ import { connectAgentApiPipe } from "./agentApiTransport.ts";
 configurePdfResourceDirectory(app.getAppPath());
 
 interface GenerateLineHtmlArgs {
+  requestId?: string;
   sourcePath: string;
   translationPath?: string;
   outputDir: string;
@@ -333,6 +336,7 @@ type HtmlViewerTab = {
   loadPromise?: Promise<void>;
 };
 const htmlViewerTabs = new Map<string, HtmlViewerTab>();
+const htmlViewerOpenOperations = new Set<Promise<{ key: string; tab: HtmlViewerTab }>>();
 const htmlViewerTabCloseOperations = new Map<string, Promise<boolean>>();
 const htmlViewerTabSettlements = new WeakMap<HtmlViewerTab, Promise<void>>();
 const htmlStateWriteQueues = new Map<string, Promise<void>>();
@@ -1449,9 +1453,9 @@ async function ensureTransactionalTextTarget(filePath: string, initialText: stri
   }
 }
 
-function broadcastLineReviewState(payload: Record<string, unknown>): void {
+function broadcastLineReviewState(payload: Record<string, unknown>, excludeSender?: number): void {
   for (const tab of htmlViewerTabs.values()) {
-    if (!tab.view.webContents.isDestroyed()) {
+    if (!tab.view.webContents.isDestroyed() && tab.view.webContents.id !== excludeSender) {
       tab.view.webContents.send("html:lineReviewStateUpdate", payload);
     }
   }
@@ -2632,12 +2636,13 @@ async function readLineDocumentForWorkflow(
   filePath: string,
   fileType: GenerateLineHtmlArgs["fileType"],
   workspaceDir: string,
-  role: "source" | "translation"
+  role: "source" | "translation",
+  onPdfProgress?: (sourcePath: string, page: number, totalPages: number) => void
 ): Promise<{ text: string; kind: "txt" | "epub" | "pdf"; promptPath?: string; projection?: { kind: "pdf-text"; originalHash: string; projectionHash: string } }> {
   const kind = resolveLineFileType(filePath, fileType);
   if (kind === "pdf") {
     if (role === "translation") throw new Error("For PDF proofreading, select the aligned translated TXT produced by YN, not an independently typeset PDF.");
-    const pdf = await preparePdfDocument(filePath, workspaceDir);
+    const pdf = await preparePdfDocument(filePath, workspaceDir, { onProgress: (page, total) => onPdfProgress?.(filePath, page, total) });
     return { text: pdf.text, kind, promptPath: pdf.sourcePath, projection: { kind: "pdf-text", originalHash: pdf.originalHash, projectionHash: pdf.sourceHash } };
   }
   const text = await readLineDocument(filePath, kind, workspaceDir);
@@ -3153,6 +3158,14 @@ async function finishClosingHtmlViewerTab(key: string): Promise<boolean> {
 }
 
 async function loadHtmlViewerTab(targetPath: string, outputDir?: string): Promise<{ key: string; tab: HtmlViewerTab }> {
+  if (desktopQuitPending) throw new Error("YN is shutting down; wait for pending storage and HTML writes.");
+  const operation = finishLoadingHtmlViewerTab(targetPath, outputDir);
+  htmlViewerOpenOperations.add(operation);
+  try { return await operation; }
+  finally { htmlViewerOpenOperations.delete(operation); }
+}
+
+async function finishLoadingHtmlViewerTab(targetPath: string, outputDir?: string): Promise<{ key: string; tab: HtmlViewerTab }> {
   if (htmlViewerWindowClosing) throw new Error("HTML viewer is closing. Wait for pending changes to be saved before reopening it.");
   const resolvedTargetPath = await resolveHtmlOpenTarget(targetPath);
   const { filePath, hash, key } = splitHtmlOpenTarget(resolvedTargetPath);
@@ -3251,7 +3264,7 @@ async function injectHtmlSidecarState(filePath: string, contents: Electron.WebCo
   const stateJson = JSON.stringify(sidecarState);
   await contents.executeJavaScript(`
     (() => {
-      const incomingState = ${stateJson};
+      const incomingState = JSON.parse(${JSON.stringify(stateJson)});
       if (!incomingState || typeof incomingState !== "object") return;
       if (${JSON.stringify(kind)} === "line") {
         const legacyKey = "translation-workshop:line:" + location.pathname;
@@ -3260,18 +3273,18 @@ async function injectHtmlSidecarState(filePath: string, contents: Electron.WebCo
         const mergedState = {
           ...existingState,
           ...incomingState,
-          edits: { ...(existingState.edits || {}), ...(incomingState.edits || {}) },
-          status: { ...(existingState.status || {}), ...(incomingState.status || {}) },
-          revisions: { ...(existingState.revisions || {}), ...(incomingState.revisions || {}) },
-          revisionHistory: { ...(existingState.revisionHistory || {}), ...(incomingState.revisionHistory || {}) },
-          auditIssues: { ...(existingState.auditIssues || {}), ...(incomingState.auditIssues || {}) },
-          auditWhitelist: { ...(existingState.auditWhitelist || {}), ...(incomingState.auditWhitelist || {}) },
+          edits: incomingState.edits || {},
+          status: incomingState.status || {},
+          revisions: incomingState.revisions || {},
+          revisionHistory: incomingState.revisionHistory || {},
+          auditIssues: incomingState.auditIssues || {},
+          auditWhitelist: incomingState.auditWhitelist || {},
           theme: { ...(existingState.theme || {}), ...(incomingState.theme || {}) }
         };
-        for (const storageKey of [...new Set([primaryKey, legacyKey].filter(Boolean))]) {
-          localStorage.setItem(storageKey, JSON.stringify(mergedState));
-        }
         if (typeof state === "object" && state) Object.assign(state, mergedState);
+        if (typeof storeLineReviewStateLocally === "function") storeLineReviewStateLocally();
+        else for (const storageKey of [...new Set([primaryKey, legacyKey].filter(Boolean))]) localStorage.setItem(storageKey, JSON.stringify(mergedState));
+        if (typeof canonicalStateHydrated !== "undefined") canonicalStateHydrated = true;
       } else {
         const existingState = JSON.parse(localStorage.getItem(key) || "{}") || {};
         const mergedState = {
@@ -3283,7 +3296,11 @@ async function injectHtmlSidecarState(filePath: string, contents: Electron.WebCo
         localStorage.setItem(key, JSON.stringify(mergedState));
         if (typeof state === "object" && state) Object.assign(state, mergedState);
       }
-      if (typeof render === "function") render();
+      if (typeof render === "function") {
+        const previous = typeof applyingCanonicalState !== "undefined" ? applyingCanonicalState : false;
+        applyingCanonicalState = true;
+        try { render(); } finally { applyingCanonicalState = previous; }
+      }
     })();
   `);
 }
@@ -3324,8 +3341,8 @@ async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promi
       const legacyKey = "translation-workshop:line:" + location.pathname;
       const primaryKey = typeof lineReviewStorageKey === "function" ? lineReviewStorageKey() : legacyKey;
       const storageKeys = [...new Set([primaryKey, legacyKey].filter(Boolean))];
-      const existingState = JSON.parse(localStorage.getItem(primaryKey) || localStorage.getItem(legacyKey) || "{}") || {};
-      const incomingState = ${stateJson};
+      const existingState = typeof state === "object" && state ? state : JSON.parse(localStorage.getItem(primaryKey) || localStorage.getItem(legacyKey) || "{}") || {};
+      const incomingState = JSON.parse(${JSON.stringify(stateJson)});
       const affectedLines = ${linesJson};
       const mergedState = {
         ...existingState,
@@ -3346,9 +3363,6 @@ async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promi
         }
         mergedState[field] = nextMap;
       }
-      for (const storageKey of storageKeys) {
-        localStorage.setItem(storageKey, JSON.stringify(mergedState));
-      }
       if (typeof state === "object" && state) {
         Object.assign(state, mergedState);
         state.edits = mergedState.edits;
@@ -3359,8 +3373,12 @@ async function applyLineReviewStateToView(args: ApplyLineReviewStateArgs): Promi
         state.auditWhitelist = mergedState.auditWhitelist;
         state.theme = mergedState.theme;
       }
+      if (typeof storeLineReviewStateLocally === "function") storeLineReviewStateLocally();
+      else for (const storageKey of storageKeys) localStorage.setItem(storageKey, JSON.stringify(mergedState));
       if (typeof render === "function") {
-        render();
+        const previous = typeof applyingCanonicalState !== "undefined" ? applyingCanonicalState : false;
+        applyingCanonicalState = true;
+        try { render(); } finally { applyingCanonicalState = previous; }
       }
       const targetLine = ${lineJson};
       if (Number.isInteger(targetLine) && targetLine > 0 && typeof jumpToLine === "function") {
@@ -3517,7 +3535,7 @@ ipcMain.handle("prompts:build", async (_event, args: unknown) => {
   return buildPrompt(normalizePromptBuildArgs(args));
 });
 
-async function generateLineReview(args: GenerateLineHtmlArgs) {
+async function generateLineReview(args: GenerateLineHtmlArgs, onPdfProgress?: (sourcePath: string, page: number, totalPages: number) => void) {
   if (!args.sourcePath || !args.outputDir) {
     throw new Error("Source path and output folder are required.");
   }
@@ -3689,7 +3707,7 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
     const matches = matchFolderFiles(sourceFiles, translationFiles);
     const preparedMatches = await Promise.all(matches.map(async (match) => ({
       match,
-      sourceDocument: await readLineDocumentForWorkflow(match.sourcePath, args.fileType, workspaceDir, "source")
+      sourceDocument: await readLineDocumentForWorkflow(match.sourcePath, args.fileType, workspaceDir, "source", onPdfProgress)
     })));
     const folderAdvanced = folderPromptAdvanced(args.advanced, preparedMatches.map(({ match, sourceDocument }) => ({
       id: match.sourceName,
@@ -3795,7 +3813,7 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
       warningCount: indexFiles.filter((file) => file.status !== "matched").length
     };
   }
-  const sourceDocument = await readLineDocumentForWorkflow(args.sourcePath, args.fileType, workspaceDir, "source");
+  const sourceDocument = await readLineDocumentForWorkflow(args.sourcePath, args.fileType, workspaceDir, "source", onPdfProgress);
   const translationDocument = args.translationPath
     ? await readTranslationDocumentForWorkflow(args.translationPath, workspaceDir)
     : undefined;
@@ -3843,7 +3861,28 @@ async function generateLineReview(args: GenerateLineHtmlArgs) {
   await writeFile(path.join(workspaceDir, "state.json"), projectJson(path.join(workspaceDir, "state.json"), { lastHtml: outputPath, generatedAt: new Date().toISOString() }), "utf8");
   return { outputPath };
 }
-ipcMain.handle("html:generateLineReview", async (_event, args: GenerateLineHtmlArgs) => generateLineReview(args));
+ipcMain.handle("html:generateLineReview", async (event, args: GenerateLineHtmlArgs) => {
+  const requestId = args.requestId || randomUUID(), started = performance.now();
+  const progress = (sourcePath: string, page: number, totalPages: number) => {
+    if (!event.sender.isDestroyed()) event.sender.send("html:lineGenerationProgress", { requestId, sourcePath, page, totalPages });
+  };
+  if (!args.sourcePath || !args.outputDir) throw new Error("Source path and output folder are required.");
+  const journal = path.join(normalizeProjectFolder(args.outputDir).workspaceDir, "html-generation", "events.jsonl");
+  await mkdir(path.dirname(journal), { recursive: true });
+  const record = (phase: string, detail: object = {}) => appendFile(journal, JSON.stringify({ requestId, phase,
+    sourcePath: args.sourcePath, outputDir: args.outputDir, fileType: args.fileType, inputMode: args.inputMode,
+    at: new Date().toISOString(), elapsedMs: performance.now()-started, ...detail })+"\n");
+  await record("requested");
+  try {
+    const result = await generateLineReview(args, progress);
+    await record("completed", { outputPath: result.outputPath });
+    return result;
+  } catch (error) {
+    try { await record("failed", { error: error instanceof Error ? error.message : String(error) }); }
+    catch (diagnosticError) { throw new AggregateError([error, diagnosticError], "HTML generation and diagnostic persistence failed."); }
+    throw error;
+  }
+});
 
 async function generateProposalReview(args: GenerateReviewHtmlArgs, allowEmpty = false) {
   if (!args.outputDir) {
@@ -4414,6 +4453,9 @@ ipcMain.handle("html:persistState", async (event, args: {
   changedStateKeys?: unknown;
   clientId?: unknown;
   mutationId?: unknown;
+  hydrate?: boolean;
+  bulk?: boolean;
+  expectedRevision?: number;
 }) => {
   const kind = args?.kind === "line" || args?.kind === "proposal" ? args.kind : "";
   if (!kind) return { ok: false };
@@ -4444,23 +4486,21 @@ ipcMain.handle("html:persistState", async (event, args: {
     const changedLines = normalizeChangedLineNumbers(args.changedLines);
     const changedStateKeys = normalizeChangedStateKeys(args.changedStateKeys);
     let mutationAccepted = true;
-    const canonicalState = await updateHtmlSidecarState(
-      statePath,
-      async (current) => {
-        await assertPdfLineReviewState(filePath, args.state, changedLines);
-        const stateKey = path.resolve(statePath).toLowerCase();
-        const sequences = htmlStateMutationSequences.get(stateKey) ?? new Map<string, number>();
-        htmlStateMutationSequences.set(stateKey, sequences);
-        mutationAccepted = acceptLineReviewMutationSequence(
-          sequences,
-          args.clientId,
-          args.mutationId
-        );
-        return mutationAccepted
-          ? mergeCanonicalLineReviewState(current, args.state, changedLines, changedStateKeys)
-          : current;
-      }
-    );
+    const queueKey = path.resolve(statePath).toLowerCase();
+    const previous = htmlStateWriteQueues.get(queueKey) ?? Promise.resolve();
+    let canonicalState: Record<string, unknown> = {};
+    const write = previous.catch(() => undefined).then(async () => {
+      await assertPdfLineReviewState(filePath, args.state, changedLines);
+      const sequences = htmlStateMutationSequences.get(queueKey) ?? new Map<string, number>();
+      htmlStateMutationSequences.set(queueKey, sequences);
+      mutationAccepted = acceptLineReviewMutationSequence(sequences, args.clientId, args.mutationId);
+      canonicalState = await commitLineReviewStateInWorker({ statePath, projectRoot: containedProjectRoot(statePath),
+        state: args.state, changedLines: mutationAccepted ? changedLines : [], changedStateKeys: mutationAccepted ? changedStateKeys : [],
+        hydrate: args.hydrate !== false, mutationAccepted, expectedRevision: args.expectedRevision });
+    });
+    htmlStateWriteQueues.set(queueKey, write);
+    try { await write; }
+    finally { if (htmlStateWriteQueues.get(queueKey) === write) htmlStateWriteQueues.delete(queueKey); }
     const payload = {
       ok: true,
       path: statePath,
@@ -4470,10 +4510,14 @@ ipcMain.handle("html:persistState", async (event, args: {
       changedStateKeys: mutationAccepted ? changedStateKeys : [],
       clientId: typeof args.clientId === "string" ? args.clientId : "",
       mutationId: typeof args.mutationId === "string" ? args.mutationId : "",
-      mutationAccepted
+      mutationAccepted,
+      partial: args.hydrate === false
     };
-    broadcastLineReviewState(payload);
-    return payload;
+    broadcastLineReviewState(payload, args.bulk ? event.sender.id : undefined);
+    // The importing owner already has the exact submitted maps. Acknowledge
+    // its commit without bouncing every line back through IPC a second time.
+    return args.bulk ? { ...payload, state: { documentRevision: canonicalState.documentRevision },
+      changedLines: [], changedStateKeys: [], ackOnly: true } : payload;
   }
   await writeHtmlSidecarState(statePath, args.state);
   return { ok: true, path: statePath };
@@ -4857,7 +4901,29 @@ app.whenReady().then(async () => {
           const lineReviewPath = project.lineReviewPath ?? project.lastLineReviewHtml;
           if (typeof lineReviewPath === "string" && lineReviewPath) await openBuiltinTaskHtml(lineReviewPath, outputDir);
           signal.throwIfAborted();
+          let continuation: Partial<PiSessionPromptRequest> = {};
+          if (project.builtinTaskKind === "translation" || project.builtinTaskKind === "proofread") {
+            if (typeof lineReviewPath !== "string" || !lineReviewPath) throw new Error("The existing task has no review HTML binding.");
+            const tab = [...htmlViewerTabs.values()].find(item => sameFilePath(item.filePath, lineReviewPath));
+            if (!tab) throw new Error("The existing task review HTML is unavailable.");
+            const packet = await tab.view.webContents.executeJavaScript(`(async () => {
+              const page = ${taskParameterPage};
+              return page.translationWorkshopTaskParameters.prepare(${JSON.stringify(project.builtinTaskKind === "proofread" ? "proofread" : "translate")});
+            })()`);
+            signal.throwIfAborted();
+            if (packet?.bindings?.outputDir !== outputDir || packet.metadata?.workflowIntent !== project.builtinTaskKind) {
+              throw new Error("The existing task HTML parameters do not match its project.");
+            }
+            // Continue with the same concrete projections/manifest as the HTML.
+            // The original PDF/EPUB remains the homepage's input; it is never
+            // substituted for a running Host's UTF-8 source on reply/resume.
+            continuation = { ...packet.metadata, sourcePath: packet.bindings.sourcePath,
+              sourceSelection: { kind: packet.bindings.sourceKind, path: packet.bindings.sourcePath },
+              translationPath: packet.bindings.translationPath, translationBindingOrigin: "canonical" };
+          }
+          signal.throwIfAborted();
           const accepted = await piNativeSessionService.prompt({ outputDir, sessionId, ...model,
+            ...continuation,
             ...(typeof lineReviewPath === "string" ? { lineReviewPath } : {}),
             prompt: message ?? "Resume the existing YN task in this Pi session. Use resumeYnWorkflow for a suspended complete workflow, reconcile existing artifacts through Host before claiming work, and continue only its unfinished tasks. If preparation is unfinished, continue its existing draft/check/commit or source-rule trial and startPreparedWorkflow path. Preserve accepted evidence and user settings." });
           signal.throwIfAborted();
@@ -4988,13 +5054,56 @@ app.whenReady().then(async () => {
   if (agentApiMode) await exitAgentApiError(error);
   else app.exit(1);
 });
+let desktopQuitPending = false;
+if (!agentApiMode) registerDesktopShutdown(app, {
+  async settle() {
+    desktopQuitPending = true;
+    for (const window of BrowserWindow.getAllWindows()) window.setEnabled(false);
+    const nativeDisposal = Promise.allSettled([piNativeSessionService.disposeAll()]);
+    // A previously accepted open can still be awaiting path resolution or a
+    // legacy upgrade. Capture tabs only after all such operations have settled.
+    const openOutcomes = await Promise.allSettled([...htmlViewerOpenOperations]);
+    for (const window of BrowserWindow.getAllWindows()) window.setEnabled(false);
+    const tabs = [...htmlViewerTabs.values()];
+    const outcomes = await Promise.allSettled([
+      ...tabs.map(settleHtmlViewerTab)
+    ]);
+    const errors = [...await nativeDisposal, ...openOutcomes, ...outcomes].flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+    try { await drainHtmlSidecarStateWrites(); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, "YN could not finish saving sessions and HTML before exit.");
+  },
+  exit() {
+    // All owners and sidecars are durably settled. Do not launch a second
+    // asynchronous window-close/save cycle after the shutdown barrier.
+    if (htmlViewerWindow && !htmlViewerWindow.isDestroyed()) disposeHtmlViewerTabs(htmlViewerWindow, [...htmlViewerTabs.values()]);
+    app.exit(0);
+  },
+  async onFailure(error) {
+    desktopQuitPending = false;
+    piNativeSessionService.resumeAfterCancelledShutdown();
+    for (const window of BrowserWindow.getAllWindows()) window.setEnabled(true);
+    console.error("[shutdown] Session or HTML persistence failed; exit cancelled", error);
+    if (BrowserWindow.getAllWindows().length === 0) {
+      try { await createWindow(); }
+      catch (windowError) {
+        console.error("[shutdown] Failed to restore the main window after cancelled exit", windowError);
+        error = new AggregateError([error, windowError], "Exit persistence and window restoration failed.");
+      }
+    }
+    await dialog.showMessageBox({ type: "error", title: "YN",
+      message: "退出保存失败，窗口已保留。 / Exit cancelled because session or HTML storage could not be saved.",
+      detail: error instanceof AggregateError
+        ? error.errors.map(item => item instanceof Error ? item.message : String(item)).join("\n")
+        : error instanceof Error ? error.message : String(error) });
+  }
+});
 app.on("window-all-closed", () => {
   if (!agentApiMode && process.platform !== "darwin") {
     app.quit();
   }
 });
 app.on("activate", () => {
-  if (!agentApiMode && BrowserWindow.getAllWindows().length === 0) {
+  if (!agentApiMode && !desktopQuitPending && BrowserWindow.getAllWindows().length === 0) {
     void createWindow();
   }
 });

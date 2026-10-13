@@ -551,6 +551,68 @@ await test("character aliases satisfy character name warnings", () => {
   assert.equal(result.warnings.filter((f) => f.code === "character_name_missing").length, 0);
 });
 
+await test("character names reuse longest glossary coverage, independent of entry order and target correctness", () => {
+  const entries = [{ name: "ベス", target: "贝丝" }, { name: "エリザベス", target: "伊丽莎白" }];
+  for (const characterEntries of [entries, entries.toReversed()]) {
+    for (const candidate of ["伊丽莎白来了。", "她来了。"]) {
+      const result = validateTranslationCandidate("エリザベスが来た。", candidate, { languagePair: "ja->zh-CN", characterEntries });
+      const missing = result.warnings.filter(f => f.code === "character_name_missing");
+      assert.equal(missing.some(f => f.detail.includes("贝丝")), false, JSON.stringify(missing));
+      assert.equal(missing.length, candidate === "她来了。" ? 1 : 0);
+    }
+  }
+});
+
+await test("an independently occurring short character name remains checked beside a long name", () => {
+  const characterEntries = [{ name: "ベス", target: "贝丝" }, { name: "エリザベス", target: "伊丽莎白" }];
+  for (const source of ["エリザベスとベスが来た。", "ベスとエリザベスが来た。", "ベスが来た。"]) {
+    const missing = validateTranslationCandidate(source, "伊丽莎白来了。", { languagePair: "ja->zh-CN", characterEntries })
+      .warnings.filter(f => f.code === "character_name_missing");
+    assert.equal(missing.length, 1, source);
+    assert.ok(missing[0].detail.includes("贝丝"));
+  }
+});
+
+await test("nested character references do not apply the short character's voice or hide the long character's pronoun check", () => {
+  const characterEntries = [
+    { name: "ベス", target: "贝丝", forbiddenTerms: ["笑"], gender: "male", genderConfidence: "confirmed" },
+    { name: "エリザベス", target: "伊丽莎白", gender: "female", genderConfidence: "confirmed" }
+  ];
+  const warnings = validateTranslationCandidate("エリザベスが笑った。", "伊丽莎白笑了，他很开心。", { languagePair: "ja->zh-CN", characterEntries }).warnings;
+  assert.equal(warnings.some(f => f.code === "character_voice_forbidden_term"), false);
+  assert.ok(warnings.some(f => f.code === "character_pronoun_mismatch"));
+});
+
+await test("long character aliases cover embedded canonical short names without triggering alias name warnings", () => {
+  const characterEntries = [{ name: "ベス", target: "贝丝" }, { name: "Elizabeth", target: "伊丽莎白", aliases: ["エリザベス"] }];
+  const covered = validateTranslationCandidate("エリザベスが来た。", "伊丽莎白来了。", { languagePair: "ja->zh-CN", characterEntries });
+  assert.equal(covered.warnings.some(f => f.code === "character_name_missing"), false);
+  const independent = validateTranslationCandidate("エリザベスとベスが来た。", "伊丽莎白来了。", { languagePair: "ja->zh-CN", characterEntries });
+  assert.equal(independent.warnings.filter(f => f.code === "character_name_missing").length, 1);
+});
+
+await test("shared character aliases preserve ambiguous owners instead of inventing a single speaker", () => {
+  const entries = [
+    { name: "Alice", target: "爱丽丝", aliases: ["先生"], gender: "female", genderConfidence: "confirmed" },
+    { name: "Bob", target: "鲍勃", aliases: ["先生"], gender: "male", genderConfidence: "confirmed" }
+  ];
+  for (const characterEntries of [entries, entries.toReversed()]) {
+    const warnings = validateTranslationCandidate("先生が来た。", "他来了。", { languagePair: "ja->zh-CN", characterEntries }).warnings;
+    assert.equal(warnings.some(f => f.code === "character_name_missing" || f.code === "character_pronoun_mismatch"), false);
+  }
+});
+
+await test("mentioning a short name inside dialogue does not make it the long-name speaker", () => {
+  const characterEntries = [
+    { name: "ベス", target: "贝丝", requiredTerms: ["私 -> 咱家"] },
+    { name: "エリザベス", target: "伊丽莎白" }
+  ];
+  const warnings = validateTranslationCandidate("エリザベス「私とベスが来た」", "伊丽莎白说：“我和贝丝来了。”", { languagePair: "ja->zh-CN", characterEntries }).warnings;
+  assert.equal(warnings.some(f => f.code === "character_voice_required_missing"), false);
+  const speaker = validateTranslationCandidate("ベス「私が来た」", "贝丝说：“我来了。”", { languagePair: "ja->zh-CN", characterEntries });
+  assert.ok(speaker.warnings.some(f => f.code === "character_voice_required_missing"));
+});
+
 await test("character aliases do not create character-name translation warnings", () => {
   const characterEntries = [{ name: "遥娜", target: "遥娜", aliases: ["小遥", "遥"] }];
   for (const source of ["小遥は笑った。", "遥は笑った。", "遥か遠くで笑った。", "小遥「私は笑った」"]) {

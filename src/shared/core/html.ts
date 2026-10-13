@@ -312,6 +312,11 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     artifactsBridgeMissing: "请从 translation-workshop 应用内打开此 HTML，以使用 Agent 产物发现。",
     refreshArtifacts: "刷新",
     scanningArtifacts: "正在扫描 Agent 产物…",
+    artifactChecking: "正在后台核验 {done}/{total} 行…",
+    artifactMemory: "正在后台更新译文记忆…",
+    artifactMerging: "正在合并草稿 {done}/{total} 行…",
+    artifactCancelled: "已取消候选处理。",
+    artifactCancel: "取消处理",
     noArtifacts: "未在 AI_translation/ 下找到候选译文产物。",
     artifactsNeedOutputDir: "需要先选择输出文件夹才能发现 Agent 产物。",
     artifactScanFailed: "产物扫描失败",
@@ -495,6 +500,11 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     artifactsBridgeMissing: "Open this HTML inside translation-workshop to discover agent artifacts.",
     refreshArtifacts: "Refresh",
     scanningArtifacts: "Scanning for agent artifacts…",
+    artifactChecking: "Checking in background: {done}/{total} lines…",
+    artifactMemory: "Updating translation memory in background…",
+    artifactMerging: "Merging draft: {done}/{total} lines…",
+    artifactCancelled: "Candidate operation cancelled.",
+    artifactCancel: "Cancel operation",
     noArtifacts: "No candidate translation artifacts found under AI_translation/.",
     artifactsNeedOutputDir: "Set an output folder to discover agent artifacts.",
     artifactScanFailed: "Artifact scan failed",
@@ -603,6 +613,9 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .cell { min-height:44px; border:1px solid transparent; border-radius:8px; padding:9px 11px; background:var(--target-bg); line-height:1.72; font-size:15px; overflow-wrap:anywhere; white-space:pre-wrap; }
     .source { color:#3f4752; background:var(--source-bg); font-family:"Yu Gothic","Meiryo","Noto Sans CJK JP",sans-serif; }
     .target { border-color:#c9d7f5; }
+    .pdf-inline { font-size:0; display:inline-block; background:#eef1f8; border-radius:3px; padding:0 3px; user-select:all; }
+    .pdf-inline::after { content:attr(data-label); font-size:14px; color:#43506a; }
+    .pdf-layout-note { display:block; font-size:12px; color:#69758b; margin-top:4px; }
     .target:focus { outline:2px solid var(--sky); outline-offset:1px; background:#fff; }
     .row.manual .target { background:#fff3c7; border-color:#f4b740; }
     .row.glossary .target { background:#effdf9; border-color:#8ee7d4; }
@@ -870,6 +883,7 @@ function aiToolsHtml(t: Record<string, string>, workflow: ReturnType<typeof work
       <section id="agentArtifactsPanel" class="agent-artifacts">
         <header>
           <strong>${t.agentArtifacts ?? "Agent translation artifacts"}</strong>
+          <button id="cancelAgentArtifact" type="button" hidden>${t.artifactCancel}</button>
           <button id="refreshAgentArtifacts" type="button">${t.refreshArtifacts ?? "Refresh"}</button>
         </header>
         <p class="ai-status" id="agentArtifactsStatus">${t.artifactsPanelIntro ?? "Scanning AI_translation/ for agent draft candidates."}</p>
@@ -1097,11 +1111,11 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 50;
+export const LINE_REVIEW_PROTOCOL_VERSION = 54;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 19;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
-export const PROMPT_SETTINGS_VERSION = 45;
+export const PROMPT_SETTINGS_VERSION = 46;
 
 export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
   const locale = options.locale ?? "zh-CN";
@@ -1258,7 +1272,11 @@ function sameLineReviewPath(value) {
   return normalizedLineReviewPath(value) === normalizedLineReviewPath(expected);
 }
 function storeLineReviewStateLocally() {
-  const serialized = JSON.stringify(state);
+  // Electron sidecar is authoritative. Keep only small UI metadata locally;
+  // serializing hundreds of thousands of draft rows on every edit blocks UI
+  // and exceeds localStorage quota before the IPC write can even start.
+  const localState = invokeBridge()?.persistHtmlState ? Object.fromEntries(Object.entries(state).filter(([name]) => !lineScopedStateKeys.includes(name))) : state;
+  const serialized = JSON.stringify(localState);
   localStorage.setItem(key, serialized);
   if (key !== legacyKey) localStorage.setItem(legacyKey, serialized);
   return serialized;
@@ -1309,8 +1327,9 @@ function trackHostStateRequest(request) {
 function dispatchLineReviewStateWrite(persist, request) {
   traceLineReviewSync("persist-start", {
     mutationId: request.mutationId,
-    changedLines: request.changedLines,
-    edits: request.changedLines.map(line => [line, request.state.edits?.[line]])
+    changedLineCount: request.changedLines.length,
+    changedLines: request.changedLines.slice(0, 20),
+    edits: request.changedLines.slice(0, 20).map(line => [line, request.state.edits?.[line]])
   });
   return persist(request).then((result) => {
     applyCanonicalLineReviewState(result);
@@ -1340,7 +1359,14 @@ function queueLineReviewStateWrite(persist, request) {
     reject = nextReject;
   });
   const changedLines = [...new Set([...(previous?.request.changedLines || []), ...request.changedLines])];
-  const mergedRequest = { ...request, changedLines };
+  const mergedRequest = { ...request, changedLines, state: { ...request.state } };
+  for (const name of lineScopedStateKeys) {
+    const latest = request.state[name] || {};
+    const merged = { ...(previous?.request.state[name] || {}), ...latest };
+    // Absence in a touched line is an explicit deletion, not "no change".
+    for (const line of request.changedLines) if (!Object.prototype.hasOwnProperty.call(latest, line)) delete merged[line];
+    mergedRequest.state[name] = merged;
+  }
   capturePendingLineMutation(mergedRequest.state, changedLines, mergedRequest.mutationId);
   const pending = {
     persist,
@@ -1387,12 +1413,14 @@ function overlayPendingLineMutations() {
   }
 }
 function refreshRenderedCanonicalLines(changedLines, activeEditor) {
-  for (const line of changedLines) {
+  const changed = new Set(changedLines);
+  for (const row of pageRows()) {
+    const line = row.line;
+    if (!changed.has(Number(line))) continue;
     const rowElement = rowsEl.querySelector('.row[data-line="' + line + '"]');
     const target = rowElement?.querySelector(".target");
-    const row = data.rows.find(item => Number(item.line) === Number(line));
-    if (!rowElement || !target || !row || target === activeEditor) continue;
-    target.textContent = rowValue(row);
+    if (!rowElement || !target || target === activeEditor) continue;
+    target.innerHTML = pdfInlineHtml(row, rowValue(row));
     const status = state.status[line] || row.status;
     rowElement.classList.toggle("manual", status === "manual");
     rowElement.classList.toggle("glossary", status === "glossary");
@@ -1419,19 +1447,27 @@ async function refreshSyncedLinesFromCanonical(path, syncedAt) {
   }
 }
 function applyCanonicalLineReviewState(payload) {
+  if (artifactImportBusy && payload?.clientId !== lineReviewClientId) { deferredArtifactCanonicalStates.push(payload); return; }
   const incoming = payload?.state;
   if (!incoming || typeof incoming !== "object" || !sameLineReviewPath(payload?.lineReviewPath)) return;
   const incomingRevision = Number(incoming.documentRevision || 0);
   if (incomingRevision <= Number(state.documentRevision || 0)) return;
   const changedLines = normalizedChangedLines(payload?.changedLines);
   const changedStateKeys = Array.isArray(payload?.changedStateKeys) ? payload.changedStateKeys.map(String) : [];
-  const hydrate = !canonicalStateHydrated;
+  if (payload.ackOnly) {
+    state.documentRevision = incomingRevision;
+    canonicalStateHydrated = true;
+    storeLineReviewStateLocally();
+    return;
+  }
+  const hydrate = !canonicalStateHydrated && !payload.partial;
   traceLineReviewSync("canonical-received", {
     revision: incomingRevision,
     mutationId: payload?.mutationId || "",
-    changedLines,
-    incomingEdits: changedLines.map(line => [line, incoming.edits?.[line]]),
-    pending: changedLines.map(line => [line, pendingLineMutations.get(String(line))?.mutationId || ""])
+    changedLineCount: changedLines.length,
+    changedLines: changedLines.slice(0, 20),
+    incomingEdits: changedLines.slice(0, 20).map(line => [line, incoming.edits?.[line]]),
+    pending: changedLines.slice(0, 20).map(line => [line, pendingLineMutations.get(String(line))?.mutationId || ""])
   });
   acknowledgePendingLineMutation(payload, changedLines);
   const previousSyncedAt = state.syncedAt;
@@ -1447,8 +1483,8 @@ function applyCanonicalLineReviewState(payload) {
   traceLineReviewSync("canonical-applied", {
     revision: incomingRevision,
     mutationId: payload?.mutationId || "",
-    edits: changedLines.map(line => [line, state.edits?.[line]]),
-    pending: changedLines.map(line => [line, pendingLineMutations.get(String(line))?.mutationId || ""])
+    edits: changedLines.slice(0, 20).map(line => [line, state.edits?.[line]]),
+    pending: changedLines.slice(0, 20).map(line => [line, pendingLineMutations.get(String(line))?.mutationId || ""])
   });
   const ownWrite = payload?.clientId === lineReviewClientId;
   const refreshSyncedText = !ownWrite
@@ -1484,11 +1520,15 @@ function save(changedLines = [], changedStateKeys = []) {
   if (!restoringPosition) state.scrollY = scrollY;
   state.activeLine = activeLine;
   try {
-    const serialized = storeLineReviewStateLocally();
+    try { storeLineReviewStateLocally(); } catch (error) { console.warn("translation-workshop could not store UI metadata", error); }
     const persist = invokeBridge()?.persistHtmlState;
     if (persist) {
-      const snapshot = JSON.parse(serialized);
       const normalizedLines = normalizedChangedLines(changedLines);
+      const snapshot = { ...state };
+      for (const name of lineScopedStateKeys) {
+        snapshot[name] = canonicalStateHydrated ? {} : { ...(state[name] || {}) };
+        for (const line of normalizedLines) if (Object.prototype.hasOwnProperty.call(state[name] || {}, line)) snapshot[name][line] = structuredClone(state[name][line]);
+      }
       const mutationId = normalizedLines.length > 0
         ? lineReviewClientId + ":" + (++localLineMutationSequence)
         : "";
@@ -1496,6 +1536,7 @@ function save(changedLines = [], changedStateKeys = []) {
         kind: "line",
         lineReviewPath: data.lineReviewPath || "",
         state: snapshot,
+        hydrate: !canonicalStateHydrated,
         changedLines: normalizedLines,
         changedStateKeys: Array.isArray(changedStateKeys) ? changedStateKeys.map(String) : [],
         clientId: lineReviewClientId,
@@ -1510,13 +1551,20 @@ function save(changedLines = [], changedStateKeys = []) {
       trackHostStateRequest(request);
     }
   } catch (error) {
-    console.warn("translation-workshop could not persist small UI state", error);
+    const failure = Promise.reject(error);
+    trackHostStateRequest(failure);
+    reportLineReviewPersistFailure(error);
   }
   return lastHostStateWrite;
 }
 window.flushTranslationWorkshopLineReviewState = async () => {
-  await flushQueuedLineReviewStateWrite();
-  return save();
+  artifactClosing = true;
+  try {
+    await cancelArtifactOperation(true);
+    if (artifactImportTask) await artifactImportTask;
+    await flushQueuedLineReviewStateWrite();
+    return await save();
+  } finally { artifactClosing = false; }
 };
 const unsubscribeLineReviewState = invokeBridge()?.onLineReviewStateUpdate?.((payload) => {
   applyCanonicalLineReviewState(payload);
@@ -1526,6 +1574,13 @@ function rowValue(row) {
   if (row.pdfProtection) return row.source;
   const syncedValue = syncedLines[row.line - 1];
   return state.edits[row.line] ?? (syncedValue !== undefined ? syncedValue : row.translation ?? "");
+}
+function pdfInlineHtml(row, text) {
+  let html = escapeHtml(text);
+  for (const node of row?.pdfInlineProtections || []) {
+    html = html.split(escapeHtml(node.token)).join('<span class="pdf-inline" contenteditable="false" title="PDF: preserved by Host" data-label="' + escapeHtml(node.text) + '">' + escapeHtml(node.token) + '</span>');
+  }
+  return html;
 }
 function pageRows() { return data.rows.slice((page - 1) * pageSize, page * pageSize); }
 function rowSearchText(row) {
@@ -1564,8 +1619,8 @@ function render() {
     const markerClass = whitelist ? " whitelisted" : (auditIssue ? " severity-" + auditIssue.severity : "");
     return '<article class="row ' + statusClass + auditClass + jumpClass + matchClass + '" data-line="' + row.line + '">' +
       '<div class="line">' + row.line + '</div>' +
-      '<div class="cell source">' + escapeHtml(row.source) + '</div>' +
-      '<div class="cell target" contenteditable="' + (row.pdfProtection ? 'false' : 'true') + '" spellcheck="false"' + (row.pdfProtection ? ' title="PDF: code / math preserved by Host"' : '') + '>' + escapeHtml(rowValue(row)) + '</div>' +
+      '<div class="cell source">' + pdfInlineHtml(row, row.source) + (row.pdfSegmentation === 'parallel-region' ? '<small class="pdf-layout-note">' + (document.documentElement.lang === 'en-US' ? 'Unmarked aligned columns/table: independent row; do not complete adjacent content here.' : '未标记的对齐分栏／表格：此行独立处理，不在这里补写相邻内容。') + '</small>' : '') + '</div>' +
+      '<div class="cell target" contenteditable="' + (row.pdfProtection ? 'false' : 'true') + '" spellcheck="false"' + (row.pdfProtection ? ' title="PDF: original code / math / references preserved by Host"' : '') + '>' + pdfInlineHtml(row, rowValue(row)) + '</div>' +
       '<button class="audit-marker' + markerClass + '" type="button" title="' + escapeHtml(markerTitle) + '">' + escapeHtml(markerText) + '</button>' +
       '</article>';
   }).join("");
@@ -1598,7 +1653,7 @@ function updateEditedTarget(target, persist) {
   const line = row.dataset.line;
   if (lanSyncStopping || lanSyncStarting) {
     const canonicalRow = data.rows.find(item => String(item.line) === String(line));
-    target.textContent = canonicalRow ? rowValue(canonicalRow) : "";
+    target.innerHTML = pdfInlineHtml(canonicalRow, canonicalRow ? rowValue(canonicalRow) : "");
     return;
   }
   const text = target.textContent || "";
@@ -1669,7 +1724,7 @@ function restoreCurrentLine() {
   delete state.status[line];
   const row = data.rows.find(item => String(item.line) === String(line));
   const targetEl = rowEl?.querySelector(".target");
-  if (targetEl) targetEl.textContent = row ? rowValue(row) : "";
+  if (targetEl) targetEl.innerHTML = pdfInlineHtml(row, row ? rowValue(row) : "");
   recordLineRevision(line, row ? rowValue(row) : "", row?.status || "", "desktop-restore");
   rowEl?.classList.remove("manual");
   rowEl?.classList.remove("glossary");
@@ -1886,15 +1941,15 @@ function promptSettingsFromProjectState(value) {
     if (Object.prototype.hasOwnProperty.call(value, settingKey)) settings[settingKey] = value[settingKey];
   }
   const storedVersion = optionalPositivePromptNumber(settings.promptSettingsVersion) || 0;
-  if (storedVersion < promptSettingsVersion) {
+  if (storedVersion < 37) {
     // Older HTML materialized the inherited review-worker fallback as an explicit
     // project value. Clear it once; users can set a real override in the new field.
     settings.reviewSubagentCount = null;
     if (optionalPositivePromptNumber(settings.subagentCount) === undefined) {
       settings.subagentCount = promptStoredDefaults().subagentCount;
     }
-    settings.promptSettingsVersion = promptSettingsVersion;
   }
+  if (storedVersion < promptSettingsVersion) settings.promptSettingsVersion = promptSettingsVersion;
   return settings;
 }
 
@@ -2311,9 +2366,10 @@ async function buildWorkflowPromptFromSettings(kind) {
     glossaryPath: boundGlossaryPath(),
     inputMode: workflow.promptInputMode || workflow.inputMode || "separate"
   };
+  const metadata = workflowPromptMetadata(settings, kind);
   const prompt = await bridge.buildPrompt({ kind, ...bindings, advanced: settings });
   if (!prompt?.trim()) throw new Error("Empty workflow prompt returned by Electron host.");
-  return { prompt, bindings, settings, metadata: workflowPromptMetadata(settings, kind) };
+  return { prompt, bindings, settings, metadata };
 }
 async function synchronizeTaskParameters() {
   window.clearTimeout(promptSettingsWriteTimer);
@@ -2849,7 +2905,7 @@ function applyRemoteLanSyncPatch(payload) {
   activeLine = String(line);
   const target = rowsEl.querySelector('.row[data-line="' + line + '"] .target');
   if (target && document.activeElement !== target) {
-    target.textContent = rowValue({ line });
+    target.innerHTML = pdfInlineHtml(data.rows.find(row => String(row.line) === String(line)), rowValue({ line }));
   }
   changedCount.textContent = Object.keys(state.edits).length;
 }
@@ -2895,13 +2951,13 @@ function artifactCardHtml(artifact, validation) {
   const sourceLine = source
     ? '<div class="artifact-meta">' + escapeHtml(sourceLabel) + ': ' + escapeHtml(source) + '</div>'
     : '<div class="artifact-meta warn">' + escapeHtml(data.labels.artifactSourceUnmatched || "Source not matched") + '</div>';
-  const blockingList = (validation?.blocking || []).map(function (f) { return '<li>' + escapeHtml(f.detail) + '</li>'; }).join("");
+  const blockingList = (validation?.blocking || []).slice(0, 8).map(function (f) { return '<li>' + escapeHtml(f.detail) + '</li>'; }).join("");
   const warningList = (validation?.warnings || []).slice(0, 8).map(function (f) { return '<li>' + escapeHtml(f.detail) + '</li>'; }).join("");
   const canImport = validation?.ok && !!source;
   const importBtn = canImport
     ? '<button type="button" class="primary artifact-import" data-path="' + escapeHtml(artifact.path) + '" data-source="' + escapeHtml(source) + '">' + escapeHtml(data.labels.importAsDraft || "Import as draft") + '</button>'
-    : '<button type="button" class="artifact-repair" data-path="' + escapeHtml(artifact.path) + '">' + escapeHtml(data.labels.openRepair || "Jump to issue line") + '</button>';
-  const repairBtn = !validation?.ok
+    : validation ? '<button type="button" class="artifact-repair" data-path="' + escapeHtml(artifact.path) + '">' + escapeHtml(data.labels.openRepair || "Jump to issue line") + '</button>' : "";
+  const repairBtn = validation && !validation.ok
     ? '<button type="button" class="artifact-repair-prompt" data-path="' + escapeHtml(artifact.path) + '" data-source="' + escapeHtml(source) + '">' + escapeHtml(data.labels.generateRepairPrompt || "Generate repair prompt") + '</button>'
     : "";
   const openBtn = '<button type="button" class="artifact-open" data-path="' + escapeHtml(artifact.path) + '">' + escapeHtml(data.labels.openArtifact || "Open artifact") + '</button>';
@@ -2918,111 +2974,151 @@ function artifactCardHtml(artifact, validation) {
 }
 
 const artifactValidations = new Map();
-
-function artifactLanguagePair() {
-  return promptSettingsValue().languagePair || workflow.promptDefaults?.languagePair || "ja->zh-CN";
+let artifactGeneration = 0;
+let artifactRequestId = "";
+let artifactImportTask = null;
+let artifactImportBusy = false;
+let artifactClosing = false;
+let artifactCancelled = false;
+const deferredArtifactCanonicalStates = [];
+const artifactCancelButton = document.getElementById("cancelAgentArtifact");
+function artifactLanguagePair() { return promptSettingsValue().languagePair || workflow.promptDefaults?.languagePair || "ja->zh-CN"; }
+function artifactArguments(candidatePath, sourcePath, requestId) {
+  return { projectDir: workflow.paths?.outputDir || "", sourcePath, candidatePath, requestId,
+    locale: data.locale || "zh-CN", languagePair: artifactLanguagePair(),
+    customPreserveRules: readPromptCustomPreserveRules(), glossaryPath: boundGlossaryPath() || undefined };
 }
-
+function artifactOperationStarted() {
+  artifactCancelled = false;
+  artifactRequestId = globalThis.crypto.randomUUID();
+  artifactCancelButton.hidden = false;
+  return artifactRequestId;
+}
+function artifactOperationFinished(requestId) {
+  if (artifactRequestId !== requestId) return;
+  artifactRequestId = "";
+  artifactCancelButton.hidden = true;
+}
+async function cancelArtifactOperation(all = false) {
+  artifactCancelled = true;
+  artifactGeneration++;
+  if (artifactRequestId || all) await invokeBridge()?.cancelAgentArtifact?.(all ? undefined : artifactRequestId);
+}
+artifactCancelButton?.addEventListener("click", () => {
+  void cancelArtifactOperation().then(() => setArtifactStatus(data.labels.artifactCancelled)).catch(reportLineReviewPersistFailure);
+});
+const unsubscribeArtifactProgress = invokeBridge()?.onAgentArtifactProgress?.(progress => {
+  if (progress.requestId !== artifactRequestId || artifactCancelled) return;
+  const text = progress.phase.startsWith("memory") ? data.labels.artifactMemory : String(data.labels.artifactChecking)
+    .replace("{done}", String(progress.completedLines)).replace("{total}", String(progress.totalLines || "…"));
+  if (artifactImportBusy) setAiStatus(text); else setArtifactStatus(text);
+});
 async function discoverAgentArtifacts() {
-  if (!agentArtifactsPanel) return;
+  if (!agentArtifactsPanel || artifactClosing || artifactImportBusy) return;
+  await cancelArtifactOperation();
+  const generation = ++artifactGeneration;
   agentArtifactsPanel.hidden = false;
   const bridge = invokeBridge();
-  if (!bridge?.discoverAgentArtifacts) {
-    setArtifactStatus(data.labels.artifactsBridgeMissing || "Open this HTML inside translation-workshop to discover agent artifacts.");
-    if (agentArtifactsList) agentArtifactsList.innerHTML = "";
-    return;
-  }
+  if (!bridge?.discoverAgentArtifacts) { setArtifactStatus(data.labels.artifactsBridgeMissing); return; }
   const projectDir = workflow.paths?.outputDir || "";
-  if (!projectDir || (projectDir.startsWith("[") && projectDir.endsWith("]"))) {
-    setArtifactStatus(data.labels.artifactsNeedOutputDir || "Set an output folder to discover agent artifacts.");
-    if (agentArtifactsList) agentArtifactsList.innerHTML = "";
-    return;
-  }
-  setArtifactStatus(data.labels.scanningArtifacts || "Scanning for agent artifacts…");
+  if (!projectDir || projectDir.startsWith("[")) { setArtifactStatus(data.labels.artifactsNeedOutputDir); return; }
+  setArtifactStatus(data.labels.scanningArtifacts);
   artifactValidations.clear();
   try {
     const sourcePath = workflow.paths?.validationSourcePath || workflow.paths?.sourcePath || "";
-    const locale = data.locale || document.documentElement.lang || "zh-CN";
-    const artifacts = await bridge.discoverAgentArtifacts({
-      projectDir,
-      sourcePaths: sourcePath ? [sourcePath] : []
-    });
-    if (artifacts.length === 0) {
-      setArtifactStatus(data.labels.noArtifacts || "No candidate translation artifacts found under AI_translation/.");
-      if (agentArtifactsList) agentArtifactsList.innerHTML = "";
-      return;
-    }
-    setArtifactStatus(String(data.labels.artifactsRescanned || "Rescanned {count} artifact(s) from disk.").replace("{count}", String(artifacts.length)));
-    if (agentArtifactsList) agentArtifactsList.innerHTML = "";
+    const artifacts = await bridge.discoverAgentArtifacts({ projectDir, sourcePaths: sourcePath ? [sourcePath] : [] });
+    if (generation !== artifactGeneration) return;
+    agentArtifactsList.innerHTML = "";
+    const cards = new Map();
     for (const artifact of artifacts) {
-      let validation = null;
-      if (artifact.sourcePath) {
-        try {
-          validation = await bridge.validateAgentArtifact({
-            projectDir,
-            sourcePath: artifact.sourcePath,
-            candidatePath: artifact.path,
-            locale,
-            languagePair: artifactLanguagePair(),
-            customPreserveRules: readPromptCustomPreserveRules(),
-            glossaryPath: boundGlossaryPath() || undefined
-          });
-        } catch (error) {
-          validation = {
-            ok: false,
-            blocking: [{ detail: (data.labels.artifactValidationFailed || "Validation failed") + ": " + (error?.message || String(error)) }],
-            warnings: []
-          };
-        }
-      }
+      const card = document.createElement("div"); card.innerHTML = artifactCardHtml(artifact, null);
+      agentArtifactsList.appendChild(card); cards.set(artifact.path, card);
+    }
+    if (!artifacts.length) { setArtifactStatus(data.labels.noArtifacts); return; }
+    // Paint the directory listing before starting the full-file check.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    for (const artifact of artifacts) {
+      if (generation !== artifactGeneration) return;
+      if (!artifact.sourcePath) continue;
+      const requestId = artifactOperationStarted();
+      let validation;
+      try { validation = await bridge.validateAgentArtifact(artifactArguments(artifact.path, artifact.sourcePath, requestId)); }
+      catch (error) {
+        if (generation !== artifactGeneration) return;
+        validation = { ok: false, blocking: [{ detail: data.labels.artifactValidationFailed + ": " + (error?.message || String(error)) }], warnings: [] };
+      } finally { artifactOperationFinished(requestId); }
+      if (generation !== artifactGeneration) return;
       artifactValidations.set(artifact.path, validation);
-      const card = document.createElement("div");
-      card.innerHTML = artifactCardHtml(artifact, validation);
-      agentArtifactsList.appendChild(card.firstChild);
+      cards.get(artifact.path).innerHTML = artifactCardHtml(artifact, validation);
     }
-  } catch (error) {
-    setArtifactStatus((data.labels.artifactScanFailed || "Artifact scan failed") + ": " + (error?.message || String(error)));
-  }
+    if (generation === artifactGeneration) setArtifactStatus(String(data.labels.artifactsRescanned).replace("{count}", String(artifacts.length)));
+  } catch (error) { if (generation === artifactGeneration) setArtifactStatus(data.labels.artifactScanFailed + ": " + (error?.message || String(error))); }
 }
-
 async function importArtifactAsDraft(candidatePath, sourcePath) {
+  if (artifactImportBusy || artifactClosing) return;
+  const task = importCandidateDraft(candidatePath, sourcePath);
+  artifactImportTask = task;
+  try { await task; } finally { if (artifactImportTask === task) artifactImportTask = null; }
+}
+async function importCandidateDraft(candidatePath, sourcePath) {
   const bridge = invokeBridge();
-  if (!bridge?.buildAgentImportPlan) return;
-  setAiStatus(data.labels.importingDraft || "Importing candidate as draft…");
+  if (!bridge?.buildAgentImportPlan || !bridge?.persistHtmlState) return;
+  artifactImportBusy = true;
+  rowsEl.inert = true;
+  refreshAgentArtifactsButton.disabled = true;
+  let requestId = "", previous = null, committed = false;
   try {
-    const plan = await bridge.buildAgentImportPlan({
-      projectDir: workflow.paths?.outputDir || "",
-      sourcePath,
-      candidatePath,
-      locale: data.locale || "zh-CN",
-      languagePair: artifactLanguagePair(),
-      customPreserveRules: readPromptCustomPreserveRules(),
-      glossaryPath: boundGlossaryPath() || undefined
-    });
-    if (!plan.ok) {
-      setAiStatus((data.labels.importBlocked || "Import blocked by validation") + ": " + (plan.validation.blocking[0]?.detail || ""));
-      return;
+    await cancelArtifactOperation();
+    await flushQueuedLineReviewStateWrite(); await lastHostStateWrite;
+    const expectedRevision = Number(state.documentRevision || 0);
+    const binding = workflow.paths?.validationSourcePath || workflow.paths?.sourcePath || "";
+    requestId = artifactOperationStarted();
+    setAiStatus(data.labels.importingDraft);
+    const plan = await bridge.buildAgentImportPlan({ ...artifactArguments(candidatePath, sourcePath, requestId), compact: true });
+    if (artifactCancelled) throw new Error("[YN_ARTIFACT_CANCELLED] " + data.labels.artifactCancelled);
+    if (!plan.ok) { setAiStatus(data.labels.importBlocked + ": " + (plan.validation.blocking[0]?.detail || "")); return; }
+    if (binding !== (workflow.paths?.validationSourcePath || workflow.paths?.sourcePath || "") || plan.lineCount !== data.rows.length) throw new Error("Candidate does not match the current review document.");
+    previous = { edits: state.edits, status: state.status, translationPath: state.translationPath,
+      translationPromptPath: state.translationPromptPath, paths: { ...workflow.paths } };
+    const edits = { ...state.edits }, status = { ...state.status }, importedLines = [];
+    for (let index = 0; index < plan.lines.length; index += 5000) {
+      if (artifactCancelled) throw new Error("[YN_ARTIFACT_CANCELLED] " + data.labels.artifactCancelled);
+      const end = Math.min(index + 5000, plan.lines.length);
+      for (let i = index; i < end; i++) { edits[i + 1] = plan.lines[i]; status[i + 1] = "machine"; importedLines.push(i + 1); }
+      setAiStatus(String(data.labels.artifactMerging).replace("{done}", String(end)).replace("{total}", String(plan.lines.length)));
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
-    const importedLines = [];
-    for (const line in plan.edits) {
-      state.edits[line] = String(plan.edits[line] ?? "");
-      state.status[line] = plan.status[line] || "machine";
-      importedLines.push(Number(line));
-    }
-    save(importedLines);
-    render();
-    if (/\.txt$/i.test(candidatePath)) {
-      const sourceIsEpub = /\.epub$/i.test(workflow.paths?.sourcePath || "");
-      if (sourceIsEpub && workflow.paths?.editableTranslationPath) {
-        state.translationPath = workflow.paths.editableTranslationPath;
-      }
-      setBoundTranslationPath(candidatePath, candidatePath, { userSelected: true });
-    } else {
-      updateSaveTxtVisibility();
-    }
-    setAiStatus((data.labels.importedDraft || "Imported as draft") + " " + String(data.labels.importedDraftNote || "({count} lines).").replace("{count}", String(plan.lineCount)));
+    if (artifactCancelled) throw new Error("[YN_ARTIFACT_CANCELLED] " + data.labels.artifactCancelled);
+    state.edits = edits; state.status = status;
+    setBoundTranslationPath(candidatePath, candidatePath, { userSelected: true, deferPersist: true });
+    const mutationId = lineReviewClientId + ":" + (++localLineMutationSequence);
+    artifactCancelButton.disabled = true;
+    // One atomic draft commit. The importing UI is frozen, so it does not need
+    // six pending objects per line or a second full canonical IPC roundtrip.
+    const commit = bridge.persistHtmlState({ kind: "line", lineReviewPath: data.lineReviewPath || currentLineReviewPath(),
+      state: { ...state }, changedLines: importedLines, changedStateKeys: ["translationPath", "translationPromptPath"],
+      clientId: lineReviewClientId, mutationId, hydrate: false, bulk: true, expectedRevision });
+    trackHostStateRequest(commit);
+    const result = await commit;
+    if (!result?.ok || result.mutationAccepted === false) throw new Error("The Host rejected the draft import.");
+    committed = true;
+    applyCanonicalLineReviewState(result);
+    updateProjectState({ translationPath: candidatePath, translationBindingOrigin: "user", promptTranslationPath: workflow.paths?.promptTranslationPath });
+    applyingCanonicalState = true; try { render(); } finally { applyingCanonicalState = false; }
+    setAiStatus(data.labels.importedDraft + " " + String(data.labels.importedDraftNote).replace("{count}", String(plan.lineCount)) + (plan.memoryWarning ? " · " + plan.memoryWarning : ""));
   } catch (error) {
-    setAiStatus((data.labels.importFailed || "Import failed") + ": " + (error?.message || String(error)));
+    if (previous && !committed) {
+      state.edits = previous.edits; state.status = previous.status;
+      state.translationPath = previous.translationPath; state.translationPromptPath = previous.translationPromptPath;
+      Object.assign(workflow.paths, previous.paths);
+    }
+    setAiStatus(data.labels.importFailed + ": " + (error?.message || String(error)));
+    if (!String(error?.message || error).includes("[YN_ARTIFACT_CANCELLED]")) throw error;
+  } finally {
+    artifactOperationFinished(requestId);
+    artifactCancelButton.disabled = false;
+    artifactImportBusy = false; rowsEl.inert = false; refreshAgentArtifactsButton.disabled = false;
+    for (const payload of deferredArtifactCanonicalStates.splice(0)) applyCanonicalLineReviewState(payload);
   }
 }
 
@@ -3048,20 +3144,18 @@ function openLineRepair(candidatePath) {
 
 async function generateRepairPrompt(candidatePath, sourcePath) {
   const bridge = invokeBridge();
-  if (!bridge?.buildAgentRepairPrompt) return;
+  if (!bridge?.buildAgentRepairPrompt || artifactImportBusy || artifactClosing) return;
+  await cancelArtifactOperation();
+  const generation = ++artifactGeneration, requestId = artifactOperationStarted();
   try {
-    const prompt = await bridge.buildAgentRepairPrompt({
-      projectDir: workflow.paths?.outputDir || "",
-      sourcePath,
-      candidatePath,
-      locale: data.locale || "zh-CN"
-    });
+    const prompt = await bridge.buildAgentRepairPrompt(artifactArguments(candidatePath, sourcePath, requestId));
+    if (generation !== artifactGeneration) return;
     setPromptText(prompt);
     await openAgentChatForPrompt();
-    setAiStatus(data.labels.repairPromptReady || "Repair prompt ready in the prompt box.");
+    setAiStatus(data.labels.repairPromptReady);
   } catch (error) {
-    setAiStatus((data.labels.repairPromptFailed || "Repair prompt generation failed") + ": " + (error?.message || String(error)));
-  }
+    if (generation === artifactGeneration) setAiStatus(data.labels.repairPromptFailed + ": " + (error?.message || String(error)));
+  } finally { artifactOperationFinished(requestId); }
 }
 
 agentArtifactsList?.addEventListener("click", (event) => {
@@ -3070,7 +3164,7 @@ agentArtifactsList?.addEventListener("click", (event) => {
   const path = target.getAttribute("data-path") || "";
   const source = target.getAttribute("data-source") || "";
   if (target.classList.contains("artifact-import")) {
-    void importArtifactAsDraft(path, source);
+    void importArtifactAsDraft(path, source).catch(reportLineReviewPersistFailure);
   } else if (target.classList.contains("artifact-repair")) {
     openLineRepair(path);
   } else if (target.classList.contains("artifact-repair-prompt")) {
@@ -3348,6 +3442,7 @@ function setBoundTranslationPath(path, promptPath, options) {
     state.translationPromptPath = promptValue;
     paths.translationPath = value;
     paths.promptTranslationPath = extracted ? promptValue : value;
+    if (options?.deferPersist) { updateSaveTxtVisibility(); return; }
     save([], ["translationPath", "translationPromptPath"]);
     updateProjectState({
       translationPath: value,
@@ -4308,6 +4403,7 @@ document.getElementById("customThemeColor")?.addEventListener("input", (event) =
 addEventListener("beforeunload", () => {
   window.clearInterval(agentInterfaceHeartbeat);
   unsubscribeLineReviewState?.();
+  unsubscribeArtifactProgress?.();
   state.page = page;
   state.scrollY = scrollY;
   state.activeLine = activeLine;

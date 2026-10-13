@@ -1,4 +1,5 @@
-import { readPdfProtectedLines, assertPdfProtectedWrite } from "../../pdfDocuments.ts";
+import { readPdfProtectedLines, readPdfPreservedSpans, assertPdfProtectedWrite } from "../../pdfDocuments.ts";
+import {readTranslationResidueApprovals} from '../translationResidueApproval.ts';
 import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -11,6 +12,7 @@ import {
 } from "../writeTranslationChunk.ts";
 import {
   createTranslationPreservedPayloadStripper,
+  isTranslationResidueApproved,
   splitTextLines,
   validateTranslationCandidate,
   type ValidationOptions
@@ -653,6 +655,7 @@ async function prepareTranslationReuseAuditInStore(
     ]);
     const sourceHash = sha256(sourceText);
     const candidateHash = sha256(candidateText);
+    const residueConfirmations = await readTranslationResidueApprovals(input.outputDir,input.sourcePath);
     const ownerSessionId = input.ownerSessionId?.trim() || undefined;
     const ownerMatches = (audit: TranslationReuseAuditRecord) => (
       ownerSessionId === undefined || audit.ownerSessionId === ownerSessionId
@@ -664,7 +667,23 @@ async function prepareTranslationReuseAuditInStore(
       && audit.status !== "applied"
       && audit.document.candidateHash === candidateHash
     ));
-    if (existing) return { value: summary(existing), changed: false };
+    if (existing) {
+      const sources=splitTextLines(sourceText),candidates=splitTextLines(candidateText);
+      let changed=false;
+      for(const confirmation of residueConfirmations) {
+        if(sources[confirmation.line-1]!==confirmation.sourceText||candidates[confirmation.line-1]!==confirmation.candidateText)continue;
+        const row=existing.document.lines[confirmation.line-1];
+        const signals=row.semanticSignals.filter(code=>!['likely_untranslated','target_language_not_observed'].includes(code));
+        const codes=row.deterministicCodes.filter(code=>code!=='likely_untranslated');
+        if(signals.length===row.semanticSignals.length&&codes.length===row.deterministicCodes.length)continue;
+        row.semanticSignals=signals;row.deterministicCodes=codes;changed=true;
+        if(row.deterministicDisposition==='semantic_review_required'&&!signals.length&&!row.verdict) {
+          row.deterministicDisposition='automatic_reuse';row.verdict='reuse';row.reason='Exact untranslated false positive confirmed by parent: '+confirmation.reason;
+        }
+      }
+      if(changed){existing.updatedAt=Date.now();existing.status=pendingSemanticLines(existing).length===0?'awaiting_user_decision':'auditing';}
+      return { value: summary(existing), changed };
+    }
     const applied = store.audits
       .filter((audit) => (
         audit.document.documentId === input.documentId
@@ -703,6 +722,8 @@ async function prepareTranslationReuseAuditInStore(
     const options: ValidationOptions = {
       ...input.validationOptions,
       pdfProtectedLines: await readPdfProtectedLines(input.sourcePath,input.outputDir) ?? input.validationOptions?.pdfProtectedLines,
+      sourceBinding:input.sourcePath,translationResidueApprovals:residueConfirmations,
+      pdfPreservedSpans: await readPdfPreservedSpans(input.sourcePath,input.outputDir) ?? input.validationOptions?.pdfPreservedSpans,
       languagePair: input.languagePair ?? input.validationOptions?.languagePair
     };
     const stripPreservedPayload = createTranslationPreservedPayloadStripper(options);
@@ -793,7 +814,8 @@ async function prepareTranslationReuseAuditInStore(
       const candidateHasLexicalProse = /\p{L}/u.test(candidateProse);
       if (sourceHasLexicalProse && !candidateHasLexicalProse) {
         semanticSignals.push("candidate_prose_missing");
-      } else if (sourceHasLexicalProse && hasTargetScriptEvidence(candidateProse, options.languagePair) === false) {
+      } else if (sourceHasLexicalProse && !isTranslationResidueApproved(options,line,source,translation)
+        && hasTargetScriptEvidence(candidateProse, options.languagePair) === false) {
         semanticSignals.push("target_language_not_observed");
       }
       if (
@@ -1002,6 +1024,9 @@ export async function readTranslationReuseAuditSelection(input: {
     translation: candidateLines[line - 1] ?? ""
   });
   const selected = new Set(selectedLines);
+  const residueConfirmations=(await readTranslationResidueApprovals(input.outputDir,record.document.sourcePath))
+    .filter(entry=>selected.has(entry.line)&&entry.sourceText===sourceLines[entry.line-1]&&entry.candidateText===candidateLines[entry.line-1])
+    .map(({line,reason})=>({line,reason}));
   const contextLines = new Set<number>();
   for (const line of selectedLines) {
     for (let contextLine = Math.max(1, line - 2); contextLine <= Math.min(record.document.sourceLineCount, line + 2); contextLine += 1) {
@@ -1015,6 +1040,7 @@ export async function readTranslationReuseAuditSelection(input: {
     fromLine: selectedLines[0],
     toLine: selectedLines.at(-1)!,
     selectedLines,
+    residueConfirmations,
     lines: selectedLines.map((line) => {
       const entry = record.document.lines[line - 1];
       return {

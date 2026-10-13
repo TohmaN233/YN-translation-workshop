@@ -5,13 +5,18 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { extractedWorkshopTextPath } from "./agent/translationBindingResolve.ts";
 import { decodeProjectPaths, projectRelativePath } from "./projectPaths.ts";
-import { PDF_LAYOUT_VERSION, validatePdfLayout, type PdfLayout, type PdfWorkerOperation } from "./pdfTypes.ts";
-import type { PdfProtectedLine } from "../shared/validation/pdfPreservation.ts";
+import { PDF_LAYOUT_VERSION, PDF_EXTRACTOR_REVISION, validatePdfLayout, type PdfLayout, type PdfWorkerOperation } from "./pdfTypes.ts";
+import { splitPdfInlineTranslation, type PdfProtectedLine } from "../shared/validation/pdfPreservation.ts";
+import type { PdfPreservedSpan } from "../shared/validation/pdfAcademicPrescan.ts";
 import type { PiSessionPromptRequest } from "../shared/agent/piSessionContract.ts";
 import { RequiredWorkflowFileError, withRequiredWorkflowFile } from "./agent/requiredWorkflowFile.ts";
 import { NonRetryableAssignmentError } from "./agent/piNative/assignmentFailure.ts";
+import {pdfReferenceSections} from './pdfReferenceSections.ts';
 
 const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
+const pdfErrorDetails=(error:unknown):string=>error instanceof AggregateError
+  ? `${error.message}: ${error.errors.map(pdfErrorDetails).join('; ')}`
+  : error instanceof Error?error.message:String(error);
 let resourceDirectory = fileURLToPath(new URL("../../", import.meta.url));
 export function configurePdfResourceDirectory(directory: string): void { resourceDirectory = directory; }
 function fontPath(): string {
@@ -31,16 +36,26 @@ async function runPdfWorker(operation: PdfWorkerOperation, signal?: AbortSignal,
       const worker = new Worker(new URL(import.meta.url.endsWith(".ts") ? "./pdfWorker.ts" : "./pdfWorker.js", import.meta.url), {
         workerData: operation, execArgv: process.execArgv.filter(arg => !arg.startsWith("--input-type")) });
       let result: any, failure: unknown;
-      const abort = () => { failure ??= signal?.reason ?? new Error("PDF operation cancelled."); void worker.terminate().catch(error => { failure = new AggregateError([failure, error], "PDF worker cancellation failed."); }); };
+      // PDF decoders can be creating native zlib handles. Interrupting the
+      // thread between construction and initialization can abort Node itself.
+      // Request cancellation and wait for render/decoder cleanup and real exit.
+      const abort = () => { failure ??= signal?.reason ?? new Error("PDF operation cancelled."); worker.postMessage({type:"cancel"}); };
       worker.on("message", message => {
         if (message.type === "result") result = message.result;
-        else if (message.type === "error") failure ??= new Error(message.error);
+        else if (message.type === "error") {
+          const error=new Error(message.error);
+          if(message.cleanupFailure&&failure)failure=new AggregateError([failure,error],`PDF cancellation cleanup failed: ${pdfErrorDetails(failure)}; ${error.message}`);
+          else if(message.cleanupFailure)failure=new AggregateError([error],error.message);
+          else failure ??= error;
+        }
         else if (message.type === "progress") {
           try { onProgress?.(message.page, message.total); }
           catch (error) { failure ??= error; abort(); }
         }
       });
-      worker.once("error", error => { failure ??= error; });
+      worker.once("error", error => { failure=failure
+        ? new AggregateError([failure,error],`PDF operation and worker failure: ${pdfErrorDetails(failure)}; ${error.message}`)
+        : error; });
       worker.once("exit", code => {
         signal?.removeEventListener("abort", abort);
         if (failure) reject(failure);
@@ -50,16 +65,17 @@ async function runPdfWorker(operation: PdfWorkerOperation, signal?: AbortSignal,
       if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
     });
     signal?.throwIfAborted();
-    await record("completed", { pages: result.pages });
+    await record("completed", { pages: result.pages, segmentation:result.segmentation });
     return result;
   } catch (error) {
-    try { await record(signal?.aborted ? "cancelled" : "failed", { error: error instanceof Error ? error.message : String(error) }); }
+    try { await record(signal?.aborted&&!(error instanceof AggregateError) ? "cancelled" : "failed", { error: pdfErrorDetails(error) }); }
     catch (journalError) { throw new AggregateError([error, journalError], "PDF operation and diagnostic persistence failed."); }
     throw error;
   }
 }
 
-type VerifiedPdfBinding = { layout: PdfLayout; files: string[]; stamps: string[] };
+type VerifiedPdfBinding = { layout: PdfLayout; files: string[]; stamps: string[]; preservedSpans: PdfPreservedSpan[] };
+const preservedSpansCache = new WeakMap<PdfLayout, PdfPreservedSpan[]>();
 const verifiedBindings = new Map<string, VerifiedPdfBinding>();
 async function fileStamp(file: string): Promise<string> {
   const value = await stat(file, { bigint: true });
@@ -112,7 +128,10 @@ export async function readPdfLayout(sourcePath: string, projectRoot: string, sig
   let binding: VerifiedPdfBinding;
   try {
     binding = await runBindingWorker({ kind: "verify", sourcePath, projectRoot }, signal) as VerifiedPdfBinding;
-    await record("binding_verification_completed",{pages:binding.layout.pages.length,rows:binding.layout.blocks.length});
+    preservedSpansCache.set(binding.layout,binding.preservedSpans);
+    await record("binding_verification_completed",{pages:binding.layout.pages.length,rows:binding.layout.blocks.length,
+      academicPrescan:{sourceHash:binding.layout.sourceHash,preservedOccurrences:binding.preservedSpans.length,
+        preservedIdentifiers:[...new Set(binding.preservedSpans.filter(span=>span.kind==='software'||span.kind==='acronym').map(span=>span.text))]}});
   } catch (error) {
     try { await record(signal?.aborted ? "binding_verification_cancelled" : "binding_verification_failed",{error:error instanceof Error ? error.message : String(error)}); }
     catch (journalError) { throw new NonRetryableAssignmentError("PDF binding verification and diagnostics failed.",new AggregateError([error,journalError])); }
@@ -131,16 +150,12 @@ export async function preparePdfDocument(originalPath: string, workspaceDir: str
   const identityPath = extractedWorkshopTextPath(workspaceDir, originalPath, "source");
   const originalHash = await runBindingWorker({ kind: "hash", file: originalPath }, options.signal) as string;
   const identityDirectory = path.dirname(path.dirname(identityPath));
-  const sourcePath = path.join(path.dirname(identityDirectory), path.basename(identityDirectory) + "-pdf-" + originalHash.slice(0,16) + `-v${PDF_LAYOUT_VERSION}`, "source", path.parse(originalPath).name + ".txt");
+  const sourcePath = path.join(path.dirname(identityDirectory), path.basename(identityDirectory) + "-pdf-" + originalHash.slice(0,16) + `-v${PDF_LAYOUT_VERSION}-e${PDF_EXTRACTOR_REVISION}`, "source", path.parse(originalPath).name + ".txt");
   const existing = await readPdfLayout(sourcePath, projectRoot, options.signal);
   if (existing) {
     if (path.resolve(existing.originalPath) !== path.resolve(originalPath) || originalHash !== existing.originalHash) throw new NonRetryableAssignmentError("PDF projection has an incompatible original binding. Start a new task.");
     const sourceBytes = await withRequiredWorkflowFile(sourcePath, () => readFile(sourcePath), options.signal);
-    for (const page of existing.pages) {
-      for (const [file, digest] of [[page.backgroundPath, page.backgroundHash], [page.previewPath, page.previewHash]]) {
-        if (await runBindingWorker({kind:"hash",file}, options.signal) !== digest) throw new NonRetryableAssignmentError(`PDF asset changed: ${file}. Restore it before resuming.`);
-      }
-    }
+    await runBindingWorker({ kind: "verify-assets", sourcePath, projectRoot }, options.signal);
     return { sourcePath, text: sourceBytes.toString("utf8"), originalHash: existing.originalHash, sourceHash: existing.sourceHash };
   }
   try { await runPdfWorker({ kind: "extract", originalPath, projectRoot, sourcePath, fontPath: fontPath() }, options.signal, options.onProgress); }
@@ -174,12 +189,25 @@ export async function pdfReferencesForRange(sourcePath: string, projectRoot: str
   const pages = new Set(blocks.map(block => block.page));
   const references = layout.references.filter(ref => pages.has(ref.page) || blocks.some(block => refersToCaption(block.text, ref.caption)))
     .map(({ id, page, caption, captionLine }) => ({ id, page, caption, captionLine }));
-  return { references, protectedLines: blocks.filter(block => block.protection).map(block => ({ line: block.line, kind: block.protection })),
-    instruction: "PDF code and mathematical formulas are not translatable. Copy each Host-protected line exactly, including comments, spacing and symbols; never diagnose preserved source language as untranslated. Translate surrounding prose. Images are read-only PDF context, not automatic model input. When a passage refers to a figure/table or needs visual context, call viewPdfReference with the corresponding reference id and source line." };
+  const scannedSpans = preservedSpansCache.get(layout);
+  if (!scannedSpans) throw new Error('Verified PDF binding is missing its academic preservation prescan.');
+  const preservedSpans = scannedSpans.filter(span=>span.line>=fromLine&&span.line<=toLine);
+  return { references, preservedSpans, segmentationWarnings:blocks.filter(block=>block.segmentation==='parallel-region').map(block=>({line:block.line,reason:'Unmarked aligned columns/table areas are ambiguous; this visual row remains independent. Do not complete neighboring rows here.'})),
+    inlineProtections:blocks.flatMap(block=>(block.inlineProtections??[]).map(({token,text,kind})=>({line:block.line,token,text,kind,readOnly:true}))), protectedLines: (await readPdfProtectedLines(sourcePath,projectRoot))!.filter(block=>block.line>=fromLine&&block.line<=toLine).map(block=>({...block,readOnly:true})),
+    instruction: "PDF paragraphs combine visual wraps within each page. A paragraph can continue on the next page: consult adjacent source rows for context without copying prose between rows. Inline {{formula:pN:id}} / {{code:pN:id}} markers stand for native glyphs; retain their exact identity, count and order in the translated paragraph. inlineProtections supplies their read-only original text. Translate the complete surrounding prose without expanding it or completing another paragraph. PDF code, mathematical formulas and References/Bibliography sections are immutable Host-prepared rows. protectedLines is read-only context; never submit, copy, translate or diagnose those rows as untranslated. Translate only the writable sourceBlocks or translatableLines. The Host merges the original protected content at its physical line numbers. preservedSpans are source-evidenced software names, defined acronyms, labels and reference identifiers: retain them unless an explicit project glossary requests a different target; do not diagnose their unchanged text as untranslated. Surrounding prose still needs translation. Images are read-only PDF context, not automatic model input. When a passage refers to a figure/table or needs visual context, call viewPdfReference with the corresponding reference id and source line." };
+}
+
+export async function readPdfPreservedSpans(sourcePath: string | undefined, projectRoot: string, signal?: AbortSignal): Promise<PdfPreservedSpan[] | undefined> {
+  if (!sourcePath || !isPdfSourceProjection(sourcePath)) return undefined;
+  const layout = await readPdfLayout(sourcePath,projectRoot,signal);
+  if (!layout) throw new RequiredWorkflowFileError(sourcePath+'.pdf-layout.json');
+  const spans=preservedSpansCache.get(layout);
+  if (!spans) throw new Error('Verified PDF binding is missing its academic preservation prescan.');
+  return spans;
 }
 
 export function isPdfSourceProjection(sourcePath: string): boolean {
-  return /[\\/]\.translation-workshop[\\/]extracted-text[\\/][^\\/]+-pdf-[a-f0-9]{16}(?:-v\d+)?[\\/]source[\\/]/i.test(sourcePath);
+  return /[\\/]\.translation-workshop[\\/]extracted-text[\\/][^\\/]+-pdf-[a-f0-9]{16}(?:-v\d+)?(?:-e\d+)?[\\/]source[\\/]/i.test(sourcePath);
 }
 
 const protectedRowsCache = new WeakMap<PdfLayout, PdfProtectedLine[]>();
@@ -188,7 +216,12 @@ export async function readPdfProtectedLines(sourcePath: string | undefined, proj
   const layout = await readPdfLayout(sourcePath, projectRoot, signal);
   if (!layout) throw new RequiredWorkflowFileError(sourcePath + ".pdf-layout.json");
   let rows = protectedRowsCache.get(layout);
-  if (!rows) { rows = layout.blocks.filter(block => block.protection).map(block => ({ line: block.line, kind: block.protection!, text: block.text })); protectedRowsCache.set(layout, rows); }
+  if (!rows) {
+    const references=pdfReferenceSections(layout).protectedLines;
+    const map=new Map<number,PdfProtectedLine>(layout.blocks.filter(block=>block.protection).map(block=>[block.line,{line:block.line,kind:block.protection!,text:block.text}]));
+    for(const row of references)map.set(row.line,row);
+    rows=[...map.values()].sort((a,b)=>a.line-b.line);protectedRowsCache.set(layout,rows);
+  }
   return rows;
 }
 
@@ -216,9 +249,9 @@ export async function preflightPdfRequest(request: Pick<PiSessionPromptRequest, 
 export async function assertPdfProtectedWrite(sourcePath: string | undefined, projectRoot: string, entries: Array<{ line: number; text: string }>, fullDocument = false): Promise<void> {
   const protectedLines = await readPdfProtectedLines(sourcePath, projectRoot);
   if (!protectedLines) return;
+  const layout = (await readPdfLayout(sourcePath!, projectRoot))!;
   const map = new Map(protectedLines.map(entry => [entry.line, entry]));
   if (fullDocument) {
-    const layout = (await readPdfLayout(sourcePath!, projectRoot))!;
     if (entries.length !== layout.blocks.length) throw new Error(`PDF translation must retain all ${layout.blocks.length} source rows, including protected code/math.`);
     const supplied = new Map(entries.map(entry => [entry.line, entry.text]));
     for (const original of protectedLines) if (supplied.get(original.line) !== original.text) throw new Error(`PDF L${original.line}: protected ${original.kind} is missing or changed.`);
@@ -226,6 +259,13 @@ export async function assertPdfProtectedWrite(sourcePath: string | undefined, pr
   for (const entry of entries) {
     const original = map.get(entry.line);
     if (original && entry.text !== original.text) throw new Error(`PDF L${entry.line}: protected ${original.kind} must remain exactly identical to its source.`);
+    const source=layout.blocks[entry.line-1];
+    if (!source) throw new Error(`PDF write is outside its source at L${entry.line}.`);
+    // Empty draft rows remain unfinished; nonempty rows retain inline ownership.
+    if(entry.text.trim()||fullDocument) {
+      try {splitPdfInlineTranslation(source.text,entry.text);}
+      catch(error){throw new Error(`PDF L${entry.line}: ${error instanceof Error?error.message:String(error)}`);}
+    }
   }
 }
 

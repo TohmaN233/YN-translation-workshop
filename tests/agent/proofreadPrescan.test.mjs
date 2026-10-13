@@ -40,6 +40,15 @@ const aliasSignals = buildProofreadDeterministicSignals({
 });
 assert.equal(aliasSignals.some(signal => signal.code === "H3" && signal.line === 1), false);
 assert.ok(aliasSignals.some(signal => signal.code === "H3" && signal.line === 2));
+const nestedNameSignals = buildProofreadDeterministicSignals({
+  sourceText: "エリザベスが来た。\nエリザベスとベスが来た。",
+  translationText: "伊丽莎白来了。\n伊丽莎白来了。",
+  validationOptions: { languagePair: "ja->zh-CN", characterEntries: [
+    { name: "ベス", target: "贝丝" }, { name: "エリザベス", target: "伊丽莎白" }
+  ] }
+});
+assert.equal(nestedNameSignals.some(signal => signal.code === "H3" && signal.line === 1), false);
+assert.ok(nestedNameSignals.some(signal => signal.code === "H3" && signal.line === 2));
 assert.ok(byCode.has("H3:1"), "glossary mismatch must be found by the full deterministic scan");
 assert.ok(byCode.has("H4:2"), "source-language residue must be found by the full deterministic scan");
 assert.ok(byCode.has("H7:3"), "AI contamination must be found by the full deterministic scan");

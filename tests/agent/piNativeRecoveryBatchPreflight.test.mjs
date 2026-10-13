@@ -633,6 +633,7 @@ test("real general translation repair rolls back canonical, review evidence and 
     await supervisor.waitForAll();
     assert.equal(supervisor.list()[0].status, "failed");
     assert.match(supervisor.list()[0].error, /Host canonical repair evidence commit failed/);
+    assert.match(supervisor.list()[0].error, /injected general repair persistence failure/, "fatal diagnostic must preserve its underlying cause");
     assert.equal(calls, 2, "Host commit failure must end the current native child turn");
     assert.equal(await readFile(canonical, "utf8"), `${candidateLines.join("\n")}\n`);
     assert.deepEqual(alignment, previousAlignment);

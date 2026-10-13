@@ -1,13 +1,10 @@
 # Design
 
-This legacy 1.x document has been retired. It is not a runtime specification.
-The 2.x application uses an embedded Pi runtime and Host-owned workflow contracts,
-not external CLI or skill-driven execution.
+The application uses native Pi sessions and Host-owned translation/proofreading contracts. The official local Agent API drives the same preparation and runtime without opening the main window.
 
-- [Product overview and artifacts](../README.en.md)
-- [Current workflow and ownership boundaries](workflow.md)
+- [Current workflows](workflows.en.md)
 - [Runtime code map](agent-runtime-codegraph.md)
-- [Pi and pi-web implementation map](pi-web-migration-map.md)
+- [Background Agent API](agent-api.en.md)
+- [Function reference](reference.en.md)
 
-This page is an index, not a runtime specification. Current code and tests define
-implementation details.
+The old 1.x prompt-copy design is historical, not a current runtime specification.

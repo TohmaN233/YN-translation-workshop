@@ -14,7 +14,7 @@ import { agentChatFlowVersion } from "./agentChatEmbed.ts";
 import { isMechanicalScanProposal, type ReviewProposal } from "./reviewReport.ts";
 
 interface EmbeddedReviewData {
-  rows?: Array<{ source?: unknown; translation?: unknown }>;
+  rows?: Array<{ source?: unknown; translation?: unknown; pdfProtection?: unknown; pdfInlineProtections?: unknown; pdfSegmentation?: unknown }>;
   pageSize?: unknown;
   startPage?: unknown;
   workflow?: {
@@ -436,7 +436,7 @@ export function upgradeLegacyLineReviewHtmlContent(
   if (!data?.rows || !Array.isArray(data.rows)) {
     return undefined;
   }
-  return renderLineReviewHtml({
+  const upgraded = renderLineReviewHtml({
     title: htmlTitle(html, fallbackTitle),
     sourceText: data.rows.map((row) => String(row.source ?? "")).join("\n"),
     translationText: data.rows.map((row) => String(row.translation ?? "")).join("\n"),
@@ -446,6 +446,18 @@ export function upgradeLegacyLineReviewHtmlContent(
     lineReviewPath: sourceFilePath,
     workflow: { ...workflowOptions(data), ...workflowOverride }
   });
+  // Protocol upgrades retain PDF display metadata; the Host still verifies the
+  // immutable layout independently at every write boundary.
+  return upgraded.replace(/(<script id="reviewData" type="application\/json">)([\s\S]*?)(<\/script>)/,
+    (_match,open,json,close)=>{
+      const next=JSON.parse(json);
+      for(const [index,row] of data.rows!.entries()) {
+        if(row.pdfProtection==='code'||row.pdfProtection==='math'||row.pdfProtection==='reference')next.rows[index].pdfProtection=row.pdfProtection;
+        if(Array.isArray(row.pdfInlineProtections))next.rows[index].pdfInlineProtections=row.pdfInlineProtections;
+        if(row.pdfSegmentation==='parallel-region'||row.pdfSegmentation==='paragraph'||row.pdfSegmentation==='protected')next.rows[index].pdfSegmentation=row.pdfSegmentation;
+      }
+      return open+JSON.stringify(next).replace(/</g,'\\u003c')+close;
+    });
 }
 
 export function upgradeLegacyBatchLineReviewHtmlContent(

@@ -1,4 +1,4 @@
-import { readSessionContext, appendSessionMessage } from "./sessionAccess.ts";
+import { readSessionContext, appendSessionMessage, getDiskSessionAccess } from "./sessionAccess.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/node";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -449,6 +449,12 @@ export class PiNativeSessionService {
   private nextQueuedInputSequence = 0;
   private nextPromptGeneration = 0;
   private taskPreparationHost?: YnTaskPreparationHost;
+  private shuttingDown = false;
+  private shutdownTask?: Promise<void>;
+
+  private assertAcceptingOperations(): void {
+    if (this.shuttingDown) throw new Error("YN is shutting down; wait for session storage to finish closing.");
+  }
 
   constructor(options: PiNativeSessionServiceOptions = {}) {
     this.options = options;
@@ -481,7 +487,9 @@ export class PiNativeSessionService {
   }
 
   async createSession(workspaceDir: string): Promise<PiSessionSummary> {
+    this.assertAcceptingOperations();
     return this.withWorkspaceTransition(workspaceDir, async () => {
+      this.assertAcceptingOperations();
       const repository = new PiSessionRepository(workspaceDir);
       const sessionId = `pi_${randomUUID()}`;
       const session = await repository.create(sessionId);
@@ -506,7 +514,9 @@ export class PiNativeSessionService {
   }
 
   async selectSession(workspaceDir: string, sessionId: string): Promise<void> {
+    this.assertAcceptingOperations();
     await this.withWorkspaceTransition(workspaceDir, async () => {
+      this.assertAcceptingOperations();
       const repository = new PiSessionRepository(workspaceDir);
       if (!(await repository.findMetadata(sessionId))) {
         throw new Error(`Pi session ${sessionId} was not found.`);
@@ -519,6 +529,7 @@ export class PiNativeSessionService {
   }
 
   async deleteSession(workspaceDir: string, sessionId: string): Promise<boolean> {
+    this.assertAcceptingOperations();
     const key = sessionKey(workspaceDir, sessionId);
     if (this.closingSessions.has(key)) throw new Error(`Pi session ${sessionId} is already closing.`);
     this.closingSessions.add(key);
@@ -527,6 +538,7 @@ export class PiNativeSessionService {
     try {
       await this.abort(workspaceDir, sessionId);
       return await this.withWorkspaceSessionTransition(workspaceDir, sessionId, async () => {
+        this.assertAcceptingOperations();
         const active = this.active.get(key);
         if (active?.compacting) throw new Error("Wait for native Pi compaction before deleting this session.");
         active?.unsubscribe();
@@ -559,11 +571,14 @@ export class PiNativeSessionService {
   }
 
   async loadMessages(workspaceDir: string, sessionId: string): Promise<AgentMessage[]> {
+    this.assertAcceptingOperations();
     if (!sessionId) return [];
     const key = sessionKey(workspaceDir, sessionId);
     const coldController = this.active.has(key) ? undefined : this.registerColdStorageController(key);
     try {
       return await this.withSessionTransition(workspaceDir, sessionId, async () => {
+        this.assertAcceptingOperations();
+        coldController?.signal.throwIfAborted();
         const active = this.active.get(key);
         const repository = new PiSessionRepository(workspaceDir);
         let session: Session | undefined;
@@ -602,12 +617,21 @@ export class PiNativeSessionService {
     parentSessionId: string,
     childSessionId: string
   ): Promise<AgentMessage[]> {
-    const repository = new PiSessionRepository(workspaceDir);
-    return repository.withChildSessionReadForParent(childSessionId, parentSessionId, async (child) => (
-      (await readSessionContext(child)).messages
-        .filter((message) => message.role !== "system")
-        .map(piWebDisplayMessage)
-    ));
+    this.assertAcceptingOperations();
+    const key = sessionKey(workspaceDir, parentSessionId);
+    const controller = this.registerColdStorageController(key);
+    try {
+      return await this.withSessionTransition(workspaceDir, parentSessionId, async () => {
+        this.assertAcceptingOperations();
+        controller.signal.throwIfAborted();
+        const repository = new PiSessionRepository(workspaceDir, { signal: controller.signal });
+        return repository.withChildSessionReadForParent(childSessionId, parentSessionId, async (child) => (
+          (await readSessionContext(child)).messages
+            .filter((message) => message.role !== "system")
+            .map(piWebDisplayMessage)
+        ));
+      });
+    } finally { this.releaseColdStorageController(key, controller); }
   }
 
   listRecentEvents(workspaceDir: string, sessionId: string, afterSequence = 0): PiSessionEventEnvelope[] {
@@ -635,6 +659,7 @@ export class PiNativeSessionService {
   }
 
   private async acceptPrompt(request: PiSessionPromptRequest, preparationHandoff?: YnTaskPreparationState, handoffCancelled?: () => boolean): Promise<PiSessionPromptAcceptance> {
+    this.assertAcceptingOperations();
     const preparationStarted = performance.now();
     request = await resolveCurrentProjectPromptRequest(request);
     assertWorkflowPromptMetadata(request);
@@ -662,7 +687,8 @@ export class PiNativeSessionService {
         }
         const prepared = await this.prepareRuntime(request, "prompt", preparationHandoff);
         if (reservation.cancelled || handoffCancelled?.()) {
-          throw new DOMException("Pi prompt was cancelled before the native runtime started.", "AbortError");
+          await this.releaseCancelledPreparation(prepared,
+            new DOMException("Pi prompt was cancelled before the native runtime started.", "AbortError"));
         }
         const active = this.commitPreparedRuntime(key, prepared);
         const operation: PromptOperation = {
@@ -721,6 +747,7 @@ export class PiNativeSessionService {
   }
 
   async compact(request: PiSessionCompactRequest): Promise<PiSessionCompactionResult> {
+    this.assertAcceptingOperations();
     const key = sessionKey(request.outputDir, request.sessionId);
     if (this.sessionOperationReservations.has(key)) {
       throw new Error("Pi session is busy.");
@@ -750,7 +777,8 @@ export class PiNativeSessionService {
           thinkingLevel: request.thinkingLevel
         }, "compaction");
         if (reservation.cancelled) {
-          throw new DOMException("Pi compaction was cancelled before the native runtime started.", "AbortError");
+          await this.releaseCancelledPreparation(prepared,
+            new DOMException("Pi compaction was cancelled before the native runtime started.", "AbortError"));
         }
         const active = this.commitPreparedRuntime(key, prepared);
         active.compacting = true;
@@ -776,7 +804,9 @@ export class PiNativeSessionService {
     text: string,
     images?: ImageContent[]
   ): Promise<void> {
+    this.assertAcceptingOperations();
     await this.withSessionTransition(workspaceDir, sessionId, async () => {
+      this.assertAcceptingOperations();
       const active = this.requireRunning(workspaceDir, sessionId);
       const entry: QueuedInputOrderEntry = {
         sequence: ++this.nextQueuedInputSequence,
@@ -824,7 +854,7 @@ export class PiNativeSessionService {
       || activeBeforeStop?.reviewBindingRecovery?.pending
       || activeBeforeStop?.compactionTask
     );
-    if (!hasActiveWork) return;
+    if (!hasActiveWork && !activeBeforeStop) return;
     if (reservation) { reservation.cancelled = true; reservation.preparationController?.abort(new DOMException("PDF session preparation was stopped.", "AbortError")); }
     let settleStop!: () => void;
     let failStop!: (error: unknown) => void;
@@ -847,15 +877,19 @@ export class PiNativeSessionService {
       current.subagents.abortAll();
     };
     // Cancellation cannot wait for a Host disk write or session transition.
-    if (active) signalStop(active);
+    if (active && hasActiveWork) signalStop(active);
     try {
       await this.withSessionTransition(workspaceDir, sessionId, async () => {
         const current = this.active.get(key);
-        if (current && current !== active) signalStop(current);
+        if (current && current !== active && hasActiveWork) signalStop(current);
         active = current;
-        if (active) this.suspendDomainRun(active);
+        if (active && hasActiveWork) this.suspendDomainRun(active);
       });
       if (!active) return;
+      if (!hasActiveWork) {
+        await this.flushSessionStorage(active, "idle-stop");
+        return;
+      }
       const hadActiveWork = active.running || active.compacting || active.subagents.hasRunning();
       // An exiting Host tool may publish through the session transition. Holding
       // that transition while waiting for native idle deadlocks both operations.
@@ -887,6 +921,11 @@ export class PiNativeSessionService {
       } catch (error) {
         errors.push(error);
       }
+      try {
+        await this.flushSessionStorage(active, "stop");
+      } catch (error) {
+        errors.push(error);
+      }
       if (errors.length > 0) {
         const error = new AggregateError(errors, `Pi Stop failed to finish cleanly: ${errors.map((item) => item instanceof Error ? item.message : String(item)).join("; ")}`);
         active.error = error.message;
@@ -901,6 +940,59 @@ export class PiNativeSessionService {
       if (this.sessionOperationReservations.get(key) === stopReservation) this.sessionOperationReservations.delete(key);
       settleStop();
     }
+  }
+
+  private async flushSessionStorage(active: ActiveSession, reason: string): Promise<void> {
+    const disk = getDiskSessionAccess(active.session);
+    if (!disk) return;
+    const started = Date.now();
+    // An idle Stop must not append a synthetic transaction just to flush an
+    // already clean index. This also keeps repeated close/Stop requests cheap.
+    console.info("Pi session restore index flush requested", { sessionId: active.sessionId, reason });
+    try {
+      await disk.storage.flushDerivedIndex();
+      console.info("Pi session restore index flushed", { sessionId: active.sessionId, reason, elapsedMs: Date.now() - started });
+    } catch (error) {
+      active.error = error instanceof Error ? error.message : String(error);
+      this.emitActiveState(active);
+      try {
+        await active.runtime.appendCustomEntry("yn_session_storage_flush", { phase: "failed", reason,
+          timestamp: Date.now(), elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) });
+      } catch (diagnosticError) {
+        throw new AggregateError([error, diagnosticError], "Pi restore index flush and failure diagnostic both failed.");
+      }
+      throw error;
+    }
+  }
+
+  /** Block new model work before signalling every desktop session to Stop. */
+  disposeAll(): Promise<void> {
+    if (this.shutdownTask) return this.shutdownTask;
+    this.shuttingDown = true;
+    const workspaces = new Map<string, string>();
+    for (const key of [...this.sessionOperationReservations.keys(), ...this.coldStorageControllers.keys()]) {
+      const root = key.slice(0, key.lastIndexOf("::"));
+      workspaces.set(workspaceKey(root), root);
+    }
+    for (const resource of this.transitionTails.keys()) {
+      if (resource.startsWith("workspace:")) {
+        const root = resource.slice("workspace:".length);
+        workspaces.set(workspaceKey(root), root);
+      }
+    }
+    for (const active of this.active.values()) workspaces.set(workspaceKey(active.workspaceDir), active.workspaceDir);
+    this.shutdownTask = (async () => {
+      const outcomes = await Promise.allSettled([...workspaces.values()].map(root => this.disposeWorkspace(root)));
+      const errors = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+      if (errors.length) throw new AggregateError(errors, "Desktop Pi session disposal failed.");
+    })();
+    return this.shutdownTask;
+  }
+
+  /** Only the desktop failure handler calls this after all quit settlements finished. */
+  resumeAfterCancelledShutdown(): void {
+    this.shuttingDown = false;
+    this.shutdownTask = undefined;
   }
 
   private async abortActiveSession(active: ActiveSession): Promise<void> {
@@ -968,22 +1060,30 @@ export class PiNativeSessionService {
     const sessionIds = this.workspaceSessionIds(workspaceDir);
     const outcomes = await Promise.allSettled(sessionIds.map((sessionId) => this.abort(workspaceDir, sessionId)));
     const errors: unknown[] = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+    const failedStops = new Set(sessionIds.filter((_, index) => outcomes[index].status === "rejected"));
     await this.withTransitions(this.workspaceSessionResources(workspaceDir, sessionIds), async () => {
       const prefix = `${workspaceKey(workspaceDir)}::`;
       const sessions = [...this.active.entries()].filter(([key]) => key.startsWith(prefix));
       for (const [key, active] of sessions) {
+        // Keep a usable warm owner when Stop could not save its latest index.
+        // Pi close is terminal even on failure; closing now would destroy the
+        // only owner that can retry that outstanding persistence safely.
+        if (failedStops.has(active.sessionId)) continue;
         if (active.running || active.compacting || active.subagents.hasRunning()) {
           errors.push(new Error(`Cannot release Pi session ${active.sessionId}: native work did not settle after Stop.`));
           continue;
         }
+        try { await this.flushSessionStorage(active, "dispose"); }
+        catch (error) { errors.push(error); continue; }
         const releaseErrors: unknown[] = [];
         try { active.unsubscribe(); } catch (error) { releaseErrors.push(error); }
         try { active.runtime.dispose(); } catch (error) { releaseErrors.push(error); }
         try { await active.session.close(BACKGROUND_CONTEXT); } catch (error) { releaseErrors.push(error); }
-        if (!releaseErrors.length) {
-          this.active.delete(key);
-          this.events.delete(key);
-        }
+        // The latest restore window is already durable. Native Session.close
+        // seals the owner even when it reports an error, so it must never be
+        // reused by the next prompt or a retry of desktop shutdown.
+        this.active.delete(key);
+        this.events.delete(key);
         errors.push(...releaseErrors);
       }
       for (const key of this.coldStorageSequences.keys()) {
@@ -1001,6 +1101,7 @@ export class PiNativeSessionService {
     purpose: "prompt" | "compaction" = "prompt",
     preparationHandoff?: YnTaskPreparationState
   ): Promise<PreparedRuntime> {
+    this.assertAcceptingOperations();
     const key = sessionKey(request.outputDir, request.sessionId);
     const previous = this.active.get(key);
     if (previous?.running || previous?.compacting) {
@@ -1028,7 +1129,10 @@ export class PiNativeSessionService {
     } catch (error) {
       // A failed provider/tool preparation never transfers this new handle to
       // the active owner. Keep an existing owner's session usable on rejection.
-      if (!previous && session) await session.close(BACKGROUND_CONTEXT);
+      if (!previous && session) {
+        try { await session.close(BACKGROUND_CONTEXT); }
+        catch (closeError) { throw new AggregateError([error, closeError], "Pi runtime preparation failed and its session could not close."); }
+      }
       throw error;
     } finally {
       if (coldController) this.releaseColdStorageController(key, coldController);
@@ -1080,6 +1184,7 @@ export class PiNativeSessionService {
       providerId: request.providerId,
       modelId: request.modelId
     });
+    preparationSignal?.throwIfAborted();
     const modelSelectionMs = performance.now() - selectionStarted;
     const setupStarted = performance.now();
     if (purpose === "prompt" && request.images?.length && !selection.model.input.includes("image")) {
@@ -1618,6 +1723,8 @@ export class PiNativeSessionService {
       workflowSuspended: hostState.workflowSuspended || hasParkedWorkflow(),
       domainRun
     }) ?? GENERIC_SYSTEM_PROMPT);
+    preparationSignal?.throwIfAborted();
+    if (reservation?.cancelled) throw new DOMException("Pi runtime preparation was stopped.", "AbortError");
     let userGateAssistantKey = "";
     let terminateUserGateBatch = false;
     runtime = new PiSessionAgentRuntime({
@@ -1734,6 +1841,17 @@ export class PiNativeSessionService {
     this.active.set(key, prepared.active);
     if (prepared.retirePreviousSubagents) prepared.previous?.subagents.abortAll();
     return prepared.active;
+  }
+
+  /** A cancelled preparation never transfers its newly opened handle to an owner. */
+  private async releaseCancelledPreparation(prepared: PreparedRuntime, cancellation: DOMException): Promise<never> {
+    const errors: unknown[] = [cancellation];
+    try { prepared.active.runtime.dispose(); } catch (error) { errors.push(error); }
+    if (!prepared.previous) {
+      try { await prepared.active.session.close(BACKGROUND_CONTEXT); } catch (error) { errors.push(error); }
+    }
+    if (errors.length > 1) throw new AggregateError(errors, "Cancelled Pi runtime preparation could not release its resources.");
+    throw cancellation;
   }
 
   private requireRunning(workspaceDir: string, sessionId: string): ActiveSession {

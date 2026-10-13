@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import electronPath from "electron";
 import { build } from "esbuild";
 
 const root = process.cwd();
+const activeTestProcesses = new Set();
 const verifyOnly = process.env.YN_VERIFY_ONLY?.trim();
 const tempDir = await mkdtemp(path.join(root, ".tmp-electron-pi-native-"));
 const userDataDir = await mkdtemp(path.join(root, ".tmp-electron-user-data-"));
@@ -25,6 +26,7 @@ async function buildVerifier(entryPoint, outputName) {
   // just as the packaged main process resolves dist/main/proofreadPrescanWorker.js.
   await copyFile(path.join(root, "dist/main/proofreadPrescanWorker.js"), path.join(tempDir, "proofreadPrescanWorker.js"));
   await copyFile(path.join(root, "dist/main/translationValidationWorker.js"), path.join(tempDir, "translationValidationWorker.js"));
+  await copyFile(path.join(root, "dist/main/lineReviewStateWorker.js"), path.join(tempDir, "lineReviewStateWorker.js"));
   for (const worker of ["sessionIndexWorker.js", "sessionMaintenanceWorker.js", "sessionHostReplayWorker.js"]) {
     await copyFile(path.join(root, "dist/main", worker), path.join(tempDir, worker));
   }
@@ -41,6 +43,7 @@ async function buildVerifier(entryPoint, outputName) {
     },
     external: [
       "electron",
+      "pdfjs-dist", "pdfjs-dist/*", "pdf-lib", "@pdf-lib/fontkit", "@napi-rs/canvas",
       "extract-zip",
       "@earendil-works/pi-ai",
       "@earendil-works/pi-ai/*",
@@ -52,7 +55,7 @@ async function buildVerifier(entryPoint, outputName) {
 }
 
 async function runVerifier(mainPath, successMarker, timeoutMs, envOverrides = {}) {
-  const result = await new Promise((resolve) => {
+  const result = await new Promise((resolve, reject) => {
     const child = spawn(electronPath, [
       "--disable-gpu",
       "--disable-gpu-compositing",
@@ -71,9 +74,16 @@ async function runVerifier(mainPath, successMarker, timeoutMs, envOverrides = {}
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });
+    activeTestProcesses.add(child.pid);
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill(), timeoutMs);
+    const timer = setTimeout(async () => {
+      try {
+        const evidence = path.join(tempDir, `timeout-${child.pid}.json`);
+        await writeFile(evidence, JSON.stringify({ pid: child.pid, mainPath, tempDir, userDataDir, processPreserved: true, stdout, stderr }, null, 2));
+        reject(new Error(`Electron verifier timed out; PID ${child.pid} and evidence ${evidence} retained, no process was killed.`));
+      } catch (error) { reject(error); }
+    }, timeoutMs);
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString("utf8");
       stdout += text;
@@ -85,10 +95,12 @@ async function runVerifier(mainPath, successMarker, timeoutMs, envOverrides = {}
       process.stderr.write(text);
     });
     child.on("close", (code) => {
+      activeTestProcesses.delete(child.pid);
       clearTimeout(timer);
       resolve({ code, stdout, stderr, processId: child.pid });
     });
     child.on("error", (error) => {
+      activeTestProcesses.delete(child.pid);
       clearTimeout(timer);
       resolve({ code: 1, stdout, stderr: `${stderr}\n${error.stack || error.message}`, processId: child.pid });
     });
@@ -170,7 +182,9 @@ try {
   console.error(error instanceof Error ? error.stack || error.message : String(error));
   process.exitCode = 1;
 } finally {
-  await removeElectronTempDir(tempDir);
-  await removeElectronTempDir(userDataDir);
-  await removeElectronTempDir(coldRestartWorkspace);
+  if (activeTestProcesses.size === 0) {
+    await removeElectronTempDir(tempDir);
+    await removeElectronTempDir(userDataDir);
+    await removeElectronTempDir(coldRestartWorkspace);
+  } else console.error(`Preserved active test PIDs ${[...activeTestProcesses].join(", ")} and fixtures ${tempDir}, ${userDataDir}, ${coldRestartWorkspace}.`);
 }

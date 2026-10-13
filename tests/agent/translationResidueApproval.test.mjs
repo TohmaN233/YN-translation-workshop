@@ -1,0 +1,82 @@
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,writeFile,readFile,cp,rm} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {createYnDomainTools} from '../../src/main/agent/piNative/ynDomainTools.ts';
+import {createYnDomainRunContract} from '../../src/main/agent/piNative/domainRunContract.ts';
+import {createPiTranslationRuntimeSpec,createPiTranslationAuditSubagentWorker} from '../../src/main/agent/piNative/subagentRunner.ts';
+import {prepareTranslationReuseAudit,readTranslationReuseAuditSelection} from '../../src/main/agent/piNative/translationReuseAudit.ts';
+import {PiSessionRepository} from '../../src/main/agent/piNative/sessionRepository.ts';
+import {createModels,fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai';
+import {createYnTranslationValidationOptions} from '../../src/main/agent/piNative/translationValidationContext.ts';
+import {validateTranslationCandidate} from '../../src/shared/validation/translationValidator.ts';
+import {readProjectState} from '../../src/main/projectState.ts';
+import {parseTranslationResidueApprovals} from '../../src/main/agent/translationResidueApproval.ts';
+import {executeArtifactOperation} from '../../src/main/agent/artifactValidationWorkerTasks.ts';
+const root=await mkdtemp(path.join(os.tmpdir(),'yn-residue-parent-'));
+const moved=root+'-moved';
+let repository,auditWorker;
+const setup=request=>createYnDomainTools({request,domainRun:createYnDomainRunContract({workflowIntent:'translation',fullWorkflow:false}),
+  subagents:{hasRunning:()=>false},publishCustomMessage:async()=>{},persistHostState:async()=>{}});
+try {
+  const sourcePath=path.join(root,'source.txt');
+  const source=['mrfDepth','ThirdPartyPackageCore','%s ProtocolNamespace'];
+  await writeFile(sourcePath,source.join('\n')+'\n');
+  const request={outputDir:root,sourcePath,sessionId:'parent',prompt:'Translate.',languagePair:'en->zh-CN',glossaryCandidates:false,characterBible:false};
+  const candidate=path.join(root,'AI_translation/source_translated.txt');await mkdir(path.dirname(candidate),{recursive:true});
+  await writeFile(candidate,source.slice(0,2).join('\n')+'\n%s 协议命名空间\n');
+  const reuseArgs={outputDir:root,ownerSessionId:'parent',sourcePath,candidatePath:candidate,documentId:'source.txt',languagePair:'en->zh-CN',validationOptions:{styleForbiddenTerms:['mrfDepth']}};
+  const cachedReuse=await prepareTranslationReuseAudit(reuseArgs);
+  const tools=setup(request),execute=(name,params)=>tools.find(t=>t.name===name).execute(name,params);
+  await assert.rejects(execute('writeTranslationChunk',{fromLine:1,toLine:1,lines:[source[0]]}),/validation failed|未翻译/i);
+  const before=await readProjectState(root);
+  await assert.rejects(execute('confirmTranslationResidueSafe',{entries:[{line:1,translation:source[0],reason:'package name'},
+    {line:3,translation:'%d ProtocolNamespace',reason:'namespace'}]}),/structural.*placeholder_mismatch/i);
+  assert.deepEqual(await readProjectState(root),before,'one bad row rolls back the entire confirmation');
+  const entries=[{line:1,translation:source[0],reason:'Exact software package name.'},{line:2,translation:source[1],reason:'Exact public API namespace.'}];
+  await execute('confirmTranslationResidueSafe',{entries});
+  const refreshedReuse=await prepareTranslationReuseAudit(reuseArgs);assert.equal(refreshedReuse.auditId,cachedReuse.auditId,'refresh existing audit without losing other evidence');
+  const reuse=await readTranslationReuseAuditSelection({outputDir:root,ownerSessionId:'parent',auditId:refreshedReuse.auditId,documentId:'source.txt',lines:[1,2]});
+  assert.ok(reuse.lines.every(row=>!row.semanticSignals.some(code=>['likely_untranslated','target_language_not_observed'].includes(code))));
+  assert.ok(reuse.lines[0].semanticSignals.includes('style_guide_violation'),'unrelated signals remain reviewed');assert.equal(reuse.lines[1].deterministicDisposition,'automatic_reuse');
+  await execute('writeTranslationChunk',{fromLine:1,toLine:1,lines:[source[0]]});
+  const spec=createPiTranslationRuntimeSpec({request,task:{fromLine:2,toLine:2,instruction:'Retain the confirmed API namespace'},executionMode:'bounded_repair',publishCustomMessage:async()=>{}},
+    {sourceRead:false,translationWritten:false,translationValidated:false});
+  const child=spec.tools('child');
+  assert.ok(!child.some(t=>t.name==='confirmTranslationResidueSafe'),'child cannot issue semantic waivers');
+  await child.find(t=>t.name==='readAssignedSource').execute('read',{});
+  const repair=await child.find(t=>t.name==='repairAssignedTranslation').execute('write',{entries:[{line:2,translation:source[1]}]});
+  assert.equal(repair.details.accepted,true);
+  assert.equal((await child.find(t=>t.name==='validateAssignedTranslation').execute('validate',{misalignedLines:[]})).details.validation.accepted,true);
+  assert.deepEqual((await readFile(candidate,'utf8')).split('\n').slice(0,2),source.slice(0,2),'parent and child really commit approved text');
+  const options=await createYnTranslationValidationOptions(request);
+  const hasResidue=(a,b,opts=options)=>[...validateTranslationCandidate(a,b,opts).blocking,...validateTranslationCandidate(a,b,opts).warnings].some(f=>f.code==='likely_untranslated');
+  assert.equal(hasResidue(source[0],source[0]),false);
+  assert.equal(hasResidue(source[0],'mrfDepth v2'),true,'changed candidate invalidates approval');
+  assert.equal(hasResidue('mrfDepth v2','mrfDepth v2'),true,'changed source invalidates approval');
+  assert.equal(hasResidue(source[0],source[0],{...options,sourceBinding:path.join(root,'other.txt')}),true,'decision cannot cross documents');
+  await cp(root,moved,{recursive:true});
+  const movedRequest={...request,outputDir:moved,sourcePath:path.join(moved,'source.txt')};
+  const movedOptions=await createYnTranslationValidationOptions(movedRequest);
+  assert.equal(hasResidue(source[0],source[0],movedOptions),false,'cold load in moved project retains relative binding');
+  const coldReuse=await prepareTranslationReuseAudit({...reuseArgs,outputDir:moved,sourcePath:movedRequest.sourcePath,candidatePath:path.join(moved,'AI_translation/source_translated.txt'),ownerSessionId:'cold'});
+  const cold=await readTranslationReuseAuditSelection({outputDir:moved,ownerSessionId:'cold',auditId:coldReuse.auditId,documentId:'source.txt',lines:[1,2]});
+  assert.deepEqual(cold.residueConfirmations.map(row=>row.line),[1,2]);assert.ok(cold.lines.every(row=>!row.semanticSignals.includes('target_language_not_observed')));
+  assert.ok(!(await readFile(path.join(root,'.translation-workshop/project.json'),'utf8')).includes(root.replaceAll('\\','\\\\')),'approval paths persist relative to project');
+  const imported=await executeArtifactOperation({operation:'validate',args:{projectDir:moved,sourcePath:movedRequest.sourcePath,candidatePath:path.join(moved,'AI_translation/source_translated.txt'),languagePair:'en->zh-CN'},assets:{}},()=>{},()=>{},async()=>{});
+  assert.ok(![...imported.validation.blocking,...imported.validation.warnings].some(f=>f.code==='likely_untranslated'&&f.line<=2),'import worker uses the same approvals');
+  const approval=(await readProjectState(root)).translationResidueApprovals[0];
+  assert.throws(()=>parseTranslationResidueApprovals([{...approval,candidateText:'tampered'}]),/hashes/);
+  repository=new PiSessionRepository(root);await repository.create('parent');
+  const provider=fauxProvider({provider:'confirmed-reuse-audit',tokensPerSecond:1_000_000}),models=createModels();models.setProvider(provider.provider);
+  const call=(name,args={})=>fauxAssistantMessage(fauxToolCall(name,args),{stopReason:'toolUse'});
+  provider.setResponses([call('readAssignedTranslationAudit'),input=>{
+    const read=JSON.parse(input.messages.filter(m=>m.role==='toolResult').at(-1).content[0].text);
+    assert.equal(read.residueConfirmations[0].line,1);assert.match(read.residueInstruction,/parent decisions/);assert.ok(!read.lines[0].semanticSignals.includes('target_language_not_observed'));
+    return call('submitTranslationAudit',{entries:[{line:1,verdict:'retranslate',reason:'Resolve the separate style guide conflict; package preservation is already confirmed.'}]});
+  }]);
+  const context={request,task:{mode:'translation_audit',auditId:refreshedReuse.auditId,documentId:'source.txt',fromLine:1,toLine:1,lines:[1],prompt:'Review remaining style signal.'},publishCustomMessage:async()=>{},
+    createModelSelection:async()=>({models,model:provider.getModel(),providerId:provider.provider.id,modelId:provider.getModel().id})};
+  auditWorker=await createPiTranslationAuditSubagentWorker(context);await auditWorker.runAssignment(context);
+  console.log('Parent-only residue confirmations persist across writes, child repair, import and project moves; exact changes and structural errors remain rejected');
+} finally {await auditWorker?.dispose();await repository?.close();await rm(root,{recursive:true,force:true});await rm(moved,{recursive:true,force:true});}

@@ -3,13 +3,19 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
 
 const agentArtifactApi = {
+  cancelAgentArtifact: (requestId?: string) => ipcRenderer.invoke("agent-artifacts:cancel", { requestId }),
+  onAgentArtifactProgress: (callback: (progress: { requestId: string; phase: string; completedLines: number; totalLines: number }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: Parameters<typeof callback>[0]) => callback(progress);
+    ipcRenderer.on("agent-artifacts:progress", listener);
+    return () => ipcRenderer.removeListener("agent-artifacts:progress", listener);
+  },
   discoverAgentArtifacts: (args: { projectDir: string; sourcePaths?: string[] }) =>
     ipcRenderer.invoke("agent-artifacts:discover", args),
-  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[] }) =>
+  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[]; requestId?: string; compact?: boolean }) =>
     ipcRenderer.invoke("agent-artifacts:validate", args),
-  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[] }) =>
+  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[]; requestId?: string; compact?: boolean }) =>
     ipcRenderer.invoke("agent-artifacts:importPlan", args),
-  buildAgentRepairPrompt: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; customPreserveRules?: CustomPreserveRule[] }) =>
+  buildAgentRepairPrompt: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[]; requestId?: string; compact?: boolean }) =>
     ipcRenderer.invoke("agent-artifacts:repairPrompt", args)
 };
 
@@ -117,6 +123,11 @@ contextBridge.exposeInMainWorld("workshop", {
   approveAssetProposal: (args: { outputDir: string; proposalId: string; entry?: Record<string, unknown> }) => ipcRenderer.invoke("agent-assets:approveProposal", args),
   buildPrompt: (args: unknown) => ipcRenderer.invoke("prompts:build", args),
   generateLineReview: (args: unknown) => ipcRenderer.invoke("html:generateLineReview", args),
+  onLineReviewGenerationProgress: (callback: (progress: { requestId: string; sourcePath: string; page: number; totalPages: number }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: { requestId: string; sourcePath: string; page: number; totalPages: number }) => callback(progress);
+    ipcRenderer.on("html:lineGenerationProgress", listener);
+    return () => ipcRenderer.removeListener("html:lineGenerationProgress", listener);
+  },
   generateProposalReview: (args: unknown) => ipcRenderer.invoke("html:generateProposalReview", args),
   openReviewHtml: (args: unknown) => ipcRenderer.invoke("html:openReviewHtml", args),
   findProofreadReport: (outputDir: string) => ipcRenderer.invoke("reports:findProofreadReport", outputDir),
@@ -175,7 +186,7 @@ contextBridge.exposeInMainWorld("workshopHtml", {
     ipcRenderer.invoke("html:resolveProposalLineReviewDocument", args),
   applyProposalLineReviewStates: (args: { documents: Array<{ reportPath?: string; documentId?: string; sourcePath?: string; translationPath?: string; lineReviewPath?: string; lineState?: unknown; changedLines?: number[]; changedStateKeys?: string[]; expectedLineRevisions?: Record<string, number> }> }) =>
     ipcRenderer.invoke("html:applyProposalLineReviewStates", args),
-  persistHtmlState: (args: { kind: "line" | "proposal"; lineReviewPath?: string; state: unknown; changedLines?: number[]; changedStateKeys?: string[]; clientId?: string; mutationId?: string }) => ipcRenderer.invoke("html:persistState", args),
+  persistHtmlState: (args: { kind: "line" | "proposal"; lineReviewPath?: string; state: unknown; changedLines?: number[]; changedStateKeys?: string[]; clientId?: string; mutationId?: string; hydrate?: boolean; bulk?: boolean; expectedRevision?: number }) => ipcRenderer.invoke("html:persistState", args),
   onLineReviewStateUpdate: (callback: (payload: unknown) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload);
     ipcRenderer.on("html:lineReviewStateUpdate", listener);

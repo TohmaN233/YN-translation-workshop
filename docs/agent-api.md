@@ -36,7 +36,7 @@ node agent-tools/yn-agent-server.mjs "D:/YN/translation-workshop.exe"
 stdin/stdout 是 UTF-8 NDJSON，每个非空行一个 JSON，空行作为分隔忽略。stdout 仅协议；诊断在 stderr。请求 ID 可为字符串或整数，未完成请求的 ID 不可重复；停止请求不会排在模型启动后面。首个消息：
 
 ```json
-{"type":"ready","protocol":"yn-agent-api","protocolVersion":1,"version":"2.1.10"}
+{"type":"ready","protocol":"yn-agent-api","protocolVersion":1,"version":"2.2.0"}
 ```
 
 请求：

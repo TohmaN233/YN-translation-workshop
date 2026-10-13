@@ -19,7 +19,7 @@ const output = path.join(fixture, "main.mjs");
 await build({ absWorkingDir: root, entryPoints: ["scripts/verify-electron-agent-api-main.ts"], bundle: true,
   platform: "node", format: "esm", outfile: output, external,
   banner: { js: 'import { createRequire as __ynCreateRequire } from "node:module"; const require = __ynCreateRequire(import.meta.url);' } });
-for (const name of ["sourcePreparationWorker", "translationValidationWorker", "proofreadPrescanWorker", "sessionIndexWorker", "sessionMaintenanceWorker", "sessionHostReplayWorker", "pdfBindingWorker", "pdfWorker"]) {
+for (const name of ["sourcePreparationWorker", "translationValidationWorker", "proofreadPrescanWorker", "sessionIndexWorker", "sessionMaintenanceWorker", "sessionHostReplayWorker", "pdfBindingWorker", "pdfWorker", "lineReviewStateWorker"]) {
   await copyFile(path.join(root, "dist", "main", `${name}.js`), path.join(fixture, `${name}.js`));
 }
 let stderr = "";
@@ -113,6 +113,23 @@ try {
     if (name === "folder") assert.equal(planned.settings.folderTranslationOrder, "{a.txt b.txt}");
     const started = await yn.call("start", { planId: planned.planId, confirmed: true }); records.push(await terminal(started));
     assert.ok(started.outputPath);
+    if (["bilingual", "epub", "pdf"].includes(name)) {
+      await yn.call("reply", { outputDir: started.outputDir, sessionId: started.sessionId, message: "Continue the existing task without changing its source binding." });
+      records.push(await terminal(started));
+      if(name==="pdf") {
+        await writeFile(path.join(fixture,"pause-prepare.txt"),"pause");
+        const pending=yn.call("reply",{outputDir:started.outputDir,sessionId:started.sessionId,message:"Cancelled before native prompt."});
+        const rejected=assert.rejects(pending,/cancel|abort|stop/i);
+        await waitFor(()=>existsSync(path.join(fixture,"prepare-waiting.txt")),Boolean,"HTML preparation barrier");
+        const before=await readFile(path.join(fixture,"model-selections.txt"),"utf8");
+        const stopping=yn.call("stop",{outputDir:started.outputDir,sessionId:started.sessionId});
+        await waitFor(()=>existsSync(path.join(fixture,"prepare-stop-requested.txt")),Boolean,"Stop reached native owner");
+        await writeFile(path.join(fixture,"release-prepare.txt"),"release");
+        await Promise.all([stopping,rejected]);
+        assert.equal(await readFile(path.join(fixture,"model-selections.txt"),"utf8"),before,"Stop during prepare cannot select another model");
+        await rm(path.join(fixture,"pause-prepare.txt"));
+      }
+    }
   }
   // A new task may bind the same project to a new session. An old session must
   // not silently inherit that new task's HTML/parameters or request a model.
@@ -132,6 +149,7 @@ try {
   const accepted = JSON.parse(await readFile(path.join(fixture, "acceptance.json"), "utf8"));
   assert.equal(accepted.code, 0); assert.equal(accepted.visibleWindows, 0); assert.equal(accepted.nativeOwners, 0);
   assert.equal(accepted.parityChecks, 6); assert.ok(accepted.maxWindows > 0); assert.equal(accepted.paidCalls, 0);
+  assert.deepEqual([...new Set(accepted.continuedProjections)].sort(), ["bilingual", "epub", "pdf"]);
   eofClient = await openStdioLauncher(); await eofClient.ready;
   const eofPlan = await eofClient.call("plan", { task: "assets", settings: { outputDir: path.join(fixture, "eof"), materials: "Alice is a mage." } });
   const unfinished = await eofClient.call("start", { planId: eofPlan.planId, confirmed: true });
@@ -156,7 +174,7 @@ try {
   await resumedClient.close();
   const coldAccepted = JSON.parse(await readFile(path.join(fixture, "acceptance.json"), "utf8"));
   assert.equal(coldAccepted.nativeOwners, 0); assert.equal(coldAccepted.code, 0); assert.equal(coldAccepted.visibleWindows, 0);
-  await writeFile(path.join(evidenceDir, "electron-acceptance.json"), JSON.stringify({ ...accepted, records, confirmedPlanning: true, idempotentStart: true,
+  await writeFile(path.join(evidenceDir, "electron-acceptance.json"), JSON.stringify({ ...accepted, records, resumeStopBarrier: true, confirmedPlanning: true, idempotentStart: true,
     singleInstance: true, nativeStopResume: true, oldSessionMismatchRejected: true, htmlOnlyAutoapply: true,
     stdioLauncherEof: eofAccepted, coldResume: coldAccepted, draftPreservedAndCommitted: true }, null, 2));
   console.log(JSON.stringify({ agentApiAcceptance: true, ...accepted }));

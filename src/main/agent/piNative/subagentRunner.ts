@@ -45,6 +45,8 @@ import {
 import {
   discardTranslationStagingCandidate,
   prepareTranslationStagingCandidate,
+  seedPdfProtectedRows,
+  withTranslationCandidateLock,
   promoteTranslationStagingRange,
   resolveTranslationCandidatePath,
   writeTranslationChunk,
@@ -74,6 +76,7 @@ import {
   ynTranslationStructuralWarnings
 } from "./translationArtifactValidation.ts";
 import { createYnTranslationValidationOptions } from "./translationValidationContext.ts";
+import { readTranslationResidueApprovals } from "../translationResidueApproval.ts";
 import { runTranslationValidation } from "./translationValidationService.ts";
 import {
   requestDocumentId,
@@ -1695,10 +1698,11 @@ async function validateExistingAssignedRange(
 }
 
 function hasExistingAssignedTranslation(
-  artifact: Awaited<ReturnType<typeof validateAssignedRange>>
+  artifact: Awaited<ReturnType<typeof validateAssignedRange>>,
+  protectedIndexes: Set<number>
 ): boolean {
   return artifact.sourceSlice.some((sourceLine, index) => (
-    sourceLine.trim() !== "" && (artifact.candidateSlice[index]?.trim() ?? "") !== ""
+    !protectedIndexes.has(index) && sourceLine.trim() !== "" && (artifact.candidateSlice[index]?.trim() ?? "") !== ""
   ));
 }
 
@@ -1944,8 +1948,8 @@ function translationWireBlocksFromLines(nonEmptyLines: TranslationWireLine[]): T
   return blocks;
 }
 
-function translationWireBlocks(source: string[], fromLine: number): TranslationWireBlock[] {
-  return translationWireBlocksFromLines(source.flatMap((sourceText, index) => sourceText.trim() === ""
+function translationWireBlocks(source: string[], fromLine: number, protectedLines?: Set<number>): TranslationWireBlock[] {
+  return translationWireBlocksFromLines(source.flatMap((sourceText, index) => sourceText.trim() === "" || protectedLines?.has(fromLine + index)
     ? []
     : [{ line: fromLine + index, sourceText }]));
 }
@@ -2303,8 +2307,8 @@ export function createPiTranslationSubagentTools(
     fromLine: Type.Optional(Type.Integer({ minimum: 1 })),
     toLine: Type.Optional(Type.Integer({ minimum: 1 })),
     blocks: Type.Array(translatedBlockSchema, {
-      minItems: 1,
-      description: "Initial bulk translation blocks. Mirror every sourceBlocks object and echo each compact relative line id exactly once."
+      minItems: 0,
+      description: "Initial bulk translation blocks. Mirror every writable sourceBlocks object and echo each compact relative line id exactly once. An all-protected PDF page uses an empty array."
     })
   }, { additionalProperties: false });
   const repairEntrySchema = Type.Object({
@@ -2456,11 +2460,13 @@ export function createPiTranslationSubagentTools(
           ? { range: { fromLine: selectedRepairLines[0], toLine: selectedRepairLines.at(-1)! } }
           : assignedSourcePageRange(context.task, input, progress.readLines!);
         const range = sourcePage.range;
+        const pdfReferences = await pdfReferencesForRange(sourcePath(context.request), context.request.outputDir, range.fromLine, range.toLine);
+        const protectedLines = new Set(pdfReferences?.protectedLines.map(row => row.line));
         const sourceBlocks = selectedRepairLines.length > 0
           ? contiguousLineRanges(selectedRepairLines).flatMap((selectedRange) => (
               translationWireBlocks(
                 lines.slice(selectedRange.fromLine - 1, selectedRange.toLine),
-                selectedRange.fromLine
+                selectedRange.fromLine, protectedLines
               ).map((block) => ({
                 ...translationWireSourceBlock(block),
                 id: `s${selectedRange.fromLine}-${block.id}`
@@ -2468,7 +2474,7 @@ export function createPiTranslationSubagentTools(
             ))
           : translationWireBlocks(
               lines.slice(range.fromLine - 1, range.toLine),
-              range.fromLine
+              range.fromLine, protectedLines
             ).map(translationWireSourceBlock);
         const visibleSourceLines = selectedRepairLines.length > 0
           ? selectedRepairLines.map((line) => lines[line - 1] ?? "")
@@ -2493,6 +2499,10 @@ export function createPiTranslationSubagentTools(
         throwIfAborted(context.signal, signal);
         progress.referenceRead = true;
         progress.activeSourcePage = range;
+        if (context.workingCandidatePath) {
+          for (const line of protectedLines) progress.writtenLines!.add(line);
+          progress.translationWritten = isCovered(progress.writtenLines!, context.task);
+        }
         if (selectedRepairLines.length > 0) {
           for (const line of selectedRepairLines) progress.readLines!.add(line);
           progress.sourceRead = areLinesCovered(progress.readLines!, selectedRepairLines);
@@ -2512,13 +2522,18 @@ export function createPiTranslationSubagentTools(
                   : {})
               }),
           totalLines: lines.length,
-          pdfReferences: await pdfReferencesForRange(sourcePath(context.request), context.request.outputDir, range.fromLine, range.toLine),
+          pdfReferences,
           assignment: {
             fromLine: context.task.fromLine,
             toLine: context.task.toLine,
             ...(selectedRepairLines.length > 0 ? { selectedLines: selectedRepairLines } : {})
           },
           sourceBlocks,
+          residueConfirmations: (await readTranslationResidueApprovals(context.request.outputDir,sourcePath(context.request)))
+            .filter(entry=>entry.line>=range.fromLine&&entry.line<=range.toLine&&lines[entry.line-1]===entry.sourceText)
+            .map(({line,candidateText,reason})=>({line,translation:candidateText,reason})),
+          ...(protectedLines.size ? { hostProtectedLines: [...protectedLines], protectedRowsReadOnly: true,
+            protectionInstruction: "The Host has prepared these immutable PDF rows. They are read-only context in pdfReferences.protectedLines; submit only sourceBlocks, never copy or translate protected rows. An empty sourceBlocks page needs no translation write; continue to the next page or validate the complete assignment." } : {}),
           ...(context.executionMode === "bounded_repair" || context.executionMode === "chunk_review_repair" ? {
             currentTranslationEntries: (selectedRepairLines.length > 0
               ? selectedRepairLines
@@ -2582,7 +2597,10 @@ export function createPiTranslationSubagentTools(
         }
         const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(context.request)));
         const source = sourceLines.slice(range.fromLine - 1, range.toLine);
-        const wireBlocks = translationWireBlocks(source, range.fromLine);
+        const proposedValidationOptions = await createYnTranslationValidationOptions(context.request, undefined, range.fromLine, context.signal);
+        const protectedPdfLines = new Set(proposedValidationOptions.pdfProtectedLines?.map(entry => entry.line));
+        const protectedAbsoluteLines = new Set([...protectedPdfLines].map(line => range.fromLine + line - 1));
+        const wireBlocks = translationWireBlocks(source, range.fromLine, protectedAbsoluteLines);
         let translations = new Map<number, string>();
         let invalidBlocks: TranslationWireInvalidBlock[] = [];
         let invalidBlockLines = new Set<number>();
@@ -2605,6 +2623,7 @@ export function createPiTranslationSubagentTools(
             const entry = normalizeTranslationRepairEntry(rawEntry, "repairAssignedTranslation");
             const line = entry.line;
             const text = entry.translation;
+            if (protectedAbsoluteLines.has(line)) throw new Error(`L${line} is an immutable Host-prepared PDF row; submit only translatable prose.`);
             if (line < range.fromLine || line > range.toLine) {
               throw new Error(`Translated entry L${line} must stay inside L${range.fromLine}-L${range.toLine}.`);
             }
@@ -2632,7 +2651,7 @@ export function createPiTranslationSubagentTools(
         }
         const missing = source.flatMap((text, index) => {
           const line = range.fromLine + index;
-          return text.trim() !== "" && !progress.writtenLines!.has(line) && !translations.has(line) ? [line] : [];
+          return text.trim() !== "" && !protectedAbsoluteLines.has(line) && !progress.writtenLines!.has(line) && !translations.has(line) ? [line] : [];
         });
         let existing: string[] = [];
         let previousCandidateText: string | undefined;
@@ -2646,6 +2665,7 @@ export function createPiTranslationSubagentTools(
         }
         const proposedLines = source.map((sourceText, index) => {
           const line = range.fromLine + index;
+          if (protectedPdfLines.has(index + 1)) return sourceText;
           if (sourceText.trim() === "") return sourceText;
           const translated = translations.get(line);
           if (translated !== undefined && translated.trim() === "") return sourceText;
@@ -2656,7 +2676,7 @@ export function createPiTranslationSubagentTools(
         const proposedValidation = validateTranslationCandidate(
           source.join("\n"),
           proposedLines.join("\n"),
-          await createYnTranslationValidationOptions(context.request, undefined, range.fromLine, context.signal)
+          proposedValidationOptions
         );
         const structurallyRejectedLines = new Set<number>(missing);
         for (const line of invalidBlockLines) structurallyRejectedLines.add(line);
@@ -2675,9 +2695,11 @@ export function createPiTranslationSubagentTools(
           if (!structurallyRejectedLines.has(line)) return text;
           // Retain an existing human/model candidate during repair, but never
           // manufacture copied-source filler for a missing translation.
-          const protectedLine = proposedValidation.blocking.some(finding => finding.line === index+1 && finding.code === "pdf_protected_content_mismatch");
           // Host-preserved code/math is deterministic original content, not copied-prose filler.
-          return protectedLine ? source[index] : existing[line - 1] ?? "";
+          // Missing/invalid wire markers may reject a row even though its proposed
+          // fallback already matches. Protection comes from the verified layout,
+          // never from whether this submission happened to produce a mismatch.
+          return protectedPdfLines.has(index + 1) ? source[index] : existing[line - 1] ?? "";
         });
         const persistedValidation = validateTranslationCandidate(
           source.join("\n"),
@@ -2751,13 +2773,13 @@ export function createPiTranslationSubagentTools(
                 else await writeTextFileAtomically(canonical, previousCandidateText);
                 }
               } catch (rollbackError) { rollbackErrors.push(rollbackError); }
-              if (rollbackErrors.length > 0) throw new NonRetryableAssignmentError("Host canonical repair commit failed and rollback was incomplete.", new AggregateError([error, ...rollbackErrors]));
-              throw new NonRetryableAssignmentError("Host canonical repair evidence commit failed; the prior candidate was restored.", error);
+              if (rollbackErrors.length > 0) throw new NonRetryableAssignmentError(`Host canonical repair commit failed and rollback was incomplete. Cause: ${compactErrorCause(error)}; rollback: ${rollbackErrors.map(compactErrorCause).join("; ")}`, new AggregateError([error, ...rollbackErrors]));
+              throw new NonRetryableAssignmentError(`Host canonical repair evidence commit failed; the prior candidate was restored. Cause: ${compactErrorCause(error)}`, error);
             }
         })();
         source.forEach((sourceText, index) => {
           const line = range.fromLine + index;
-          if (sourceText.trim() === "" || (translations.has(line) && !structurallyRejectedLines.has(line))) {
+          if (sourceText.trim() === "" || protectedAbsoluteLines.has(line) || (translations.has(line) && !structurallyRejectedLines.has(line))) {
             progress.writtenLines!.add(line);
             if (translations.has(line)) progress.mutatedLines!.add(line);
           }
@@ -2793,7 +2815,7 @@ export function createPiTranslationSubagentTools(
           ...structurallyRejectedLines,
           ...validationRepairLines,
           ...requiredBatchLines.filter((line) => !translations.has(line) || structurallyRejectedLines.has(line))
-        ])].sort((left, right) => left - right);
+        ])].filter(line => !protectedAbsoluteLines.has(line)).sort((left, right) => left - right);
         const repairIssues: Array<{
           code: string;
           severity: "blocking" | "warning";
@@ -3616,7 +3638,12 @@ function createPiTranslationReviewRuntimeSpec(
           .join("\n");
         const projectReferences = await translationProjectReferences(context.request, selectedSourceText);
         assignmentRead = true;
-        return textResult({ ...assignment, projectReferences });
+        const rows=assignment.windows.flatMap(window=>window.rows);
+        const residueConfirmations=(await readTranslationResidueApprovals(context.request.outputDir,sourcePath(context.request)))
+          .filter(entry=>rows.some(row=>row.line===entry.line&&row.source===entry.sourceText&&row.translation===entry.candidateText))
+          .map(({line,reason})=>({line,reason}));
+        return textResult({ ...assignment, projectReferences, residueConfirmations,
+          residueInstruction: "These exact rows have a parent-confirmed untranslated false positive. Do not reject them for source-language residue; review meaning and all other requirements normally." });
       }
     },
     {
@@ -3754,7 +3781,8 @@ function createPiTranslationAuditRuntimeSpec(
         ].join("\n");
         const projectReferences = await translationProjectReferences(context.request, selectedSourceText);
         read = true;
-        return textResult({ ...batch, projectReferences });
+        return textResult({ ...batch, projectReferences,
+          residueInstruction: "residueConfirmations are exact parent decisions. Do not reject these rows merely for source-language residue or missing target-script characters; still review meaning and other signals." });
       }
     },
     {
@@ -4617,6 +4645,8 @@ export function createPiTranslationRuntimeSpec(
     ],
     async execute(runtime, session, taskPrompt, onRetry) {
       const existingArtifact = await validateExistingAssignedRange(context);
+      const protectedIndexes = new Set((await readPdfProtectedLines(sourcePath(context.request), context.request.outputDir, context.signal) ?? [])
+        .map(row => row.line - context.task.fromLine));
       const chunkReviewRepair = context.executionMode === "chunk_review_repair";
       if (boundedSelectedLines.length > 0) {
         if (!existingArtifact || !isStructurallyCompleteAssignedTranslation(existingArtifact)) {
@@ -4624,7 +4654,7 @@ export function createPiTranslationRuntimeSpec(
             `Sparse bounded repair requires a structurally complete retained candidate inside L${context.task.fromLine}-L${context.task.toLine}.`
           );
         }
-        progress.requiredBatchLines = new Set(boundedSelectedLines);
+        progress.requiredBatchLines = new Set(boundedSelectedLines.filter(line => !protectedIndexes.has(line - context.task.fromLine)));
         markCovered(progress.writtenLines ??= new Set<number>(), context.task);
         progress.translationWritten = true;
       }
@@ -4639,12 +4669,12 @@ export function createPiTranslationRuntimeSpec(
         if (rejectedLines.length === 0) {
           throw new Error("Review-worker repair requires at least one exact rejected line.");
         }
-        progress.requiredBatchLines = new Set(rejectedLines);
+        progress.requiredBatchLines = new Set(rejectedLines.filter(line => !protectedIndexes.has(line - context.task.fromLine)));
         markCovered(progress.writtenLines ??= new Set<number>(), context.task);
         progress.translationWritten = true;
       }
 	      const resumeRepair = existingArtifact !== undefined
-	        && hasExistingAssignedTranslation(existingArtifact)
+	        && hasExistingAssignedTranslation(existingArtifact, protectedIndexes)
 	        && !isYnTranslationChunkWritable(existingArtifact.validation)
 	        && isLineAlignedAssignedTranslation(existingArtifact);
       if (resumeRepair) {
@@ -5139,7 +5169,8 @@ export async function createPiTranslationSubagentWorker(
               sessionId: context.request.sessionId,
               subagentId,
               assignmentId: `${assignmentDocumentId}:L${context.task.fromLine}-L${context.task.toLine}`,
-              resumeStagingPath: context.task.stagingCandidatePath
+              resumeStagingPath: context.task.stagingCandidatePath,
+              deferPdfProtection: Boolean(context.onStagingCandidatePrepared)
             });
             await context.onStagingCandidatePrepared?.({
               documentId: assignmentDocumentId,
@@ -5147,6 +5178,13 @@ export async function createPiTranslationSubagentWorker(
               toLine: context.task.toLine,
               candidatePath: stagingPath
             }, context.signal);
+            if (!context.onStagingCandidatePrepared) {
+              await withTranslationCandidateLock(stagingPath, async () => {
+                const lines = splitTextLines(await readRequiredWorkflowText(stagingPath!));
+                const changed = await seedPdfProtectedRows(sourcePath(context.request), context.request.outputDir, lines, context.task);
+                if (changed.length) await writeTextFileAtomically(stagingPath!, `${lines.join("\n")}\n`);
+              });
+            }
           } catch (error) {
             if (error === context.signal?.reason || (error instanceof Error && error.name === "AbortError")) throw error;
             throw new NonRetryableAssignmentError(
@@ -5263,9 +5301,10 @@ export async function createPiTranslationSubagentWorker(
             }
           });
           let outcome: Awaited<ReturnType<ReturnType<typeof createPiTranslationRuntimeSpec>["execute"]>> | undefined;
+          const hostProtectedLines = new Set((await readPdfProtectedLines(sourcePath(context.request), context.request.outputDir, context.signal) ?? []).map(row => row.line));
           for (const [chunkIndex, chunkTask] of chunks.entries()) {
             let reviewFeedback = chunkTask.reviewFeedback
-              ?.filter((feedback) => feedback.line >= chunkTask.fromLine && feedback.line <= chunkTask.toLine)
+              ?.filter((feedback) => feedback.line >= chunkTask.fromLine && feedback.line <= chunkTask.toLine && !hostProtectedLines.has(feedback.line))
               .map((feedback) => ({ line: feedback.line, reason: feedback.reason }));
             let previousRejectedCandidateHash: string | undefined;
             let reviewRepairCycles = 0;

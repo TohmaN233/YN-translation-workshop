@@ -18,8 +18,23 @@ await writeProviderConfig(fixture, { activeProviderId: "custom-api", providers: 
   baseUrl: "http://127.0.0.1:1/v1", enabled: true
 } } });
 let visibleWindows = 0, maxWindows = 0, modelSelections = 0, parityChecks = 0;
+const continuedProjections: string[] = [];
+const instrumented = new Set<number>();
 const observed = setInterval(() => {
   const windows = BrowserWindow.getAllWindows();
+  for(const view of windows.flatMap(window=>window.getBrowserViews())) {
+    const web=view.webContents;
+    if(instrumented.has(web.id))continue;instrumented.add(web.id);
+    const execute=web.executeJavaScript.bind(web);
+    web.executeJavaScript=async (script,userGesture)=>{
+      const result=await execute(script,userGesture);
+      if(script.includes("translationWorkshopTaskParameters.prepare") && existsSync(path.join(fixture,"pause-prepare.txt"))) {
+        writeFileSync(path.join(fixture,"prepare-waiting.txt"),String(modelSelections));
+        while(!existsSync(path.join(fixture,"release-prepare.txt")))await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      return result;
+    };
+  }
   maxWindows = Math.max(maxWindows, windows.length); visibleWindows += windows.filter(window => window.isVisible()).length;
 }, 10);
 const exit = app.exit.bind(app);
@@ -27,7 +42,7 @@ app.exit = (code = 0) => {
   clearInterval(observed);
   visibleWindows += BrowserWindow.getAllWindows().filter(window => window.isVisible()).length;
   writeFileSync(path.join(fixture, "acceptance.json"), JSON.stringify({ code, visibleWindows, maxWindows,
-    modelSelections, parityChecks, nativeOwners: (piNativeSessionService as any).active.size, paidCalls: 0 }, null, 2));
+    modelSelections, parityChecks, continuedProjections, nativeOwners: (piNativeSessionService as any).active.size, paidCalls: 0 }, null, 2));
   exit(code);
 };
 process.on("uncaughtException", error => { console.error("[agent-api-fixture:uncaught]", error); app.exit(1); });
@@ -50,6 +65,7 @@ function assets() {
 const options = (piNativeSessionService as unknown as { options: PiNativeSessionServiceOptions }).options;
 options.createModelSelection = async ({ workspaceDir }) => {
   modelSelections += 1;
+  writeFileSync(path.join(fixture,"model-selections.txt"),String(modelSelections));
   let provider = providers.get(workspaceDir);
   if (!provider) {
     provider = fauxProvider({ tokensPerSecond: 1_000_000, tokenSize: { min: 100_000, max: 100_000 } });
@@ -65,6 +81,16 @@ options.createModelSelection = async ({ workspaceDir }) => {
   return { models, model: provider.getModel(), providerId: provider.provider.id, modelId: provider.getModel().id };
 };
 options.createTools = context => {
+  const mode = path.basename(context.request.outputDir);
+  if (["bilingual", "epub", "pdf"].includes(mode) && !context.request.taskPreparation) {
+    if (!context.request.sourcePath?.endsWith(".txt") || !context.request.sourcePath.includes("extracted-text")) {
+      throw new Error(`Continuation lost the ${mode} text projection: ${context.request.sourcePath}`);
+    }
+    if (!/^(?:\uFEFF)?Workflow:/u.test(context.request.prompt)) {
+      continuedProjections.push(mode);
+      providers.get(context.request.outputDir)!.setResponses([done("Existing projected task continued.")]);
+    }
+  }
   if (!seenSessions.has(context.request.sessionId)) {
     seenSessions.add(context.request.sessionId);
     const mode = path.basename(context.request.outputDir);
@@ -122,5 +148,10 @@ options.createTools = context => {
     }
   }
 ];
+};
+const nativeAbort=piNativeSessionService.abort.bind(piNativeSessionService);
+piNativeSessionService.abort=async (...args)=>{
+  if(existsSync(path.join(fixture,"prepare-waiting.txt")))writeFileSync(path.join(fixture,"prepare-stop-requested.txt"),"cancelled");
+  return nativeAbort(...args);
 };
 await import("../src/main/main.ts");

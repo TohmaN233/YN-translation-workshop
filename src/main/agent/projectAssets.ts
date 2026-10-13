@@ -492,7 +492,16 @@ function assetProposalFrom(value: unknown, filePath: string): AssetProposal {
   return value;
 }
 
+type ProjectReferenceAssets = Omit<ProjectAssets, "available" | "translationMemory"> & {
+  available: Omit<ProjectAssets["available"], "translationMemory">;
+};
 async function readProjectAssetsUnlocked(args: { outputDir: string; includeLegacyCharacters?: boolean }): Promise<ProjectAssets> {
+  const references = await readProjectReferenceAssetsUnlocked(args);
+  const translationMemory = await readTranslationMemoryStats(args.outputDir);
+  return { ...references, available: { ...references.available, translationMemory: translationMemory.initialized }, translationMemory };
+}
+
+async function readProjectReferenceAssetsUnlocked(args: { outputDir: string; includeLegacyCharacters?: boolean }): Promise<ProjectReferenceAssets> {
   const paths = assetPaths(args.outputDir);
   const glossary = await readJsonObject(paths.glossary);
   const glossaryEntries = entriesFrom(glossary, "entries", paths.glossary);
@@ -519,7 +528,6 @@ async function readProjectAssetsUnlocked(args: { outputDir: string; includeLegac
   assertFormalAssetEntries("glossary", glossaryEntries, paths.glossary);
   assertFormalAssetEntries("character_bible", characterEntries, paths.characterBible);
   const styleGuideSource = await readOptionalText(paths.styleGuide);
-  const translationMemory = await readTranslationMemoryStats(args.outputDir);
   const characterSections = characterBibleSource.split(/^##\s+/m).slice(1);
   return {
     paths: {
@@ -531,13 +539,11 @@ async function readProjectAssetsUnlocked(args: { outputDir: string; includeLegac
     available: {
       glossary: glossary !== undefined,
       characterBible: characterBibleAvailable,
-      styleGuide: styleGuideSource !== undefined,
-      translationMemory: translationMemory.initialized
+      styleGuide: styleGuideSource !== undefined
     },
     glossary: { entries: glossaryEntries },
     characterBible: { characters: characterEntries, source: characterBibleSource, revisions: Object.fromEntries(characterEntries.map((entry, index) => [String(entry.name), characterRecordRevision(characterSections[index] ?? "")])) },
-    styleGuide: styleGuideSource ?? "",
-    translationMemory
+    styleGuide: styleGuideSource ?? ""
   };
 }
 
@@ -837,7 +843,10 @@ export async function readWorkflowProjectAssets(args: {
   outputDir: string;
   glossaryPath?: string;
 }): Promise<ProjectAssets> {
-  const assets = await readProjectAssets({ outputDir: args.outputDir });
+  return selectWorkflowGlossary(args, await readProjectAssets({ outputDir: args.outputDir }));
+}
+
+async function selectWorkflowGlossary<T extends ProjectReferenceAssets>(args: { outputDir: string; glossaryPath?: string }, assets: T): Promise<T> {
   const state = await readProjectState(args.outputDir);
   const selectedPath = args.glossaryPath?.trim() || (typeof state.glossaryPath === "string" ? state.glossaryPath.trim() : "");
   if (!selectedPath) return assets;
@@ -875,7 +884,7 @@ export async function readWorkflowProjectAssets(args: {
   };
 }
 
-function projectGlossaryEntries(assets: ProjectAssets): GlossaryValidationEntry[] {
+function projectGlossaryEntries(assets: ProjectReferenceAssets): GlossaryValidationEntry[] {
   return assets.glossary.entries.map((entry, index) => {
     const source = requiredAssetString(entry, "source", assets.paths.glossary, "entries", index);
     const target = requiredAssetString(entry, "target", assets.paths.glossary, "entries", index);
@@ -893,7 +902,7 @@ function projectGlossaryEntries(assets: ProjectAssets): GlossaryValidationEntry[
   });
 }
 
-function projectCharacterEntries(assets: ProjectAssets): CharacterValidationEntry[] {
+function projectCharacterEntries(assets: ProjectReferenceAssets): CharacterValidationEntry[] {
   return assets.characterBible.characters.map((entry, index) => {
     const filePath = assets.paths.characterBible;
     const name = requiredAssetString(entry, "name", filePath, "characters", index);
@@ -963,10 +972,20 @@ export async function readProjectTranslationValidationAssets(
   };
 }
 
+// Validation depends on reference files, never SQLite statistics. Reading
+// memory here also attempts schema writes and conflicts with an import's
+// pre-COMMIT snapshot check while the worker holds its SQLite transaction.
+async function readWorkflowReferenceAssets(args: { outputDir: string; glossaryPath?: string }): Promise<ProjectReferenceAssets> {
+  return enqueueProjectAssetWrite(args.outputDir, async () => {
+    await ensureLegacyCharacterBibleMigratedUnlocked(args.outputDir);
+    return selectWorkflowGlossary(args, await readProjectReferenceAssetsUnlocked(args));
+  });
+}
+
 export async function readWorkflowTranslationValidationAssets(args: {
   outputDir: string;
   glossaryPath?: string;
-}, readAssets = readWorkflowProjectAssets): Promise<ProjectTranslationValidationAssets> {
+}, readAssets = readWorkflowReferenceAssets): Promise<ProjectTranslationValidationAssets> {
   const assets = await readAssets(args);
   return {
     glossaryEntries: projectGlossaryEntries(assets),

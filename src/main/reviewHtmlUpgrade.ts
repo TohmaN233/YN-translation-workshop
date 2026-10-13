@@ -15,7 +15,7 @@ import { BATCH_LINE_REVIEW_PROTOCOL_VERSION, type HtmlWorkflowOptions } from "..
 import { writeTextFileAtomically, writeTextFilesAtomically } from "./atomicFile.ts";
 import { resolveBatchReviewChildForUpgrade } from "./batchReviewUpgradePaths.ts";
 import { formatFolderTranslationOrder } from "./agent/piNative/folderTranslationPlan.ts";
-import { portableReviewHtml, resolveReviewHtmlPaths } from "./reviewHtmlPortability.ts";
+import { portableReviewHtml, resolveReviewHtmlPaths, bindPdfReviewHtml } from "./reviewHtmlPortability.ts";
 
 function prepareLegacyReviewHtmlFile(
   targetPath: string,
@@ -48,7 +48,7 @@ function prepareLegacyReviewHtmlFile(
 async function upgradeLegacyReviewHtmlFile(targetPath: string, html?: string): Promise<boolean> {
   const currentHtml = html ?? await readFile(targetPath, "utf8");
   const resolved = resolveReviewHtmlPaths(currentHtml, targetPath);
-  const upgraded = portableReviewHtml(prepareLegacyReviewHtmlFile(targetPath, resolved) ?? resolved, targetPath);
+  const upgraded = portableReviewHtml(await bindPdfReviewHtml(targetPath,prepareLegacyReviewHtmlFile(targetPath, resolved) ?? resolved), targetPath);
   if (upgraded === currentHtml) return false;
   await writeTextFileAtomically(targetPath, upgraded);
   return true;
@@ -158,13 +158,13 @@ export async function upgradeLegacyReviewHtmlTree(targetPath: string): Promise<b
 
   const rawChildHtml = await Promise.all(childPaths.map((childPath) => readFile(childPath, "utf8")));
   const childHtml = rawChildHtml.map((html, index) => resolveReviewHtmlPaths(html, childPaths[index]));
-  const childUpgrades = childPaths.map((childPath, index) => {
-    return portableReviewHtml(prepareLegacyReviewHtmlFile(
+  const childUpgrades = await Promise.all(childPaths.map(async (childPath, index) => {
+    return portableReviewHtml(await bindPdfReviewHtml(childPath,prepareLegacyReviewHtmlFile(
       childPath,
       childHtml[index],
       folderWorkflow ? folderPromptWorkflowOverride(folderWorkflow, childReferences, childHtml) : undefined
-    ) ?? childHtml[index], childPath);
-  });
+    ) ?? childHtml[index]), childPath);
+  }));
   const updates = [
     ...((portableReviewHtml(batchUpgrade ?? html, absoluteTargetPath) !== rawHtml)
       ? [{ targetPath: absoluteTargetPath, text: portableReviewHtml(batchUpgrade ?? html, absoluteTargetPath) }] : []),

@@ -42,12 +42,14 @@ try {
 
   const previousCachePath = path.join(directory, (await readdir(directory)).find(name => name.endsWith(".json")));
   const previousCache = JSON.parse(await readFile(previousCachePath, "utf8"));
-  await writeFile(previousCachePath, JSON.stringify({ ...previousCache, version: 1,
-    signals: [{ line: 1, code: "H3", evidence: "stale alias-name warning" }] }));
-  assert.deepEqual(await runProofreadPrescan({ ...changed, cache: { ...cache, inputHash: "input-2" } }),
-    buildProofreadDeterministicSignals(changed), "old alias warning cache must be recomputed");
-  assert.equal(JSON.parse(await readFile(previousCachePath, "utf8")).version, 2);
-  assert.equal((await events()).filter(event => event.event === "completed").length, 3);
+  for (const version of [1, 2]) {
+    await writeFile(previousCachePath, JSON.stringify({ ...previousCache, version,
+      signals: [{ line: 1, code: "H3", evidence: "stale alias or nested-character name warning" }] }));
+    assert.deepEqual(await runProofreadPrescan({ ...changed, cache: { ...cache, inputHash: "input-2" } }),
+      buildProofreadDeterministicSignals(changed), "old character-name warning cache must be recomputed");
+    assert.equal(JSON.parse(await readFile(previousCachePath, "utf8")).version, 3);
+  }
+  assert.equal((await events()).filter(event => event.event === "completed").length, 4);
 
   const controller = new AbortController();
   await assert.rejects(runProofreadPrescan({

@@ -173,6 +173,8 @@ export function assertYnTranslationChunkWritable(
     `${scope} validation failed: ${validation.summary}`,
     lines.ranges.length > 0 ? `Affected lines: ${lines.ranges.join(", ")}` : "",
     ...samples.map((finding) => finding.detail),
+    findings.some(finding => finding.code === "likely_untranslated")
+      ? "If this is a semantic false positive, the parent can inspect the exact source/candidate and use confirmTranslationResidueSafe with a reason, then retry the same text. Children cannot issue this confirmation; other mechanical checks still apply." : "",
     findings.length > samples.length ? `${findings.length - samples.length} additional findings omitted.` : ""
   ].filter(Boolean).join("\n"));
 }

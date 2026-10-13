@@ -115,6 +115,17 @@ await test("character warnings do not block candidate import", () => {
   assert.ok(plan.validation.warnings.some((f) => f.code === "character_name_missing"));
 });
 
+await test("candidate import shares longest character-name coverage and still checks an independent short name", () => {
+  const characters = [{ name: "ベス", target: "贝丝" }, { name: "エリザベス", target: "伊丽莎白" }];
+  const plan = source => buildCandidateImportPlan(source, "伊丽莎白来了。", "zh-CN", "ja->zh-CN", [], characters);
+  const covered = plan("エリザベスが来た。");
+  assert.equal(covered.ok, true);
+  assert.equal(covered.validation.warnings.some(f => f.code === "character_name_missing"), false);
+  const independent = plan("エリザベスとベスが来た。");
+  assert.equal(independent.ok, true);
+  assert.ok(independent.validation.warnings.some(f => f.code === "character_name_missing"));
+});
+
 await test("style warnings do not block candidate import", () => {
   const plan = buildCandidateImportPlan(
     "彼は笑った。",

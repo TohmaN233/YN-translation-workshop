@@ -36,7 +36,7 @@ For development: `node agent-tools/yn-agent-server.mjs node_modules/electron/dis
 stdin/stdout use UTF-8 NDJSON, one JSON object per non-empty line; empty separators are ignored. stdout contains protocol messages only; diagnostics go to stderr. Request IDs are strings or integers and must be unique while in flight. Stop is not serialized behind model startup. The first message is:
 
 ```json
-{"type":"ready","protocol":"yn-agent-api","protocolVersion":1,"version":"2.1.10"}
+{"type":"ready","protocol":"yn-agent-api","protocolVersion":1,"version":"2.2.0"}
 ```
 
 Example requests:

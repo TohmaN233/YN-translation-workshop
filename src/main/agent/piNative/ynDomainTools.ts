@@ -1,4 +1,5 @@
 import { localPdfProtectedLines } from "../../../shared/validation/pdfPreservation.ts";
+import { localPdfPreservedSpans } from "../../../shared/validation/pdfAcademicPrescan.ts";
 import { readPdfProtectedLines, assertPdfProtectedWrite } from "../../pdfDocuments.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -18,6 +19,7 @@ import {
 import {
   parseCharacterVoiceRequiredTerm,
   candidateContainsSourceLanguage,
+  isTranslationResidueApproved,
   createTranslationPreservedPayloadStripper,
   createTranslationResiduePayloadReader,
   parseSourceLanguageFromPair,
@@ -70,10 +72,12 @@ import {
   prepareTranslationStagingCandidate,
   promoteTranslationStagingRange,
   resolveTranslationCandidatePath,
+  withTranslationCandidateLock,
   writeTranslationChunk
 } from "../writeTranslationChunk.ts";
 import { publishCanonicalTranslationBinding, resolveProofreadTranslationPath } from "../translationBindingResolve.ts";
 import { recoverErasedTranslationStaging } from "./translationStagingRecovery.ts";
+import { findPdfProtectionReceipt, preparePdfProtectionReceipt } from "./pdfProtectionRecovery.ts";
 import { writeTextFileAtomically } from "../../atomicFile.ts";
 import {
   listPiConfiguredModels,
@@ -97,6 +101,7 @@ import {
   ynTranslationValidationDebt
 } from "./translationArtifactValidation.ts";
 import { createYnTranslationValidationOptions } from "./translationValidationContext.ts";
+import { confirmTranslationResidueSafe } from "../translationResidueApproval.ts";
 import { runTranslationValidation } from "./translationValidationService.ts";
 import {
   summarizeProofreadDeterministicSignals,
@@ -2578,6 +2583,40 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       );
     }
   };
+  // Call only after proving the original candidate/hash. Protected bytes and
+  // their evidence are changed together; unchanged prose keeps its verdicts.
+  const normalizeVerifiedPdfScope = async (
+    bound: PiBoundSourceRequest,
+    range: { fromLine: number; toLine: number },
+    sources: string[],
+    candidates: string[],
+    scope?: TranslationAlignmentRangeState
+  ): Promise<{ changed: boolean; restoredLines: number[] }> => {
+    const protectedRows = (await readPdfProtectedLines(sourcePath(bound), bound.outputDir) ?? [])
+      .filter(row => row.line >= range.fromLine && row.line <= range.toLine);
+    const restoredLines: number[] = [];
+    let changed = false;
+    for (const row of protectedRows) {
+      if (candidates[row.line - 1] !== row.text) {
+        candidates[row.line - 1] = row.text;
+        restoredLines.push(row.line);
+        changed = true;
+      }
+      const check = scope?.checks.find(check => check.line === row.line);
+      if (check) {
+        const hash = translationAlignmentLinesInputHash([sources[row.line - 1]], [row.text], bound.languagePair);
+        if (check.verdict !== "aligned" || check.lineInputHash !== hash || check.warningVerdicts?.length) {
+          check.verdict = "aligned";
+          check.reason = "pdf_protected_host: original code/formula retained by Host";
+          check.lineInputHash = hash;
+          delete check.warningVerdicts;
+          changed = true;
+        }
+      }
+    }
+    if (scope && changed) scope.inputHash = currentTranslationAlignmentRangeHash(scope, sources, candidates, bound.languagePair);
+    return { changed, restoredLines };
+  };
   const bindPreparedTranslationStagingEvidenceUnlocked = async (
     prepared: { documentId: string; fromLine: number; toLine: number; candidatePath: string },
     signal?: AbortSignal
@@ -2592,7 +2631,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     const exact = existing.find((scope) => (
       scope.fromLine === prepared.fromLine && scope.toLine === prepared.toLine
     ));
-    if (!exact) return;
+    if (!exact) {
+      const sources = splitTextLines(await readRequiredWorkflowText(sourcePath(bound)));
+      const lines = splitTextLines(await readRequiredWorkflowText(candidate));
+      if (sources.length !== lines.length) throw new Error("Prepared PDF staging line count does not match its source.");
+      const normalized = await normalizeVerifiedPdfScope(bound, prepared, sources, lines);
+      if (normalized.restoredLines.length) await writeTextFileAtomically(candidate, `${lines.join("\n")}\n`);
+      return;
+    }
     assertTranslationChunkReviewRangeAvailable(prepared.documentId, prepared);
     const previousCandidate = path.resolve(exact.candidatePath);
     if (previousCandidate !== candidate && previousCandidate !== path.resolve(candidatePath(bound))) {
@@ -2626,16 +2672,36 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         `Recovery prepared staging candidate changed for ${prepared.documentId} L${prepared.fromLine}-L${prepared.toLine}.`
       );
     }
-    if (previousCandidate === candidate) return;
     // A fresh worker inherits the verified candidate and every accepted/rejected check
     // before its first provider call. Subsequent writes reopen only the rejected rows.
     const rebound = { ...structuredClone(exact), candidatePath: candidate };
+    const normalized = await normalizeVerifiedPdfScope(bound, prepared, sourceLines, stagingLines, rebound);
+    if (previousCandidate === candidate && !normalized.changed) return;
     translationAlignmentState.ranges[prepared.documentId] = existing.map((scope) => scope === exact ? rebound : scope);
     try {
+      if (normalized.restoredLines.length) {
+        await preparePdfProtectionReceipt({ outputDir: bound.outputDir, scope: exact, candidatePath: candidate,
+          sourceLines, beforeLines: splitTextLines(stagingText ?? previousText), afterLines: stagingLines, languagePair: bound.languagePair });
+        await writeTextFileAtomically(candidate, `${stagingLines.join("\n")}\n`);
+      }
       await context.persistHostState?.();
     } catch (error) {
       const liveRanges = translationAlignmentState.ranges[prepared.documentId] ?? [];
       translationAlignmentState.ranges[prepared.documentId] = liveRanges.map((scope) => scope === rebound ? exact : scope);
+      try { await context.persistHostState?.({ force: true }); }
+      catch (compensationError) {
+        const diagnosisDir = path.join(bound.outputDir, ".translation-workshop", "agent", "recovery-transactions", `pdf-staging-${randomUUID()}`);
+        await mkdir(diagnosisDir, { recursive: true });
+        const backupPath = path.join(diagnosisDir, "previous-staging.txt");
+        await writeTextFileAtomically(backupPath, stagingText ?? previousText);
+        await writeTextFileAtomically(path.join(diagnosisDir, "transaction.json"), `${JSON.stringify({
+          phase: "compensation_unconfirmed", candidatePath: candidate, backupPath,
+          previousScope: exact, preparedScope: rebound, originalError: error instanceof Error ? error.message : String(error),
+          compensationError: compensationError instanceof Error ? compensationError.message : String(compensationError)
+        }, null, 2)}\n`);
+        throw new NonRetryableAssignmentError("PDF staging evidence compensation could not be confirmed; the prepared artifact was retained.", new AggregateError([error, compensationError]));
+      }
+      if (normalized.restoredLines.length) await writeTextFileAtomically(candidate, stagingText ?? previousText);
       throw error;
     }
     console.info(JSON.stringify({
@@ -2646,13 +2712,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       auditId: rebound.auditId,
       previousCandidatePath: previousCandidate,
       stagingCandidatePath: candidate,
+      restoredProtectedLines: normalized.restoredLines,
       rejectedLines: rebound.checks.filter((check) => check.verdict === "misaligned").map((check) => check.line),
       acceptedCheckCount: rebound.checks.filter((check) => check.verdict === "aligned").length
     }));
   };
   const bindPreparedTranslationStagingEvidence = (
     ...args: Parameters<typeof bindPreparedTranslationStagingEvidenceUnlocked>
-  ) => withTranslationEvidenceTransaction(() => bindPreparedTranslationStagingEvidenceUnlocked(...args));
+  ) => withTranslationEvidenceTransaction(() => withTranslationCandidateLock(args[0].candidatePath,
+    () => bindPreparedTranslationStagingEvidenceUnlocked(...args)));
   const registerTranslationChunkReviewUnlocked = async (
     bound: PiBoundSourceRequest,
     inputRange: {
@@ -3101,6 +3169,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           toLine: scope.toLine,
           riskLineCount: requested.riskLineCount,
           sampledLineCount: requested.sampledLineCount,
+          pdfReferences: await pdfReferencesForRange(sourcePath(bound),bound.outputDir,scope.fromLine,scope.toLine),
           windows: reviewWindows(scope, pending).map((window) => ({
             ...window,
             rows: Array.from({ length: window.toLine - window.fromLine + 1 }, (_, index) => {
@@ -3124,6 +3193,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const grouped = new Map<number, { codes: Set<string>; notes: Set<string> }>();
         const ignoredPunctuationLines = new Set<number>();
         const ignoredPreservedResidueLines = new Set<number>();
+        const ignoredParentConfirmedResidueLines = new Set<number>();
         const ignoredPdfProtectedLines = new Set<number>();
         const pdfProtectedLines = new Map((await readPdfProtectedLines(sourcePath(bound), bound.outputDir) ?? []).map(entry => [entry.line, entry]));
         const preservationOptions = failures.some(failure => canonicalTranslationReviewCode(failure.code.trim()) === "untranslated_or_source_residue")
@@ -3154,12 +3224,17 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             ignoredPunctuationLines.add(failure.line);
             continue;
           }
+          if(preservationOptions&&canonicalTranslationReviewCode(code)==='untranslated_or_source_residue'
+            &&isTranslationResidueApproved(preservationOptions,failure.line,sourceLines[failure.line-1],candidateLines[failure.line-1])) {
+            ignoredParentConfirmedResidueLines.add(failure.line);
+            continue;
+          }
           if (readResidue && sourceLanguage
             && canonicalTranslationReviewCode(code) === "untranslated_or_source_residue"
             && !/wrong.target.language/iu.test(code)) {
             const source = sourceLines[failure.line - 1];
             const candidate = candidateLines[failure.line - 1];
-            const { source: sourceProse, candidate: candidateProse } = readResidue(source, candidate);
+            const { source: sourceProse, candidate: candidateProse } = readResidue(source, candidate, failure.line);
             const preservation = validateTranslationCandidate(source, candidate, { ...preservationOptions, lineOffset: failure.line-1 });
             if (sourceProse !== source && preservation.ok
               && (!proseCore(sourceProse) || proseCore(candidateProse))
@@ -3190,12 +3265,12 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           check.verdict = "aligned";
           delete check.reason;
         }
-        for (const line of new Set([...ignoredPunctuationLines, ...ignoredPreservedResidueLines, ...ignoredPdfProtectedLines])) {
+        for (const line of new Set([...ignoredPunctuationLines, ...ignoredPreservedResidueLines, ...ignoredPdfProtectedLines, ...ignoredParentConfirmedResidueLines])) {
           const check = byLine.get(line) ?? {
             line,
             signals: []
           };
-          check.signals = [...new Set([...check.signals, ignoredPdfProtectedLines.has(line) ? "review_ignored_pdf_protected_content" : ignoredPreservedResidueLines.has(line)
+          check.signals = [...new Set([...check.signals, ignoredParentConfirmedResidueLines.has(line) ? "review_parent_confirmed_source_residue" : ignoredPdfProtectedLines.has(line) ? "review_ignored_pdf_protected_content" : ignoredPreservedResidueLines.has(line)
             ? "review_ignored_preserved_source_residue" : "review_ignored_punctuation_only"])];
           check.verdict = "aligned";
           delete check.reason;
@@ -3752,6 +3827,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       reboundScope?: TranslationAlignmentRangeState;
       proofScope?: TranslationAlignmentRangeState;
       displacedRangeHash?: string;
+      needsPdfNormalization: boolean;
     }> = [];
     const rollbackReuseBaselines = new Map<string, () => Promise<void>>();
     // Validate every retained scope before changing any artifact or launching a
@@ -3763,6 +3839,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       const bound = bindPiSourceDocument(baseRequest, document);
       const canonical = path.resolve(candidatePath(bound));
       const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(bound)));
+      const protectedRows = await readPdfProtectedLines(sourcePath(bound), bound.outputDir, signal);
       const canonicalText = await readOptionalCandidateText(canonical);
       if (canonicalText !== undefined && splitTextLines(canonicalText).length !== sourceLines.length) {
         throw new Error(`Recovery preflight rejected canonical line count for ${document.id}.`);
@@ -3810,12 +3887,22 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
                 ?? translationAlignmentLinesInputHash([sourceLines[check.line - 1]], [candidateLines[check.line - 1]], bound.languagePair) })) };
           }
           if (original.inputHash !== actualHash) {
+            const pdfReceipt = protectedRows && await findPdfProtectionReceipt({ outputDir: bound.outputDir, scope: original,
+              sourceLines, candidateLines, protectedRows, languagePair: bound.languagePair });
+            if (pdfReceipt) {
+              reboundScope = structuredClone(original);
+              await normalizeVerifiedPdfScope(bound, original, sourceLines, candidateLines, reboundScope);
+              reboundScope.inputHash = actualHash;
+              console.info(JSON.stringify({ event: "yn.translation.recovery.pdf_receipt_verified", documentId: document.id,
+                fromLine: original.fromLine, toLine: original.toLine, candidatePath: candidate, receiptPath: pdfReceipt,
+                previousHash: original.inputHash, inputHash: actualHash }));
+            }
             const erased = candidate !== canonical && candidateLines.slice(original.fromLine - 1, original.toLine).every((line) => line === "");
             if (erased) recovery = await recoverErasedTranslationStaging({
               outputDir: bound.outputDir, parentSessionId: baseRequest.sessionId, scope: original,
               sourceLines, languagePair: bound.languagePair, signal
             });
-            if (rebindCandidate && !erased && original.sourceHash === translationReviewSourceHash(sourceLines.slice(original.fromLine - 1, original.toLine))) {
+            if (rebindCandidate && !reboundScope && !erased && original.sourceHash === translationReviewSourceHash(sourceLines.slice(original.fromLine - 1, original.toLine))) {
               const rangeSources = sourceLines.slice(original.fromLine - 1, original.toLine);
               const rangeCandidates = candidateLines.slice(original.fromLine - 1, original.toLine);
               const validation = await runTranslationValidation({ sourceText: rangeSources.join("\n") + "\n", candidateText: rangeCandidates.join("\n") + "\n",
@@ -3847,7 +3934,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               throw new Error(`Recovery preflight rejected stale or incompatible review evidence for ${document.id} L${original.fromLine}-${original.toLine}: candidate=${candidate}; expectedHash=${original.inputHash}; actualHash=${actualHash}; erased=${erased}; no matching owned durable write receipt.`);
             }
           }
-          verified.push({ bound, scope: original, canonical, recovery, reboundScope, proofScope, displacedRangeHash: recovery ? actualHash : undefined });
+          const provenScope = reboundScope ?? proofScope ?? original;
+          const needsPdfNormalization = protectedRows?.some(row => {
+            if (row.line < original.fromLine || row.line > original.toLine) return false;
+            const candidate = recovery ? recovery.lines[row.line - original.fromLine] : candidateLines[row.line - 1];
+            const check = provenScope.checks.find(check => check.line === row.line);
+            return candidate !== row.text || Boolean(check && (check.verdict !== "aligned" || check.warningVerdicts?.length
+              || check.lineInputHash !== translationAlignmentLinesInputHash([sourceLines[row.line - 1]], [row.text], bound.languagePair)));
+          }) ?? false;
+          verified.push({ bound, scope: original, canonical, recovery, reboundScope, proofScope, needsPdfNormalization, displacedRangeHash: recovery ? actualHash : undefined });
         }
       }
     }
@@ -3866,7 +3961,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     try {
       let mutationSourcePath: string | undefined;
       let mutationSourceLines: string[] = [];
-      for (const { bound, scope: original, canonical, recovery, reboundScope, proofScope, displacedRangeHash } of verified) {
+      for (const { bound, scope: original, canonical, recovery, reboundScope, proofScope, needsPdfNormalization, displacedRangeHash } of verified) {
         signal?.throwIfAborted();
         const scope = structuredClone(reboundScope ?? proofScope ?? original);
         changed = Boolean(proofScope) || changed;
@@ -3885,7 +3980,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               retainedCheckCount: scope.checks.filter(c => c.verdict !== undefined).length }, timestamp: Date.now() });
         }
         changed = reopenMalformedTranslationReviewEvidence(scope) || changed;
-        const accepted = scope.checks.length > 0 && scope.checks.every((check) => check.verdict === "aligned");
         const priorCandidate = path.resolve(scope.candidatePath);
         if (recovery) {
           const previousText = await readRequiredWorkflowText(priorCandidate);
@@ -3906,7 +4000,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           await writeTextFileAtomically(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
           stagingRecoveryReceipts.set(receiptPath, receipt);
           lines.splice(scope.fromLine - 1, scope.toLine - scope.fromLine + 1, ...recovery.lines);
-          await assertPdfProtectedWrite(sourcePath(bound), bound.outputDir, recovery.lines.map((text, index) => ({ line: scope.fromLine + index, text })));
           if (currentTranslationAlignmentRangeHash(scope, sources, lines, bound.languagePair) !== scope.inputHash) throw new Error("Native staging recovery no longer matches its original review evidence.");
           await writeTextFileAtomically(priorCandidate, `${lines.join("\n")}\n`);
           await writeTextFileAtomically(receiptPath, `${JSON.stringify({ ...receipt, phase: "restored" }, null, 2)}\n`);
@@ -3916,6 +4009,36 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             fromLine: scope.fromLine, toLine: scope.toLine, candidatePath: priorCandidate, inputHash: scope.inputHash,
             childSessionId: recovery.childSessionId, receiptEntryId: recovery.receiptEntryId, diagnosisPath: receiptPath }));
         }
+        // Phase one already determines which verified PDF ranges need repair.
+        // Unchanged scopes (including all TXT scopes) add no artifact rereads.
+        if (needsPdfNormalization) {
+          if (mutationSourcePath !== sourcePath(bound)) {
+            mutationSourcePath = sourcePath(bound);
+            mutationSourceLines = splitTextLines(await readRequiredWorkflowText(mutationSourcePath));
+          }
+          const priorText = await readRequiredWorkflowText(priorCandidate);
+          const ownedLines = splitTextLines(priorText);
+          if (ownedLines.length !== mutationSourceLines.length
+            || currentTranslationAlignmentRangeHash(scope, mutationSourceLines, ownedLines, bound.languagePair) !== scope.inputHash) {
+            throw new Error(`Candidate changed during protected recovery for ${scope.documentId} L${scope.fromLine}-${scope.toLine}.`);
+          }
+          const normalized = await normalizeVerifiedPdfScope(bound, scope, mutationSourceLines, ownedLines, scope);
+          if (normalized.changed) {
+            changed = true;
+            if (normalized.restoredLines.length) {
+              if (priorCandidate === canonical) {
+                if (!previousCanonicalTexts.has(canonical)) previousCanonicalTexts.set(canonical, priorText);
+              } else if (!previousStagingTexts.has(priorCandidate)) previousStagingTexts.set(priorCandidate, priorText);
+              await preparePdfProtectionReceipt({ outputDir: bound.outputDir, scope: original, candidatePath: priorCandidate,
+                sourceLines: mutationSourceLines, beforeLines: splitTextLines(priorText), afterLines: ownedLines, languagePair: bound.languagePair });
+              await writeTextFileAtomically(priorCandidate, `${ownedLines.join("\n")}\n`);
+            }
+            console.info(JSON.stringify({ event: "yn.translation.recovery.pdf_protection_bound", documentId: scope.documentId,
+              fromLine: scope.fromLine, toLine: scope.toLine, candidatePath: priorCandidate,
+              restoredLines: normalized.restoredLines, previousHash: original.inputHash, inputHash: scope.inputHash }));
+          }
+        }
+        const accepted = scope.checks.length > 0 && scope.checks.every((check) => check.verdict === "aligned");
         if ((accepted && priorCandidate !== canonical) || (!accepted && priorCandidate === canonical)) {
           if (mutationSourcePath !== sourcePath(bound)) {
             mutationSourcePath = sourcePath(bound);
@@ -3942,7 +4065,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           const staging = await prepareTranslationStagingCandidate({
             outputDir: bound.outputDir, sourcePaths: [sourcePath(bound)], documentId: scope.documentId,
             sessionId: baseRequest.sessionId, subagentId: recoveryWorkerId,
-            assignmentId: `${scope.documentId}:L${scope.fromLine}-L${scope.toLine}`
+            assignmentId: `${scope.documentId}:L${scope.fromLine}-L${scope.toLine}`,
+            deferPdfProtection: true
           });
           createdStaging.push(staging);
           const stagingLines = splitTextLines(await readRequiredWorkflowText(staging));
@@ -3982,9 +4106,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               canonicalSnapshots.push({ candidatePath: canonical, previouslyAbsent: previous === undefined, backupPath,
                 previousHash: previous === undefined ? undefined : createHash("sha256").update(previous).digest("hex") });
             }
+            const stagingSnapshots: Array<{ candidatePath: string; backupPath: string }> = [];
+            for (const [candidatePath, previous] of previousStagingTexts) {
+              const backupPath = path.join(diagnosisDir, `${stagingSnapshots.length + 1}-previous-staging.txt`);
+              await writeTextFileAtomically(backupPath, previous);
+              stagingSnapshots.push({ candidatePath, backupPath });
+            }
             diagnosisPath = path.join(diagnosisDir, "transaction.json");
             await writeTextFileAtomically(diagnosisPath, `${JSON.stringify({ schemaVersion: 1,
-              phase: "compensation_unconfirmed", canonicalSnapshots, retainedStagingCandidates: [...createdStaging, ...previousStagingTexts.keys()],
+              phase: "compensation_unconfirmed", canonicalSnapshots, stagingSnapshots, retainedStagingCandidates: [...createdStaging, ...previousStagingTexts.keys()],
               restoredStagingReceipts: [...stagingRecoveryReceipts.keys()],
               originalError: error instanceof Error ? error.message : String(error),
               compensationError: compensationError instanceof Error ? compensationError.message : String(compensationError)
@@ -4482,6 +4612,28 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
   };
   const tools: YnDomainAgentTool[] = [
     ...createPdfReferenceTools(() => activeTranslationChunkReview?.bound ?? request, () => context.supportsImages?.() === true).map(tool => ({ ...tool, requiresSourceManifest: true as const })),
+    {
+      requiresSourceManifest: true,
+      name: "confirmTranslationResidueSafe",
+      label: "Confirm untranslated detection false positive",
+      description: "Parent-only semantic decision for TXT, EPUB and PDF. Inspect source and proposed translation first; confirm specific likely_untranslated false positives with exact absolute row, translation and reason. This records permission without writing text. Then write normally or retry the bounded child repair. The decision survives restart but is invalidated by changed source or candidate. It cannot waive missing prose, formula/code, placeholders, tags, preservation rules or line structure. Never approve genuinely untranslated prose just to unblock a task.",
+      parameters: Type.Object({
+        documentId: Type.Optional(Type.String({ minLength: 1 })),
+        entries: Type.Array(Type.Object({
+          line: Type.Integer({ minimum: 1 }), translation: Type.String(), reason: Type.String({ minLength: 1 })
+        }, { additionalProperties: false }), { minItems: 1 })
+      }, { additionalProperties: false }),
+      executionMode: "sequential",
+      async execute(_toolCallId, params) {
+        return withTranslationEvidenceTransaction(async () => {
+          const input = params as { documentId?: string; entries: Array<{ line: number; translation: string; reason: string }> };
+          const bound = input.documentId?.trim() ? await boundForDocument(input.documentId.trim()) : request;
+          const result = await confirmTranslationResidueSafe({ outputDir: bound.outputDir, sourcePath: sourcePath(bound),
+            sessionId: baseRequest.sessionId, entries: input.entries, validationOptions: await createValidationOptions(bound) });
+          return textResult(result);
+        });
+      }
+    },
     {
       name: "recordTranslationPreservedTerms",
       label: "Record user-preserved terms",
@@ -5114,7 +5266,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const signals = (await runProofreadPrescan({
           sourceText: scopedSource,
           translationText: scopedTranslation,
-          validationOptions: { ...validationOptions, pdfProtectedLines: localPdfProtectedLines(validationOptions.pdfProtectedLines, range.fromLine) },
+          validationOptions: { ...validationOptions, pdfProtectedLines: localPdfProtectedLines(validationOptions.pdfProtectedLines, range.fromLine),
+            pdfPreservedSpans: localPdfPreservedSpans(validationOptions.pdfPreservedSpans,range.fromLine) },
           signal: toolExecution.getStore()?.signal
         }))
           .map((signal) => ({ ...signal, line: signal.line + range.fromLine - 1 }))
@@ -5779,8 +5932,11 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         if (context.domainRun?.kind === "proofread" && !context.domainRun.suspended) {
           context.domainRun.recordProofreadParentRead("source", range.fromLine, range.toLine);
         }
-        return textResult({ ...range, totalLines: lines.length, lines: lines.slice(range.fromLine - 1, range.toLine),
-          pdfReferences: await pdfReferencesForRange(sourcePath(readRequest), readRequest.outputDir, range.fromLine, range.toLine) });
+        const pdfReferences = await pdfReferencesForRange(sourcePath(readRequest), readRequest.outputDir, range.fromLine, range.toLine);
+        const protectedLines = new Set(pdfReferences?.protectedLines.map(row => row.line));
+        return textResult({ ...range, totalLines: lines.length, lines: lines.slice(range.fromLine - 1, range.toLine), pdfReferences,
+          ...(pdfReferences ? { translatableLines: lines.slice(range.fromLine - 1, range.toLine).flatMap((source,index)=>protectedLines.has(range.fromLine+index)||!source.trim()?[]:[{line:range.fromLine+index,source}]),
+            writeInstruction: "Submit only translatableLines using writeTranslationChunk entries: [{line, translation}]. The Host merges immutable code/math/references at their original line positions." } : {}) });
       }
     },
     {
@@ -6976,17 +7132,18 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       requiresSourceManifest: true,
       name: "writeTranslationChunk",
       label: "Write translation chunk",
-      description: "Strictly validate and atomically write one exact line range into the named translation candidate without changing the active workflow document.",
+      description: "Strictly validate and atomically write one exact line range into the named translation candidate without changing the active workflow document. PDF tasks submit only translatableLines as entries; the Host merges immutable code/math/references. Legacy full-line arrays remain supported with exact protection checks.",
       parameters: Type.Object({
         documentId: Type.Optional(Type.String({ minLength: 1 })),
         fromLine: Type.Integer({ minimum: 1 }),
         toLine: Type.Integer({ minimum: 1 }),
-        lines: Type.Array(Type.String())
+        lines: Type.Optional(Type.Array(Type.String())),
+        entries: Type.Optional(Type.Array(Type.Object({ line: Type.Integer({ minimum: 1 }), translation: Type.String() })))
       }),
       executionMode: "sequential",
       async execute(_toolCallId, params) {
         return withTranslationEvidenceTransaction(async () => {
-        const input = params as { documentId?: string; fromLine: number; toLine: number; lines: string[] };
+        const input = params as { documentId?: string; fromLine: number; toLine: number; lines?: string[]; entries?: Array<{ line: number; translation: string }> };
         const bound = input.documentId?.trim()
           ? await boundForDocument(input.documentId.trim())
           : request;
@@ -6999,6 +7156,24 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         if (!boundedArtifactRepair) context.domainRun?.activate("translation");
         const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(bound)));
         const range = normalizeRange(input.fromLine, input.toLine, sourceLines.length);
+        if (Array.isArray(input.lines) === Array.isArray(input.entries)) throw new Error("Submit exactly one of lines or entries.");
+        const protectedRows = new Map((await readPdfProtectedLines(sourcePath(bound), bound.outputDir) ?? []).map(row => [row.line, row.text]));
+        let chunkLines = input.lines;
+        if (input.entries) {
+          const entries = new Map<number, string>();
+          for (const entry of input.entries) {
+            if (!Number.isInteger(entry.line) || entry.line < range.fromLine || entry.line > range.toLine
+              || entries.has(entry.line) || typeof entry.translation !== "string" || /[\r\n]/.test(entry.translation)) {
+              throw new Error("Each entry must uniquely own one physical line inside the requested range.");
+            }
+            if (protectedRows.has(entry.line)) throw new Error(`L${entry.line} is immutable Host-prepared PDF content; submit only translatable prose.`);
+            if (!sourceLines[entry.line - 1]?.trim()) throw new Error(`L${entry.line} is an empty source line retained by the Host.`);
+            entries.set(entry.line, entry.translation);
+          }
+          chunkLines = sourceLines.slice(range.fromLine - 1, range.toLine).map((source, index) =>
+            protectedRows.get(range.fromLine + index) ?? (source.trim() ? entries.get(range.fromLine + index) ?? "" : source));
+        }
+        if (!chunkLines) throw new Error("Translation lines are required.");
         if (context.subagents.hasWriteConflict?.({
           documentId: documentId(bound),
           ...range
@@ -7008,12 +7183,12 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           );
         }
         const expected = range.toLine - range.fromLine + 1;
-        if (input.lines.length !== expected) {
-          throw new Error(`Range ${range.fromLine}-${range.toLine} requires exactly ${expected} lines; received ${input.lines.length}.`);
+        if (chunkLines.length !== expected) {
+          throw new Error(`Range ${range.fromLine}-${range.toLine} requires exactly ${expected} lines; received ${chunkLines.length}.`);
         }
         const validation = await runTranslationValidation({
           sourceText: sourceLines.slice(range.fromLine - 1, range.toLine).join("\n") + "\n",
-          candidateText: input.lines.join("\n") + "\n",
+          candidateText: chunkLines.join("\n") + "\n",
           validationOptions: { ...await createValidationOptions(bound), lineOffset: range.fromLine - 1 },
           signal: toolExecution.getStore()?.signal,
           diagnostics: { outputDir: bound.outputDir, documentId: documentId(bound), phase: "parent-write", ...range }
@@ -7044,7 +7219,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           sourcePaths: [sourcePath(bound)],
           documentId: documentId(bound),
           ...range,
-          lines: input.lines
+          lines: chunkLines
         });
         if (!result.ok) throw new Error(result.error || "Translation chunk write failed.");
           if (boundedArtifactRepair) {
@@ -7344,7 +7519,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             signals: (await runProofreadPrescan({
               sourceText: sourceLines.slice(localScope.fromLine - 1, localScope.toLine).join("\n"),
               translationText: translationLines.slice(localScope.fromLine - 1, localScope.toLine).join("\n"),
-              validationOptions: { ...validationOptions, pdfProtectedLines: localPdfProtectedLines(validationOptions.pdfProtectedLines, localScope.fromLine) },
+              validationOptions: { ...validationOptions, pdfProtectedLines: localPdfProtectedLines(validationOptions.pdfProtectedLines, localScope.fromLine),
+                pdfPreservedSpans: localPdfPreservedSpans(validationOptions.pdfPreservedSpans,localScope.fromLine) },
               signal: toolExecution.getStore()?.signal
             })).map((signal) => ({ ...signal, line: signal.line + localScope.fromLine - 1 }))
           };

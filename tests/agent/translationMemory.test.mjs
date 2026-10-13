@@ -1,7 +1,8 @@
 import { strict as assert } from "node:assert";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   readTranslationMemoryStats,
@@ -96,6 +97,30 @@ await test("translation memory can be searched for reusable line pairs", async (
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
+});
+
+await test("memory statistics and search remain read-only during a background write transaction", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "tw-tm-reader-"));
+  let writer;
+  try {
+    await rememberTranslationSegments({ outputDir, sourceText: "Source sentence", targetText: "译文句子" });
+    writer = new DatabaseSync(translationMemoryPath(outputDir));
+    writer.exec("BEGIN IMMEDIATE; UPDATE translation_segments SET target_text='uncommitted';");
+    assert.equal((await readTranslationMemoryStats(outputDir)).segmentCount, 1);
+    assert.equal((await searchTranslationMemory({ outputDir, query: "Source" })).matches[0].targetText, "译文句子");
+    writer.exec("ROLLBACK");
+  } finally { writer?.close(); await rm(outputDir, { recursive: true, force: true }); }
+});
+
+await test("read-only memory queries do not initialize a database without its schema", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "tw-tm-empty-"));
+  let db;
+  try {
+    const file=translationMemoryPath(outputDir);await mkdir(path.dirname(file),{recursive:true});db=new DatabaseSync(file);
+    assert.equal((await readTranslationMemoryStats(outputDir)).initialized,false);
+    const search=await searchTranslationMemory({outputDir,query:"Source"});assert.equal(search.initialized,false);assert.deepEqual(search.matches,[]);
+    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().length,0,"reads must leave schema untouched");
+  } finally { db?.close(); await rm(outputDir, { recursive: true, force: true }); }
 });
 
 console.log("");

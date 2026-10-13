@@ -50,12 +50,32 @@ function referenceResponses(finalText: string) {
     (context: any) => { assert(last(context).status === "committed", "Both reference assets must be formally committed"); return fauxAssistantMessage(fauxText(finalText)); }
   ];
 }
+const handoffPackets: any[] = [];
+const instrumentedViews = new Set<number>();
+const packetTimer=setInterval(()=>{
+  for(const view of BrowserWindow.getAllWindows().flatMap(window=>window.getBrowserViews())) {
+    const web=view.webContents;if(instrumentedViews.has(web.id))continue;instrumentedViews.add(web.id);
+    const execute=web.executeJavaScript.bind(web);
+    web.executeJavaScript=async (script,userGesture)=>{
+      const result=await execute(script,userGesture);
+      if(script.includes("translationWorkshopTaskParameters.prepare") && result?.prompt && result?.metadata)handoffPackets.push(JSON.parse(JSON.stringify(result)));
+      return result;
+    };
+  }
+},5);
+let pdfHandoffPacket:any;
 // Constructor dependency substitution exists only in this verifier. Product Host,
 // IPC, navigation, scanner, settings and application paths remain unchanged.
 const options = (piNativeSessionService as unknown as { options: PiNativeSessionServiceOptions }).options;
 options.createModelSelection = async () => ({ models, model: provider.getModel(), providerId: provider.provider.id, modelId: provider.getModel().id });
 options.createTools = context => {
   requests.push(context.request);
+  if(!context.request.taskPreparation && context.request.sourcePath?.includes("-pdf-")) {
+    const packet=handoffPackets.findLast(packet=>packet.prompt===context.request.prompt);
+    assert(packet,"PDF native handoff must use the actual HTML parameter builder");
+    for(const key of Object.keys(packet.metadata))assert(JSON.stringify(packet.metadata[key])===JSON.stringify((context.request as any)[key]),`PDF handoff differs: ${key}; HTML=${JSON.stringify(packet.metadata[key])}; native=${JSON.stringify((context.request as any)[key])}`);
+    pdfHandoffPacket=packet;
+  }
   return [{ name: "completeFixtureWorkflow", label: "Complete verifier fixture", description: "Provide native completion evidence for this single-line faux fixture.", parameters: Type.Object({}), async execute() {
     const request = context.request; const domain = context.domainRun!; const documentId = path.basename(request.sourcePath!);
     const documents = request.folderSourceDocuments ?? [{ id: documentId, path: request.sourcePath! }];
@@ -313,9 +333,11 @@ async function run() {
   const pdfRequest = requests.at(-1), pdfView = await viewFor(pdfTask.outputPath);
   assert(await readFile(pdfRequest.sourcePath, "utf8") === original, "PDF must enter the same native workflow as a UTF-8 projection");
   assert((await readFile(pdfPath)).equals(Buffer.from(pdfBytes)), "PDF input must stay read-only");
-  const pdfPacket = await pdfView!.webContents.executeJavaScript("window.translationWorkshopTaskParameters.prepare('translate')");
+  // Compare at handoff. Later asset hydration/user edits may change the page.
+  const pdfPacket = pdfHandoffPacket;
+  assert(pdfPacket,"PDF packet was observed at the native handoff");
   assert(pdfPacket.prompt === pdfRequest.prompt, "PDF one-click prompt must equal manual HTML prompt");
-  for (const key of Object.keys(pdfPacket.metadata)) assert(JSON.stringify(pdfPacket.metadata[key]) === JSON.stringify(pdfRequest[key]), `PDF HTML metadata differs: ${key}`);
+  for (const key of Object.keys(pdfPacket.metadata)) assert(JSON.stringify(pdfPacket.metadata[key]) === JSON.stringify(pdfRequest[key]), `PDF HTML metadata differs: ${key}; HTML=${JSON.stringify(pdfPacket.metadata[key])}; native=${JSON.stringify(pdfRequest[key])}`);
   assert((await readPdfLayout(pdfRequest.sourcePath, fixture))?.pages.length === 1, "PDF layout must be bound to the native source");
   await pdfView!.webContents.executeJavaScript("document.getElementById('syncTranslation').click()");
   await waitFor(() => pdfView!.webContents.executeJavaScript("document.querySelector('.row .target').textContent"), value => value === initialTranslation, "PDF canonical translation loaded");
@@ -446,6 +468,7 @@ void app.whenReady().then(async () => {
   try { await Promise.race([run(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Built-in task Electron verifier timed out")), 120000); })]); }
   finally { if (timer) clearTimeout(timer); }
 }).catch(error => { console.error(error.stack || error.message); process.exitCode = 1; }).finally(async () => {
+  clearInterval(packetTimer);
   await piNativeSessionService.disposeWorkspace(fixture);
   for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.destroy();
   if (!path.resolve(fixture).startsWith(`${path.resolve(os.tmpdir())}${path.sep}yn-electron-builtin-`)) throw new Error("Unsafe fixture cleanup");

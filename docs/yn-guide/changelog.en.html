@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="preload" as="image" href="assets/app-icon.png"/><meta name="description" content="AI translation and proofreading for long-form fiction and game localization. TXT, EPUB and text-layer PDF, editable line review, glossary consistency and verifiable recovery."/><meta name="robots" content="index,follow"/><meta http-equiv="Content-Security-Policy" content="default-src &#x27;self&#x27; data:; script-src &#x27;self&#x27;; style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27;; img-src &#x27;self&#x27; data: https://img.shields.io;"/><link rel="canonical" href="https://tohman233.github.io/YN-translation-workshop/changelog.en.html"/><link rel="alternate" hrefLang="zh-CN" href="https://tohman233.github.io/YN-translation-workshop/changelog.html"/><link rel="alternate" hrefLang="en" href="https://tohman233.github.io/YN-translation-workshop/changelog.en.html"/><link rel="icon" href="assets/app-icon.png"/><title>Changelog · YN Translation Workshop 2.2.0</title><link rel="stylesheet" href="styles.css"/><script src="content.js" defer=""></script><script src="app.js" defer=""></script></head><body data-page="changelog" data-locale="en" data-version="2.2.0"><header class="topbar"><a class="brand" href="index.en.html"><img src="assets/app-icon.png" alt="YN"/><strong>YN Translation Workshop</strong></a><button class="search-trigger" type="button" data-search-open="true">Search docs</button><div class="topmeta"><span>2.2.0</span><a href="changelog.html" hrefLang="zh-CN">中文</a><button type="button" class="menu-button" data-menu="true" aria-label="Navigation">☰</button></div></header><aside class="sidebar" aria-label="Documentation navigation"><section class="nav-section"><p class="nav-label">Project</p><a class="nav-link" href="index.en.html">Overview</a></section><section class="nav-section"><p class="nav-label">Using YN</p><a class="nav-link" href="guides.en.html">First run</a><a class="nav-link" href="features.en.html">Features and settings</a><a class="nav-link" href="pdf.en.html">PDF translation</a><a class="nav-link" href="agent-api.en.html">Background Agent API</a></section><section class="nav-section"><p class="nav-label">Examples and evidence</p><a class="nav-link" href="examples.en.html">Project examples</a><a class="nav-link" href="quality.en.html">Quality and reliability</a></section><section class="nav-section"><p class="nav-label">Technical reference</p><a class="nav-link" href="workflows.en.html">Workflows and recovery</a><a class="nav-link" href="harness.en.html">Harness architecture</a><a class="nav-link" href="development.en.html">Development and validation</a><a class="nav-link" href="functions.en.html">Function reference</a><a class="nav-link" href="terminology.en.html">Agent terminology</a><a class="nav-link active" href="changelog.en.html">Changelog</a></section><div class="sidebar-foot">Docs for 2.2.0 · 2026-10-13</div></aside><main class="layout"><article class="content" id="content" data-source="CHANGELOG.en.md"><h1 id="changelog">Changelog</h1>
+<p><a href="changelog.html">中文</a> · <a href="index.en.html">Project</a></p>
+<p>Recorded version changes. Public availability and downloads follow <a href="https://github.com/TohmaN233/YN-translation-workshop/releases">Releases</a>.</p>
+<h2 id="what-s-new-in-2-2-0">What&#x27;s new in 2.2.0</h2>
+<ul>
+<li>Fix oversized session loading, compact older sessions with verified backups, and reuse verified recovery state to avoid replaying history before chat; add loading progress and cancellation.</li>
+<li>Stabilize translation, review, and proofreading child prompt and tool prefixes for cache reuse across chunks. Context still resets after each chunk, with unchanged Host scope validation.</li>
+<li>Add a background Agent API: confirm the location and settings, then reuse lazy-mode preparation and execution; query status, stop, resume and answer questions.</li>
+<li>Support text-layer PDFs with extracted text, page/image references on demand for vision models, Host protection of identified code and mathematical formulas, and one-click translated PDF export. See the <a href="pdf.en.html">PDF guide</a>.</li>
+<li>Fix mathematical PDF font detection and glyph binding; prefill and lock code/formulas in the Host so models submit only prose and cannot omit protected rows.</li>
+<li>Prescan source-evidenced package names, acronyms and structural labels; translation, review and residue checks share the retained identifiers to avoid false untranslated findings.</li>
+<li>Let the parent Agent confirm specific untranslated false positives in TXT, EPUB and PDF with a reason. Source or translation changes invalidate the confirmation; format, formula and code protection remain active.</li>
+<li>Prefill and protect PDF References/Bibliography in the Host, skip model translation of reference rows and retain their original glyphs on export. Cancellation waits for background resource cleanup and reports cleanup failures explicitly.</li>
+<li>Reuse glossary longest-match coverage for character names, avoiding embedded short-name warnings while still checking independent occurrences.</li>
+<li>Save session recovery indexes on Stop and exit to avoid lengthy replay after restart; allow candidate discovery, validation and import with external read-only sources.</li>
+<li>Check and import large candidates in the background with progress and cancellation; commit drafts once without blocking the window on hundreds of thousands of lines.</li>
+</ul>
+<h2 id="what-s-new-in-2-1-9">What&#x27;s new in 2.1.9</h2>
+<ul>
+<li>Fix the single-file mode regression introduced in 2.1.4.</li>
+</ul>
+<h2 id="what-s-new-in-2-1-7-2-1-8">What&#x27;s new in 2.1.7–2.1.8</h2>
+<ul>
+<li>
+<p>Exclude actual regex-preserved matches and correctly aligned glossary pairs from untranslated checks. Record explicitly preserved words as formal source-to-identical-target terms; validate the remaining prose with the same rules for candidate imports and AI review. Glossary matching, terminology conflicts, and recovery rescans also exclude regex-preserved spans.</p>
+</li>
+<li>
+<p>Automatically reconcile stale review bindings in Host, retain unchanged accepted evidence, and resume work. Fix batch settlement after Stop.</p>
+</li>
+</ul>
+<h2 id="what-s-new-in-2-1-6">What&#x27;s new in 2.1.6</h2>
+<ul>
+<li>Stop when bound required files disappear, preserving drafts and reporting the missing path. Unbound glossary and character tables remain optional.</li>
+<li>Fix Stop and project shutdown deadlocks.</li>
+<li>Fix Electron HTML closing and task cancellation bindings; failed saves report the error and preserve edits.</li>
+<li>Use relative bindings for project settings, HTML and recovery artifacts. Copying a complete project retains parent/child Agent history, drafts and review evidence. External source/reference files must be transferred and selected again.</li>
+</ul>
+<h2 id="what-s-new-in-2-1-5">What&#x27;s new in 2.1.5</h2>
+<ul>
+<li>Fix large-file translation freezes with range-scoped chunk checks and background final validation, preserving structural checks, review and recovery.</li>
+<li>Apply translation preservation rules and mechanical checks to proofreading suggestions to protect control codes, tags and placeholders.</li>
+<li>Fix concurrent recovery: Host verifies and reconciles translations, staging and review evidence before starting Workers. Failed commits preserve recoverable artifacts; unretryable internal errors stop the workflow.</li>
+</ul>
+<h2 id="what-s-new-in-2-1-4">What&#x27;s new in 2.1.4</h2>
+<ul>
+<li>
+<p>Create a project from reference preparation before translating. Clear homepage entries and restore task defaults in one click.</p>
+</li>
+<li>
+<p>Reference preparation uses editable drafts, checks them, then commits both formal assets together. Interrupted or failed tasks retain their drafts.</p>
+</li>
+<li>
+<p>One-click setup checks parameters against the source and trials control-token rules, then uses the shared HTML parameters and translation prompt. Generate line-by-line HTML first for hands-on control.</p>
+</li>
+<li>
+<p>Removed the unused chunking toggle. Folder HTML initializes the file order inside braces and preserves explicit selections.</p>
+</li>
+<li>
+<p>Configure providers and models at the top of the homepage before opening a project or HTML; settings are shared globally.</p>
+</li>
+<li>
+<p>Built-in task setup opens HTML and starts translation or proofreading after settings confirmation; reference materials can be organized directly. Defaults: 500 lines and up to 3 agents, with preservation-rule scanning before translation.</p>
+</li>
+<li>
+<p>Editable HTML character tables and optional proofreading auto-apply to HTML; TXT saving remains manual.</p>
+</li>
+<li>
+<p>Fixed canceled tasks and compaction starting after Stop.</p>
+</li>
+</ul>
+<h2 id="what-s-new-in-2-1-3">What&#x27;s new in 2.1.3</h2>
+<ul>
+<li>Fixed Grok 4.7 requests incorrectly sending <code>reasoning_effort=none</code>: Auto and legacy Off selections use the official <code>high</code> default; models without known effort controls omit the parameter.</li>
+<li>HTML glossary management separates approved terms and AI candidates. Preview, search and delete candidates before import, or delete approved entries individually. Deletion affects only the selected table; older HTML upgrades when opened.</li>
+<li>Upgrade the core to 0.99.1 with compatibility updates to prevent regressions.</li>
+</ul>
+<h2 id="what-s-new-in-2-1-2">What&#x27;s new in 2.1.2</h2>
+<ul>
+<li>Standard Provider model catalogs can refresh automatically from upstream Pi, with local cache and bundled-catalog fallback when the network is unavailable.</li>
+<li>Fixed inconsistent state when resuming parked translation-reuse workflows, retrying proofreading glossary candidates, and restoring typed Workflow intent.</li>
+<li>Aligned structured repair capacity with the 500-line model page and merged duplicate length-risk signals for the same line.</li>
+</ul>
+<h2 id="what-s-new-from-2-0-5-to-2-1-0">What&#x27;s new from 2.0.5 to 2.1.0</h2>
+<ul>
+<li>Very large review pages open now: the 80 MiB hard reject is gone, and jumping from a suggestion to the source dropped from about 4s to 1–2s in testing.</li>
+<li>Large-file translation and proofreading are steadier: memory no longer climbs without bound, and prescans no longer freeze the main window.</li>
+<li>The main window is responsive, and a character can have multiple dialogue lines.</li>
+<li>Opening Agent or sending a short prompt no longer yanks the review page to the top.</li>
+<li>Mobile remote is a full-screen workspace, with Agent in the tools drawer.</li>
+</ul>
+<h3 id="2-0-1-2-0-5-workflow-reliability-and-providers">2.0.1 – 2.0.5: Workflow reliability and Providers</h3>
+<ul>
+<li>Proofreading and EPUB jobs consistently follow the translation explicitly selected on the page. When no file was selected manually, completed translation output becomes the authoritative <code>translated</code> binding instead of a temporary snapshot.</li>
+<li>Added <strong>Grok (OAuth)</strong>, model-specific thinking levels, and long-reasoning waits. Expired authorization refreshes and resumes the current work instead of stopping the entire batch.</li>
+<li>Exhausted translation review hands exact failed lines back to the parent Agent. The Host refreshes proofreading findings from current bound rows, and accepted results cannot be erased by a later empty write or rejected item.</li>
+<li>Longer glossary names cover shorter names, cross-file terminology differences move to final warning review, and disabling glossary candidates also disables their construction, updates, and validation.</li>
+<li>Batch apply preserves human edits and TXT-written status. Workflow recovery explicitly distinguishes translation from proofreading to avoid resuming the wrong job.</li>
+</ul></article></main><aside class="toc"><strong>On this page</strong><div id="toc-links"><a href="#what-s-new-in-2-2-0" class="level-2">What&#x27;s new in 2.2.0</a><a href="#what-s-new-in-2-1-9" class="level-2">What&#x27;s new in 2.1.9</a><a href="#what-s-new-in-2-1-7-2-1-8" class="level-2">What&#x27;s new in 2.1.7–2.1.8</a><a href="#what-s-new-in-2-1-6" class="level-2">What&#x27;s new in 2.1.6</a><a href="#what-s-new-in-2-1-5" class="level-2">What&#x27;s new in 2.1.5</a><a href="#what-s-new-in-2-1-4" class="level-2">What&#x27;s new in 2.1.4</a><a href="#what-s-new-in-2-1-3" class="level-2">What&#x27;s new in 2.1.3</a><a href="#what-s-new-in-2-1-2" class="level-2">What&#x27;s new in 2.1.2</a><a href="#what-s-new-from-2-0-5-to-2-1-0" class="level-2">What&#x27;s new from 2.0.5 to 2.1.0</a><a href="#2-0-1-2-0-5-workflow-reliability-and-providers" class="level-3">2.0.1 – 2.0.5: Workflow reliability and Providers</a></div></aside><dialog class="search-dialog" id="search-dialog"><div class="search-head"><input type="search" id="global-search" placeholder="Search title or topic" aria-label="Search documentation"/><button type="button" data-search-close="true" aria-label="Close search">×</button></div><div class="search-results" id="search-results"></div></dialog><dialog class="lightbox" id="lightbox"><button type="button" data-lightbox-close="true" aria-label="Close image">×</button><img alt="Enlarged product screenshot"/></dialog><footer class="doc-footer"><a href="https://github.com/TohmaN233/YN-translation-workshop/releases">Downloads</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/CHANGELOG.en.md">Markdown source</a> · MIT</footer></body></html>

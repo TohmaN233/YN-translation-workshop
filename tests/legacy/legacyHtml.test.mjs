@@ -802,7 +802,7 @@ await test("renderLineReviewHtml binds imported TXT candidates for later Save TX
   assert.ok(match, "expected inline line-review script");
   assert.match(
     match[1],
-    /async function importArtifactAsDraft\(candidatePath, sourcePath\)[\s\S]*sourceIsEpub[\s\S]*setBoundTranslationPath\(candidatePath, candidatePath, \{ userSelected: true \}\)/
+    /async function importArtifactAsDraft\(candidatePath, sourcePath\)[\s\S]*setBoundTranslationPath\(candidatePath, candidatePath, \{ userSelected: true, deferPersist: true \}\)/
   );
 });
 
@@ -969,7 +969,8 @@ await test("line-review Agent entry opens embedded HTML dock and same-state popo
   assert.equal(route.sourcePath, "G:/proj/source.txt");
   assert.match(match[1], /function workflowPromptMetadata\(settings, kind\)[\s\S]*workflowIntent:\s*kind === "proofread" \? "proofread" : "translation"/);
   assert.match(match[1], /function workflowPromptMetadata\(settings, kind\)[\s\S]*languagePair:\s*settings\.languagePair/);
-  assert.match(match[1], /metadata: workflowPromptMetadata\(settings, kind\)/);
+  assert.match(match[1], /const metadata = workflowPromptMetadata\(settings, kind\);[\s\S]*?const prompt = await bridge\.buildPrompt/);
+  assert.match(match[1], /return \{ prompt, bindings, settings, metadata \}/);
   assert.doesNotMatch(match[1], /dataset\.ynWorkflowIntent|querySelector\("#agentChatReactRoot textarea"\)/);
   assert.match(match[1], /isDocked\(\) && !document\.body\.classList\.contains\("agent-chat-popout"\)/);
   assert.match(match[1], /agentChatPopout"\)\?\.addEventListener\("click", \(\) => \{ void openEmbeddedPopout\(\); \}\)/);

@@ -1,18 +1,16 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
-  <meta name="description" content="YN Translation Workshop 初翻与校对两条完整 Workflow 的执行链、输入读取和完成条件。">
-  <link rel="icon" href="assets/app-icon.png">
-  <link rel="stylesheet" href="styles.css">
-  <script defer src="content.js"></script>
-  <script defer src="terminology.js"></script>
-  <script defer src="copy-defaults.js"></script>
-  <script defer src="locale-en.js"></script>
-  <script defer src="app.js"></script>
-  <title>两条 Workflow · YN Translation Workshop</title>
-</head>
-<body data-page="workflows"></body>
-</html>
+<html lang="zh-CN"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="preload" as="image" href="assets/app-icon.png"/><meta name="description" content="面向长篇小说与游戏汉化的 AI 翻译、校对工作台：TXT、EPUB、文字层 PDF、逐行人工审阅、译名一致性与可核查的中断恢复。"/><meta name="robots" content="index,follow"/><meta http-equiv="Content-Security-Policy" content="default-src &#x27;self&#x27; data:; script-src &#x27;self&#x27;; style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27;; img-src &#x27;self&#x27; data: https://img.shields.io;"/><link rel="canonical" href="https://tohman233.github.io/YN-translation-workshop/workflows.html"/><link rel="alternate" hrefLang="zh-CN" href="https://tohman233.github.io/YN-translation-workshop/workflows.html"/><link rel="alternate" hrefLang="en" href="https://tohman233.github.io/YN-translation-workshop/workflows.en.html"/><link rel="icon" href="assets/app-icon.png"/><title>流程与恢复 · YN Translation Workshop 2.2.0</title><link rel="stylesheet" href="styles.css"/><script src="content.js" defer=""></script><script src="app.js" defer=""></script></head><body data-page="workflows" data-locale="zh" data-version="2.2.0"><header class="topbar"><a class="brand" href="index.html"><img src="assets/app-icon.png" alt="YN"/><strong>YN Translation Workshop</strong></a><button class="search-trigger" type="button" data-search-open="true">搜索文档</button><div class="topmeta"><span>2.2.0</span><a href="workflows.en.html" hrefLang="en">English</a><button type="button" class="menu-button" data-menu="true" aria-label="导航">☰</button></div></header><aside class="sidebar" aria-label="文档导航"><section class="nav-section"><p class="nav-label">项目</p><a class="nav-link" href="index.html">认识 YN</a></section><section class="nav-section"><p class="nav-label">使用 YN</p><a class="nav-link" href="guides.html">第一次使用</a><a class="nav-link" href="features.html">功能与参数</a><a class="nav-link" href="pdf.html">PDF 翻译</a><a class="nav-link" href="agent-api.html">后台 Agent API</a></section><section class="nav-section"><p class="nav-label">案例与证据</p><a class="nav-link" href="examples.html">翻译项目例子</a><a class="nav-link" href="quality.html">质量与可靠性</a></section><section class="nav-section"><p class="nav-label">技术参考</p><a class="nav-link active" href="workflows.html">流程与恢复</a><a class="nav-link" href="harness.html">Harness 架构</a><a class="nav-link" href="development.html">开发与验证</a><a class="nav-link" href="functions.html">Function 参考</a><a class="nav-link" href="terminology.html">Agent 术语</a><a class="nav-link" href="changelog.html">版本记录</a></section><div class="sidebar-foot">文档对应 2.2.0 · 2026-10-13</div></aside><main class="layout"><article class="content" id="content" data-source="docs/workflows.md"><h1 id="翻译-校对与资料准备">翻译、校对与资料准备</h1>
+<p><a href="workflows.en.html">English</a> · <a href="guides.html">首次使用</a></p>
+<h2 id="初翻">初翻</h2>
+<p>准备参数与保留规则 → 解析原文清单 → 领取行分块 → 写入草稿 → 机械校验 → 独立复审 → 精确修复 → 提交正式候选 → 全文终检。</p>
+<p>分块以物理行为边界，默认 500 行。并发工人是上限；每块完成后清空模型上下文，已接受证据由 Host 保留。译名/角色只注入直接命中的参考，缺少资料时再检索。已识别的 PDF 代码/公式由 Host 固定，不进入可写正文。</p>
+<p>疑似未译可以是专名等误报。主 Agent 核对原文与候选后，可用 <code>confirmTranslationResidueSafe</code> 逐行说明理由并确认，随后继续原写入／修复流程。确认在项目中保存且只适用于该行的确切文本，任一文本改变即失效；子 Agent 无法授权。此能力适用于 TXT、EPUB、PDF，其他格式与结构检查仍执行。</p>
+<h2 id="校对">校对</h2>
+<p>绑定已有译文 → 扫描全部对齐行 → 逐片精审或分层抽样 → 提交带绝对行号的建议与证据 → 审阅/应用到 HTML → 用户写出文件。</p>
+<p>建议译文携带与翻译相同的保留要求。风格和语义风险需结合上下文判断，不能把所有 warning 变成硬拒绝。Monte Carlo 的抽样覆盖与全文校对分开报告。</p>
+<h2 id="资料准备">资料准备</h2>
+<p>读取参考 → 编辑译名和角色草稿 → 读取核查 → check → commit。没有译文也可新建项目；草稿可反复改，最后事务性提升为正式表。</p>
+<h2 id="停止与恢复">停止与恢复</h2>
+<p>停止先取消 Pi 和工作池，再保存收尾状态。异常恢复在首笔模型请求前核验原文/草稿的行数、hash、范围所有权与复核证据。未变的通过证据保留，仅变化行重新审查。保护内容改写前保存写前收据，避免文件已更新但 checkpoint 未提交的窗口破坏冷恢复。</p>
+<p>程序内部故障、必需文件缺失、无进展修复或有界重连耗尽会停止整条流程；用户停止取消自动恢复。恢复不是把所有已完成文本交给模型重翻。</p>
+<p>实现入口：<a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/src/main/agent/piNative/ynDomainTools.ts">YN Host</a>、<a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/src/main/agent/piNative/subagentSupervisor.ts">Supervisor</a>、<a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/src/main/agent/piNative/subagentRunner.ts">子 Agent</a>。</p></article></main><aside class="toc"><strong>本页目录</strong><div id="toc-links"><a href="#初翻" class="level-2">初翻</a><a href="#校对" class="level-2">校对</a><a href="#资料准备" class="level-2">资料准备</a><a href="#停止与恢复" class="level-2">停止与恢复</a></div></aside><dialog class="search-dialog" id="search-dialog"><div class="search-head"><input type="search" id="global-search" placeholder="搜索标题或内容" aria-label="搜索文档"/><button type="button" data-search-close="true" aria-label="关闭搜索">×</button></div><div class="search-results" id="search-results"></div></dialog><dialog class="lightbox" id="lightbox"><button type="button" data-lightbox-close="true" aria-label="关闭图片">×</button><img alt="放大的产品截图"/></dialog><footer class="doc-footer"><a href="https://github.com/TohmaN233/YN-translation-workshop/releases">发布下载</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/docs/workflows.md">Markdown 源文</a> · MIT</footer></body></html>

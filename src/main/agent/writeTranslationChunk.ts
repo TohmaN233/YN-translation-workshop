@@ -122,6 +122,17 @@ function safeStagingSegment(value: string): string {
   return (normalized || "session").slice(0, 48);
 }
 
+export async function seedPdfProtectedRows(sourcePath: string | undefined, outputDir: string, lines: string[], range = { fromLine: 1, toLine: lines.length }): Promise<number[]> {
+  const protectedRows = await (await import("../pdfDocuments.ts")).readPdfProtectedLines(sourcePath, outputDir);
+  const changed: number[] = [];
+  for (const row of protectedRows ?? []) {
+    if (row.line < range.fromLine || row.line > range.toLine) continue;
+    if (row.line > lines.length) throw new Error(`PDF protected row L${row.line} exceeds the candidate line count.`);
+    if (lines[row.line - 1] !== row.text) { lines[row.line - 1] = row.text; changed.push(row.line); }
+  }
+  return changed;
+}
+
 export async function prepareTranslationStagingCandidate(args: {
   outputDir: string;
   sourcePaths: string[];
@@ -130,6 +141,7 @@ export async function prepareTranslationStagingCandidate(args: {
   subagentId: string;
   assignmentId: string;
   resumeStagingPath?: string;
+  deferPdfProtection?: boolean;
 }): Promise<string> {
   if (args.resumeStagingPath?.trim()) {
     const resumed = path.resolve(args.resumeStagingPath);
@@ -143,6 +155,8 @@ export async function prepareTranslationStagingCandidate(args: {
         `Cannot resume ${args.documentId}: staging candidate has ${resumedLines.length} lines but source has ${sourceLineCount}.`
       );
     }
+    // Existing bytes may be bound to durable review evidence. The Host verifies
+    // that evidence before normalizing its owned protected rows transactionally.
     return resumed;
   }
   const canonicalPath = resolveTranslationCandidatePath(args);
@@ -158,7 +172,7 @@ export async function prepareTranslationStagingCandidate(args: {
   );
   assertStagingPath(args.outputDir, stagingPath);
   const sourceLineCount = await countSourceLines(args.sourcePaths);
-  await withTranslationCandidateLock(canonicalPath, async () => {
+  await withTranslationCandidateLock(canonicalPath, () => withTranslationCandidateLock(stagingPath, async () => {
     // Retries of one durable assignment own the same staging identity. Never
     // replace its written bytes with the (possibly still blank) canonical file.
     try {
@@ -171,8 +185,10 @@ export async function prepareTranslationStagingCandidate(args: {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     let lines: string[];
+    let copiedCanonical = false;
     try {
       lines = splitTextLines(await readFile(canonicalPath, "utf8"));
+      copiedCanonical = true;
       if (lines.length !== sourceLineCount) {
         throw new Error(
           `Cannot stage ${args.documentId}: canonical candidate has ${lines.length} lines but source has ${sourceLineCount}.`
@@ -182,9 +198,10 @@ export async function prepareTranslationStagingCandidate(args: {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       lines = Array.from({ length: sourceLineCount }, () => "");
     }
+    if (!copiedCanonical || !args.deferPdfProtection) await seedPdfProtectedRows(args.sourcePaths[0], args.outputDir, lines);
     await mkdir(path.dirname(stagingPath), { recursive: true });
     await writeTextFileAtomically(stagingPath, `${lines.join("\n")}\n`);
-  });
+  }));
   return stagingPath;
 }
 
@@ -313,6 +330,7 @@ export async function writeTranslationChunk(args: WriteTranslationChunkArgs): Pr
     for (let index = 0; index < chunkLines.length; index += 1) {
       merged[fromLine - 1 + index] = chunkLines[index];
     }
+    if (created) await seedPdfProtectedRows(args.sourcePaths[0], args.outputDir, merged);
 
     await writeTextFileAtomically(candidatePath, `${merged.join("\n")}\n`);
     await refreshCanonicalReuseBaseline({
@@ -392,6 +410,7 @@ export async function writeTranslationLines(args: WriteTranslationLinesArgs): Pr
     const merged = existing.slice(0, sourceLineCount);
     while (merged.length < sourceLineCount) merged.push("");
     for (const entry of entries) merged[entry.line - 1] = entry.text;
+    if (created) await seedPdfProtectedRows(args.sourcePaths[0], args.outputDir, merged);
     await writeTextFileAtomically(candidatePath, `${merged.join("\n")}\n`);
     await refreshCanonicalReuseBaseline({
       outputDir: args.outputDir,

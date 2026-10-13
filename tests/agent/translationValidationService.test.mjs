@@ -20,6 +20,16 @@ try {
   assert.deepEqual(await runTranslationValidation(args),
     validateTranslationCandidate(args.sourceText, args.candidateText, args.validationOptions));
   const result = await runTranslationValidation(args);
+  const nestedNames = {
+    sourceText: "エリザベスが来た。\nエリザベスとベスが来た。",
+    candidateText: "伊丽莎白来了。\n伊丽莎白来了。",
+    validationOptions: { languagePair: "ja->zh-CN", lineOffset: 500, characterEntries: [
+      { name: "ベス", target: "贝丝" }, { name: "エリザベス", target: "伊丽莎白" }
+    ] }
+  };
+  const nestedResult = await runTranslationValidation(nestedNames);
+  assert.deepEqual(nestedResult, validateTranslationCandidate(nestedNames.sourceText, nestedNames.candidateText, nestedNames.validationOptions));
+  assert.deepEqual(nestedResult.warnings.filter(f => f.code === "character_name_missing").map(f => f.line), [502]);
   assert.equal(result.sourceLineCount, 3, "trailing blank physical rows must survive range validation");
   assert.ok(result.blocking.some(finding => finding.line === 501 && finding.code === "placeholder_mismatch"));
   assert.ok(result.blocking.some(finding => finding.line === 502 && finding.code === "tag_mismatch"));

@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {validateTranslationCandidate} from '../src/shared/validation/translationValidator.ts';
+const source='Parameterized rectifiable curves. For an interval domain {{formula:p3:1}} where {{formula:p3:2}}, let {{formula:p3:3}} denote the set of all continuous maps {{formula:p3:4}} whose total variation';
+const candidate='参数化可求长曲线。对于定义域为区间的曲线{{formula:p3:1}}，其中{{formula:p3:2}}，令{{formula:p3:3}}表示所有连续映射{{formula:p3:4}}的集合，其总变差';
+const pdf={languagePair:'en->zh-CN',pdfProtectedLines:[]};
+const result=validateTranslationCandidate(source,candidate,pdf);
+assert.equal(result.ok,true);
+assert.equal(result.warnings.some(finding=>finding.code==='likely_untranslated'),false,'PDF markers must not create residue warnings that stop native writes');
+const same=validateTranslationCandidate('This complete English sentence is intentionally unchanged.','This complete English sentence is intentionally unchanged.',pdf);
+assert.equal([...same.blocking,...same.warnings].some(f=>f.code==='likely_untranslated'),true,'PDF retains residue detection until the parent confirms a specific false positive');
+assert.ok([...validateTranslationCandidate('This complete English sentence is intentionally unchanged.','This complete English sentence is intentionally unchanged.',{languagePair:'en->zh-CN'}).blocking].some(f=>f.code==='likely_untranslated'),'TXT keeps its existing hard untranslated check');
+assert.equal(validateTranslationCandidate(source,candidate.replace('{{formula:p3:1}}',''),pdf).ok,false,'PDF formulas remain structurally protected');
+console.log('PDF markers are excluded from residue; genuinely unchanged prose and formula structure remain checked');

@@ -1,18 +1,60 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
-  <meta name="description" content="YN Translation Workshop 中文指南入口，分为普通用户教程和 Harness 技术手册。">
-  <link rel="icon" href="assets/app-icon.png">
-  <link rel="stylesheet" href="styles.css">
-  <script defer src="content.js"></script>
-  <script defer src="terminology.js"></script>
-  <script defer src="copy-defaults.js"></script>
-  <script defer src="locale-en.js"></script>
-  <script defer src="app.js"></script>
-  <title>YN Translation Workshop 中文指南</title>
-</head>
-<body data-page="overview"></body>
-</html>
+<html lang="zh-CN"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="preload" as="image" href="assets/app-icon.png"/><meta name="description" content="面向长篇小说与游戏汉化的 AI 翻译、校对工作台：TXT、EPUB、文字层 PDF、逐行人工审阅、译名一致性与可核查的中断恢复。"/><meta name="robots" content="index,follow"/><meta http-equiv="Content-Security-Policy" content="default-src &#x27;self&#x27; data:; script-src &#x27;self&#x27;; style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27;; img-src &#x27;self&#x27; data: https://img.shields.io;"/><link rel="canonical" href="https://tohman233.github.io/YN-translation-workshop/index.html"/><link rel="alternate" hrefLang="zh-CN" href="https://tohman233.github.io/YN-translation-workshop/index.html"/><link rel="alternate" hrefLang="en" href="https://tohman233.github.io/YN-translation-workshop/index.en.html"/><link rel="icon" href="assets/app-icon.png"/><title>认识 YN · YN Translation Workshop 2.2.0</title><link rel="stylesheet" href="styles.css"/><script src="content.js" defer=""></script><script src="app.js" defer=""></script></head><body data-page="overview" data-locale="zh" data-version="2.2.0"><header class="topbar"><a class="brand" href="index.html"><img src="assets/app-icon.png" alt="YN"/><strong>YN Translation Workshop</strong></a><button class="search-trigger" type="button" data-search-open="true">搜索文档</button><div class="topmeta"><span>2.2.0</span><a href="index.en.html" hrefLang="en">English</a><button type="button" class="menu-button" data-menu="true" aria-label="导航">☰</button></div></header><aside class="sidebar" aria-label="文档导航"><section class="nav-section"><p class="nav-label">项目</p><a class="nav-link active" href="index.html">认识 YN</a></section><section class="nav-section"><p class="nav-label">使用 YN</p><a class="nav-link" href="guides.html">第一次使用</a><a class="nav-link" href="features.html">功能与参数</a><a class="nav-link" href="pdf.html">PDF 翻译</a><a class="nav-link" href="agent-api.html">后台 Agent API</a></section><section class="nav-section"><p class="nav-label">案例与证据</p><a class="nav-link" href="examples.html">翻译项目例子</a><a class="nav-link" href="quality.html">质量与可靠性</a></section><section class="nav-section"><p class="nav-label">技术参考</p><a class="nav-link" href="workflows.html">流程与恢复</a><a class="nav-link" href="harness.html">Harness 架构</a><a class="nav-link" href="development.html">开发与验证</a><a class="nav-link" href="functions.html">Function 参考</a><a class="nav-link" href="terminology.html">Agent 术语</a><a class="nav-link" href="changelog.html">版本记录</a></section><div class="sidebar-foot">文档对应 2.2.0 · 2026-10-13</div></aside><main class="layout"><article class="content" id="content" data-source="README.md"><h1 id="yn-translation-workshop">YN Translation Workshop</h1>
+<p><a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat-square" alt="MIT Licensed" loading="lazy" decoding="async"/></a></p>
+<p><strong>面向长篇小说与游戏文本本地化的开源 AI 翻译、校对与逐行审阅工作台。</strong></p>
+<p>YN 把 TXT、EPUB 和文字层 PDF 变成可编辑的原译文对照页面。它把术语表、角色资料、格式保留、分块翻译和校对放在同一项目中；你可以让 AI 处理整批文本，也可以只让它检查指定行，自己决定最终写入。</p>
+<p><a href="index.en.html">English</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/releases">下载 Windows 版本</a> · <a href="https://tohman233.github.io/YN-translation-workshop/">使用手册</a> · <a href="https://tgy233.top/tgypage/yn/">项目介绍</a></p>
+<p>适合需要跨章节保持译名、保留游戏控制符、逐行人工检查并继续长任务的项目。不面向实时屏幕翻译；PDF 当前以可选中文字为主，不提供 OCR。云端模型会收到任务所需文本，翻译质量仍取决于模型、项目资料和人工审阅。</p>
+<h2 id="使用要求">使用要求</h2>
+<ul>
+<li>当前发行面向 Windows x64。安装包自带运行环境，普通使用不需要 Node.js。</li>
+<li>AI 功能需要在 YN 配置供应商、模型和授权；关闭 Agent 后仍可人工编辑。</li>
+<li>原文应为 TXT、EPUB 或有文字层的 PDF。校对需要与原文逐行对应的已有译文。</li>
+</ul>
+<h2 id="下载与安装">下载与安装</h2>
+<p>在 <a href="https://github.com/TohmaN233/YN-translation-workshop/releases">Releases</a> 选择安装版 <code>translation-workshop-Setup-2.2.0-x64.exe</code> 或便携版 <code>translation-workshop-Portable-2.2.0-x64.exe</code>。公开下载以实际发布版本为准；本说明对应 2.2.0。</p>
+<p>安装版支持应用内更新；便携版通过发布页下载替换。发布页同时提供 <code>SHA256SUMS.txt</code>。</p>
+<h2 id="配置">配置</h2>
+<p>先在启动页顶部配置供应商和模型，再填写原文、项目保存位置、语言方向与翻译风格。新任务默认每块 <strong>500 行</strong>、最多 <strong>3 个子 Agent</strong>；已有项目的显式设置会保留。</p>
+<p>已有译名表、角色表或参考资料时，先使用“整理项目资料”，再开始翻译。游戏文本可设置正则保留规则，先查看匹配示例，避免把台词正文一起锁住。</p>
+<h2 id="第一次翻译">第一次翻译</h2>
+<ol>
+<li>选择原文并确认项目位置；建议先用一小段文本验证设置。</li>
+<li>使用“准备并启动翻译”，确认默认参数。YN 核对内容、试跑保留规则，自动打开行对行 HTML 并启动同一翻译流程。希望更多人工介入时，可先生成 HTML 再按需调用 AI。</li>
+<li>完成后刷新候选译文，逐行修改或抽查；需要校对时，绑定已有译文并启动校对。</li>
+<li>接受、拒绝或修改校对建议。自动应用只更新 HTML；<strong>最终写入 TXT 由你手动完成</strong>。EPUB/PDF 使用对应导出入口。</li>
+</ol>
+<p><img src="assets/screens/line-review.png" alt="行对行审阅页面，可对照原文编辑译文与校对意见" loading="lazy" decoding="async"/></p>
+<p><a href="https://tohman233.github.io/YN-translation-workshop/guides.html">完整教程</a> · <a href="pdf.html">PDF 说明</a> · <a href="agent-api.html">外部 Agent 后台使用</a></p>
+<h2 id="能解决哪些问题">能解决哪些问题</h2><div class="table-scroll"><table><thead><tr><th>需求</th><th>YN 的处理方式</th></tr></thead><tbody><tr><td>长篇译名与角色称谓变化</td><td>正式译名表、候选、角色表及直接命中参考；冲突显式呈现</td></tr><tr><td>游戏控制符、标签或变量被改坏</td><td>保留规则与机械校验；校对建议也携带相同要求</td></tr><tr><td>大量文本需要人工逐行检查</td><td>原译文对照、搜索、编辑、候选刷新、建议接受与拒绝</td></tr><tr><td>翻译中断后继续工作</td><td>核验已有草稿和审阅证据后续跑；不盲目重试内部故障</td></tr><tr><td>PDF 含代码、公式或图表</td><td>Host 保留代码/公式，视觉模型按需看图，HTML 中导出 PDF</td></tr><tr><td>不打开主窗口也能使用</td><td>外部 Agent 通过官方接口先展示计划，确认后在后台启动</td></tr></tbody></table></div><p>详细参数、旧译复用、抽样校对、局域网操作与产物位置见 <a href="features.html">功能手册</a>。</p>
+<h2 id="yn-翻译项目例子">YN 翻译项目例子</h2>
+<ul>
+<li><strong>日语 → 中文：</strong><a href="https://space.bilibili.com/1863789519">美希命的游戏汉化展示</a>，包括其许多汉化游戏。</li>
+<li><strong>日语 → 中文：</strong><a href="https://tgy233.top/tgypage/%E7%A7%91%E5%AD%A6ADV%E5%B0%8F%E8%AF%B4%E6%B1%87%E6%80%BB_2026-0828.html">《命运石之门》圆环小说</a>。</li>
+<li><strong>中文 → 英文：</strong><a href="https://drive.google.com/file/d/1pPVFPxdwOxNnT_8TO1wJGEY9D3FVFNeK/view">《Robotics;Notes》小说译文</a>。</li>
+</ul>
+<p>这些是项目作者提供的使用实例，展示产物与使用场景，不作为独立质量评测或零人工修改的证明。参见 <a href="examples.html">案例说明</a>。</p>
+<h2 id="质量与可靠性的依据">质量与可靠性的依据</h2>
+<p>YN 用程序检查行对齐、占位符、保留内容、写入范围与恢复证据，再安排独立 AI 复审；模型说“完成”不能代替产物检查。这能暴露结构和流程问题，不能证明所有语义都正确。</p>
+<p><a href="quality.html">质量与可靠性说明</a> 列出公开测试、复现命令、验证边界与失败处理；语义准确率、跨工具排名和普遍成本优势尚未给出可对照的评测，不作此类承诺。</p>
+<h2 id="2-2-0-更新摘要">2.2.0 更新摘要</h2>
+<ul>
+<li>新增文字层 PDF 翻译、按需图片参考和 PDF 导出；合并完整正文段落，保护代码、公式及参考文献，并预扫描学术标识；主 Agent 可确认具体的未译误报。</li>
+<li>新增官方后台 Agent API，复用现有准备、翻译、校对与资料流程。</li>
+<li>改善大历史会话和大候选响应，完善停止、断连恢复与角色名匹配。</li>
+</ul>
+<p>完整版本记录见 <a href="changelog.html">Changelog</a>。</p>
+<h2 id="文档与开发">文档与开发</h2>
+<p><a href="guides.html">使用教程</a> · <a href="features.html">功能与参数</a> · <a href="workflows.html">工作流</a> · <a href="terminology.html">技术术语</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/docs/agent-runtime-codegraph.md">运行时代码地图</a></p>
+<p>开发需要 Node.js <code>&gt;=22.19.0</code>，使用已有 npm lock：</p>
+<pre><code class="language-bash">npm ci
+npm run dev
+</code></pre>
+<pre><code class="language-bash">npm test
+npm run build
+</code></pre>
+<p>桌面、LAN 与发布包验证入口见 <a href="development.html">开发与验证</a>。</p>
+<h2 id="隐私与许可">隐私与许可</h2>
+<p>项目状态、资产、会话与备份保存在项目目录；供应商授权保存在 Electron 用户数据中。复制项目时，也需一并带走位于项目外的原文或资料并重新绑定。LAN 的 PIN 持有者可操作共享工作台，请只在可信网络或受控隧道中使用。</p>
+<p><a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/LICENSE">MIT</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/THIRD_PARTY_NOTICES.md">第三方许可</a></p>
+<p>感谢 OpenAI Codex 以及参与测试、翻译和反馈的人。</p></article></main><aside class="toc"><strong>本页目录</strong><div id="toc-links"><a href="#使用要求" class="level-2">使用要求</a><a href="#下载与安装" class="level-2">下载与安装</a><a href="#配置" class="level-2">配置</a><a href="#第一次翻译" class="level-2">第一次翻译</a><a href="#能解决哪些问题" class="level-2">能解决哪些问题</a><a href="#yn-翻译项目例子" class="level-2">YN 翻译项目例子</a><a href="#质量与可靠性的依据" class="level-2">质量与可靠性的依据</a><a href="#2-2-0-更新摘要" class="level-2">2.2.0 更新摘要</a><a href="#文档与开发" class="level-2">文档与开发</a><a href="#隐私与许可" class="level-2">隐私与许可</a></div></aside><dialog class="search-dialog" id="search-dialog"><div class="search-head"><input type="search" id="global-search" placeholder="搜索标题或内容" aria-label="搜索文档"/><button type="button" data-search-close="true" aria-label="关闭搜索">×</button></div><div class="search-results" id="search-results"></div></dialog><dialog class="lightbox" id="lightbox"><button type="button" data-lightbox-close="true" aria-label="关闭图片">×</button><img alt="放大的产品截图"/></dialog><footer class="doc-footer"><a href="https://github.com/TohmaN233/YN-translation-workshop/releases">发布下载</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/README.md">Markdown 源文</a> · MIT</footer></body></html>

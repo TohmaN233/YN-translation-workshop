@@ -56,6 +56,7 @@ for (const requiredEntry of [
   "/dist/main/sessionMaintenanceWorker.js",
   "/dist/main/sessionHostReplayWorker.js",
   "/dist/main/pdfWorker.js",
+  "/dist/main/lineReviewStateWorker.js",
   "/assets/fonts/NotoSansSC-Regular.ttf",
   "/assets/fonts/OFL.txt",
   "/node_modules/pdfjs-dist/package.json",
@@ -134,7 +135,7 @@ const packedYaml = JSON.parse(
   extractFile(asarPath, path.join("node_modules", "js-yaml", "package.json")).toString("utf8"),
 );
 const packedMain = extractFile(asarPath, path.join("dist", "main", "main.js")).toString("utf8");
-for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js", "dist/main/translationValidationWorker.js", "dist/main/sourcePreparationWorker.js", "dist/main/sessionIndexWorker.js", "dist/main/sessionMaintenanceWorker.js", "dist/main/sessionHostReplayWorker.js", "dist/main/pdfWorker.js", "assets/fonts/NotoSansSC-Regular.ttf", "assets/fonts/OFL.txt", "docs/pdf.md", "docs/pdf.en.md", "README.md", "README.en.md", "THIRD_PARTY_NOTICES.md"]) {
+for (const entry of ["dist/main/main.js", "dist/main/proofreadPrescanWorker.js", "dist/main/translationValidationWorker.js", "dist/main/sourcePreparationWorker.js", "dist/main/sessionIndexWorker.js", "dist/main/sessionMaintenanceWorker.js", "dist/main/sessionHostReplayWorker.js", "dist/main/pdfWorker.js", "dist/main/lineReviewStateWorker.js", "assets/fonts/NotoSansSC-Regular.ttf", "assets/fonts/OFL.txt", "docs/pdf.md", "docs/pdf.en.md", "README.md", "README.en.md", "THIRD_PARTY_NOTICES.md"]) {
   assert.equal(
     createHash("sha256").update(extractFile(asarPath, path.normalize(entry))).digest("hex"),
     createHash("sha256").update(readFileSync(path.join(rootDir, entry))).digest("hex"),

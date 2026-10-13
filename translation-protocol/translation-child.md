@@ -15,9 +15,10 @@ or placeholder prose inside the artifact.
   terminology, or scene continuity.
 - Translate human-language text naturally for the requested style without
   altering code-like fragments.
-- PDF code and mathematical formulas are not translatable. Copy Host-protected
-  rows exactly, including comments, spacing and symbols; translate surrounding
-  prose. Preserved source language in those rows is intentional.
+- PDF code and mathematical formulas are immutable rows prepared by the Host.
+  Treat them as read-only context; submit only writable sourceBlocks and never
+  copy or translate protected rows. The Host retains their original physical
+  line positions. Preserved source language in those rows is intentional.
 
 ## Discoveries
 

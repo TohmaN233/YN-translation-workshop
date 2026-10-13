@@ -13,8 +13,10 @@
 // lives in src/main/agent and src/main/ipc, not in the monolithic main process.
 
 import { ipcMain } from "electron";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { ArtifactCancelledError } from "../agent/artifactCancellation.ts";
 
 import {
   discoverCandidateArtifacts,
@@ -22,14 +24,9 @@ import {
   type DiscoveredArtifact,
   type SourceEntry
 } from "../agent/artifactDiscovery.ts";
-import { buildCandidateImportPlan, buildRepairPrompt } from "../agent/importCandidate.ts";
-import { readPdfProtectedLines } from "../pdfDocuments.ts";
-import { readWorkflowTranslationValidationAssets } from "../agent/projectAssets.ts";
-import { resolveProjectPath } from "../agent/projectPathGuard.ts";
-import { rememberTranslationSegments } from "../agent/translationMemory.ts";
-import { validateTranslationCandidate, type TranslationValidationResult } from "../../shared/validation/translationValidator.ts";
-import { normalizeCustomPreserveRules, type CustomPreserveRule } from "../../shared/validation/customPreserveRules.ts";
-import { readProjectState } from "../projectState.ts";
+import { runArtifactOperation, type ArtifactWorkerRequest, type ArtifactWorkerResult } from "../agent/artifactValidationService.ts";
+import { resolveProjectPath, resolveReadablePath } from "../agent/projectPathGuard.ts";
+import type { CustomPreserveRule } from "../../shared/validation/customPreserveRules.ts";
 
 export interface DiscoverArtifactsArgs {
   projectDir: string;
@@ -45,21 +42,11 @@ export interface ValidateArtifactArgs {
   languagePair?: string;
   glossaryPath?: string;
   customPreserveRules?: CustomPreserveRule[];
+  requestId?: string;
+  compact?: boolean;
 }
 
-export interface RepairPromptArgs {
-  projectDir: string;
-  sourcePath: string;
-  candidatePath: string;
-  locale?: "zh-CN" | "en-US";
-  languagePair?: string;
-  customPreserveRules?: CustomPreserveRule[];
-}
-
-async function artifactPreserveRules(args: ValidateArtifactArgs | RepairPromptArgs) {
-  const project = await readProjectState(args.projectDir);
-  return normalizeCustomPreserveRules(args.customPreserveRules ?? project.customPreserveRules);
-}
+export type RepairPromptArgs = ValidateArtifactArgs;
 
 async function readDirEntries(dir: string): Promise<{ directory: string; entries: DirEntry[] } | undefined> {
   try {
@@ -89,12 +76,8 @@ function sourceEntriesFromPaths(projectDir: string, sourcePaths: string[] | unde
   }
   const sources: SourceEntry[] = [];
   for (const item of sourcePaths) {
-    try {
-      const sourcePath = resolveProjectPath(projectDir, item);
-      sources.push({ path: sourcePath, basename: path.basename(sourcePath).replace(/\.[^.]+$/, "") });
-    } catch {
-      // Ignore source paths outside the project boundary.
-    }
+    const sourcePath = resolveReadablePath(projectDir, item).path;
+    sources.push({ path: sourcePath, basename: path.basename(sourcePath).replace(/\.[^.]+$/, "") });
   }
   return sources;
 }
@@ -116,85 +99,45 @@ export function registerAgentArtifactIpc(): void {
     return discoverCandidateArtifacts(args.projectDir, listing, sources) satisfies DiscoveredArtifact[];
   });
 
-  ipcMain.handle("agent-artifacts:validate", async (_event, args: ValidateArtifactArgs) => {
-    if (!args?.projectDir || !path.isAbsolute(args.projectDir)) {
-      throw new Error("An absolute project directory is required.");
+  const running = new Map<string, { owner: number; controller: AbortController; task: Promise<ArtifactWorkerResult> }>();
+  async function execute(event: Electron.IpcMainInvokeEvent, args: ValidateArtifactArgs, operation: ArtifactWorkerRequest["operation"]) {
+    if (!args?.projectDir || !path.isAbsolute(args.projectDir)) throw new Error("An absolute project directory is required.");
+    const resolved = { ...args, sourcePath: resolveReadablePath(args.projectDir, args.sourcePath).path,
+      candidatePath: resolveProjectPath(args.projectDir, args.candidatePath) };
+    const requestId = args.requestId || randomUUID();
+    if (running.has(requestId)) throw new Error("Artifact request is already running.");
+    const controller = new AbortController();
+    const sender = event.sender;
+    const abort = () => controller.abort(new ArtifactCancelledError("Artifact window closed."));
+    sender?.once("destroyed", abort);
+    if (sender?.isDestroyed()) abort();
+    const task = runArtifactOperation({ args: resolved, operation, compact: args.compact }, { requestId, signal: controller.signal,
+      onProgress: progress => { if (requestId && sender && !sender.isDestroyed()) sender.send("agent-artifacts:progress", progress); } });
+    running.set(requestId, { owner: sender?.id, controller, task });
+    try {
+      return await task;
+    } finally {
+      sender?.removeListener("destroyed", abort);
+      running.delete(requestId);
     }
-    const sourcePath = resolveProjectPath(args.projectDir, args.sourcePath);
-    const candidatePath = resolveProjectPath(args.projectDir, args.candidatePath);
-    const [sourceText, candidateText] = await Promise.all([
-      readFile(sourcePath, "utf8"),
-      readFile(candidatePath, "utf8")
-    ]);
-    const { glossaryEntries, characterEntries, styleForbiddenTerms } = await readWorkflowTranslationValidationAssets({
-      outputDir: args.projectDir,
-      glossaryPath: args.glossaryPath
-    });
-    const validation = validateTranslationCandidate(sourceText, candidateText, {
-      locale: args.locale === "en-US" ? "en-US" : "zh-CN",
-      languagePair: args.languagePair,
-      pdfProtectedLines: await readPdfProtectedLines(sourcePath, args.projectDir),
-      customPreserveRules: await artifactPreserveRules(args),
-      glossaryEntries,
-      characterEntries,
-      styleForbiddenTerms
-    });
-    return validation satisfies TranslationValidationResult;
+  }
+  ipcMain.handle("agent-artifacts:cancel", async (event, args: { requestId?: string }) => {
+    const entries = args?.requestId ? [running.get(args.requestId)].filter(Boolean) : [...running.values()];
+    const owned = entries.filter(entry => entry!.owner === event.sender?.id);
+    if (!owned.length) return { ok: false };
+    for (const entry of owned) entry!.controller.abort(new ArtifactCancelledError());
+    // A cancel acknowledgement also proves worker/SQLite cleanup is finished.
+    const settled = await Promise.allSettled(owned.map(entry => entry!.task));
+    const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected" && !(result.reason instanceof ArtifactCancelledError)).map(result => result.reason);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length) throw new AggregateError(failures, "Artifact cancellation cleanup failed.");
+    return { ok: true };
   });
-
-  ipcMain.handle("agent-artifacts:importPlan", async (_event, args: ValidateArtifactArgs) => {
-    if (!args?.projectDir || !path.isAbsolute(args.projectDir)) {
-      throw new Error("An absolute project directory is required.");
-    }
-    const sourcePath = resolveProjectPath(args.projectDir, args.sourcePath);
-    const candidatePath = resolveProjectPath(args.projectDir, args.candidatePath);
-    const [sourceText, candidateText] = await Promise.all([
-      readFile(sourcePath, "utf8"),
-      readFile(candidatePath, "utf8")
-    ]);
-    // buildCandidateImportPlan refuses to emit edits when validation blocks;
-    // the caller must show the repair entry point instead of importing.
-    const { glossaryEntries, characterEntries, styleForbiddenTerms } = await readWorkflowTranslationValidationAssets({
-      outputDir: args.projectDir,
-      glossaryPath: args.glossaryPath
-    });
-    const plan = buildCandidateImportPlan(
-      sourceText,
-      candidateText,
-      args.locale === "en-US" ? "en-US" : "zh-CN",
-      args.languagePair,
-      glossaryEntries,
-      characterEntries,
-      styleForbiddenTerms,
-      await artifactPreserveRules(args),
-      await readPdfProtectedLines(sourcePath, args.projectDir)
-    );
-    if (plan.ok) {
-      await rememberTranslationSegments({
-        outputDir: args.projectDir,
-        sourceText,
-        targetText: candidateText,
-        sourcePath,
-        targetPath: candidatePath,
-        languagePair: args.languagePair
-      }).catch(() => undefined);
-    }
-    return plan;
+  ipcMain.handle("agent-artifacts:validate", async (event, args: ValidateArtifactArgs) => (await execute(event, args, "validate")).validation);
+  ipcMain.handle("agent-artifacts:importPlan", async (event, args: ValidateArtifactArgs) => {
+    const result = await execute(event, args, "import");
+    return args.compact ? { ok: result.validation.ok, validation: result.validation, lines: result.lines ?? [],
+      lineCount: result.validation.candidateLineCount, memoryWarning: result.memoryWarning } : { ...result.plan, memoryWarning: result.memoryWarning };
   });
-
-  ipcMain.handle("agent-artifacts:repairPrompt", async (_event, args: RepairPromptArgs) => {
-    if (!args?.projectDir || !path.isAbsolute(args.projectDir)) {
-      throw new Error("An absolute project directory is required.");
-    }
-    const sourcePath = resolveProjectPath(args.projectDir, args.sourcePath);
-    const candidatePath = resolveProjectPath(args.projectDir, args.candidatePath);
-    const [sourceText, candidateText] = await Promise.all([
-      readFile(sourcePath, "utf8"),
-      readFile(candidatePath, "utf8")
-    ]);
-    const locale = args.locale === "en-US" ? "en-US" : "zh-CN";
-    const plan = buildCandidateImportPlan(sourceText, candidateText, locale, args.languagePair,
-      undefined, undefined, undefined, await artifactPreserveRules(args), await readPdfProtectedLines(sourcePath, args.projectDir));
-    return buildRepairPrompt(sourceText, candidateText, plan.validation, locale);
-  });
+  ipcMain.handle("agent-artifacts:repairPrompt", async (event, args: RepairPromptArgs) => (await execute(event, args, "repair")).prompt);
 }

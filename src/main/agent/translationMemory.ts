@@ -38,6 +38,8 @@ export interface RememberTranslationSegmentsArgs {
   sourcePath?: string;
   targetPath?: string;
   languagePair?: string;
+  checkCancelled?: () => void;
+  beforeCommit?: () => Promise<void>;
 }
 
 type DatabaseSyncLike = {
@@ -50,7 +52,7 @@ type DatabaseSyncLike = {
   close(): void;
 };
 
-type DatabaseSyncCtor = new (filename: string) => DatabaseSyncLike;
+type DatabaseSyncCtor = new (filename: string, options?: { readOnly?: boolean }) => DatabaseSyncLike;
 
 function projectDir(outputDir: string): string {
   return path.basename(outputDir).toLowerCase() === ".translation-workshop"
@@ -72,14 +74,16 @@ async function loadDatabaseSync(): Promise<DatabaseSyncCtor | undefined> {
   }
 }
 
-async function openTranslationMemory(outputDir: string): Promise<{ db?: DatabaseSyncLike; filePath: string; error?: string }> {
+async function openTranslationMemory(outputDir: string, readOnly = false): Promise<{ db?: DatabaseSyncLike; filePath: string; error?: string }> {
   const filePath = translationMemoryPath(outputDir);
   const DatabaseSync = await loadDatabaseSync();
   if (!DatabaseSync) {
     return { filePath, error: "node:sqlite is not available in this runtime." };
   }
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const db = new DatabaseSync(filePath);
+  if (!readOnly) await mkdir(path.dirname(filePath), { recursive: true });
+  const db = new DatabaseSync(filePath, { readOnly });
+  if (readOnly) return { db, filePath };
+  try {
   db.exec(`
     CREATE TABLE IF NOT EXISTS translation_segments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,14 +102,24 @@ async function openTranslationMemory(outputDir: string): Promise<{ db?: Database
     CREATE INDEX IF NOT EXISTS idx_translation_segments_updated_at
       ON translation_segments(updated_at);
   `);
+  } catch (error) {
+    try { db.close(); }
+    catch (closeError) { throw new AggregateError([error, closeError], "Translation memory initialization and cleanup failed."); }
+    throw error;
+  }
   return { db, filePath };
+}
+
+function hasTranslationMemorySchema(db: DatabaseSyncLike): boolean {
+  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='translation_segments'").get());
 }
 
 export async function readTranslationMemoryStats(outputDir: string): Promise<TranslationMemoryStats> {
   const filePath = translationMemoryPath(outputDir);
   try {
     await stat(filePath);
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return {
       path: filePath,
       available: true,
@@ -114,7 +128,7 @@ export async function readTranslationMemoryStats(outputDir: string): Promise<Tra
     };
   }
 
-  const { db, error } = await openTranslationMemory(outputDir);
+  const { db, error } = await openTranslationMemory(outputDir, true);
   if (!db) {
     return {
       path: filePath,
@@ -125,6 +139,9 @@ export async function readTranslationMemoryStats(outputDir: string): Promise<Tra
     };
   }
   try {
+    if (!hasTranslationMemorySchema(db)) {
+      return { path: filePath, available: true, initialized: false, segmentCount: 0 };
+    }
     const row = db.prepare("SELECT COUNT(*) AS segmentCount, MAX(updated_at) AS updatedAt FROM translation_segments").get() ?? {};
     return {
       path: filePath,
@@ -164,15 +181,17 @@ export async function searchTranslationMemory(args: {
   const maxResults = Math.min(Math.max(Math.floor(Number(args.maxResults ?? 12)) || 12, 1), 50);
   try {
     await stat(filePath);
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return { path: filePath, available: true, initialized: false, query, matches: [] };
   }
 
-  const { db, error } = await openTranslationMemory(args.outputDir);
+  const { db, error } = await openTranslationMemory(args.outputDir, true);
   if (!db) {
     return { path: filePath, available: false, initialized: true, query, matches: [], error };
   }
   try {
+    if (!hasTranslationMemorySchema(db)) return { path: filePath, available: true, initialized: false, query, matches: [] };
     const rows = query
       ? db.prepare(`
           SELECT source_path, line, source_text, target_text, target_path, language_pair, updated_at
@@ -218,6 +237,7 @@ export async function rememberTranslationSegments(args: RememberTranslationSegme
   }
 
   const now = new Date().toISOString();
+  let failure: unknown;
   try {
     const insert = db.prepare(`
       INSERT INTO translation_segments (
@@ -239,6 +259,7 @@ export async function rememberTranslationSegments(args: RememberTranslationSegme
     db.exec("BEGIN");
     try {
       for (let i = 0; i < sourceLines.length; i += 1) {
+        if (i % 500 === 0) args.checkCancelled?.();
         const source = sourceLines[i].trim();
         const target = targetLines[i].trim();
         if (!source || !target) continue;
@@ -253,13 +274,21 @@ export async function rememberTranslationSegments(args: RememberTranslationSegme
           now
         );
       }
+      args.checkCancelled?.();
+      await args.beforeCommit?.();
+      args.checkCancelled?.();
       db.exec("COMMIT");
     } catch (err) {
-      db.exec("ROLLBACK");
+      try { db.exec("ROLLBACK"); }
+      catch (rollbackError) { throw new AggregateError([err, rollbackError], "Translation memory rollback failed."); }
       throw err;
     }
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    db.close();
+    try { db.close(); }
+    catch (closeError) { throw failure ? new AggregateError([failure, closeError], "Translation memory cleanup failed.") : closeError; }
   }
 
   return readTranslationMemoryStats(args.outputDir);

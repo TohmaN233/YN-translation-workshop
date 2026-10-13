@@ -114,10 +114,12 @@ type WorkshopCandidateImportPlan = {
 };
 
 type WorkshopAgentArtifactApi = {
+  cancelAgentArtifact: (requestId?: string) => Promise<{ ok: boolean }>;
+  onAgentArtifactProgress: (callback: (progress: { requestId: string; phase: string; completedLines: number; totalLines: number }) => void) => () => void;
   discoverAgentArtifacts: (args: { projectDir: string; sourcePaths?: string[] }) => Promise<WorkshopCandidateArtifact[]>;
-  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[] }) => Promise<WorkshopTranslationValidationResult>;
-  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[] }) => Promise<WorkshopCandidateImportPlan>;
-  buildAgentRepairPrompt: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US" }) => Promise<string>;
+  validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[]; requestId?: string; compact?: boolean }) => Promise<WorkshopTranslationValidationResult>;
+  buildAgentImportPlan: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[]; requestId?: string; compact?: boolean }) => Promise<WorkshopCandidateImportPlan>;
+  buildAgentRepairPrompt: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[] }) => Promise<string>;
 };
 
 type WorkshopAgentSessionApi = {
@@ -274,6 +276,7 @@ declare global {
       approveAssetProposal: (args: { outputDir: string; proposalId: string; entry?: Record<string, unknown> }) => Promise<{ id: string; status: string }>;
       buildPrompt: (args: WorkshopPromptBuildArgs) => Promise<string>;
       generateLineReview: (args: unknown) => Promise<{ outputPath: string; fileCount?: number; matchedCount?: number; warningCount?: number }>;
+      onLineReviewGenerationProgress: (callback: (progress: { requestId: string; sourcePath: string; page: number; totalPages: number }) => void) => () => void;
       generateProposalReview: (args: unknown) => Promise<WorkshopProposalReviewResult>;
       openReviewHtml: (args: { htmlPath: string; outputDir?: string; activate?: boolean }) => Promise<{ ok: boolean }>;
       findProofreadReport: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedMs: number; score: number; reasons: string[] }>>;

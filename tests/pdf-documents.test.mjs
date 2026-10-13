@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, cp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { PDFDocument, StandardFonts, rgb, setTextRenderingMode, TextRenderingMode } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, setTextRenderingMode, TextRenderingMode, pushGraphicsState, popGraphicsState, rectangle, clip, endPath } from 'pdf-lib';
 import { createCanvas } from '@napi-rs/canvas';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { preparePdfDocument, createTranslatedPdf, readPdfLayout, pdfReferencesForRange, readPdfReferenceImage } from '../src/main/pdfDocuments.ts';
@@ -47,6 +47,11 @@ try {
   const before = (await previewStat(layout.pages[0].previewPath)).mtimeMs;
   await preparePdfDocument(originalPath,workspace);
   assert.equal((await previewStat(layout.pages[0].previewPath)).mtimeMs,before,'unchanged extraction must reuse assets');
+  for(const asset of [layout.pages[0].previewPath,layout.pages[0].backgroundPath]) {
+    const bytes=await readFile(asset);await writeFile(asset,Buffer.concat([bytes,Buffer.from('tampered')]));
+    await assert.rejects(preparePdfDocument(originalPath,workspace),/PDF asset changed/,'batched warm verification must still hash every asset');
+    await writeFile(asset,bytes);
+  }
   const refs = await pdfReferencesForRange(extracted.sourcePath,projectRoot,2,2);
   assert.ok(refs.references.some(ref=>ref.id==='p1-image1'));
   assert.equal(JSON.stringify(refs).includes('base64'),false);
@@ -62,7 +67,7 @@ try {
   assert.equal(viewed.content[1].type,'image'); assert.equal(viewed.content[1].mimeType,'image/png');
   await assert.rejects(createPdfReferenceTools(()=>request,()=>false)[1].execute('no-vision',{id:'p1-image1',sourceLine:2,reason:'Figure meaning'}),/active model/);
   assert.deepEqual(createPdfReferenceTools(()=>({...request,sourcePath:path.join(root,'plain.txt')}),()=>true),[]);
-  const translatedLines = ['PDF 示例','参见图 1 理解示意图。','表 1：示例','图 1：蓝色矩形','第二页','参见图 1。'];
+  const translatedLines = ['PDF\u2028示例','参见图 1 理解示意图。','表 1：示例','图 1：蓝色矩形','第二页','参见图 1。'];
   const provider = fauxProvider({provider:'pdf-native-vision',tokensPerSecond:1_000_000,
     models:[{id:'vision',input:['text','image'],reasoning:false,contextWindow:64000,maxTokens:4096}]});
   const models = createModels(); models.setProvider(provider.provider);
@@ -153,7 +158,26 @@ try {
   await assert.rejects(preparePdfDocument(originalPath,cancelledWorkspace,{signal:midAbort.signal,onProgress:()=>midAbort.abort(new Error('mid-extraction cancellation'))}),/mid-extraction cancellation/);
   assert.ok((await readFile(path.join(cancelledWorkspace,'pdf','events.jsonl'),'utf8')).includes('"cancelled"'));
   const image = layout.pages[0].previewPath; await rm(image);
+  await assert.rejects(preparePdfDocument(originalPath,workspace),error=>error.name==='RequiredWorkflowFileError','missing warm assets must stop preparation');
   await assert.rejects(readPdfReferenceImage(extracted.sourcePath,projectRoot,'p1-image1',2),error=>error.name==='RequiredWorkflowFileError');
+  // Cover artwork is large before clipping, but its visible area is below native text.
+  const clipped = await PDFDocument.create(), clippedPage = clipped.addPage([600,800]);
+  clippedPage.drawText('Cover title',{x:40,y:650,size:22,font:await clipped.embedFont(StandardFonts.Helvetica)});
+  clippedPage.pushOperators(pushGraphicsState(),rectangle(40,40,520,300),clip(),endPath());
+  clippedPage.drawImage(await clipped.embedPng(canvas.toBuffer('image/png')),{x:0,y:0,width:600,height:800});
+  clippedPage.pushOperators(popGraphicsState());
+  const clippedPath = path.join(root,'clipped-cover.pdf'); await writeFile(clippedPath,await clipped.save());
+  const clippedProject = path.join(root,'clipped-project');
+  const clippedSource = await preparePdfDocument(clippedPath,path.join(clippedProject,'.translation-workshop'));
+  const clippedLayout = await readPdfLayout(clippedSource.sourcePath,clippedProject);
+  const clippedImage = clippedLayout.references.find(ref=>ref.id==='p1-image1');
+  assert.deepEqual([clippedImage.x,clippedImage.y,clippedImage.width,clippedImage.height],[40,460,520,300]);
+  assert.equal(clippedSource.text,'Cover title');
+  const fullRaster = await PDFDocument.create(), rasterPage = fullRaster.addPage([600,800]);
+  rasterPage.drawImage(await fullRaster.embedPng(canvas.toBuffer('image/png')),{x:0,y:0,width:600,height:800});
+  rasterPage.drawText('Overlay',{x:40,y:650,size:22,font:await fullRaster.embedFont(StandardFonts.Helvetica)});
+  const rasterPath=path.join(root,'raster-overlay.pdf'); await writeFile(rasterPath,await fullRaster.save());
+  await assert.rejects(preparePdfDocument(rasterPath,path.join(root,'raster-project','.translation-workshop')),/full-page raster/);
   const scanned = await PDFDocument.create(); const scanPage = scanned.addPage([160,80]);scanPage.drawImage(await scanned.embedPng(canvas.toBuffer('image/png')),{x:0,y:0,width:160,height:80});
   const scanPath = path.join(root,'scan.pdf');await writeFile(scanPath,await scanned.save());
   await assert.rejects(preparePdfDocument(scanPath,path.join(root,'scan-project','.translation-workshop')),/OCR is required/);
@@ -169,5 +193,13 @@ try {
   const colorPath = path.join(root,'colors.pdf'); await writeFile(colorPath,await colored.save());
   const colorSource = await preparePdfDocument(colorPath,path.join(root,'color-project','.translation-workshop'));
   assert.deepEqual((await readPdfLayout(colorSource.sourcePath,path.join(root,'color-project'))).blocks.map(block=>block.color),[[1,0,0],[0,0,1]]);
+  const narrow = await PDFDocument.create(), narrowPage = narrow.addPage([200,200]);
+  narrowPage.drawText('l',{x:40,y:120,size:12,font:await narrow.embedFont(StandardFonts.Helvetica)});
+  narrowPage.drawText('11',{x:40,y:60,size:12,font:await narrow.embedFont(StandardFonts.TimesRoman)});
+  const narrowPath=path.join(root,'narrow.pdf'), narrowProject=path.join(root,'narrow-project');
+  await writeFile(narrowPath,await narrow.save());
+  const narrowSource=await preparePdfDocument(narrowPath,path.join(narrowProject,'.translation-workshop'));
+  const narrowExport=await createTranslatedPdf({templatePath:narrowPath,sourcePath:narrowSource.sourcePath,projectRoot:narrowProject,translatedLines:['.','11']});
+  assert.equal((await PDFDocument.load(await readFile(narrowExport.outputPath))).getPageCount(),1,'one wide replacement glyph must shrink before wrapping; unchanged digits retain original glyphs');
   console.log('PDF extraction, lazy native images, layout export, move, legacy upgrade and failure boundaries passed');
 } finally { await rm(root,{recursive:true,force:true}); }

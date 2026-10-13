@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="preload" as="image" href="assets/app-icon.png"/><meta name="description" content="面向长篇小说与游戏汉化的 AI 翻译、校对工作台：TXT、EPUB、文字层 PDF、逐行人工审阅、译名一致性与可核查的中断恢复。"/><meta name="robots" content="index,follow"/><meta http-equiv="Content-Security-Policy" content="default-src &#x27;self&#x27; data:; script-src &#x27;self&#x27;; style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27;; img-src &#x27;self&#x27; data: https://img.shields.io;"/><link rel="canonical" href="https://tohman233.github.io/YN-translation-workshop/changelog.html"/><link rel="alternate" hrefLang="zh-CN" href="https://tohman233.github.io/YN-translation-workshop/changelog.html"/><link rel="alternate" hrefLang="en" href="https://tohman233.github.io/YN-translation-workshop/changelog.en.html"/><link rel="icon" href="assets/app-icon.png"/><title>版本记录 · YN Translation Workshop 2.2.0</title><link rel="stylesheet" href="styles.css"/><script src="content.js" defer=""></script><script src="app.js" defer=""></script></head><body data-page="changelog" data-locale="zh" data-version="2.2.0"><header class="topbar"><a class="brand" href="index.html"><img src="assets/app-icon.png" alt="YN"/><strong>YN Translation Workshop</strong></a><button class="search-trigger" type="button" data-search-open="true">搜索文档</button><div class="topmeta"><span>2.2.0</span><a href="changelog.en.html" hrefLang="en">English</a><button type="button" class="menu-button" data-menu="true" aria-label="导航">☰</button></div></header><aside class="sidebar" aria-label="文档导航"><section class="nav-section"><p class="nav-label">项目</p><a class="nav-link" href="index.html">认识 YN</a></section><section class="nav-section"><p class="nav-label">使用 YN</p><a class="nav-link" href="guides.html">第一次使用</a><a class="nav-link" href="features.html">功能与参数</a><a class="nav-link" href="pdf.html">PDF 翻译</a><a class="nav-link" href="agent-api.html">后台 Agent API</a></section><section class="nav-section"><p class="nav-label">案例与证据</p><a class="nav-link" href="examples.html">翻译项目例子</a><a class="nav-link" href="quality.html">质量与可靠性</a></section><section class="nav-section"><p class="nav-label">技术参考</p><a class="nav-link" href="workflows.html">流程与恢复</a><a class="nav-link" href="harness.html">Harness 架构</a><a class="nav-link" href="development.html">开发与验证</a><a class="nav-link" href="functions.html">Function 参考</a><a class="nav-link" href="terminology.html">Agent 术语</a><a class="nav-link active" href="changelog.html">版本记录</a></section><div class="sidebar-foot">文档对应 2.2.0 · 2026-10-13</div></aside><main class="layout"><article class="content" id="content" data-source="CHANGELOG.md"><h1 id="更新记录">更新记录</h1>
+<p><a href="changelog.en.html">English</a> · <a href="index.html">项目首页</a></p>
+<p>以下保留已记录的版本变化；公开发行与下载以 <a href="https://github.com/TohmaN233/YN-translation-workshop/releases">Releases</a> 为准。</p>
+<h2 id="2-2-0-更新">2.2.0 更新</h2>
+<ul>
+<li>修复超大会话读取失败；旧会话自动压缩并保留备份，复用已核验的恢复结果，避免发消息时重复重放历史；后台加载支持进度和停止。</li>
+<li>固定翻译、审阅和校对子 Agent 的提示词与工具声明前缀，提高分块之间的缓存复用；每块仍清空上下文，Host 保持原有范围校验。</li>
+<li>新增后台 Agent API，先确认位置和参数，再复用懒人模式准备项目并启动；支持状态、停止、续跑和用户答复。</li>
+<li>支持文字层 PDF：提取文本并保留页面和图片索引，视觉模型按需看图；Host 锁定已识别的代码和数学公式，在 HTML 中一键导出译文 PDF。详见 <a href="pdf.html">PDF 使用说明</a>。</li>
+<li>修复数学 PDF 的字体识别、上下标和字形绑定；Host 预填并锁定代码与公式，模型只提交正文，避免漏交保留行导致流程停止。</li>
+<li>PDF 翻译前预扫描有源文依据的包名、缩写和结构标识；翻译、复核与漏译检查共享保留项，避免将这些内容误判为漏译。</li>
+<li>主 Agent 可为 TXT、EPUB、PDF 的具体漏译误报提交带理由的确认；原文或译文变化后确认失效，格式、公式和代码保护继续生效。</li>
+<li>PDF 的 References/Bibliography 由 Host 预填并保护，模型跳过参考文献，导出保留原始字形；取消等待后台资源正常收尾，清理失败明确显示。</li>
+<li>角色名检查复用译名表的长词覆盖逻辑，避免长名中的短名误报；独立出现的短名仍需检查。</li>
+<li>停止和退出时保存会话恢复索引，避免重启后发消息重放大量历史；修复原文位于项目外时候选译文无法匹配、校验和导入的问题。</li>
+<li>大候选的刷新、校验和导入在后台执行，显示进度并支持取消；草稿一次提交，避免几十万行阻塞窗口。</li>
+</ul>
+<h2 id="2-1-9-更新">2.1.9 更新</h2>
+<ul>
+<li>修复 2.1.4 带来的单文件模式回归。</li>
+</ul>
+<h2 id="2-1-7-2-1-8-更新">2.1.7–2.1.8 更新</h2>
+<ul>
+<li>
+<p>漏译检查排除正则实际匹配的保留内容，以及术语表中在同一行正确对应的源词与译词；其余正文仍需翻译。用户明确要求保留的词由 Agent 记录为正式的「源词 → 原词」，候选导入和 AI 审阅使用相同规则。译名匹配、术语冲突及恢复重扫也排除正则保留片段。</p>
+</li>
+<li>
+<p>审阅绑定失效后，由 Host 停止旧工人、核验草稿并自动续跑；保留未变化行的通过证据，修复停止时的批次结算错误。</p>
+</li>
+</ul>
+<h2 id="2-1-6-更新">2.1.6 更新</h2>
+<ul>
+<li>已绑定的必需文件缺失时停止整个工作流，保留草稿并提示恢复路径；未绑定的译名表、角色表允许缺省。</li>
+<li>修复立即中止与项目关闭的收尾死锁。</li>
+<li>修复 Electron HTML 关闭与停止任务的路径绑定；保存失败会明确提示并保留修改。</li>
+<li>项目内设置、HTML 和恢复产物使用相对路径；复制整个项目后仍可读取父/子 Agent 历史、草稿和审阅记录。项目外绑定的原文或资料需一并带走并重新选择。</li>
+</ul>
+<h2 id="2-1-5-更新">2.1.5 更新</h2>
+<ul>
+<li>修复大文件翻译卡死：分块检查只扫描当前范围，全文终检在后台执行，保留全部结构要求、审阅与中断恢复。</li>
+<li>校对建议复用翻译的格式保留要求与机械检查，防止丢失控制符、标签和占位符。</li>
+<li>修复并发中断恢复：Host 在启动 Worker 前统一核查、交接已有译文、staging 与审阅记录；提交失败保留可恢复产物，不可重试的内部错误停止整个工作流。</li>
+</ul>
+<h2 id="2-1-4-更新">2.1.4 更新</h2>
+<ul>
+<li>
+<p>整理参考资料可直接新建并绑定项目，在翻译前准备译名表和角色表；首页支持一键清空填写内容并恢复默认参数。</p>
+</li>
+<li>
+<p>资料整理先生成可修改、删除的草稿，核查后一次性提交正式译名表和角色表；中断或失败保留草稿。</p>
+</li>
+<li>
+<p>简便启动先核对参数与原文、试跑控制符保留规则，再使用 HTML 共用参数表和相同翻译提示词；需要人工介入时可先生成行对行 HTML。</p>
+</li>
+<li>
+<p>移除无效的分块开关，保留每块行数；文件夹 HTML 自动填入带大括号的文件顺序，保留已填写的选择。</p>
+</li>
+<li>
+<p>首页顶部可直接配置供应商和模型，无需先选择项目或打开 HTML；设置全局共用。</p>
+</li>
+<li>
+<p>首页新增内置 Agent 任务入口：确认参数后自动打开 HTML 并启动翻译或校对，也可直接整理项目资料。默认分块 500 行、子 Agent 上限 3；翻译前预扫并试跑保留规则。</p>
+</li>
+<li>
+<p>HTML 新增角色表查看、编辑和删除；校对可自动应用意见到 HTML，TXT 仍手动保存。</p>
+</li>
+<li>
+<p>修复停止后旧任务或压缩仍继续启动的竞态。</p>
+</li>
+</ul>
+<h2 id="2-1-3-更新">2.1.3 更新</h2>
+<ul>
+<li>修复 Grok 4.7 被误发 <code>reasoning_effort=none</code> 的请求：自动及旧“关闭”配置使用官方默认 <code>high</code>，没有已知思考档位的模型不发送 effort 参数。</li>
+<li>HTML 术语面板分别显示正式译名表与 AI 候选，导入前可查看、搜索和删除候选，正式表也支持逐条删除。删除仅修改对应表，不自动修改译文或角色资料；旧 HTML 打开时会自动升级。</li>
+<li>内核升级到 0.99.1，并完成各方面适配，避免回归。</li>
+</ul>
+<h2 id="2-1-2-更新">2.1.2 更新</h2>
+<ul>
+<li>标准 Provider 的模型目录可从 Pi 上游自动刷新，并在网络不可用时使用本地缓存或随应用发布的目录。</li>
+<li>修复停放的译文复用流程恢复、校对术语候选重试和 Workflow 类型恢复中的状态不一致。</li>
+<li>500 行模型分页与结构化修复上限保持一致，并合并同一行重复的长度风险信号。</li>
+</ul>
+<h2 id="2-0-5-2-1-0-更新">2.0.5 → 2.1.0 更新</h2>
+<ul>
+<li>超大审阅页能打开了：不再被 80 MiB 卡死；建议跳到原文，实测从大约 4 秒降到 1–2 秒。</li>
+<li>大文件翻译、校对更稳，内存不再越跑越高，预扫描也不再卡住主窗口。</li>
+<li>主窗口能自适应；角色可以给同一人追加多条台词。</li>
+<li>打开 Agent 或发短问题，不会把审阅页拉回顶部。</li>
+<li>手机远程改成全屏工作区，Agent 放进工具抽屉。</li>
+</ul>
+<h3 id="2-0-1-2-0-5-工作流可靠性与-provider">2.0.1 – 2.0.5：工作流可靠性与 Provider</h3>
+<ul>
+<li>校对与 EPUB 始终遵循页面手选的权威译文绑定；翻译完成后，未手选的页面会跟随正式 <code>translated</code> 产物，不再误读临时快照。</li>
+<li>新增 <strong>Grok (OAuth)</strong>、按模型适配的思考等级和长推理等待；授权过期时刷新并恢复当前工作，而不是中断整批任务。</li>
+<li>翻译复审耗尽后把精确失败行交回主 Agent，校对 findings 由 Host 按当前绑定行校正；已通过结果不会被后续空写入或失败项清空。</li>
+<li>术语长名覆盖短名，跨文件术语差异进入最终警告复核；关闭术语候选时不再构造、更新或校验候选资产。</li>
+<li>批量应用保留人工修改和 TXT 写入状态，恢复命令明确区分翻译与校对，减少跨工作流误恢复。</li>
+</ul></article></main><aside class="toc"><strong>本页目录</strong><div id="toc-links"><a href="#2-2-0-更新" class="level-2">2.2.0 更新</a><a href="#2-1-9-更新" class="level-2">2.1.9 更新</a><a href="#2-1-7-2-1-8-更新" class="level-2">2.1.7–2.1.8 更新</a><a href="#2-1-6-更新" class="level-2">2.1.6 更新</a><a href="#2-1-5-更新" class="level-2">2.1.5 更新</a><a href="#2-1-4-更新" class="level-2">2.1.4 更新</a><a href="#2-1-3-更新" class="level-2">2.1.3 更新</a><a href="#2-1-2-更新" class="level-2">2.1.2 更新</a><a href="#2-0-5-2-1-0-更新" class="level-2">2.0.5 → 2.1.0 更新</a><a href="#2-0-1-2-0-5-工作流可靠性与-provider" class="level-3">2.0.1 – 2.0.5：工作流可靠性与 Provider</a></div></aside><dialog class="search-dialog" id="search-dialog"><div class="search-head"><input type="search" id="global-search" placeholder="搜索标题或内容" aria-label="搜索文档"/><button type="button" data-search-close="true" aria-label="关闭搜索">×</button></div><div class="search-results" id="search-results"></div></dialog><dialog class="lightbox" id="lightbox"><button type="button" data-lightbox-close="true" aria-label="关闭图片">×</button><img alt="放大的产品截图"/></dialog><footer class="doc-footer"><a href="https://github.com/TohmaN233/YN-translation-workshop/releases">发布下载</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/CHANGELOG.md">Markdown 源文</a> · MIT</footer></body></html>

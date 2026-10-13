@@ -30,6 +30,13 @@ for (let run = 0; run < 150; run++) {
   const actual = validateTranslationCandidate(source, "完全无关", { glossaryEntries: entries, detectUntranslated: false })
     .warnings.filter((finding) => finding.code === "glossary_missing").map((finding) => finding.detail.match(/原文出现「(.*?)」/u)?.[1]);
   assert.deepEqual(actual, expected);
+  const characterMatches = validateTranslationCandidate(source, "完全无关", {
+    characterEntries: entries.map(({ source, target }) => ({ name: source, target })), detectUntranslated: false
+  }).warnings.filter(finding => finding.code === "character_name_missing")
+    .map(finding => finding.detail.match(/原文出现「(.*?)」/u)?.[1]);
+  // A shared character surface retains all owners; compare matched surfaces rather than collapsing role identities.
+  assert.deepEqual([...new Set(characterMatches.map(normalize))].toSorted(), [...new Set(expected.map(normalize))].toSorted(),
+    "character and glossary matches must share Unicode/overlap coverage");
 }
 const entry = { source: "魔術師", target: "魔法师", aliases: ["法师"] };
 assert.equal(validateTranslationCandidate("魔術師", "法师", { glossaryEntries: [entry] }).warnings.length, 0);

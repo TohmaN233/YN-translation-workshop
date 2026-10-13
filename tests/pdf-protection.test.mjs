@@ -68,7 +68,7 @@ try {
   await writeFile(originalPath,await pdf.save());const original=await readFile(originalPath);
   const extracted=await preparePdfDocument(originalPath,path.join(project,'.translation-workshop'));
   const layout=await readPdfLayout(extracted.sourcePath,project), protections=await readPdfProtectedLines(extracted.sourcePath,project);
-  assert.equal(layout.version,2);assert.equal(protections[500].line,501);assert.ok(protections.length>501);
+  assert.equal(layout.version,3);assert.equal(protections[500].line,501);assert.ok(protections.length>501);
   assert.equal(protections.find(p=>p.text.startsWith('Do not')).kind,'code');assert.ok(protections.some(p=>p.kind==='math'));
   assert.equal(layout.blocks.find(p=>p.text==='Translate surrounding prose.').protection,undefined);
   const refs=await pdfReferencesForRange(extracted.sourcePath,project,501,501);assert.equal(refs.protectedLines[0].line,501);
@@ -90,13 +90,14 @@ try {
   const staged=await prepareTranslationStagingCandidate({outputDir:project,sourcePaths:[extracted.sourcePath],documentId:'protected.pdf',subagentId:'fixture',sessionId:'fixture',assignmentId:'fixture'});
   const damaged=lines.slice();damaged[500]='changed';await writeFile(staged,damaged.join('\n')+'\n');
   await assert.rejects(promoteTranslationStagingRange({outputDir:project,sourcePaths:[extracted.sourcePath],documentId:'protected.pdf',stagingPath:staged,fromLine:501,toLine:501}),/protected code/);
-  // Actual child submission must return an exact rejected row, without writing it.
+  // Protected rows are read-only context, never writable model source blocks.
   const context={request,task:{fromLine:501,toLine:501},executionMode:'translation'};
   const childTools=createPiTranslationSubagentTools(context);
   const read=childTools.find(t=>t.name==='readAssignedSource'),write=childTools.find(t=>t.name==='writeAssignedTranslation');
-  const sourceBlocks=JSON.parse((await read.execute('read',{})).content[0].text).sourceBlocks;
-  const rejected=JSON.parse((await write.execute('write',{blocks:sourceBlocks.map(block=>({id:block.id,lines:block.lines.map(line=>line[0]+'changed')}))})).content[0].text);
-  assert.ok(JSON.stringify(rejected).includes('pdf_protected_content_mismatch'));assert.ok(JSON.stringify(rejected).includes('501'));
+  const readonly=JSON.parse((await read.execute('read',{})).content[0].text);
+  assert.deepEqual(readonly.sourceBlocks,[]);assert.equal(readonly.pdfReferences.protectedLines[0].line,501);
+  await assert.rejects(childTools.find(t=>t.name==='repairAssignedTranslation').execute('write',{entries:[{line:501,translation:'changed'}]}),/immutable Host-prepared PDF/);
+  const preserved=JSON.parse((await write.execute('write',{blocks:[]})).content[0].text);assert.equal(preserved.requiredLineCount,0);
   const translationPath=path.join(project,'translation.txt');await writeFile(translationPath,translated.join('\n'));
   const proofTools=createPiProofreadSubagentTools({request:{...request,translationPath},task:{fromLine:501,toLine:501},publishCustomMessage:async()=>{}},'proof',{referenceRead:false,findingsWritten:false,findingsCount:0});
   await proofTools.find(t=>t.name==='readAssignedProofreadContext').execute('read',{});
@@ -142,10 +143,10 @@ try {
   raw.blocks[500].protection=undefined;await writeFile(mapPath,JSON.stringify(raw));
   await assert.rejects(readPdfProtectedLines(extracted.sourcePath,project),error=>error.name==='NonRetryableAssignmentError');
   raw.version=1;await writeFile(mapPath,JSON.stringify(raw));
-  await assert.rejects(preflightPdfRequest(request),/predates Host/);await assert.rejects(resolvePiSourceManifest(request),/predates Host/);
+  await assert.rejects(preflightPdfRequest(request),/predates paragraph/);await assert.rejects(resolvePiSourceManifest(request),/predates paragraph/);
   let selections=0;const service=new PiNativeSessionService({createModelSelection:async()=>{selections++;throw new Error('Provider must not be selected.');}});
   const oldSession=await service.createSession(project);
-  await assert.rejects(service.prompt({...request,sessionId:oldSession.id}),/predates Host/);assert.equal(selections,0,'cold old-PDF resume must stop before provider preparation');
+  await assert.rejects(service.prompt({...request,sessionId:oldSession.id}),/predates paragraph/);assert.equal(selections,0,'cold old-PDF resume must stop before provider preparation');
   await writeFile(mapPath,mapBytes);await rm(mapPath);await assert.rejects(preflightPdfRequest(request),error=>error.name==='RequiredWorkflowFileError');
   await writeFile(mapPath,mapBytes);
   const ambiguous=await PDFDocument.create(),aPage=ambiguous.addPage([600,800]);aPage.drawText('Energy is E = mc2',{x:40,y:740,font:await ambiguous.embedFont(StandardFonts.Helvetica),size:12});
@@ -156,11 +157,11 @@ try {
     beginMarkedContent('Formula'),showText(inlineFont.encodeText('x + y')),endMarkedContent(),showText(inlineFont.encodeText(' after.')),endText());
   const inlinePath=path.join(project,'inline.pdf');await writeFile(inlinePath,await inline.save());
   const inlineExtracted=await preparePdfDocument(inlinePath,path.join(project,'.translation-workshop')), inlineLayout=await readPdfLayout(inlineExtracted.sourcePath,project);
-  const inlineMath=inlineLayout.blocks.find(block=>block.protection==='math');assert.ok(inlineMath);
+  const inlineMath=inlineLayout.blocks.flatMap(block=>block.inlineProtections??[])[0];assert.ok(inlineMath);
   const inlineImages=await Promise.all([inlineLayout.pages[0].previewPath,inlineLayout.pages[0].backgroundPath].map(async file=>loadImage(await readFile(file))));
   const mathPixels=image=>{const canvas=createCanvas(image.width,image.height),ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);return ctx.getImageData(Math.floor(inlineMath.x*2),Math.floor(inlineMath.y*2),Math.ceil(inlineMath.width*2),Math.ceil(inlineMath.height*2)).data;};
   assert.deepEqual(mathPixels(inlineImages[0]),mathPixels(inlineImages[1]),'hiding prose must preserve native relative text advance');
-  assert.equal(inlineLayout.blocks.filter(block=>!block.protection).length,2,'surrounding prose stays independently translatable');
+  assert.equal(inlineLayout.blocks.filter(block=>!block.protection).length,1,'surrounding prose forms one paragraph around the native formula');
   const aPath=path.join(project,'ambiguous.pdf');await writeFile(aPath,await ambiguous.save());await assert.rejects(preparePdfDocument(aPath,path.join(project,'.translation-workshop')),/mixed with unmarked prose/);
   console.log('PDF Host code/math extraction, exact range writes, child/proofreading/import, original glyph export, old map and ambiguity guards passed');
 } finally {await rm(root,{recursive:true,force:true});}

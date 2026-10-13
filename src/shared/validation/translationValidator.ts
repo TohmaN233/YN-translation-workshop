@@ -14,7 +14,7 @@ import {
   normalizeCustomPreserveRules,
   type CustomPreserveRule
 } from "./customPreserveRules.ts";
-import type { PdfProtectedLine } from "./pdfPreservation.ts";
+import { splitPdfInlineTranslation, type PdfProtectedLine } from "./pdfPreservation.ts";
 
 export type ValidationSeverity = "blocking" | "warning";
 
@@ -59,6 +59,11 @@ export interface TranslationValidationResult {
 export type SourceLanguageKey = "ja" | "ko" | "en" | "zh";
 
 export interface ValidationOptions {
+  /** Parent-confirmed semantic decisions, scoped to exact bound source/candidate rows. */
+  sourceBinding?: string;
+  translationResidueApprovals?: Array<{sourcePath:string;line:number;sourceText:string;candidateText:string;reason:string}>;
+  /** Source-bound academic identifiers; exclusions apply only on their actual PDF rows. */
+  pdfPreservedSpans?: import('./pdfAcademicPrescan.ts').PdfPreservedSpan[];
   /** Absolute-line offset for a validated document range; counts remain range-local. */
   lineOffset?: number;
   /** Immutable original PDF code/math rows supplied by the Host layout. */
@@ -538,6 +543,11 @@ function stripPayloadWithCustomRules(
   return stripPreservedPayload(pieces.join(""), () => extractPlaceholders(line), () => extractTags(line));
 }
 
+export function isTranslationResidueApproved(options: ValidationOptions, line: number, source: string, candidate: string): boolean {
+  return options.translationResidueApprovals?.some(approval => approval.sourcePath === options.sourceBinding && approval.line === line
+    && approval.sourceText === source && approval.candidateText === candidate && Boolean(approval.reason.trim())) === true;
+}
+
 export function createTranslationPreservedPayloadStripper(
   options: Pick<ValidationOptions, "extractPlaceholders" | "extractTags" | "customPreserveRules"> = {}
 ): (line: string) => string {
@@ -545,7 +555,8 @@ export function createTranslationPreservedPayloadStripper(
   const customRules = normalizeCustomPreserveRules(options.customPreserveRules)
     .map((rule) => compileCustomPreserveRule(rule));
   const extractPlaceholders = options.extractPlaceholders ?? ((line: string) => defaultPlaceholdersWithSelectedEscapes(line, customRules));
-  return (line) => stripPayloadWithCustomRules(line, extractPlaceholders, extractTags, customRules);
+  return (line) => stripPayloadWithCustomRules(line, extractPlaceholders, extractTags, customRules)
+    .replace(/\{\{(?:formula|code):p\d+:\d+\}\}/gu, ' ');
 }
 
 /** Exclude only same-row glossary pairs, consuming each source/target occurrence once. */
@@ -606,12 +617,39 @@ function createGlossaryAlignedPayloadReader(
   };
 }
 
+function createPdfResidueReaders(options: Pick<ValidationOptions, 'pdfPreservedSpans' | 'glossaryEntries'>) {
+  const groups = new Map<number, NonNullable<ValidationOptions['pdfPreservedSpans']>>();
+  for (const span of options.pdfPreservedSpans ?? []) {
+    if (!Number.isInteger(span.line) || span.line < 1 || !Number.isInteger(span.start) || span.start < 0
+      || !Number.isInteger(span.end) || span.end <= span.start || typeof span.text !== 'string' || span.text.length !== span.end-span.start
+      || !Number.isInteger(span.evidenceLine) || span.evidenceLine < 1) throw new Error('Invalid PDF preservation prescan span.');
+    const group = groups.get(span.line) ?? []; group.push(span); groups.set(span.line, group);
+  }
+  const readers = new Map([...groups].map(([line, spans]) => {
+    const entries = spans.filter(span => !(options.glossaryEntries ?? []).some(entry =>
+      comparableTerm(entry.source ?? '') === comparableTerm(span.text) && comparableTerm(entry.target ?? '') !== comparableTerm(span.text)))
+      .map(span => ({source:span.text,target:span.text}));
+    return [line, {entries,read:createGlossaryAlignedPayloadReader(entries)}] as const;
+  }));
+  return (source: string, payloads: {source: string; candidate: string}, line: number) => {
+    for (const span of groups.get(line) ?? []) if (source.slice(span.start,span.end) !== span.text) throw new Error(`PDF preservation prescan is stale at L${line}.`);
+    const reader=readers.get(line);
+    if (!reader) return payloads;
+    const exact=reader.entries.filter(entry=>payloads.candidate.includes(entry.target));
+    return (exact.length===reader.entries.length?reader.read:createGlossaryAlignedPayloadReader(exact))(payloads.source,payloads.candidate);
+  };
+}
+
 export function createTranslationResiduePayloadReader(
-  options: Pick<ValidationOptions, "extractPlaceholders" | "extractTags" | "customPreserveRules" | "glossaryEntries"> = {}
-): (source: string, candidate: string) => { source: string; candidate: string } {
+  options: Pick<ValidationOptions, "extractPlaceholders" | "extractTags" | "customPreserveRules" | "glossaryEntries" | "pdfPreservedSpans"> = {}
+): (source: string, candidate: string, line?: number) => { source: string; candidate: string } {
   const strip = createTranslationPreservedPayloadStripper(options);
   const readPairs = createGlossaryAlignedPayloadReader((options.glossaryEntries ?? []).filter(entry => entry.source?.trim() && entry.target?.trim()));
-  return (source, candidate) => readPairs(strip(source), strip(candidate));
+  const readPdf = createPdfResidueReaders(options);
+  return (source, candidate, line = 1) => {
+    const payloads = readPdf(source,{source:strip(source),candidate:strip(candidate)},line);
+    return readPairs(payloads.source,payloads.candidate);
+  };
 }
 
 function emptyLineDetail(lineNo: number, srcEmpty: boolean, locale: ValidatorLocale): string {
@@ -799,16 +837,6 @@ function quotedDialogueSpans(text: string): string[] {
 
 function textOutsideQuotedDialogue(text: string): string {
   return text.replace(/「[^」]*」|『[^』]*』|“[^”]*”|"[^"]*"/g, " ");
-}
-
-function characterSpeaksOnLine(
-  line: string,
-  entry: { name?: string; aliases?: string[] }
-): boolean {
-  const outside = textOutsideQuotedDialogue(line);
-  return [entry.name, ...(entry.aliases ?? [])]
-    .filter((term): term is string => Boolean(term?.trim()))
-    .some((term) => textContainsTerm(outside, term));
 }
 
 function longestUncoveredGlossaryEntries(
@@ -1137,8 +1165,10 @@ export function validateTranslationCandidate(
   const customPreserveRegexes = compiledCustomPreserveRules.map(({ regex }) => regex);
   const comparePlaceholders = options.extractPlaceholders ?? ((line: string) =>
     defaultPlaceholdersWithSelectedEscapes(line, customPreserveRegexes));
-  const stripPayload = (line: string) => stripPayloadWithCustomRules(line, comparePlaceholders, extractTags, customPreserveRegexes);
+  const stripPayload = createTranslationPreservedPayloadStripper(options);
   const detectUntranslated = options.detectUntranslated ?? true;
+  const residueApprovals = new Map((options.translationResidueApprovals ?? [])
+    .filter(approval => approval.sourcePath === options.sourceBinding && approval.reason.trim()).map(approval => [approval.line, approval]));
   const sourceLanguage = options.sourceLanguage ?? parseSourceLanguageFromPair(options.languagePair);
   const targetLanguage = parseTargetLanguageFromPair(options.languagePair);
   const glossaryEntries = (options.glossaryEntries ?? []).filter((entry) =>
@@ -1146,6 +1176,7 @@ export function validateTranslationCandidate(
   );
   const matchGlossarySources = compileGlossarySourceMatcher(glossaryEntries);
   const readGlossaryPayloads = createGlossaryAlignedPayloadReader(glossaryEntries, matchGlossarySources);
+  const readPdfPayloads = createPdfResidueReaders(options);
   const glossaryCatalog = glossaryCatalogTerms(glossaryEntries).map((term) => ({ term, normalized: comparableTerm(term) }));
   const glossaryTargets = new Map<typeof glossaryEntries[number], string[]>();
   const characterEntries = (options.characterEntries ?? []).filter((entry) =>
@@ -1158,6 +1189,19 @@ export function validateTranslationCandidate(
     targets: uniqueComparableTerms([entry.target?.trim() || entry.name, entry.name, ...(entry.aliases ?? [])])
       .map(comparableTerm)
   }));
+  const characterSources = new Map<string, { source: string; owners: Map<typeof characterEntries[number], boolean> }>();
+  for (const { entry, canonicalName, names } of characterMatchers) {
+    for (const source of names) {
+      let match = characterSources.get(source);
+      if (!match) {
+        match = { source, owners: new Map() };
+        characterSources.set(source, match);
+      }
+      // Shared aliases retain every possible owner; only a canonical name triggers name warnings.
+      match.owners.set(entry, Boolean(match.owners.get(entry)) || source === canonicalName);
+    }
+  }
+  const matchCharacterSources = compileGlossarySourceMatcher([...characterSources.values()]);
   const lineOffset = options.lineOffset ?? 0;
   if (!Number.isInteger(lineOffset) || lineOffset < 0) throw new Error("Validation lineOffset must be a non-negative integer.");
   const styleForbiddenTerms = (options.styleForbiddenTerms ?? [])
@@ -1169,7 +1213,7 @@ export function validateTranslationCandidate(
   const pdfProtectedLines = new Map<number, PdfProtectedLine>();
   for (const entry of options.pdfProtectedLines ?? []) {
     if (!Number.isInteger(entry.line) || entry.line < 1 || typeof entry.text !== "string" || /[\r\n]/.test(entry.text)
-      || !["code", "math"].includes(entry.kind) || pdfProtectedLines.has(entry.line)) throw new Error("Invalid Host PDF protection binding.");
+      || !["code", "math", "reference"].includes(entry.kind) || pdfProtectedLines.has(entry.line)) throw new Error("Invalid Host PDF protection binding.");
     pdfProtectedLines.set(entry.line, entry);
   }
   const repeatedShortCandidateLines = new Set<number>();
@@ -1244,16 +1288,21 @@ export function validateTranslationCandidate(
     if (protectedLine) {
       if (src !== protectedLine.text) throw new Error(`PDF protected source binding changed at L${lineNo}.`);
       if (cand !== src) blocking.push({ code: "pdf_protected_content_mismatch", severity: "blocking", line: lineNo,
-        detail: locale === "zh-CN" ? `第 ${lineNo} 行：PDF ${protectedLine.kind === "code" ? "代码" : "数学公式"}必须与原文完全一致，不得翻译或改写。`
+        detail: locale === "zh-CN" ? `第 ${lineNo} 行：PDF ${protectedLine.kind === "code" ? "代码" : protectedLine.kind === 'reference' ? '参考文献' : "数学公式"}必须与原文完全一致，不得翻译或改写。`
           : `Line ${lineNo}: PDF ${protectedLine.kind} must remain exactly identical to the source; translation or rewriting is forbidden.` });
       continue;
     }
-    const normalizedSource = characterMatchers.length > 0 ? comparableTerm(src) : "";
     const normalizedCandidate = glossaryEntries.length > 0 || characterMatchers.length > 0 ? comparableTerm(cand) : "";
-    const sourceCharacters = characterMatchers
-      .filter(({ names }) => names.some((name) => normalizedSource.includes(name)))
-      .map(({ entry }) => entry);
+    try { splitPdfInlineTranslation(src,cand); }
+    catch (error) { blocking.push({code:'pdf_protected_content_mismatch',severity:'blocking',line:lineNo,
+      detail:`PDF L${lineNo}: ${error instanceof Error ? error.message : String(error)}`}); }
+    const characterMatches = characterMatchers.length ? matchCharacterSources(src) : [];
+    const sourceNamedCharacters = new Set(characterMatches.flatMap(({ owners }) =>
+      [...owners].filter(([, canonical]) => canonical).map(([entry]) => entry)));
+    const sourceCharacters = [...new Set(characterMatches.flatMap(({ owners }) => [...owners.keys()]))];
     const sourceCharacterSet = new Set(sourceCharacters);
+    const sourceSpeakers = new Set(characterMatchers.length ? matchCharacterSources(textOutsideQuotedDialogue(src))
+      .flatMap(({ owners }) => [...owners.keys()]) : []);
 
     const srcPh = comparePlaceholders(src).slice().sort();
     const candPh = comparePlaceholders(cand).slice().sort();
@@ -1364,9 +1413,12 @@ export function validateTranslationCandidate(
       });
     }
 
-    const residuePayloads = readGlossaryPayloads(sourcePayload, candidatePayload);
+    const pdfPayloads = readPdfPayloads(src,{source:sourcePayload,candidate:candidatePayload},lineNo);
+    const residuePayloads = readGlossaryPayloads(pdfPayloads.source, pdfPayloads.candidate);
+    const residueApproval = residueApprovals.get(lineNo);
     if (
       detectUntranslated
+      && !(residueApproval?.sourceText === src && residueApproval.candidateText === cand)
       && !isProbablyEmpty(src)
       && proseCore(residuePayloads.source).length > 0
       && looksLikeSourceResidue(src, cand, {
@@ -1412,12 +1464,12 @@ export function validateTranslationCandidate(
       }
     }
 
-    for (const { entry, canonicalName, targets } of characterMatchers) {
+    for (const { entry, targets } of characterMatchers) {
       const sourceName = entry.name?.trim() ?? "";
       const targetName = entry.target?.trim() || sourceName;
       const characterAppears = sourceCharacterSet.has(entry);
       if (
-        normalizedSource.includes(canonicalName)
+        sourceNamedCharacters.has(entry)
         && !targets.some((term) => normalizedCandidate.includes(term))
       ) {
         warnings.push({
@@ -1448,7 +1500,7 @@ export function validateTranslationCandidate(
           }
           return [mapping];
         });
-        const spokenDialogue = characterSpeaksOnLine(src, entry) ? quotedDialogueSpans(src).join("\n") : "";
+        const spokenDialogue = sourceSpeakers.has(entry) ? quotedDialogueSpans(src).join("\n") : "";
         const triggeredVoiceMappings = voiceRequiredMappings.filter((mapping) => (
           spokenDialogue.length > 0 && textContainsTerm(spokenDialogue, mapping.source)
         ));

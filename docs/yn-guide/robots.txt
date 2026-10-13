@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://tohman233.github.io/YN-translation-workshop/sitemap.xml

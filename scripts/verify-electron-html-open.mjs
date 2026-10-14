@@ -21,7 +21,7 @@ const driver=`
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {syncBuiltinESMExports} from 'node:module';
-import {app,BrowserWindow,webContents,session} from 'electron';
+import {app,BrowserWindow,webContents,session,dialog} from 'electron';
 import {mkdir,readFile,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {renderLineReviewHtml,renderBatchLineReviewIndexHtml,LINE_REVIEW_PROTOCOL_MARKER,BATCH_LINE_REVIEW_PROTOCOL_MARKER} from './src/shared/core/html.ts';
@@ -29,7 +29,8 @@ import {portableReviewHtml} from './src/main/reviewHtmlPortability.ts';
 import {lineReviewSidecarStatePath} from './src/main/batchLineReviewTxt.ts';
 const evidence=${JSON.stringify(evidence)},runtime=${JSON.stringify(runtime)};
 app.setAppPath(runtime);app.disableHardwareAcceleration();
-const result={metrics:[],htmlReads:[],networkAttempts:[],visibleEvents:0},reads=[];
+const result={metrics:[],htmlReads:[],networkAttempts:[],visibleEvents:0,errorDialogs:[]},reads=[];
+dialog.showMessageBox=async(...args)=>{const value=args.at(-1);result.errorDialogs.push({message:value.message,detail:value.detail});return {response:0,checkboxChecked:false};};
 app.on('browser-window-created',(_event,window)=>{if(window.isVisible())result.visibleEvents++;window.on('show',()=>result.visibleEvents++);});
 const originalRead=fs.promises.readFile;
 fs.promises.readFile=async(...args)=>{const value=await originalRead(...args);if(String(args[0]).endsWith('.html'))reads.push({path:path.resolve(String(args[0])),bytes:Buffer.byteLength(value)});return value;};syncBuiltinESMExports();
@@ -74,6 +75,18 @@ void app.whenReady().then(async()=>{
     const start=performance.now();await batchView.executeJavaScript('applyFile(1)');const next=await wait(()=>batchView.mainFrame.framesInSubtree.find(frame=>frame.url.includes('part-1.html')),Boolean,'second child');await ready(next,5000);result.metrics.push({name:'batch-child-switch',readyMs:performance.now()-start});
     const denied=await batchView.executeJavaScript('window.workshopHtml.prepareReviewHtmlChild({outputPath:"../single.html"}).then(()=>false,error=>String(error.message))');assert.match(denied,/child|batch|outside|index|member/i);
     const wrongSender=await web.executeJavaScript('window.workshop.prepareReviewHtmlChild({outputPath:"parts/part-0.html"}).then(()=>false,error=>String(error.message))');assert.match(wrongSender,/actual open batch parent/);
+    // Drive the real production IPC and native viewer close after a first
+    // translation-file import. No LAN session or model is involved.
+    const importHtml=path.join(htmlDir,'fresh-import.html'),importSource=path.join(project,'import-source.txt'),importTarget=path.join(project,'AI_translation','import-target.txt');
+    const importedLines=['First translated sentence.','Second translated sentence.','Third translated sentence.'];
+    await mkdir(path.dirname(importTarget),{recursive:true});await writeFile(importSource,'First source.\\nSecond source.\\nThird source.');await writeFile(importTarget,importedLines.join('\\n'));
+    await writeFile(importHtml,portableReviewHtml(renderLineReviewHtml({title:'Fresh import',sourceText:await readFile(importSource,'utf8'),lineReviewPath:importHtml,workflow:{sourcePath:importSource,outputDir:project}}),importHtml));
+    await invoke('openReviewHtml',{htmlPath:importHtml,outputDir:project,activate:false});const importView=await wait(()=>findView(importHtml),Boolean,'fresh import production view');await importView.executeJavaScript('window.translationWorkshopLineReviewReady');
+    await importView.executeJavaScript('syncLines('+JSON.stringify(importedLines)+','+JSON.stringify(importTarget)+',{bindPath:true,userSelected:true})');
+    assert.deepEqual(await importView.executeJavaScript('({lan:lanSyncToken,first:rowValue(data.rows[0]),hydrated:canonicalStateHydrated})'),{lan:'',first:importedLines[0],hydrated:true});
+    const importedState=JSON.parse(await readFile(lineReviewSidecarStatePath(importHtml,project),'utf8'));assert.equal(importedState.documentRevision,1);assert.equal(importedState.syncedFile,'AI_translation/import-target.txt');
+    const owner=BrowserWindow.getAllWindows().find(window=>window.getBrowserViews().some(view=>view.webContents.id===importView.id));assert.ok(owner,'actual native viewer owns the imported page');owner.close();
+    await wait(()=>owner.isDestroyed()||result.errorDialogs.length>0,Boolean,'native viewer close after import');assert.equal(owner.isDestroyed(),true);assert.deepEqual(result.errorDialogs,[]);result.productionImportAndClose=true;
     assert.equal(result.visibleEvents,0);assert.deepEqual(result.networkAttempts,[]);result.pass=true;result.paidCalls=0;
   }catch(error){result.pass=false;result.error=error.stack||String(error);process.exitCode=1;}
   finally{globalThis.fetch=originalFetch;fs.promises.readFile=originalRead;syncBuiltinESMExports();await writeFile(path.join(evidence,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));app.quit();}

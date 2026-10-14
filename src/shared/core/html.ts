@@ -252,6 +252,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     lanSyncStarted: "局域网同步已启动",
     lanSyncStopped: "局域网同步已停止",
     lanSyncFailed: "局域网同步失败",
+    draftSaveFailed: "草稿保存失败",
     lanSyncLanUrl: "局域网地址",
     lanSyncLocalUrl: "本地地址",
     lanSyncPin: "6 位 PIN",
@@ -440,6 +441,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     lanSyncStarted: "LAN sync started",
     lanSyncStopped: "LAN sync stopped",
     lanSyncFailed: "LAN sync failed",
+    draftSaveFailed: "Draft save failed",
     lanSyncLanUrl: "LAN address",
     lanSyncLocalUrl: "Local address",
     lanSyncPin: "6-digit PIN",
@@ -1132,7 +1134,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 57;
+export const LINE_REVIEW_PROTOCOL_VERSION = 58;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 19;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
@@ -1615,7 +1617,11 @@ window.flushTranslationWorkshopLineReviewState = async () => {
   artifactClosing = true;
   try {
     await cancelArtifactOperation(true);
-    if (artifactImportTask) await artifactImportTask;
+    if (artifactImportTask) await artifactImportTask.catch(error => {
+      // A rejected import has already reported its error and restored the
+      // previously saved draft. It is not an outstanding unsaved mutation.
+      if (error?.name !== "DraftImportRolledBack") throw error;
+    });
     await flushQueuedLineReviewStateWrite();
     return await save();
   } finally { artifactClosing = false; }
@@ -2882,7 +2888,7 @@ async function startLanSync() {
 function reportLineReviewPersistFailure(error) {
   const message = error?.message || String(error);
   console.error("translation-workshop failed to persist a line-review edit", error);
-  setAiStatus((data.labels.lanSyncFailed || "LAN sync failed") + ": " + message);
+  setAiStatus(((lanSyncToken ? data.labels.lanSyncFailed : data.labels.draftSaveFailed) || (lanSyncToken ? "LAN sync failed" : "Draft save failed")) + ": " + message);
 }
 function persistLineReviewPatch(patch) {
   const line = Number(patch?.line || 0);
@@ -3114,17 +3120,75 @@ async function importArtifactAsDraft(candidatePath, sourcePath) {
   artifactImportTask = task;
   try { await task; } finally { if (artifactImportTask === task) artifactImportTask = null; }
 }
+function captureDraftImportState() {
+  const values = {};
+  for (const name of ["edits", "status", "synced", "syncedFile", "syncedAt", "translationPath", "translationPromptPath"]) {
+    if (Object.prototype.hasOwnProperty.call(state, name)) values[name] = state[name];
+  }
+  return { values, syncedLines, paths: { ...workflow.paths } };
+}
+function restoreDraftImportState(previous) {
+  for (const name of ["edits", "status", "synced", "syncedFile", "syncedAt", "translationPath", "translationPromptPath"]) {
+    if (Object.prototype.hasOwnProperty.call(previous.values, name)) state[name] = previous.values[name];
+    else delete state[name];
+  }
+  syncedLines = previous.syncedLines;
+  for (const name of Object.keys(workflow.paths)) if (!Object.prototype.hasOwnProperty.call(previous.paths, name)) delete workflow.paths[name];
+  Object.assign(workflow.paths, previous.paths);
+  updateSaveTxtVisibility();
+}
+function draftImportRolledBack(error) {
+  const failure = new Error(error?.message || String(error), { cause: error });
+  failure.name = "DraftImportRolledBack";
+  return failure;
+}
+function isDraftRevisionConflict(error) {
+  const message = String(error?.message || error).replace(/^Error invoking remote method '[^']+': Error: /, "");
+  return /^\[YN_DRAFT_REVISION_CONFLICT\] The draft changed during import; refresh and import again to avoid overwriting newer edits\. \(expected revision \d+, actual \d+\)$/.test(message);
+}
+async function commitImportedDraft(changedLines, changedStateKeys) {
+  const bridge = invokeBridge();
+  if (!bridge?.persistHtmlState) { await save(changedLines, changedStateKeys); return; }
+  // Browser history is not a canonical disk revision. An absent sidecar is
+  // migrated against the complete read's baseline, just like a first edit.
+  const expectedRevision = canonicalStateHydrated ? Number(state.documentRevision || 0) : legacyMigrationBaseRevision;
+  const committedLines = normalizedChangedLines(canonicalStateHydrated ? changedLines : [
+    ...changedLines, ...lineScopedStateKeys.flatMap(name => Object.keys(state[name] || {}))
+  ]);
+  const mutationId = lineReviewClientId + ":" + (++localLineMutationSequence);
+  traceLineReviewSync("import-commit-start", { expectedRevision, canonicalStateHydrated, changedLineCount: changedLines.length });
+  let result;
+  try {
+    result = await bridge.persistHtmlState({ kind: "line", lineReviewPath: data.lineReviewPath || currentLineReviewPath(),
+      state: { ...state }, changedLines: committedLines, changedStateKeys, clientId: lineReviewClientId, mutationId,
+      hydrate: false, bulk: true, expectedRevision });
+    const revision = Number(result?.state?.documentRevision);
+    if (!result?.ok || result.mutationAccepted === false || !Number.isSafeInteger(revision)
+      || revision <= expectedRevision || !sameLineReviewPath(result.lineReviewPath)) throw new Error("The Host rejected the draft import acknowledgement.");
+  } catch (error) {
+    traceLineReviewSync("import-commit-failed", { expectedRevision, revisionConflict: isDraftRevisionConflict(error), message: error?.message || String(error) });
+    // A CAS rejection proves that nothing was written. The caller rolls back
+    // its temporary import; other persistence failures remain close-blocking.
+    if (!isDraftRevisionConflict(error)) trackHostStateRequest(Promise.reject(error));
+    throw error;
+  }
+  // CAS covered the complete pre-import snapshot and the submitted full maps.
+  // The small acknowledgement therefore completes first-sidecar migration.
+  canonicalStateHydrated = true;
+  applyCanonicalLineReviewState(result);
+  traceLineReviewSync("import-commit-completed", { revision: state.documentRevision, changedLineCount: changedLines.length });
+}
 async function importCandidateDraft(candidatePath, sourcePath) {
   const bridge = invokeBridge();
   if (!bridge?.buildAgentImportPlan || !bridge?.persistHtmlState) return;
   artifactImportBusy = true;
   rowsEl.inert = true;
   refreshAgentArtifactsButton.disabled = true;
-  let requestId = "", previous = null, committed = false;
+  let requestId = "", previous = null, committed = false, priorWritesSettled = false, commitAttempted = false;
   try {
     await cancelArtifactOperation();
     await flushQueuedLineReviewStateWrite(); await lastHostStateWrite;
-    const expectedRevision = Number(state.documentRevision || 0);
+    priorWritesSettled = true;
     const binding = workflow.paths?.validationSourcePath || workflow.paths?.sourcePath || "";
     requestId = artifactOperationStarted();
     setAiStatus(data.labels.importingDraft);
@@ -3132,8 +3196,7 @@ async function importCandidateDraft(candidatePath, sourcePath) {
     if (artifactCancelled) throw new Error("[YN_ARTIFACT_CANCELLED] " + data.labels.artifactCancelled);
     if (!plan.ok) { setAiStatus(data.labels.importBlocked + ": " + (plan.validation.blocking[0]?.detail || "")); return; }
     if (binding !== (workflow.paths?.validationSourcePath || workflow.paths?.sourcePath || "") || plan.lineCount !== data.rows.length) throw new Error("Candidate does not match the current review document.");
-    previous = { edits: state.edits, status: state.status, translationPath: state.translationPath,
-      translationPromptPath: state.translationPromptPath, paths: { ...workflow.paths } };
+    previous = captureDraftImportState();
     const edits = { ...state.edits }, status = { ...state.status }, importedLines = [];
     for (let index = 0; index < plan.lines.length; index += 5000) {
       if (artifactCancelled) throw new Error("[YN_ARTIFACT_CANCELLED] " + data.labels.artifactCancelled);
@@ -3145,29 +3208,22 @@ async function importCandidateDraft(candidatePath, sourcePath) {
     if (artifactCancelled) throw new Error("[YN_ARTIFACT_CANCELLED] " + data.labels.artifactCancelled);
     state.edits = edits; state.status = status;
     setBoundTranslationPath(candidatePath, candidatePath, { userSelected: true, deferPersist: true });
-    const mutationId = lineReviewClientId + ":" + (++localLineMutationSequence);
     artifactCancelButton.disabled = true;
     // One atomic draft commit. The importing UI is frozen, so it does not need
     // six pending objects per line or a second full canonical IPC roundtrip.
-    const commit = bridge.persistHtmlState({ kind: "line", lineReviewPath: data.lineReviewPath || currentLineReviewPath(),
-      state: { ...state }, changedLines: importedLines, changedStateKeys: ["translationPath", "translationPromptPath"],
-      clientId: lineReviewClientId, mutationId, hydrate: false, bulk: true, expectedRevision });
-    trackHostStateRequest(commit);
-    const result = await commit;
-    if (!result?.ok || result.mutationAccepted === false) throw new Error("The Host rejected the draft import.");
+    commitAttempted = true;
+    await commitImportedDraft(importedLines, ["translationPath", "translationPromptPath"]);
     committed = true;
-    applyCanonicalLineReviewState(result);
     updateProjectState({ translationPath: candidatePath, translationBindingOrigin: "user", promptTranslationPath: workflow.paths?.promptTranslationPath });
     applyingCanonicalState = true; try { render(); } finally { applyingCanonicalState = false; }
     setAiStatus(data.labels.importedDraft + " " + String(data.labels.importedDraftNote).replace("{count}", String(plan.lineCount)) + (plan.memoryWarning ? " · " + plan.memoryWarning : ""));
   } catch (error) {
-    if (previous && !committed) {
-      state.edits = previous.edits; state.status = previous.status;
-      state.translationPath = previous.translationPath; state.translationPromptPath = previous.translationPromptPath;
-      Object.assign(workflow.paths, previous.paths);
-    }
+    if (previous && !committed) restoreDraftImportState(previous);
     setAiStatus(data.labels.importFailed + ": " + (error?.message || String(error)));
-    if (!String(error?.message || error).includes("[YN_ARTIFACT_CANCELLED]")) throw error;
+    console.error("translation-workshop draft import failed", error);
+    if (String(error?.message || error).includes("[YN_ARTIFACT_CANCELLED]")) return;
+    if (priorWritesSettled && !committed && (!commitAttempted || isDraftRevisionConflict(error))) throw draftImportRolledBack(error);
+    throw error;
   } finally {
     artifactOperationFinished(requestId);
     artifactCancelButton.disabled = false;
@@ -3218,7 +3274,9 @@ agentArtifactsList?.addEventListener("click", (event) => {
   const path = target.getAttribute("data-path") || "";
   const source = target.getAttribute("data-source") || "";
   if (target.classList.contains("artifact-import")) {
-    void importArtifactAsDraft(path, source).catch(reportLineReviewPersistFailure);
+    void importArtifactAsDraft(path, source).catch(error => {
+      if (error?.name !== "DraftImportRolledBack") reportLineReviewPersistFailure(error);
+    });
   } else if (target.classList.contains("artifact-repair")) {
     openLineRepair(path);
   } else if (target.classList.contains("artifact-repair-prompt")) {
@@ -3257,29 +3315,58 @@ stopLanSyncButton?.addEventListener("click", async () => {
     lanSyncStopping = false;
   }
 });
-async function syncLines(lines, label) {
-  syncedLines = lines;
-  delete state.synced;
-  let importedCount = 0;
-  const synchronizedLines = [];
-  for (let index = 0; index < data.rows.length; index += 1) {
-    const lineNo = data.rows[index].line;
-    if (lines[index] !== undefined && state.status[lineNo] !== "manual") {
-      delete state.edits[lineNo];
-      delete state.status[lineNo];
-      importedCount += 1;
-      synchronizedLines.push(lineNo);
-    }
-  }
-  state.syncedFile = label;
-  state.syncedAt = new Date().toISOString();
-  save(synchronizedLines, ["syncedFile", "syncedAt"]);
-  render();
-  setAiStatus((data.labels.synced || "Translation synced") + ": " + label + " (" + importedCount + "/" + data.rows.length + ")");
+async function syncLines(lines, label, options) {
+  if (artifactImportBusy || artifactClosing) return;
+  const task = importSyncedLines(lines, label, options);
+  artifactImportTask = task;
+  try { await task; } finally { if (artifactImportTask === task) artifactImportTask = null; }
+}
+async function importSyncedLines(lines, label, options) {
+  artifactImportBusy = true;
+  rowsEl.inert = true;
+  let previous = null, committed = false, commitAttempted = false;
   try {
-    await writeSyncedText(lines.join("\n"));
+    await flushQueuedLineReviewStateWrite(); await lastHostStateWrite;
+    previous = captureDraftImportState();
+    state.edits = { ...state.edits }; state.status = { ...state.status };
+    syncedLines = lines;
+    delete state.synced;
+    let importedCount = 0;
+    const synchronizedLines = [];
+    for (let index = 0; index < data.rows.length; index += 1) {
+      const lineNo = data.rows[index].line;
+      if (lines[index] !== undefined && state.status[lineNo] !== "manual") {
+        delete state.edits[lineNo];
+        delete state.status[lineNo];
+        importedCount += 1;
+        synchronizedLines.push(lineNo);
+      }
+    }
+    state.syncedFile = label;
+    state.syncedAt = new Date().toISOString();
+    if (options?.bindPath) setBoundTranslationPath(label, label, { userSelected: options.userSelected, deferPersist: true });
+    commitAttempted = true;
+    await commitImportedDraft(synchronizedLines, ["syncedFile", "syncedAt", "translationPath", "translationPromptPath"]);
+    committed = true;
+    if (options?.bindPath && (options.userSelected || !isExtractedWorkshopTranslationPath(label))) {
+      updateProjectState({ translationPath: label, translationBindingOrigin: "user", promptTranslationPath: workflow.paths?.promptTranslationPath });
+    }
+    render();
+    setAiStatus((data.labels.synced || "Translation synced") + ": " + label + " (" + importedCount + "/" + data.rows.length + ")");
+    try {
+      await writeSyncedText(lines.join("\n"));
+    } catch (error) {
+      console.warn("translation-workshop could not persist imported translation text", error);
+    }
   } catch (error) {
-    console.warn("translation-workshop could not persist imported translation text", error);
+    if (previous && !committed) restoreDraftImportState(previous);
+    setAiStatus(data.labels.importFailed + ": " + (error?.message || String(error)));
+    console.error("translation-workshop translation file import failed", error);
+    if (previous && !committed && (!commitAttempted || isDraftRevisionConflict(error))) throw draftImportRolledBack(error);
+    throw error;
+  } finally {
+    artifactImportBusy = false; rowsEl.inert = false;
+    for (const payload of deferredArtifactCanonicalStates.splice(0)) applyCanonicalLineReviewState(payload);
   }
 }
 function openTranslationFilePicker() {
@@ -3308,8 +3395,7 @@ async function chooseTranslationFile() {
     const result = await bridge.readTextFile({ path: filePath });
     if (typeof result?.text !== "string") return;
     const nextPath = result?.path || filePath;
-    setBoundTranslationPath(nextPath, nextPath, { userSelected: true });
-    await syncLines(splitSyncedText(result.text), nextPath);
+    await syncLines(splitSyncedText(result.text), nextPath, { bindPath: true, userSelected: true });
   } catch (error) {
     setAiStatus((data.labels.syncFailed || "Translation sync failed") + ": " + (error?.message || String(error)));
   }
@@ -3322,8 +3408,7 @@ async function syncFromBoundTranslationFile() {
     const result = await bridge.readTextFile({ path: translationPath });
     if (typeof result?.text !== "string") return false;
     const nextPath = result?.path || translationPath;
-    setBoundTranslationPath(nextPath, nextPath);
-    await syncLines(splitSyncedText(result.text), nextPath);
+    await syncLines(splitSyncedText(result.text), nextPath, { bindPath: true });
     return true;
   } catch (error) {
     setAiStatus((data.labels.syncFailed || "Translation sync failed") + ": " + (error?.message || String(error)));
@@ -3504,7 +3589,7 @@ function setBoundTranslationPath(path, promptPath, options) {
       promptTranslationPath: paths.promptTranslationPath
     });
   } else {
-    save([], ["translationPath", "translationPromptPath"]);
+    if (!options?.deferPersist) save([], ["translationPath", "translationPromptPath"]);
   }
   updateSaveTxtVisibility();
 }

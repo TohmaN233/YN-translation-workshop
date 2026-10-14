@@ -21,7 +21,7 @@ if (input.projectRoot) {
   current = decodeProjectPaths(current, input.projectRoot, typeof legacyRoot === "string" ? legacyRoot : undefined);
 }
 if (input.expectedRevision !== undefined && Number(current.documentRevision ?? 0) !== input.expectedRevision) {
-  throw new Error("The draft changed during import; refresh and import again to avoid overwriting newer edits.");
+  throw new Error(`[YN_DRAFT_REVISION_CONFLICT] The draft changed during import; refresh and import again to avoid overwriting newer edits. (expected revision ${input.expectedRevision}, actual ${Number(current.documentRevision ?? 0)})`);
 }
 const merged = input.mutationAccepted ? mergeCanonicalLineReviewState(current, input.state, input.changedLines, input.changedStateKeys) : current;
 await mkdir(path.dirname(input.statePath), { recursive: true });

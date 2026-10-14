@@ -806,6 +806,20 @@ await test("renderLineReviewHtml binds imported TXT candidates for later Save TX
   );
 });
 
+await test("v57 review HTML upgrades the atomic import and close rollback contract", async () => {
+  const {renderLineReviewHtml,LINE_REVIEW_PROTOCOL_MARKER} = await import("../../src/shared/core/html.ts");
+  const current = renderLineReviewHtml({title:"import migration",sourceText:"Original source.",translationText:"Saved translation.",lineReviewPath:"G:/proj/html/review.html"});
+  const old = current.replaceAll(LINE_REVIEW_PROTOCOL_MARKER,"translation-workshop-line-review-v57");
+  assert.equal(needsLegacyLineReviewUpgrade(old),true);
+  const upgraded = upgradeLegacyLineReviewHtmlContent(old,"review.html","G:/proj/html/review.html");
+  assert.ok(upgraded);
+  assert.match(upgraded,new RegExp(LINE_REVIEW_PROTOCOL_MARKER));
+  assert.match(upgraded,/async function commitImportedDraft/);
+  assert.match(upgraded,/DraftImportRolledBack/);
+  assert.match(upgraded,/Original source\./);
+  assert.match(upgraded,/Saved translation\./);
+});
+
 await test("EPUB Agent route binds extracted text paths instead of binary EPUB paths", async () => {
   const { renderLineReviewHtml } = await import("../../src/shared/core/html.ts");
   const { agentChatRouteFromReviewData } = await import("../../src/shared/core/agentChatRoute.ts");

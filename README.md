@@ -50,18 +50,19 @@ YN 把 TXT、EPUB 和文字层 PDF 变成可编辑的原译文对照页面。它
 | 游戏控制符、标签或变量被改坏 | 保留规则与机械校验；校对建议也携带相同要求 |
 | 大量文本需要人工逐行检查 | 原译文对照、搜索、编辑、候选刷新、建议接受与拒绝 |
 | 翻译中断后继续工作 | 核验已有草稿和审阅证据后续跑；不盲目重试内部故障 |
-| PDF 含代码、公式或图表 | Host 保留代码/公式，视觉模型按需看图，HTML 中导出 PDF |
+| PDF 含代码、公式或图表 | 提取正文与字形／图表资产，整理结构后重建 HTML，翻译正文并自动重排生成新 PDF |
 | 不打开主窗口也能使用 | 外部 Agent 通过官方接口先展示计划，确认后在后台启动 |
 
 详细参数、旧译复用、抽样校对、局域网操作与产物位置见 [功能手册](docs/features.md)。
 
 ## YN 翻译项目例子
 
+- **日语 → 中文：**[Megido72（梅基多72）千万字级游戏翻译演示](https://www.bilibili.com/video/BV12ypy68EEF/)。[首章简介](https://www.bilibili.com/video/BV15spk6iEVR/)介绍了用 YN 重译约一千万字后的译名一致性与准确度改善。
 - **日语 → 中文：**[美希命的游戏汉化展示](https://space.bilibili.com/1863789519)，包括其许多汉化游戏。
 - **日语 → 中文：**[《命运石之门》圆环小说](https://tgy233.top/tgypage/%E7%A7%91%E5%AD%A6ADV%E5%B0%8F%E8%AF%B4%E6%B1%87%E6%80%BB_2026-0828.html)。
 - **中文 → 英文：**[《Robotics;Notes》小说译文](https://drive.google.com/file/d/1pPVFPxdwOxNnT_8TO1wJGEY9D3FVFNeK/view)。
 
-这些是项目作者提供的使用实例，展示产物与使用场景，不作为独立质量评测或零人工修改的证明。参见 [案例说明](docs/examples.md)。
+更多项目见 [案例说明](docs/examples.md)。
 
 ## 质量与可靠性的依据
 

@@ -26,14 +26,15 @@
 </ol>
 <p><img src="assets/screens/line-review.png" alt="行对行审阅页面，可对照原文编辑译文与校对意见" loading="lazy" decoding="async"/></p>
 <p><a href="https://tohman233.github.io/YN-translation-workshop/guides.html">完整教程</a> · <a href="pdf.html">PDF 说明</a> · <a href="agent-api.html">外部 Agent 后台使用</a></p>
-<h2 id="能解决哪些问题">能解决哪些问题</h2><div class="table-scroll"><table><thead><tr><th>需求</th><th>YN 的处理方式</th></tr></thead><tbody><tr><td>长篇译名与角色称谓变化</td><td>正式译名表、候选、角色表及直接命中参考；冲突显式呈现</td></tr><tr><td>游戏控制符、标签或变量被改坏</td><td>保留规则与机械校验；校对建议也携带相同要求</td></tr><tr><td>大量文本需要人工逐行检查</td><td>原译文对照、搜索、编辑、候选刷新、建议接受与拒绝</td></tr><tr><td>翻译中断后继续工作</td><td>核验已有草稿和审阅证据后续跑；不盲目重试内部故障</td></tr><tr><td>PDF 含代码、公式或图表</td><td>Host 保留代码/公式，视觉模型按需看图，HTML 中导出 PDF</td></tr><tr><td>不打开主窗口也能使用</td><td>外部 Agent 通过官方接口先展示计划，确认后在后台启动</td></tr></tbody></table></div><p>详细参数、旧译复用、抽样校对、局域网操作与产物位置见 <a href="features.html">功能手册</a>。</p>
+<h2 id="能解决哪些问题">能解决哪些问题</h2><div class="table-scroll"><table><thead><tr><th>需求</th><th>YN 的处理方式</th></tr></thead><tbody><tr><td>长篇译名与角色称谓变化</td><td>正式译名表、候选、角色表及直接命中参考；冲突显式呈现</td></tr><tr><td>游戏控制符、标签或变量被改坏</td><td>保留规则与机械校验；校对建议也携带相同要求</td></tr><tr><td>大量文本需要人工逐行检查</td><td>原译文对照、搜索、编辑、候选刷新、建议接受与拒绝</td></tr><tr><td>翻译中断后继续工作</td><td>核验已有草稿和审阅证据后续跑；不盲目重试内部故障</td></tr><tr><td>PDF 含代码、公式或图表</td><td>提取正文与字形／图表资产，整理结构后重建 HTML，翻译正文并自动重排生成新 PDF</td></tr><tr><td>不打开主窗口也能使用</td><td>外部 Agent 通过官方接口先展示计划，确认后在后台启动</td></tr></tbody></table></div><p>详细参数、旧译复用、抽样校对、局域网操作与产物位置见 <a href="features.html">功能手册</a>。</p>
 <h2 id="yn-翻译项目例子">YN 翻译项目例子</h2>
 <ul>
+<li><strong>日语 → 中文：</strong><a href="https://www.bilibili.com/video/BV12ypy68EEF/">Megido72（梅基多72）千万字级游戏翻译演示</a>。<a href="https://www.bilibili.com/video/BV15spk6iEVR/">首章简介</a>介绍了用 YN 重译约一千万字后的译名一致性与准确度改善。</li>
 <li><strong>日语 → 中文：</strong><a href="https://space.bilibili.com/1863789519">美希命的游戏汉化展示</a>，包括其许多汉化游戏。</li>
 <li><strong>日语 → 中文：</strong><a href="https://tgy233.top/tgypage/%E7%A7%91%E5%AD%A6ADV%E5%B0%8F%E8%AF%B4%E6%B1%87%E6%80%BB_2026-0828.html">《命运石之门》圆环小说</a>。</li>
 <li><strong>中文 → 英文：</strong><a href="https://drive.google.com/file/d/1pPVFPxdwOxNnT_8TO1wJGEY9D3FVFNeK/view">《Robotics;Notes》小说译文</a>。</li>
 </ul>
-<p>这些是项目作者提供的使用实例，展示产物与使用场景，不作为独立质量评测或零人工修改的证明。参见 <a href="examples.html">案例说明</a>。</p>
+<p>更多项目见 <a href="examples.html">案例说明</a>。</p>
 <h2 id="质量与可靠性的依据">质量与可靠性的依据</h2>
 <p>YN 用程序检查行对齐、占位符、保留内容、写入范围与恢复证据，再安排独立 AI 复审；模型说“完成”不能代替产物检查。这能暴露结构和流程问题，不能证明所有语义都正确。</p>
 <p><a href="quality.html">质量与可靠性说明</a> 列出公开测试、复现命令、验证边界与失败处理；语义准确率、跨工具排名和普遍成本优势尚未给出可对照的评测，不作此类承诺。</p>

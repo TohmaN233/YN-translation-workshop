@@ -50,18 +50,19 @@ Use reference preparation before translation when you already have terminology, 
 | Damaged game tags, variables or control codes | Preservation rules and mechanical checks, including proofreading suggestions |
 | Human inspection of many rows | Source/target view, search, editing, candidate refresh and suggestion decisions |
 | Continue an interrupted translation | Verify drafts and review evidence before resuming; stop blind retries of internal failures |
-| PDFs containing code, formulas or figures | Host-protected code/math, on-demand image context and PDF export from HTML |
+| PDFs containing code, formulas or figures | Extract prose and glyph/figure assets, reconstruct structured HTML, translate prose, then reflow into a new PDF |
 | Run without opening the main window | External agents preview and confirm a plan through the official background API |
 
 See the [feature guide](docs/features.en.md) for settings, reuse, sampled proofreading, LAN access and artifact locations.
 
 ## Projects translated with YN
 
+- **Japanese to Chinese:** [Megido72, a game translation project of about 10 million characters](https://www.bilibili.com/video/BV12ypy68EEF/). The [first-chapter description](https://www.bilibili.com/video/BV15spk6iEVR/) describes improved naming consistency and accuracy after retranslation with YN.
 - **Japanese to Chinese:** [game localization demonstrations by 美希命](https://space.bilibili.com/1863789519), including many localized games.
 - **Japanese to Chinese:** [the Steins;Gate “圆环” novel](https://tgy233.top/tgypage/%E7%A7%91%E5%AD%A6ADV%E5%B0%8F%E8%AF%B4%E6%B1%87%E6%80%BB_2026-0828.html).
 - **Chinese to English:** [a Robotics;Notes novel translation](https://drive.google.com/file/d/1pPVFPxdwOxNnT_8TO1wJGEY9D3FVFNeK/view).
 
-These examples were supplied by the project author. They show use cases and outputs, not independent benchmarks or proof of zero human editing. See [case notes](docs/examples.en.md).
+See [case notes](docs/examples.en.md) for more projects.
 
 ## Quality and reliability evidence
 

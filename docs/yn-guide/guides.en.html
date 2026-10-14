@@ -20,7 +20,7 @@
 <p><img src="assets/screens/proofread-review.png" alt="Accept, reject or edit proofreading suggestions" loading="lazy" decoding="async"/></p>
 <p>Auto-apply affects HTML only. Review the result, then write TXT or batch-write files; EPUB/PDF have export controls. Candidate refresh, HTML editing and final file output are separate operations.</p>
 <h2 id="pdf">PDF, code and formulas</h2>
-<p>Use text-layer PDFs. Host-prefilled code/math stays locked; models translate prose only. Vision models see images on demand. PDF export uses the current HTML translation and reports text overflow rather than cutting it. See the <a href="pdf.en.html">PDF guide</a> for scanned pages, reading order, inseparable content and output-format limits.</p>
+<p>Use text-layer PDFs. YN extracts prose, code/math glyphs and figures, organizes logical structure mechanically, then uses the current model for structure corrections and an independent audit before review HTML is generated. Translate editable prose while code, formulas and references retain source glyphs. Export reconstructs structured HTML from current translations and assets, then reflows it into a new PDF without original prose-box length limits. Opening existing HTML does not rerun structure models. See the <a href="pdf.en.html">PDF guide</a> for supported inputs and asset limits.</p>
 <h2 id="stop-and-move-projects">Stop and move projects</h2>
 <p>Stop and wait for cleanup before closing or moving files. Resume verifies drafts and proof before model calls. Restore missing bound files rather than repeatedly asking the model to retry. Internal bindings resolve relative to the project root; transfer and rebind external sources, PDFs and references too.</p>
 <h2 id="lan">Phones and LAN</h2>

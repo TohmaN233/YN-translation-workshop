@@ -160,7 +160,7 @@
 
 ## 12. PDF and background Agent access
 
-Text-layer PDFs become line-based working text. Host-prefilled code and formulas remain locked, images are viewed on demand, and the current HTML translation can be exported as a PDF. No OCR is included; complex reading order and inseparable content have limits. See the [PDF guide](pdf.en.md).
+Text-layer PDFs are first decomposed into prose, native glyphs and figure assets. Mechanical organization, model structure corrections and an independent audit precede review HTML. Current translated prose and preserved assets then reconstruct structured HTML, which reflows into a new PDF. Originals stay read-only, without original prose-box length limits. Opening existing HTML does not rerun structure models. OCR is not provided; complex reading order and inseparable content still have limits. See the [PDF guide](pdf.en.md).
 
 The [official Agent API](agent-api.en.md) previews location, model and settings before confirmation, then reuses homepage preparation and execution. It uses YN-configured providers, not the external agent's current chat model.
 

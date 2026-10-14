@@ -40,7 +40,7 @@ Auto-apply affects HTML only. Review the result, then write TXT or batch-write f
 
 ## PDF, code and formulas
 
-Use text-layer PDFs. Host-prefilled code/math stays locked; models translate prose only. Vision models see images on demand. PDF export uses the current HTML translation and reports text overflow rather than cutting it. See the [PDF guide](pdf.en.md) for scanned pages, reading order, inseparable content and output-format limits.
+Use text-layer PDFs. YN extracts prose, code/math glyphs and figures, organizes logical structure mechanically, then uses the current model for structure corrections and an independent audit before review HTML is generated. Translate editable prose while code, formulas and references retain source glyphs. Export reconstructs structured HTML from current translations and assets, then reflows it into a new PDF without original prose-box length limits. Opening existing HTML does not rerun structure models. See the [PDF guide](pdf.en.md) for supported inputs and asset limits.
 
 ## Stop and move projects
 

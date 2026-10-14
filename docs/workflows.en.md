@@ -6,7 +6,7 @@
 
 Prepare settings/rules → resolve source manifest → claim line chunks → write staging → mechanical validation → independent review → exact repair → promote accepted candidate → final validation.
 
-Chunks use physical lines, defaulting to 500. Worker counts are ceilings. Model context resets after each chunk while Host retains accepted proof. Only directly matched terminology/character references are injected; missing context is searched as needed. Identified PDF code/math is fixed by Host and excluded from writable prose.
+Chunks use working-text lines, defaulting to 500; PDF rows represent complete preprocessed logical units with mappings to original pages and assets. Worker counts are ceilings. Model context resets after each chunk while Host retains accepted proof. Only directly matched terminology/character references are injected; missing context is searched as needed. Identified PDF code/math is fixed by Host and excluded from writable prose.
 
 Suspected untranslated text can be a false positive, such as an identifier. After inspecting the exact source/candidate, the parent can use `confirmTranslationResidueSafe` with per-row reasons and continue the existing write/repair flow. Project decisions apply only to the exact row/text pair and expire when either changes. Children cannot authorize them. This applies to TXT, EPUB and PDF; all other structural checks remain enforced.
 

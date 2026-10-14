@@ -14,9 +14,10 @@ async function yieldBeforeReplaceRetry(attempt: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, delay));
 }
 
-async function replaceFileAtomically(sourcePath: string, targetPath: string): Promise<void> {
+async function replaceFileAtomically(sourcePath: string, targetPath: string,signal?:AbortSignal): Promise<void> {
   const deadline = Date.now() + WINDOWS_REPLACE_DEADLINE_MS;
   for (let attempt = 0; ; attempt += 1) {
+    signal?.throwIfAborted();
     try {
       await rename(sourcePath, targetPath);
       return;
@@ -30,11 +31,13 @@ async function replaceFileAtomically(sourcePath: string, targetPath: string): Pr
   }
 }
 
-export async function writeTextFileAtomically(targetPath: string, text: string): Promise<void> {
+export async function writeTextFileAtomically(targetPath: string, text: string,signal?:AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporaryPath, text, "utf8");
-    await replaceFileAtomically(temporaryPath, targetPath);
+    await writeFile(temporaryPath, text, {encoding:'utf8',signal});
+    signal?.throwIfAborted();
+    await replaceFileAtomically(temporaryPath, targetPath,signal);
   } finally {
     await rm(temporaryPath, { force: true });
   }

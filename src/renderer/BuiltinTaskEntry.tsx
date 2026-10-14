@@ -1,7 +1,7 @@
 import { BookOpen, Check, ChevronDown, FileText, FolderOpen, Languages, LoaderCircle, Settings2, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { builtinTaskDefaults, restoreTaskInputTranslationPath, type BuiltinTaskKind, type BuiltinTaskSettings } from "../shared/builtinTasks.ts";
+import { builtinTaskDefaults, htmlPreparationProgressMessage, restoreTaskInputTranslationPath, type BuiltinTaskKind, type BuiltinTaskSettings } from "../shared/builtinTasks.ts";
 import { normalizeCustomPreserveRules } from "../shared/validation/customPreserveRules.ts";
 
 type Locale = "zh-CN" | "en-US";
@@ -202,6 +202,10 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
   const editedFields = useRef(new Set<keyof BuiltinTaskSettings>());
   const dialogRef = useRef<HTMLElement>(null);
   const startPending = useRef(false);
+  const preparationRequestId = useRef<string | undefined>(undefined);
+  const preparationStarted = useRef(false);
+  const stopRequested = useRef(false);
+  const [stopping, setStopping] = useState(false);
   const [autoApplyProofread, setAutoApplyProofread] = useState(false);
   const [preservationInstructions, setPreservationInstructions] = useState("");
   const [busyTask, setBusyTask] = useState<BuiltinTaskKind | undefined>();
@@ -372,16 +376,32 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
     }
     if (startPending.current) return;
     startPending.current = true;
+    const requestId = crypto.randomUUID();
+    preparationRequestId.current = requestId;
+    preparationStarted.current = false;
+    stopRequested.current = false;
+    setStopping(false);
     setBusyTask(task);
+    let unsubscribe: (() => void) | undefined;
     try {
       props.onStarting();
+      setStatus(settings.fileType === "pdf" || /\.pdf$/iu.test(settings.sourcePath)
+        ? props.locale === "zh-CN" ? "先整理并检查 PDF 原文结构，通过后生成 HTML…" : "Organizing and checking PDF source structure before generating HTML…"
+        : text.starting);
+      unsubscribe = window.workshop.onLineReviewGenerationProgress(progress => {
+        if (progress.requestId !== requestId || stopRequested.current) return;
+        setStatus(htmlPreparationProgressMessage(progress, props.locale));
+      });
       if (task === "assets") {
         // Resolve the typed destination independently of the previously selected
         // project; existing bindings win and a new project starts with defaults.
         const materials = settings.materials;
         settings = { ...await selectProjectSettings(settings.outputDir.trim(), settings, false), materials };
       }
+      if (stopRequested.current) throw new Error(props.locale === "zh-CN" ? "任务准备已停止。" : "Task preparation stopped.");
+      preparationStarted.current = true;
       const result = await window.workshop.startBuiltinTask({
+        requestId,
         task,
         settings,
         ...(task === "translation" ? { preservationInstructions } : {}),
@@ -394,8 +414,31 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
       props.onStartFailed(reason);
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
+      unsubscribe?.();
+      preparationRequestId.current = undefined;
+      preparationStarted.current = false;
+      stopRequested.current = false;
+      setStopping(false);
       startPending.current = false;
       setBusyTask(undefined);
+    }
+  }
+
+  async function stopPreparation() {
+    const requestId = preparationRequestId.current;
+    if (!requestId || stopRequested.current) return;
+    stopRequested.current = true;setStopping(true);
+    setStatus(props.locale === "zh-CN" ? "正在停止，等待任务准备收尾…" : "Stopping. Waiting for task preparation to finish…");
+    // Project loading has no running Host yet. Its original promise still owns
+    // busy state, then observes this stop before dispatching tasks:start.
+    if (!preparationStarted.current) return;
+    try {
+      const result = await window.workshop.cancelHtmlPreparation(requestId);
+      if (!result.ok) throw new Error(props.locale === "zh-CN" ? "当前准备请求无法停止。" : "The current preparation request could not be stopped.");
+    } catch (reason) {
+      if (preparationRequestId.current !== requestId) return;
+      stopRequested.current = false;setStopping(false);
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
@@ -489,6 +532,7 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
               {busyTask === "assets" ? <LoaderCircle className="builtinTaskSpinner" size={16} /> : <BookOpen size={16} />}
               {busyTask === "assets" ? text.starting : text.assetsStart}
             </button>
+            {busyTask === "assets" && <button className="builtinTaskQuietButton" type="button" disabled={stopping} onClick={() => void stopPreparation()}>{props.locale === "zh-CN" ? (stopping ? "正在停止…" : "停止准备") : (stopping ? "Stopping…" : "Stop preparation")}</button>}
           </div>
         </article>
       </div>
@@ -699,10 +743,11 @@ export function BuiltinTaskEntry(props: BuiltinTaskEntryProps) {
               ) : null}
 
               {error ? <div className="builtinTaskFeedback error" role="alert">{error}</div> : null}
+              {busyTask === modalTask && status ? <div className="builtinTaskFeedback" role="status" aria-live="polite">{status}</div> : null}
             </div>
 
             <footer className="builtinTaskDialogFooter">
-              <button className="builtinTaskQuietButton" type="button" disabled={busyTask !== undefined} onClick={() => setModalTask(undefined)}>{text.cancel}</button>
+              <button className="builtinTaskQuietButton" type="button" disabled={stopping} onClick={() => busyTask ? void stopPreparation() : setModalTask(undefined)}>{busyTask ? (props.locale === "zh-CN" ? (stopping ? "正在停止…" : "停止准备") : (stopping ? "Stopping…" : "Stop preparation")) : text.cancel}</button>
               <button className="builtinTaskButton primary" type="button" disabled={busyTask !== undefined || (modalTask === "proofread" && !canStartProofread)} onClick={() => void startTask(modalTask, draft, autoApplyProofread)}>
                 {busyTask === modalTask ? <LoaderCircle className="builtinTaskSpinner" size={17} /> : <Check size={17} />}
                 {busyTask === modalTask ? text.starting : text.start}

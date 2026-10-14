@@ -1,3 +1,4 @@
+import { registerReviewHtmlFixtureReadIpc } from "../tests/helpers/review-html-fixture-ipc.ts";
 import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -298,6 +299,7 @@ async function run(): Promise<void> {
     });
     return { ok: true, surface: result.surface };
   });
+  registerReviewHtmlFixtureReadIpc();
   ipcMain.handle("html:persistState", async () => ({ ok: true }));
   ipcMain.handle("project:readState", async () => ({}));
   ipcMain.handle("project:patch", async () => true);
@@ -342,6 +344,7 @@ async function run(): Promise<void> {
     console.log(`[real-renderer:${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`);
   });
   await win.loadFile(htmlPath);
+  await win.webContents.executeJavaScript("window.translationWorkshopLineReviewReady");
   await win.webContents.executeJavaScript("(() => { window.confirm = () => true; return true; })()");
   const openStarted = performance.now();
   await clickSelector("#openAgentChat");

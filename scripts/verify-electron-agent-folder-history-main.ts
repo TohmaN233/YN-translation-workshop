@@ -1,3 +1,4 @@
+import { registerReviewHtmlFixtureReadIpc } from "../tests/helpers/review-html-fixture-ipc.ts";
 import { getCurrentTools } from "@earendil-works/pi-ai";
 import { readSessionConversation } from "../tests/helpers/pi-session.mjs";
 import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
@@ -43,7 +44,7 @@ import { registerAgentSessionIpc } from "../src/main/ipc/agentSessionHandlers.ts
 import { upgradeLegacyReviewHtmlTree } from "../src/main/reviewHtmlUpgrade.ts";
 import { getProviderPreset } from "../src/shared/agent/providerPresets.ts";
 import { renderLineReviewHtml } from "../src/shared/core/html.ts";
-import { embeddedBatchLineReviewFiles } from "../src/shared/core/legacyHtml.ts";
+import { embeddedBatchLineReviewFiles, upgradeLegacyBatchLineReviewHtmlContent } from "../src/shared/core/legacyHtml.ts";
 import { buildPrompt, buildTranslatePrompt } from "../src/shared/core/prompts.ts";
 import {
   splitTextLines,
@@ -490,7 +491,9 @@ async function prepareLegacyBatchFixture(): Promise<{ parentPath: string; childP
   const fixtureHtmlDir = path.join(workspace, "legacy-upgrade-fixture", ".translation-workshop", "html");
   const parentPath = path.join(fixtureHtmlDir, path.basename(batchHtmlPath));
   await mkdir(fixtureHtmlDir, { recursive: true });
-  await writeFile(parentPath, parentHtml, "utf8");
+  // The fixture models today's index opening an old child. Truly old index
+  // schemas are covered separately by the atomic compatibility tests.
+  await writeFile(parentPath, upgradeLegacyBatchLineReviewHtmlContent(parentHtml,path.basename(parentPath),workspace) ?? parentHtml, "utf8");
 
   const childPaths = await Promise.all(files.map(async (file, index) => {
     assert(file.outputPath, `The real batch child ${index + 1} has no HTML output path.`);
@@ -665,6 +668,7 @@ function responseFactory(activeSupervisor: () => ObservableSupervisor | undefine
 async function openNestedAgent(win: BrowserWindow): Promise<void> {
   await waitFor(win, 'document.querySelector("#fileFrame")?.contentDocument?.readyState === "complete"', 15_000);
   await waitFor(win, 'document.querySelector("#fileFrame")?.contentDocument?.querySelector("#openAgentChat")', 15_000);
+  await win.webContents.executeJavaScript('document.querySelector("#fileFrame").contentWindow.translationWorkshopLineReviewReady');
   const opened = await win.webContents.executeJavaScript(`(() => {
     const button = document.querySelector("#fileFrame")?.contentDocument?.querySelector("#openAgentChat");
     if (!button || typeof button.click !== "function") return false;
@@ -828,6 +832,7 @@ async function run(): Promise<Record<string, unknown>> {
     url: await rendererAssetUrl("agent-embedded-"),
     cssUrl: await rendererCssAssetUrl()
   }));
+  registerReviewHtmlFixtureReadIpc();
   ipcMain.handle("html:persistState", async () => ({ ok: true }));
 
   const firstDocument = manifest.documents[0];
@@ -867,6 +872,7 @@ async function run(): Promise<Record<string, unknown>> {
   });
   win.webContents.on("console-message", (details) => console.log(`[real-folder-renderer:${details.level}] ${details.message}`));
   await win.loadFile(controlledHtmlPath);
+  await win.webContents.executeJavaScript("window.translationWorkshopLineReviewReady");
   mark("controlled-html-loaded");
 
   routeWin = new BrowserWindow({
@@ -886,19 +892,21 @@ async function run(): Promise<Record<string, unknown>> {
   routeWin.webContents.on("console-message", (details) => console.log(`[real-folder-route:${details.level}] ${details.message}`));
 
   const legacyFixture = await prepareLegacyBatchFixture();
+  const legacyChildrenBefore=await Promise.all(legacyFixture.childPaths.map(childPath=>readFile(childPath,'utf8')));
   await routeWin.loadFile(legacyFixture.parentPath);
   await waitForNestedRoute(routeWin);
+  await routeWin.webContents.executeJavaScript('document.querySelector("#fileFrame").contentWindow.translationWorkshopLineReviewReady');
   const legacyRoute = await nestedAgentRoute(routeWin);
-  assert(legacyRoute.flow === legacyFlow && legacyRoute.sourceKind === "file", `The reconstructed v7 route did not reproduce the folder-as-file bug: ${JSON.stringify(legacyRoute)}`);
-  const upgradedOnDisk = await upgradeLegacyReviewHtmlTree(legacyFixture.parentPath);
-  assert(upgradedOnDisk, "The production legacy review-tree upgrader did not rewrite the reconstructed v7 batch.");
+  assert(legacyRoute.flow === currentFlow && legacyRoute.sourceKind === "folder", `The selected reconstructed v7 child was not upgraded before execution: ${JSON.stringify(legacyRoute)}`);
   const upgradedChildren = await Promise.all(legacyFixture.childPaths.map((childPath) => readFile(childPath, "utf8")));
-  assert(upgradedChildren.every((html) => html.includes(currentFlow) && html.includes(currentFolderRoute) && !html.includes(legacyFlow)), "The production upgrader did not rewrite every v7 child to the current folder route.");
+  assert(upgradedChildren[0]?.includes(currentFlow) && upgradedChildren[0]?.includes(currentFolderRoute) && !upgradedChildren[0]?.includes(legacyFlow), "The selected child did not acquire the current folder route.");
+  assert(upgradedChildren.slice(1).every((html,index)=>html===legacyChildrenBefore[index+1]),"Lazy preparation unexpectedly rewrote an unselected child.");
+  await upgradeLegacyReviewHtmlTree(legacyFixture.parentPath);
   await routeWin.loadFile(legacyFixture.parentPath);
   await waitForNestedRoute(routeWin);
   const upgradedRoute = await nestedAgentRoute(routeWin);
   assert(upgradedRoute.flow === currentFlow && upgradedRoute.sourceKind === "folder", `The Electron-loaded upgraded fixture did not expose the current folder route: ${JSON.stringify(upgradedRoute)}`);
-  mark("legacy-v7-folder-route-reproduced-and-upgraded");
+  mark("legacy-v7-selected-folder-route-upgraded-before-execution");
 
   const actualLoadStarted = performance.now();
   await routeWin.loadFile(batchHtmlPath);

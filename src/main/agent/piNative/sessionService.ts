@@ -1,4 +1,4 @@
-import { readSessionContext, appendSessionMessage, getDiskSessionAccess } from "./sessionAccess.ts";
+import { readSessionContext, appendSessionMessage, appendSessionCustomEntry, getDiskSessionAccess } from "./sessionAccess.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core/node";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -51,6 +51,7 @@ import {
 import type { TranslationAlignmentHostState } from "./translationAlignmentState.ts";
 import { PiSessionRepository } from "./sessionRepository.ts";
 import { PiQueuedInputNotConsumedError, PiSessionAgentRuntime } from "./sessionAgentRuntime.ts";
+import { PDF_STRUCTURE_PREPARATION_ENTRY, pdfStructureContextNeedsReset, type PdfStructurePreparationRequest, type PdfStructurePreparationResult } from "./sessionStructurePreparation.ts";
 import { NonRetryableAssignmentError, TranslationReviewBindingChangedError, isWorkflowStoppingAssignmentError } from "./assignmentFailure.ts";
 import { compactSubagentCards, interruptedSubagentCards } from "./subagentMessages.ts";
 import { YnSubagentSupervisor } from "./subagentSupervisor.ts";
@@ -205,6 +206,7 @@ async function resolveCurrentProjectPromptRequest(
 }
 
 interface ActiveSession {
+  pdfStructurePreparation?: PdfStructurePreparationOperation;
   workspaceDir: string;
   sessionId: string;
   runtime: PiSessionAgentRuntime;
@@ -260,6 +262,7 @@ interface OrderedQueuedMessage {
 }
 
 interface SessionOperationReservation {
+  pdfStructurePreparation?: PdfStructurePreparationOperation;
   preparationController?: AbortController;
   cancelled: boolean;
   stopSettlement?: Promise<void>;
@@ -269,6 +272,12 @@ interface PromptOperation {
   generation: number;
   cancelled: boolean;
   abortController: AbortController;
+}
+
+interface PdfStructurePreparationOperation {
+  controller: AbortController;
+  settlement: Promise<void>;
+  cancel: () => void;
 }
 
 interface PreparedRuntime {
@@ -650,16 +659,224 @@ export class PiNativeSessionService {
   async prompt(request: PiSessionPromptRequest): Promise<PiSessionPromptAcceptance> {
     return this.acceptPrompt(request);
   }
-
+  /** Host-only PDF preparation: await the actual native turn and durable receipt, never prompt acceptance. */
+  async runPdfStructurePreparation(request: PdfStructurePreparationRequest): Promise<PdfStructurePreparationResult> {
+    this.assertAcceptingOperations();
+    request.signal?.throwIfAborted();
+    if (!request.systemPrompt.trim() || !request.prompt.trim()) throw new Error("PDF structure preparation requires its system prompt and source prompt.");
+    if (this.hasActiveWork(request.outputDir)) throw new Error("Finish or stop the current project Agent work before preparing PDF structure.");
+    const sessionId = request.sessionId ?? `pi_${randomUUID()}`;
+    const key = sessionKey(request.outputDir, sessionId);
+    const controller = new AbortController();
+    let settle!: () => void, failSettlement!: (error: unknown) => void;
+    const settlement = new Promise<void>((resolve, reject) => { settle = resolve; failSettlement = reject; });
+    void settlement.catch(() => undefined);
+    let active: ActiveSession | undefined;
+    const operation: PdfStructurePreparationOperation = {
+      controller, settlement,
+      cancel: () => {
+        controller.abort(new DOMException("PDF structure preparation was stopped.", "AbortError"));
+        active?.runtime.requestAbort();
+      }
+    };
+    const reservation: SessionOperationReservation = { cancelled: false, preparationController: controller, pdfStructurePreparation: operation };
+    const onAbort = () => { reservation.cancelled = true; operation.cancel(); };
+    request.signal?.addEventListener("abort", onAbort, { once: true });
+    if (request.signal?.aborted) onAbort();
+    this.sessionOperationReservations.set(key, reservation);
+    let ownsStructureContext = false;
+    let session: Session | undefined;
+    let runtime: PiSessionAgentRuntime | undefined;
+    let failure: unknown;
+    let result: PdfStructurePreparationResult | undefined;
+    try {
+      active = await this.withWorkspaceSessionTransition(request.outputDir, sessionId, async () => {
+        this.assertAcceptingOperations();
+        controller.signal.throwIfAborted();
+        if ([...this.sessionOperationReservations.keys()].some(entry => entry !== key && entry.startsWith(`${workspaceKey(request.outputDir)}::`))
+          || [...this.active.entries()].some(([entry, owner]) => entry !== key && entry.startsWith(`${workspaceKey(request.outputDir)}::`)
+            && (owner.running || owner.compacting || owner.subagents.hasRunning() || owner.reviewBindingRecovery?.pending))) {
+          throw new Error("The project Agent became busy before PDF structure preparation.");
+        }
+        const previous = this.active.get(key);
+        if (previous && !previous.pdfStructurePreparation) throw new Error("PDF structure preparation cannot replace an existing Agent session.");
+        if(previous?.error)throw new Error('The previous PDF preparation owner still has a storage/cleanup failure. Finish Stop/close before preparing again.');
+        if (this.closingSessions.has(key)) throw new Error("The PDF preparation session is closing.");
+        const repository = new PiSessionRepository(request.outputDir);
+        session = previous?.session ?? (request.sessionId ? await repository.open(sessionId, {
+          signal: controller.signal,
+          onProgress: progress => this.emitStorageProgress(request.outputDir, sessionId, progress)
+        }) : await repository.create(sessionId));
+        if (!request.sessionId) await repository.writeActiveSessionId(sessionId);
+        const state = await loadYnSessionHostState(session, sessionId, { projectRoot: request.outputDir });
+        if (state?.domainRun || state?.taskPreparation || Object.keys(state?.parkedDomainRuns ?? {}).length) {
+          throw new Error("PDF structure preparation cannot enter a session with an existing workflow.");
+        }
+        const context = await readSessionContext(session);
+        if (!previous && context.messages.length && !await pdfStructureContextNeedsReset(session)) {
+          throw new Error("PDF structure preparation requires a fresh session or its own completed native preparation session.");
+        }
+        ownsStructureContext = true;
+        await appendSessionCustomEntry(session, PDF_STRUCTURE_PREPARATION_ENTRY, {
+          phase: "preparing", sessionId, timestamp: Date.now(),
+          providerId: request.providerId, modelId: request.modelId
+        });
+        controller.signal.throwIfAborted();
+        const selection = await (this.options.createModelSelection ?? createPiModelSelection)({
+          workspaceDir: request.outputDir, providerId: request.providerId, modelId: request.modelId
+        });
+        controller.signal.throwIfAborted();
+        runtime = new PiSessionAgentRuntime({
+          session, sessionId, models: selection.models, model: selection.model,
+          thinkingLevel: normalizeThinkingLevel(selection.model, request.thinkingLevel),
+          systemPrompt: request.systemPrompt, tools: request.tools ?? [],
+          refreshExpiredProviderAuth: async model => (await (this.options.createModelSelection ?? createPiModelSelection)({
+            workspaceDir: request.outputDir, providerId: model.provider, modelId: model.id
+          })).model
+        });
+        runtime.resetContext();
+        const owner: ActiveSession = {
+          pdfStructurePreparation: operation,
+          workspaceDir: path.resolve(request.outputDir), sessionId, session, runtime,
+          unsubscribe: () => {}, sequence: Math.max(previous?.sequence ?? 0, this.coldStorageSequences.get(key) ?? 0),
+          phase: "turn", running: true, compacting: false, streamingMessage: null,
+          queuedSteer: [], queuedFollowUp: [], queuedNextTurn: [], queuedUserOrder: [],
+          liveSubagentMessages: new Map(), childCompletionGeneration: 0,
+          hostState: { parkedDomainRuns: {}, workflowSuspended: false,
+            proofread: createProofreadHostState(), translationAlignment: createTranslationAlignmentHostState() },
+          hostPersistence: { tail: Promise.resolve() },
+          persistHostState: async () => {
+            await runtime!.appendCustomEntry(PDF_STRUCTURE_PREPARATION_ENTRY, {
+              phase: "checkpoint", sessionId, timestamp: Date.now(), cancelled: controller.signal.aborted,contextReset:true
+            });
+          },
+          subagents: new YnSubagentSupervisor({
+            publishCustomMessage: message => this.publishExternalMessage(request.outputDir, sessionId, message)
+          })
+        };
+        active = owner;
+        this.commitPreparedRuntime(key, { active: owner, previous, retirePreviousSubagents: false,
+          preparationTimings: { storageOpenMs: 0, hostRestoreMs: 0, modelSelectionMs: 0, runtimeSetupMs: 0 } });
+        result = { sessionId, providerId: selection.providerId, modelId: selection.modelId, text: "" };
+        await runtime.appendCustomEntry(PDF_STRUCTURE_PREPARATION_ENTRY, {
+          phase: "started", sessionId, providerId: selection.providerId, modelId: selection.modelId,
+          thinkingLevel: runtime.getThinkingLevel(), timestamp: Date.now()
+        });
+        this.emitActiveState(owner);
+        return owner;
+      });
+      controller.signal.throwIfAborted();
+      const task = active.runtime.prompt(request.prompt);
+      active.promptTask = task;
+      await task;
+      controller.signal.throwIfAborted();
+      const messages = active.runtime.getMessages();
+      if (request.responseMode === "structured-tool") {
+        let submitted = false;
+        for (const message of messages) {
+          if (message.role !== "toolResult" || message.toolName !== "submitPdfStructureAudit") continue;
+          if (message.isError && submitted) {
+            const detail = message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+            throw new NonRetryableAssignmentError(`PDF audit submission failed after its payload was sealed: ${detail}`);
+          }
+          if (!message.isError) submitted = true;
+        }
+      }
+      const assistant = [...messages].reverse().find(message => message.role === "assistant");
+      if (!assistant || assistant.role !== "assistant") throw new Error("PDF structure preparation returned no assistant response.");
+      if (assistant.stopReason !== "stop" || active.error) {
+        throw new Error(assistant.errorMessage || active.error || "PDF structure preparation did not complete its native model turn.");
+      }
+      const text = assistant.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+      if (!text.trim() && request.responseMode !== "structured-tool") throw new Error("PDF structure preparation returned an empty structure response.");
+      result!.text = text;
+    } catch (error) {
+      failure = error;
+    } finally {
+      const cleanupErrors: unknown[] = [];
+      if (runtime) {
+        try {
+          if (failure || controller.signal.aborted) await runtime.abort();
+          else await runtime.waitForIdle();
+        } catch (error) { cleanupErrors.push(error); }
+        try {
+          runtime.reconfigure({ systemPrompt: GENERIC_SYSTEM_PROMPT, tools: [] });
+          runtime.resetContext();
+          await runtime.appendCustomEntry(PDF_STRUCTURE_PREPARATION_ENTRY, {
+            phase: failure || controller.signal.aborted ? controller.signal.aborted ? "cancelled" : "failed" : "completed",
+            sessionId, providerId: result?.providerId, modelId: result?.modelId,
+            timestamp: Date.now(), contextReset: true,
+            ...(failure ? { error: failure instanceof Error ? failure.message : String(failure) } : {})
+          });
+        } catch (error) { cleanupErrors.push(error); }
+      } else if (session && ownsStructureContext) {
+        try {
+          await appendSessionCustomEntry(session, PDF_STRUCTURE_PREPARATION_ENTRY, {
+            phase: controller.signal.aborted ? "cancelled" : "failed", sessionId, timestamp: Date.now(), contextReset: true,
+            ...(failure ? { error: failure instanceof Error ? failure.message : String(failure) } : {})
+          });
+        } catch (error) { cleanupErrors.push(error); }
+      }
+      try {
+        await this.withWorkspaceSessionTransition(request.outputDir, sessionId, async () => {
+          const current = this.active.get(key);
+          if (active && current === active) {
+            active.running = false; active.phase = "idle"; active.streamingMessage = null; active.promptTask = undefined;
+            if (failure || controller.signal.aborted) active.error = failure instanceof Error ? failure.message : "PDF structure preparation cancelled.";
+            await this.flushSessionStorage(active, "pdf-structure-preparation");
+            this.emitActiveState(active);
+          } else if (session) {
+            await getDiskSessionAccess(session)?.storage.flushDerivedIndex();
+          }
+          // Successful preparation and clean cancellation release native handles. Audit JSONL remains;
+          // the next regular prompt opens its own normal tools and observes the reset receipt.
+          if (session) await session.close(BACKGROUND_CONTEXT);
+          if (runtime) runtime.dispose();
+          if (active && current === active) { active.unsubscribe(); this.active.delete(key); }
+        });
+      } catch (error) {
+        cleanupErrors.push(error);
+        if (active && this.active.get(key) === active) {
+          active.error = error instanceof Error ? error.message : String(error);
+          this.emitActiveState(active);
+        }
+        if (runtime && session && getDiskSessionAccess(session)) {
+          try {
+            await runtime.appendCustomEntry(PDF_STRUCTURE_PREPARATION_ENTRY, {
+              phase: "failed", sessionId, timestamp: Date.now(), contextReset: true,
+              error: error instanceof Error ? error.message : String(error), stage: "native-cleanup"
+            });
+          } catch (diagnosticError) { cleanupErrors.push(diagnosticError); }
+        }
+      }
+      request.signal?.removeEventListener("abort", onAbort);
+      if (this.sessionOperationReservations.get(key) === reservation) this.sessionOperationReservations.delete(key);
+      if (cleanupErrors.length) {
+        const errors = [...(failure ? [failure] : []), ...cleanupErrors];
+        const error = new AggregateError(errors, `PDF structure preparation and native cleanup failed: ${errors.map(item => item instanceof Error ? item.message : String(item)).join("; ")}`);
+        failure = error;
+        failSettlement(error);
+      } else settle();
+    }
+    if (failure) throw failure;
+    controller.signal.throwIfAborted();
+    request.signal?.throwIfAborted();
+    if (!result) throw new Error("PDF structure preparation completed without its native result.");
+    return result;
+  }
   hasActiveWork(workspaceDir: string): boolean {
     const prefix = `${workspaceKey(workspaceDir)}::`;
     return [...this.sessionOperationReservations.keys()].some(key => key.startsWith(prefix))
       || [...this.active.entries()].some(([key, active]) => key.startsWith(prefix)
-        && (active.running || active.compacting || active.subagents.hasRunning() || active.reviewBindingRecovery?.pending));
+        && (active.running || active.compacting || active.subagents.hasRunning() || active.reviewBindingRecovery?.pending || active.pdfStructurePreparation&&active.error));
   }
 
   private async acceptPrompt(request: PiSessionPromptRequest, preparationHandoff?: YnTaskPreparationState, handoffCancelled?: () => boolean): Promise<PiSessionPromptAcceptance> {
     this.assertAcceptingOperations();
+    if([...this.active.values()].some(owner=>workspaceKey(owner.workspaceDir)===workspaceKey(request.outputDir)&&owner.pdfStructurePreparation&&owner.error))throw new Error('PDF preparation storage/cleanup must finish before starting another model request.');
+    if ([...this.sessionOperationReservations.entries()].some(([key, reservation]) => key.startsWith(`${workspaceKey(request.outputDir)}::`) && reservation.pdfStructurePreparation)) {
+      throw new Error("PDF structure preparation is still running; await its gate before starting project Agent work.");
+    }
     const preparationStarted = performance.now();
     request = await resolveCurrentProjectPromptRequest(request);
     assertWorkflowPromptMetadata(request);
@@ -669,6 +886,9 @@ export class PiNativeSessionService {
     if (this.closingSessions.has(key)) throw new Error(`Pi session ${request.sessionId} is closing.`);
     await this.sessionOperationReservations.get(key)?.stopSettlement;
     await this.active.get(key)?.reviewBindingRecovery?.task;
+    if ([...this.sessionOperationReservations.entries()].some(([entry, reservation]) => entry.startsWith(`${workspaceKey(request.outputDir)}::`) && reservation.pdfStructurePreparation)) {
+      throw new Error("PDF structure preparation is still running; await its gate before starting project Agent work.");
+    }
     if (this.sessionOperationReservations.has(key)) {
       throw new Error("Pi session is already running. Use Steer or Follow-up.");
     }
@@ -836,6 +1056,11 @@ export class PiNativeSessionService {
     const stopStartedAt = Date.now();
     const key = sessionKey(workspaceDir, sessionId);
     const reservation = this.sessionOperationReservations.get(key);
+    if (reservation?.pdfStructurePreparation) {
+      reservation.cancelled = true;
+      reservation.pdfStructurePreparation.cancel();
+      return reservation.pdfStructurePreparation.settlement;
+    }
     const coldControllers = this.coldStorageControllers.get(key);
     const activeBeforeStop = this.active.get(key);
     if (!activeBeforeStop) {
@@ -1079,6 +1304,10 @@ export class PiNativeSessionService {
         try { active.unsubscribe(); } catch (error) { releaseErrors.push(error); }
         try { active.runtime.dispose(); } catch (error) { releaseErrors.push(error); }
         try { await active.session.close(BACKGROUND_CONTEXT); } catch (error) { releaseErrors.push(error); }
+        if(active.pdfStructurePreparation&&releaseErrors.length) {
+          active.error=new AggregateError(releaseErrors,'PDF native owner could not be released.').message;
+          this.emitActiveState(active);errors.push(...releaseErrors);continue;
+        }
         // The latest restore window is already durable. Native Session.close
         // seals the owner even when it reports an error, so it must never be
         // reused by the next prompt or a retry of desktop shutdown.
@@ -1168,6 +1397,7 @@ export class PiNativeSessionService {
       }
     });
     const hostRestoreMs = performance.now() - restoreStarted;
+    const resetPdfPreparationContext = !previous && await pdfStructureContextNeedsReset(session);
     if (!previous) {
       this.emitStorageProgress(request.outputDir, request.sessionId, { phase: "complete", processedBytes: 0, totalBytes: 0 });
     }
@@ -1775,6 +2005,7 @@ export class PiNativeSessionService {
         return terminateUserGateBatch ? { terminate: true } : undefined;
       }
     });
+    if (resetPdfPreparationContext) runtime.resetContext();
     const active: ActiveSession = {
       workspaceDir: path.resolve(request.outputDir),
       sessionId: request.sessionId,
@@ -1856,6 +2087,7 @@ export class PiNativeSessionService {
 
   private requireRunning(workspaceDir: string, sessionId: string): ActiveSession {
     const active = this.active.get(sessionKey(workspaceDir, sessionId));
+    if (active?.pdfStructurePreparation) throw new Error("PDF structure preparation accepts only its Host source prompt and structure tools.");
     if (!active?.running) throw new Error(`Pi session ${sessionId} is not running.`);
     return active;
   }
@@ -1909,7 +2141,7 @@ export class PiNativeSessionService {
       }
     } else if (event.type === "settled") {
       // Native provider idle is not the end of a Host-owned preparation/finish.
-      active.running = Boolean(active.promptOperation && !active.promptOperation.cancelled
+      active.running = Boolean(active.pdfStructurePreparation || active.promptOperation && !active.promptOperation.cancelled
         && active.hostState.taskPreparation && !active.hostState.taskPreparation.completed);
       active.phase = active.running ? "turn" : "idle";
       active.streamingMessage = null;
@@ -2458,7 +2690,7 @@ export class PiNativeSessionService {
   private cancelWorkspaceOperationReservations(workspaceDir: string): void {
     const prefix = `${workspaceKey(workspaceDir)}::`;
     for (const [key, reservation] of this.sessionOperationReservations) {
-      if (key.startsWith(prefix)) { reservation.cancelled = true; reservation.preparationController?.abort(new DOMException("PDF workspace preparation was stopped.", "AbortError")); }
+      if (key.startsWith(prefix)) { reservation.cancelled = true; reservation.preparationController?.abort(new DOMException("PDF workspace preparation was stopped.", "AbortError")); reservation.pdfStructurePreparation?.cancel(); }
     }
   }
 

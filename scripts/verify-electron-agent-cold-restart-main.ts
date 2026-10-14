@@ -1,3 +1,4 @@
+import { registerReviewHtmlFixtureReadIpc } from "../tests/helpers/review-html-fixture-ipc.ts";
 import { readSessionEntries, appendSessionMessage } from "../tests/helpers/pi-session.mjs";
 import { app, BrowserWindow, ipcMain, nativeImage } from "electron";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -138,6 +139,7 @@ async function recover(): Promise<void> {
     url: await rendererAssetUrl("agent-embedded-"),
     cssUrl: await rendererCssAssetUrl()
   }));
+  registerReviewHtmlFixtureReadIpc();
   ipcMain.handle("html:persistState", async () => ({ ok: true }));
   ipcMain.handle("project:readState", async () => ({}));
   ipcMain.handle("project:patch", async () => true);
@@ -170,6 +172,7 @@ async function recover(): Promise<void> {
   });
   try {
     await win.loadFile(htmlPath);
+    await win.webContents.executeJavaScript("window.translationWorkshopLineReviewReady");
     await waitFor(win, 'document.querySelector("#openAgentChat")');
     await win.webContents.executeJavaScript('document.querySelector("#openAgentChat").click()');
     await waitFor(win, '[...document.querySelectorAll("[data-agent-subagent-card=true]")].some((card) => card.innerText.includes("该 subagent 已关闭"))');

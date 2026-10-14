@@ -18,11 +18,30 @@ export interface BuiltinTaskSettings extends PromptAdvancedOptions {
 }
 
 export interface StartBuiltinTaskRequest {
+  requestId?: string;
   task: BuiltinTaskKind;
   settings: BuiltinTaskSettings;
   autoApplyProofreadSuggestions?: boolean;
   /** Natural-language wishes for the preparation Agent, not executable rules. */
   preservationInstructions?: string;
+}
+
+export interface HtmlPreparationProgress {
+  requestId:string;sourcePath:string;page:number;totalPages:number;
+  phase?:'extracting'|'structuring'|'auditing'|'validating'|'accepted';
+}
+
+export function htmlPreparationProgressMessage(progress:HtmlPreparationProgress,locale:'zh-CN'|'en-US'):string {
+  const zh=locale==='zh-CN',file=progress.sourcePath.split(/[\\/]/u).pop()||progress.sourcePath;
+  switch(progress.phase) {
+    case 'structuring':return zh?'正在整理 PDF 原文的段落、阅读顺序和表格…':'Organizing PDF paragraphs, reading order, and tables…';
+    case 'auditing':return zh?'正在独立检查 PDF 原文结构与保留内容…':'Independently checking PDF structure and preserved content…';
+    case 'validating':return zh?'正在核验源文覆盖、原生字形和结构验收…':'Validating source coverage, native glyphs, and structure acceptance…';
+    case 'accepted':return zh?'PDF 原文结构已通过检查，正在生成 HTML…':'PDF source structure accepted. Generating HTML…';
+    default:return progress.totalPages>0
+      ?zh?`正在读取 ${file}：第 ${progress.page}/${progress.totalPages} 页…`:`Reading ${file}: page ${progress.page}/${progress.totalPages}…`
+      :zh?'正在读取 PDF 原文…':'Reading PDF source…';
+  }
 }
 
 /** Restore the input binding after lazy preparation replaced it with canonical TXT. */

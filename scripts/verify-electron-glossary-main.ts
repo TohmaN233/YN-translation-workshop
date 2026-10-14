@@ -1,3 +1,4 @@
+import { registerReviewHtmlFixtureReadIpc } from "../tests/helpers/review-html-fixture-ipc.ts";
 import { app, BrowserWindow, ipcMain, webContents } from "electron";
 import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -46,6 +47,7 @@ async function makeWindow(htmlPath: string): Promise<BrowserWindow> {
     if (details.level === "error") rendererErrors.push(details.message);
   });
   await window.loadFile(htmlPath);
+  await window.webContents.executeJavaScript("window.translationWorkshopLineReviewReady");
   await window.webContents.executeJavaScript("window.confirm = () => true; true;");
   return window;
 }
@@ -60,6 +62,7 @@ try {
     return readProjectState(args.outputDir);
   });
   ipcMain.handle("files:readTextFile", async (_event, args) => ({ path: args.path, text: await readFile(args.path, "utf8") }));
+  registerReviewHtmlFixtureReadIpc();
   ipcMain.handle("html:persistState", () => ({ ok: true }));
   unsubscribe = subscribeWorkspaceAssetsStatus((outputDir, status) => {
     for (const contents of webContents.getAllWebContents()) contents.send("agent-assets:workspaceUpdate", { outputDir, status });

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {pdfTextBlocks,pdfParagraphStructure,flowPdfText,intersects} from '../src/main/pdfLayout.ts';
+import {pdfTextBlocks,pdfParagraphStructure} from '../src/main/pdfLayout.ts';
 import {splitPdfInlineTranslation} from '../src/shared/validation/pdfPreservation.ts';
 import {validateTranslationCandidate} from '../src/shared/validation/translationValidator.ts';
 import {validateProofreadReplacement} from '../src/shared/validation/proofreadReplacement.ts';
@@ -75,9 +75,4 @@ for(const candidate of [valid.replace('{{formula:p1:1}}',''),valid.replace('p1:1
   assert.ok(validateProofreadReplacement(source,candidate,{extractPlaceholders:()=>[]}).length,'proofreading must preserve marker identity/count/paragraph ownership and prose');
 }
 assert.throws(()=>splitPdfInlineTranslation('ordinary prose','正文 {{formula:p1:1}}'));
-const boxes=[{x:30,y:40,width:35,height:12},{x:70,y:40,width:15,height:12},{x:30,y:56,width:50,height:12}];
-const flowed=flowPdfText('ABCDEFGHIJ',boxes,10,value=>value.length*5);
-assert.ok(flowed);assert.equal(flowed.map(row=>row.text).join(''),'ABCDEFGHIJ');
-const ink={x:65,y:40,width:5,height:12};assert.ok(flowed.every(row=>!intersects(row.box,ink)),'text remains in real ordered areas around ink');
-assert.equal(flowPdfText('A'.repeat(200),boxes,6,value=>value.length*3),undefined,'overflow remains an explicit failure');
-console.log('ok PDF logical paragraphs include first-line and hanging indents with complete export geometry');
+console.log('ok PDF logical paragraphs preserve first-line/hanging indents and inline identity');

@@ -22,7 +22,6 @@ import {
   type UiLocale
 } from "../shared/core/html.ts";
 import {
-  embeddedProposalLinks,
   rewriteProposalReviewLineReviewPathContent
 } from "../shared/core/legacyHtml.ts";
 import { rankProofreadReportCandidates, type ProofreadReportCandidate } from "../shared/core/reportDiscovery.ts";
@@ -59,7 +58,8 @@ import {
   prepareBatchLineReviewTxtWrites,
   readBatchLineReviewChildren,
   readBatchLineReviewCurrentBindings,
-  resolveLineReviewSidecarStatePath
+  resolveLineReviewSidecarStatePath,
+  lineReviewSidecarStatePath
 } from "./batchLineReviewTxt.ts";
 import {
   acceptLineReviewMutationSequence,
@@ -74,8 +74,9 @@ import { withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
 import { readEpubText } from "./epubReader.ts";
 import { createTranslatedEpub } from "./epubWriter.ts";
 import { preparePdfDocument, createTranslatedPdf, configurePdfResourceDirectory, readPdfReferenceImage, assertPdfProtectedWrite, readPdfProtectedLines, isPdfSourceProjection } from "./pdfDocuments.ts";
+import {configurePdfStructurePreparation,withPdfPreparationContext,currentPdfPreparationContext} from './pdfStructurePreparation.ts';
 import { collectSourceTreeFiles } from "./sourceFileTree.ts";
-import { upgradeLegacyReviewHtmlTree } from "./reviewHtmlUpgrade.ts";
+import { prepareReviewHtmlOpen, prepareReviewHtmlChildOpen, readReviewHtmlSourceStamp, type ReviewHtmlOpenContext } from "./reviewHtmlUpgrade.ts";
 import { containedProjectRoot, portableReviewHtml, readReviewHtml, writeReviewHtml } from "./reviewHtmlPortability.ts";
 import { decodeProjectPaths, encodeProjectPaths } from "./projectPaths.ts";
 import { commitLineReviewStateInWorker } from "./lineReviewStateWorkerService.ts";
@@ -138,6 +139,9 @@ import { serveAgentApiStdio } from "./agentApiStdio.ts";
 import { connectAgentApiPipe } from "./agentApiTransport.ts";
 
 configurePdfResourceDirectory(app.getAppPath());
+configurePdfStructurePreparation(async request=>piNativeSessionService.runPdfStructurePreparation({
+  ...request,...(request.providerId?{}:await builtinModelSelection(request.outputDir))
+}));
 
 interface GenerateLineHtmlArgs {
   requestId?: string;
@@ -334,9 +338,13 @@ type HtmlViewerTab = {
   view: BrowserView;
   workspaceDir?: string;
   loadPromise?: Promise<void>;
+  sourceStamp?: string;
+  batchOpenContext?: ReviewHtmlOpenContext;
+  lineOpenContext?: ReviewHtmlOpenContext;
+  preparedChildren?: Map<string,ReviewHtmlOpenContext>;
 };
 const htmlViewerTabs = new Map<string, HtmlViewerTab>();
-const htmlViewerOpenOperations = new Set<Promise<{ key: string; tab: HtmlViewerTab }>>();
+const htmlViewerOpenOperations = new Set<Promise<unknown>>();
 const htmlViewerTabCloseOperations = new Map<string, Promise<boolean>>();
 const htmlViewerTabSettlements = new WeakMap<HtmlViewerTab, Promise<void>>();
 const htmlStateWriteQueues = new Map<string, Promise<void>>();
@@ -2433,31 +2441,22 @@ async function findLineReviewForProposalHtml(
   return lineReviewCandidateInWorkspace(links.lineReviewPath, undefined);
 }
 
-async function repairProposalReviewHtmlLineReviewPath(targetPath: string, outputDir?: string): Promise<boolean> {
-  const filePath = filePathFromPathLike(targetPath);
-  if (!filePath) {
-    return false;
-  }
-  let html = "";
-  try {
-    html = await readReviewHtml(filePath);
-  } catch {
-    return false;
-  }
-  const links = embeddedProposalLinks(html);
-  if (!links) {
-    return false;
-  }
+async function repairProposalReviewHtmlLineReviewPath(context: ReviewHtmlOpenContext, outputDir?: string): Promise<ReviewHtmlOpenContext> {
+  if(context.kind!=='proposalData')return context;
+  const {filePath,html,payload}=context;
+  const links={reportPath:typeof payload?.reportPath==='string'?payload.reportPath:undefined,
+    lineReviewPath:typeof payload?.lineReviewPath==='string'?payload.lineReviewPath:undefined};
   const lineReviewPath = await findLineReviewForProposalHtml(filePath, links, outputDir);
   if (!lineReviewPath || sameFilePath(filePathFromPathLike(links.lineReviewPath), lineReviewPath)) {
-    return false;
+    return context;
   }
   const rewritten = rewriteProposalReviewLineReviewPathContent(html, path.basename(filePath), lineReviewPath);
   if (rewritten) {
     await writeReviewHtml(filePath, rewritten);
-    return true;
+    const repaired=await prepareReviewHtmlOpen(filePath);
+    return {...repaired,changed:true};
   }
-  return false;
+  return context;
 }
 
 async function findProofreadReportCandidates(outputDir: string): Promise<ProofreadReportCandidate[]> {
@@ -2759,6 +2758,7 @@ async function collectLineFiles(folderPath: string, fileType: GenerateLineHtmlAr
 }
 
 async function collectTranslationLineFiles(folderPath: string, workspaceDir: string): Promise<FolderLineFile[]> {
+  if((await collectSourceTreeFiles(folderPath,file=>/\.pdf$/iu.test(file))).length)throw new Error('For PDF proofreading, select the aligned translated TXT produced by YN, not an independently typeset PDF.');
   return collectLineFiles(folderPath, "auto", workspaceDir);
 }
 
@@ -3003,7 +3003,7 @@ async function ensureHtmlViewerWindow(): Promise<BrowserWindow> {
     const closingWindow = htmlViewerWindow;
     const tabs = [...htmlViewerTabs.values()];
     htmlViewerWindowClosing = true;
-    void Promise.all(tabs.map(settleHtmlViewerTab))
+    void Promise.all([...tabs.map(settleHtmlViewerTab),...htmlViewerOpenOperations])
       .then(() => {
         if (closingWindow && !closingWindow.isDestroyed()) {
           disposeHtmlViewerTabs(closingWindow, tabs);
@@ -3057,12 +3057,9 @@ async function rememberActiveHtmlViewerProject(): Promise<void> {
   await rememberHtmlViewerTabProject(htmlViewerTabs.get(activeHtmlViewerTab));
 }
 
-async function extractLineReviewWorkspaceDir(filePath: string): Promise<string | undefined> {
-  const html = await readReviewHtml(filePath).catch(() => "");
-  const match = html.match(/<script id="(?:reviewData|proposalData|batchData)" type="application\/json">([\s\S]*?)<\/script>/i);
-  if (!match) return undefined;
-  try {
-    const data = JSON.parse(match[1]);
+function extractLineReviewWorkspaceDir(context:ReviewHtmlOpenContext):string|undefined {
+    const data=context.payload;
+    if(!data)return undefined;
     const outputDir = typeof data?.workflow?.paths?.outputDir === "string"
       ? data.workflow.paths.outputDir
       : typeof data?.folderAgentRoute?.outputDir === "string"
@@ -3073,9 +3070,6 @@ async function extractLineReviewWorkspaceDir(filePath: string): Promise<string |
     return outputDir && path.isAbsolute(outputDir)
       ? normalizeProjectFolder(outputDir).workspaceDir
       : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 async function cancelHtmlViewerTabAgentRuns(tab: HtmlViewerTab): Promise<void> {
@@ -3166,13 +3160,16 @@ async function loadHtmlViewerTab(targetPath: string, outputDir?: string): Promis
 }
 
 async function finishLoadingHtmlViewerTab(targetPath: string, outputDir?: string): Promise<{ key: string; tab: HtmlViewerTab }> {
+  const started=performance.now(),timings:Record<string,number>={};
+  let route='cold',outcome='failed';
+  const timed=async<T>(name:string,run:()=>Promise<T>):Promise<T>=>{const start=performance.now();try{return await run();}finally{timings[name]=performance.now()-start;}};
+  try {
   if (htmlViewerWindowClosing) throw new Error("HTML viewer is closing. Wait for pending changes to be saved before reopening it.");
-  const resolvedTargetPath = await resolveHtmlOpenTarget(targetPath);
+  const resolvedTargetPath = await timed('resolveTarget',()=>resolveHtmlOpenTarget(targetPath));
   const { filePath, hash, key } = splitHtmlOpenTarget(resolvedTargetPath);
   if (!(await fileExists(filePath))) {
     throw new Error(`HTML file not found: ${filePath}`);
   }
-  const upgradedOnDisk = await upgradeLegacyReviewHtmlTree(filePath);
   let tab = htmlViewerTabs.get(key);
   if (tab?.loadPromise) await tab.loadPromise;
   if (tab && !tab.view.webContents.isDestroyed()) {
@@ -3188,19 +3185,23 @@ async function finishLoadingHtmlViewerTab(targetPath: string, outputDir?: string
             .some((item) => currentMarkers.includes(item.getAttribute('content')));
         })()`)
       : false;
-    if (currentProtocol && !outputDir && !upgradedOnDisk) {
+    const sameWorkspace=!outputDir||sameFilePath(tab.workspaceDir,normalizeProjectFolder(outputDir).workspaceDir);
+    if (currentProtocol && sameWorkspace && tab.sourceStamp
+      &&tab.sourceStamp===await timed('sourceEpoch',()=>readReviewHtmlSourceStamp(filePath))) {
       if (hash) {
         await tab.view.webContents.executeJavaScript(
           `if (location.hash !== "#${hash.replace(/"/g, "")}") location.hash = "#${hash.replace(/"/g, "")}";`
         );
       }
       tab.hash = hash;
+      route='loaded-tab';outcome='ready';
       return { key, tab };
     }
   }
-  const repairedOnDisk = await repairProposalReviewHtmlLineReviewPath(filePath, outputDir);
-  const workspaceDir = await extractLineReviewWorkspaceDir(filePath);
-  await ensureHtmlViewerWindow();
+  let opening=await timed('prepareTarget',()=>prepareReviewHtmlOpen(filePath));
+  opening=await timed('repairProposal',()=>repairProposalReviewHtmlLineReviewPath(opening, outputDir));
+  const workspaceDir = extractLineReviewWorkspaceDir(opening);
+  await timed('createWindow',()=>ensureHtmlViewerWindow());
   if (!tab) {
     const view = new BrowserView({
       webPreferences: {
@@ -3220,17 +3221,25 @@ async function finishLoadingHtmlViewerTab(targetPath: string, outputDir?: string
     });
   } else {
     tab.hash = hash;
-    tab.workspaceDir = workspaceDir;
   }
   const currentUrl = tab.view.webContents.getURL();
   const currentFilePath = normalizeLinkedHtmlFilePath(currentUrl.replace(/#.*$/, ""));
-  const needsLoad = upgradedOnDisk || repairedOnDisk || !currentFilePath || !sameFilePath(currentFilePath, filePath);
+  const needsLoad = opening.changed || !currentFilePath || !sameFilePath(currentFilePath, filePath)
+    || tab.sourceStamp!==opening.sourceStamp;
   if (needsLoad) {
     if (!tab.loadPromise) {
+      if(currentFilePath)await timed('settleBeforeReload',()=>settleHtmlViewerTab(tab));
+      tab.workspaceDir=workspaceDir;
+      tab.batchOpenContext=opening.kind==='batchData'?opening:undefined;
+      tab.lineOpenContext=opening.kind==='reviewData'?opening:undefined;
+      tab.preparedChildren=new Map();
       const pendingLoad = (async () => {
-        await tab.view.webContents.loadFile(filePath, { hash });
+        if(opening.sourceStamp!==await readReviewHtmlSourceStamp(filePath))throw new Error(`HTML changed before its prepared view was loaded: ${filePath}`);
+        await timed('loadFile',()=>tab.view.webContents.loadFile(filePath, { hash }));
         tab.filePath = filePath;
-        await injectHtmlSidecarState(filePath, tab.view.webContents);
+        await timed('hydrateSidecar',()=>injectHtmlSidecarState(opening, tab.view.webContents));
+        if(opening.sourceStamp!==await readReviewHtmlSourceStamp(filePath))throw new Error(`HTML changed while its prepared view was loaded: ${filePath}`);
+        tab.sourceStamp=opening.sourceStamp;
       })();
       tab.loadPromise = pendingLoad;
       const clearPendingLoad = () => {
@@ -3243,22 +3252,27 @@ async function finishLoadingHtmlViewerTab(targetPath: string, outputDir?: string
     await tab.view.webContents.executeJavaScript(`if (location.hash !== "#${hash.replace(/"/g, "")}") location.hash = "#${hash.replace(/"/g, "")}";`);
   }
   tab.hash = hash;
+  outcome='ready';
   return { key, tab };
+  } finally {
+    console.info('[html-open]',{targetPath,route,outcome,elapsedMs:performance.now()-started,timings});
+  }
 }
 
-async function injectHtmlSidecarState(filePath: string, contents: Electron.WebContents): Promise<void> {
-  const html = await readReviewHtml(filePath).catch(() => "");
-  const kind = /<script\s+id=["']reviewData["']\s+type=["']application\/json["']>/i.test(html)
-    ? "line"
-    : /<script\s+id=["']proposalData["']\s+type=["']application\/json["']>/i.test(html)
-      ? "proposal"
-      : "";
+async function injectHtmlSidecarState(opening: ReviewHtmlOpenContext, contents: Electron.WebContents): Promise<void> {
+  const {filePath,payload}=opening;
+  const kind=opening.kind==='reviewData'?'line':opening.kind==='proposalData'?'proposal':'';
   if (!kind) return;
   if (kind === "line") {
-    const match = html.match(/<script id=["']reviewData["'] type=["']application\/json["']>([\s\S]*?)<\/script>/i);
-    if (match) pdfReviewBindings.set(path.resolve(filePath).toLowerCase(), normalizedLineReviewRouting(JSON.parse(match[1]).workflow?.paths ?? {}).sourcePaths.filter(isPdfSourceProjection));
+    pdfReviewBindings.set(path.resolve(filePath).toLowerCase(), normalizedLineReviewRouting(payload?.workflow?.paths ?? {}).sourcePaths.filter(isPdfSourceProjection));
+    await contents.executeJavaScript(`(() => {
+      const ready=window.translationWorkshopLineReviewReady;
+      if(!ready||typeof ready.then!=="function") throw new Error("Current line-review HTML is missing its initial state readiness promise.");
+      return ready;
+    })()`);
+    return;
   }
-  const statePath = await htmlSidecarStatePath(filePath, kind);
+  const statePath = await htmlSidecarStatePath(filePath,kind);
   const sidecarState = statePath ? await readJsonObject(statePath) : undefined;
   if (!sidecarState) return;
   const stateJson = JSON.stringify(sidecarState);
@@ -3266,26 +3280,6 @@ async function injectHtmlSidecarState(filePath: string, contents: Electron.WebCo
     (() => {
       const incomingState = JSON.parse(${JSON.stringify(stateJson)});
       if (!incomingState || typeof incomingState !== "object") return;
-      if (${JSON.stringify(kind)} === "line") {
-        const legacyKey = "translation-workshop:line:" + location.pathname;
-        const primaryKey = typeof lineReviewStorageKey === "function" ? lineReviewStorageKey() : legacyKey;
-        const existingState = JSON.parse(localStorage.getItem(primaryKey) || localStorage.getItem(legacyKey) || "{}") || {};
-        const mergedState = {
-          ...existingState,
-          ...incomingState,
-          edits: incomingState.edits || {},
-          status: incomingState.status || {},
-          revisions: incomingState.revisions || {},
-          revisionHistory: incomingState.revisionHistory || {},
-          auditIssues: incomingState.auditIssues || {},
-          auditWhitelist: incomingState.auditWhitelist || {},
-          theme: { ...(existingState.theme || {}), ...(incomingState.theme || {}) }
-        };
-        if (typeof state === "object" && state) Object.assign(state, mergedState);
-        if (typeof storeLineReviewStateLocally === "function") storeLineReviewStateLocally();
-        else for (const storageKey of [...new Set([primaryKey, legacyKey].filter(Boolean))]) localStorage.setItem(storageKey, JSON.stringify(mergedState));
-        if (typeof canonicalStateHydrated !== "undefined") canonicalStateHydrated = true;
-      } else {
         const existingState = JSON.parse(localStorage.getItem(key) || "{}") || {};
         const mergedState = {
           ...existingState,
@@ -3295,7 +3289,6 @@ async function injectHtmlSidecarState(filePath: string, contents: Electron.WebCo
         };
         localStorage.setItem(key, JSON.stringify(mergedState));
         if (typeof state === "object" && state) Object.assign(state, mergedState);
-      }
       if (typeof render === "function") {
         const previous = typeof applyingCanonicalState !== "undefined" ? applyingCanonicalState : false;
         applyingCanonicalState = true;
@@ -3861,8 +3854,35 @@ async function generateLineReview(args: GenerateLineHtmlArgs, onPdfProgress?: (s
   await writeFile(path.join(workspaceDir, "state.json"), projectJson(path.join(workspaceDir, "state.json"), { lastHtml: outputPath, generatedAt: new Date().toISOString() }), "utf8");
   return { outputPath };
 }
-ipcMain.handle("html:generateLineReview", async (event, args: GenerateLineHtmlArgs) => {
-  const requestId = args.requestId || randomUUID(), started = performance.now();
+type HtmlPreparationOperation={senderId:number;controller:AbortController;settled:Promise<void>;failure?:unknown};
+function isExpectedHtmlPreparationCancellation(error:unknown,signal:AbortSignal):boolean {
+  if(!signal.aborted||error instanceof AggregateError)return false;
+  if(error===signal.reason||error instanceof Error&&error.name==='AbortError')return true;
+  return error instanceof Error&&error.cause!==undefined?isExpectedHtmlPreparationCancellation(error.cause,signal):false;
+}
+const htmlPreparationOperations=new Map<string,HtmlPreparationOperation>();
+async function runHtmlPreparation<T>(requestId:string,senderId:number,action:(signal:AbortSignal,requestId:string)=>Promise<T>):Promise<T> {
+  if(desktopQuitPending)throw new Error('YN is shutting down.');
+  if(htmlPreparationOperations.has(requestId))throw new Error('This HTML preparation request is already running.');
+  const controller=new AbortController();let settle!:()=>void;
+  const operation:HtmlPreparationOperation={senderId,controller,settled:new Promise(resolve=>{settle=resolve;})};
+  htmlPreparationOperations.set(requestId,operation);
+  try {return await action(controller.signal,requestId);}
+  catch(error){operation.failure=error;throw error;}
+  finally {settle();htmlPreparationOperations.delete(requestId);}
+}
+ipcMain.handle('html:cancelPreparation',async(event,requestId:string)=>{
+  const operation=htmlPreparationOperations.get(requestId);
+  if(!operation)return {ok:true};
+  if(operation.senderId!==event.sender.id)throw new Error('This preparation belongs to another window.');
+  operation.controller.abort(new DOMException('PDF/HTML preparation was stopped.','AbortError'));
+  await operation.settled;
+  if(operation.failure&&!isExpectedHtmlPreparationCancellation(operation.failure,operation.controller.signal))throw operation.failure;
+  // The original invocation delivers its typed failure to the same caller.
+  return {ok:true};
+});
+ipcMain.handle("html:generateLineReview", async (event, args: GenerateLineHtmlArgs) => runHtmlPreparation(args.requestId||randomUUID(),event.sender.id,async(signal,requestId)=>{
+  const started = performance.now();
   const progress = (sourcePath: string, page: number, totalPages: number) => {
     if (!event.sender.isDestroyed()) event.sender.send("html:lineGenerationProgress", { requestId, sourcePath, page, totalPages });
   };
@@ -3874,7 +3894,10 @@ ipcMain.handle("html:generateLineReview", async (event, args: GenerateLineHtmlAr
     at: new Date().toISOString(), elapsedMs: performance.now()-started, ...detail })+"\n");
   await record("requested");
   try {
-    const result = await generateLineReview(args, progress);
+    const result = await withPdfPreparationContext({signal,
+      onStage:(phase,details)=>{if(!event.sender.isDestroyed())event.sender.send('html:lineGenerationProgress',{requestId,sourcePath:(details as {sourcePath?:string})?.sourcePath??args.sourcePath,phase,page:0,totalPages:0});},
+      onProgress:(page,totalPages)=>progress(args.sourcePath,page,totalPages)},()=>generateLineReview(args,progress));
+    signal.throwIfAborted();
     await record("completed", { outputPath: result.outputPath });
     return result;
   } catch (error) {
@@ -3882,7 +3905,7 @@ ipcMain.handle("html:generateLineReview", async (event, args: GenerateLineHtmlAr
     catch (diagnosticError) { throw new AggregateError([error, diagnosticError], "HTML generation and diagnostic persistence failed."); }
     throw error;
   }
-});
+}));
 
 async function generateProposalReview(args: GenerateReviewHtmlArgs, allowEmpty = false) {
   if (!args.outputDir) {
@@ -4096,7 +4119,9 @@ async function startBuiltinTask(args: StartBuiltinTaskRequest, options?: {
     options?.signal.throwIfAborted();
     let outputPath: string | undefined;
     if (args.task !== "assets") {
-      const generated = await generateBuiltinTaskReview(settings, args.task, session.id, options?.signal);
+      const generated = await withPdfPreparationContext({sessionId:session.id,...model,signal:options?.signal,
+        onStage:currentPdfPreparationContext()?.onStage,onProgress:currentPdfPreparationContext()?.onProgress},
+        ()=>generateBuiltinTaskReview(settings,args.task as 'translation'|'proofread',session.id,options?.signal));
       options?.signal.throwIfAborted();
       outputPath = generated.outputPath;
       await patchProjectState(settings.outputDir, { lastLineReviewHtml: outputPath, lineReviewPath: outputPath,
@@ -4134,7 +4159,45 @@ async function startBuiltinTask(args: StartBuiltinTaskRequest, options?: {
     startingBuiltinTasks.delete(key);
   }
 }
-ipcMain.handle("tasks:start", (_event, args: StartBuiltinTaskRequest) => startBuiltinTask(args));
+ipcMain.handle("tasks:start",(event,args:StartBuiltinTaskRequest)=>runHtmlPreparation(args.requestId||randomUUID(),event.sender.id,async(signal,requestId)=>{
+  const progress=(phase:string,sourcePath:string,page=0,totalPages=0)=>{if(!event.sender.isDestroyed())event.sender.send('html:lineGenerationProgress',{requestId,sourcePath,phase,page,totalPages});};
+  return withPdfPreparationContext({signal,onStage:(phase,details)=>progress(phase,(details as {sourcePath?:string})?.sourcePath??args.settings.sourcePath),
+    onProgress:(page,total)=>progress('extracting',args.settings.sourcePath,page,total)},async()=>startBuiltinTask(args,{
+      signal,model:await builtinModelSelection(args.settings.outputDir),onSession:()=>{}
+    }));
+}));
+
+ipcMain.handle('html:prepareReviewHtmlChild',async(event,args:{outputPath:string})=>{
+  if(desktopQuitPending||htmlViewerWindowClosing)throw new Error('HTML viewer is closing; no child preparation can start.');
+  const parentPath=normalizeLinkedHtmlFilePath((event.senderFrame?.url??event.sender.getURL()).replace(/#.*$/u,''));
+  const parent=[...htmlViewerTabs.values()].find(tab=>tab.view.webContents.id===event.sender.id&&sameFilePath(tab.filePath,parentPath));
+  const context=parent?.batchOpenContext;
+  if(!context||!args||typeof args.outputPath!=='string')throw new Error('HTML child preparation requires its actual open batch parent.');
+  if(context.sourceStamp!==await readReviewHtmlSourceStamp(context.filePath))throw new Error('Batch HTML changed; reopen it before loading a child.');
+  const started=performance.now(),operation=prepareReviewHtmlChildOpen(context,args.outputPath);
+  htmlViewerOpenOperations.add(operation);
+  try {
+    const child=await operation;
+    if(context.sourceStamp!==await readReviewHtmlSourceStamp(context.filePath))throw new Error('Batch HTML changed while preparing its child; reopen it.');
+    (parent.preparedChildren??=new Map()).set(path.resolve(child.filePath).toLowerCase(),child);
+    return {outputPath:child.filePath};
+  }
+  finally {htmlViewerOpenOperations.delete(operation);console.info('[html-open-child]',{parentPath,outputPath:args.outputPath,elapsedMs:performance.now()-started});}
+});
+
+ipcMain.handle('html:readLineReviewState',async(event,args:{lineReviewPath:string})=>{
+  if(desktopQuitPending||htmlViewerWindowClosing)throw new Error('HTML viewer is closing; initial document state cannot be read.');
+  const requested=typeof args?.lineReviewPath==='string'?normalizeLinkedHtmlFilePath(args.lineReviewPath):'';
+  const senderPath=normalizeLinkedHtmlFilePath((event.senderFrame?.url??event.sender.getURL()).replace(/#.*$/u,''));
+  const tab=[...htmlViewerTabs.values()].find(item=>item.view.webContents.id===event.sender.id);
+  const key=requested?path.resolve(requested).toLowerCase():'';
+  const context=tab&&(sameFilePath(tab.filePath,requested)?tab.lineOpenContext:tab.preparedChildren?.get(key));
+  if(!context||context.kind!=='reviewData'||!tab||(!sameFilePath(senderPath,tab.filePath)&&!sameFilePath(senderPath,requested)))throw new Error('Initial line-review state requires its actual prepared document.');
+  if(context.sourceStamp!==await readReviewHtmlSourceStamp(context.filePath))throw new Error('Line-review HTML changed before its saved state was restored; reopen it.');
+  pdfReviewBindings.set(path.resolve(context.filePath).toLowerCase(),normalizedLineReviewRouting(context.payload?.workflow?.paths??{}).sourcePaths.filter(isPdfSourceProjection));
+  const statePath=lineReviewSidecarStatePath(context.filePath,context.payload?.workflow?.paths?.outputDir);
+  return {state:statePath?await readJsonObject(statePath):undefined};
+});
 
 ipcMain.handle("html:openReviewHtml", async (_event, args: OpenReviewHtmlArgs) => {
   if (!args.htmlPath) {
@@ -4578,7 +4641,17 @@ ipcMain.handle("lan-sync:start", async (event, args: LanSyncStartArgs) => {
       lineDocument = openLineDocument;
     }
     if (!lineDocument) {
-      lineDocument = await readLinkedLineReviewDocument(proposalDocument.lineReviewPath, basePath);
+      const linkedPath=normalizeLinkedHtmlFilePath(proposalDocument.lineReviewPath,basePath);
+      if(linkedPath&&path.isAbsolute(linkedPath)) {
+        const opening=await prepareReviewHtmlOpen(linkedPath);
+        if(opening.kind==='reviewData') {
+          const rows=normalizeLanSyncRows(opening.payload?.rows);
+          if(rows.length) {
+            const statePath=lineReviewSidecarStatePath(opening.filePath,opening.payload?.workflow?.paths?.outputDir);
+            lineDocument={title:path.basename(opening.filePath),rows,state:normalizeLanSyncState(statePath?await readJsonObject(statePath):{}),pageSize:1000,lineReviewPath:opening.filePath};
+          }
+        }
+      }
     }
     if (lineDocument) {
       const incomingState = normalizeLanSyncState(args.lineDocument?.state);
@@ -4783,7 +4856,7 @@ ipcMain.handle("files:writePdfFile", async (_event, args: { templatePath: string
     || !args.templatePath.toLowerCase().endsWith(".pdf") || !Array.isArray(args.lines)) throw new Error("PDF export requires absolute project/template/projection bindings and translated lines.");
   const result = await createTranslatedPdf({ templatePath: args.templatePath, sourcePath: args.sourcePath,
     translatedLines: args.lines, projectRoot: args.outputDir });
-  return { ok: true, path: result.outputPath, pages: result.pages };
+  return { ok: true, path: result.outputPath, pages: result.pages,htmlPath:result.htmlPath };
 });
 
 ipcMain.handle("files:writeEpubFile", async (_event, args: WriteEpubFileArgs) => {
@@ -5058,8 +5131,12 @@ let desktopQuitPending = false;
 if (!agentApiMode) registerDesktopShutdown(app, {
   async settle() {
     desktopQuitPending = true;
+    const preparations=[...htmlPreparationOperations.values()];
+    for(const operation of preparations)operation.controller.abort(new DOMException('YN is shutting down.','AbortError'));
     for (const window of BrowserWindow.getAllWindows()) window.setEnabled(false);
     const nativeDisposal = Promise.allSettled([piNativeSessionService.disposeAll()]);
+    await Promise.all(preparations.map(operation=>operation.settled));
+    const preparationErrors=preparations.flatMap(operation=>operation.failure&&!isExpectedHtmlPreparationCancellation(operation.failure,operation.controller.signal)?[operation.failure]:[]);
     // A previously accepted open can still be awaiting path resolution or a
     // legacy upgrade. Capture tabs only after all such operations have settled.
     const openOutcomes = await Promise.allSettled([...htmlViewerOpenOperations]);
@@ -5068,7 +5145,7 @@ if (!agentApiMode) registerDesktopShutdown(app, {
     const outcomes = await Promise.allSettled([
       ...tabs.map(settleHtmlViewerTab)
     ]);
-    const errors = [...await nativeDisposal, ...openOutcomes, ...outcomes].flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+    const errors = [...preparationErrors,...[...await nativeDisposal, ...openOutcomes, ...outcomes].flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : [])];
     try { await drainHtmlSidecarStateWrites(); } catch (error) { errors.push(error); }
     if (errors.length) throw new AggregateError(errors, "YN could not finish saving sessions and HTML before exit.");
   },

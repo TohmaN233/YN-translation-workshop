@@ -1,11 +1,14 @@
+import {configurePdfPrintBackend} from '../src/main/pdfPrint.ts';
+import {createNativePdfPrintBackend} from './helpers/pdf-print-backend.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, cp, rm } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { PDFDocument, StandardFonts, rgb, setTextRenderingMode, TextRenderingMode, pushGraphicsState, popGraphicsState, rectangle, clip, endPath } from 'pdf-lib';
 import { createCanvas } from '@napi-rs/canvas';
+import fontkit from '@pdf-lib/fontkit';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { preparePdfDocument, createTranslatedPdf, readPdfLayout, pdfReferencesForRange, readPdfReferenceImage } from '../src/main/pdfDocuments.ts';
+import { createTranslatedPdf, readPdfLayout, pdfReferencesForRange, readPdfReferenceImage } from '../src/main/pdfDocuments.ts';
+import {preparePdfDocument} from './helpers/pdf-structure-backend.mjs';
 import { createPdfReferenceTools } from '../src/main/agent/piNative/pdfReferenceTools.ts';
 import { prepareBuiltinTaskDocuments, generateBuiltinTaskReview } from '../src/main/builtinTaskDocuments.ts';
 import { builtinTaskDefaults } from '../src/shared/builtinTasks.ts';
@@ -16,7 +19,10 @@ import { LINE_REVIEW_PROTOCOL_VERSION } from '../src/shared/core/html.ts';
 import { createModels, fauxProvider, fauxAssistantMessage, fauxToolCall, fauxText } from '@earendil-works/pi-ai';
 import { createPiTranslationSubagentWorker, createPiProofreadSubagentWorker } from '../src/main/agent/piNative/subagentRunner.ts';
 
-const root = await mkdtemp(path.join(os.tmpdir(), 'yn-pdf-'));
+const printService=process.versions.electron?undefined:await createNativePdfPrintBackend();
+if(printService)configurePdfPrintBackend(printService.backend);
+try {
+const root = await mkdtemp(path.resolve('.tmp-pdf-documents-'));
 try {
   const projectRoot = path.join(root, 'project'), inputDir = path.join(projectRoot, 'inputs');
   await mkdir(inputDir, { recursive: true });
@@ -25,7 +31,7 @@ try {
   const page = pdf.addPage([600,800]);
   page.drawText('PDF sample', { x: 40, y: 740, size: 22, font, color: rgb(.7,0,0) });
   page.drawText('See Figure 1 for the diagram.', { x: 40, y: 690, size: 12, font });
-  page.drawRectangle({ x: 35, y: 610, width: 240, height: 30, borderWidth: 1, borderColor: rgb(0,0,1) });
+  page.drawRectangle({ x: 35, y: 560, width: 240, height: 30, borderWidth: 1, borderColor: rgb(0,0,1) });
   page.drawText('Table 1: sample', { x: 40, y: 620, size: 12, font });
   const canvas = createCanvas(160,80), ctx = canvas.getContext('2d');
   ctx.fillStyle = '#225588'; ctx.fillRect(0,0,160,80);
@@ -104,21 +110,46 @@ try {
   assert.equal(imagesSeen,4,'native persistent proofreading must also keep vision support across reset');
   const exported = await createTranslatedPdf({ templatePath:originalPath,sourcePath:extracted.sourcePath,projectRoot,translatedLines });
   const output = await readFile(exported.outputPath);
+  const exportDocument=JSON.parse(await readFile(exported.documentPath,'utf8'));
+  assert.ok(layout.references.some(reference=>reference.kind==='vector'),'independent blue border has explicit source vector ownership');
+  assert.ok(exportDocument.nodes.some(node=>node.type==='figure'&&node.id.includes('vector')&&node.image),'successful reflow retains the source-owned blue border');
   if (process.env.YN_PDF_VISUAL_EVIDENCE) {
     const evidence = path.resolve(process.env.YN_PDF_VISUAL_EVIDENCE);
     await mkdir(evidence,{recursive:true});
     await writeFile(path.join(evidence,'source.pdf'),original);
     await writeFile(path.join(evidence,'translated.pdf'),output);
+    await writeFile(path.join(evidence,'translated.html'),await readFile(exported.htmlPath));
+    await writeFile(path.join(evidence,'translated.document.json'),await readFile(exported.documentPath));
     await writeFile(path.join(evidence,'layout.json'),JSON.stringify(layout,null,2));
   }
   const task = getDocument({data:new Uint8Array(output)}), roundtrip = await task.promise;
-  assert.equal(roundtrip.numPages,2);
-  const targetText = (await (await roundtrip.getPage(1)).getTextContent()).items.filter(item=>'str' in item).map(item=>item.str).join('');
+  assert.equal(roundtrip.numPages,exported.pages);
+  const renderedTexts=[];
+  for(let number=1;number<=roundtrip.numPages;number++)renderedTexts.push((await (await roundtrip.getPage(number)).getTextContent()).items.filter(item=>'str' in item).map(item=>item.str).join(''));
+  const targetText = renderedTexts.join('').normalize('NFKC');
   assert.ok(targetText.includes('PDF 示例')); assert.ok(targetText.includes('蓝色矩形')); assert.ok(!targetText.includes('PDF sample'));
   await task.destroy();
   await assert.rejects(createTranslatedPdf({ templatePath:originalPath,sourcePath:extracted.sourcePath,projectRoot,translatedLines:translatedLines.slice(1) }),/one non-empty/);
-  await assert.rejects(createTranslatedPdf({ templatePath:originalPath,sourcePath:extracted.sourcePath,projectRoot,translatedLines:translatedLines.map((line,index)=>index===0?'太长的译文'.repeat(500):line) }),/does not fit/);
-  assert.deepEqual(await readFile(exported.outputPath),output,'failed export must retain previous output');
+  assert.deepEqual(await readFile(exported.outputPath),output,'invalid line count must retain previous output');
+  const longText='很长的译文'.repeat(500)+'完整末字';
+  const longExport=await createTranslatedPdf({ templatePath:originalPath,sourcePath:extracted.sourcePath,projectRoot,translatedLines:translatedLines.map((line,index)=>index===0?longText:line) });
+  assert.ok(longExport.pages>exported.pages,'long translated heading must naturally paginate');
+  const longLoader=getDocument({data:new Uint8Array(await readFile(longExport.outputPath))}),longPdf=await longLoader.promise;
+  try {
+    let complete='';for(let number=1;number<=longPdf.numPages;number++)complete+=(await (await longPdf.getPage(number)).getTextContent()).items.filter(item=>'str' in item).map(item=>item.str).join('');
+    const continuous=complete.normalize('NFKC').replace(/\s+/gu,'');
+    assert.ok(continuous.includes('完整末字'),'the naturally paginated long translation retains its final sentinel');
+    // Chromium can choose a shared CJK radical codepoint in ToUnicode (e.g.
+    // 长 -> ⻓). Verify each actual printed glyph against the bundled face,
+    // while the editable source below verifies the exact requested Unicode.
+    const paperFont=fontkit.create(await readFile(new URL('../assets/fonts/NotoSansSC-Regular.ttf',import.meta.url)));
+    for(let index=0;index<longText.length;index++)assert.equal(paperFont.glyphForCodePoint(continuous.codePointAt(index)).id,paperFont.glyphForCodePoint(longText.codePointAt(index)).id,`printed long translation keeps source glyph at character ${index+1}`);
+    if(process.env.YN_PDF_VISUAL_EVIDENCE){const evidence=path.resolve(process.env.YN_PDF_VISUAL_EVIDENCE);await writeFile(path.join(evidence,'long-translation.pdf'),await readFile(longExport.outputPath));await writeFile(path.join(evidence,'long-translation.html'),await readFile(longExport.htmlPath));for(const number of [1,longPdf.numPages]){const page=await longPdf.getPage(number),viewport=page.getViewport({scale:1.5}),image=createCanvas(Math.ceil(viewport.width),Math.ceil(viewport.height));await page.render({canvas:image,canvasContext:image.getContext('2d'),viewport}).promise;await writeFile(path.join(evidence,`long-page-${number}.png`),image.toBuffer('image/png'));}}
+  }finally{await longLoader.destroy();}
+  const structured=JSON.parse(await readFile(longExport.documentPath,'utf8'));
+  assert.equal(structured.nodes.find(node=>node.sourceLines.includes(1)).parts.map(part=>part.text??'').join(''),longText,'editable source retains the exact long translation Unicode');
+  assert.equal(structured.sourceHash,layout.sourceHash);assert.equal(structured.originalHash,layout.originalHash);
+  assert.ok((await readFile(longExport.htmlPath,'utf8')).includes('contenteditable="true"'),'export persists its editable HTML source');
   assert.deepEqual(await readFile(originalPath),original,'original PDF stays read-only');
   await writeFile(path.join(inputDir,'text.txt'),'Another document.');
   const settings = builtinTaskDefaults({outputDir:projectRoot,sourcePath:inputDir,sourceKind:'folder',fileType:'auto',glossaryCandidates:false,characterBible:false});
@@ -200,6 +231,8 @@ try {
   await writeFile(narrowPath,await narrow.save());
   const narrowSource=await preparePdfDocument(narrowPath,path.join(narrowProject,'.translation-workshop'));
   const narrowExport=await createTranslatedPdf({templatePath:narrowPath,sourcePath:narrowSource.sourcePath,projectRoot:narrowProject,translatedLines:['.','11']});
-  assert.equal((await PDFDocument.load(await readFile(narrowExport.outputPath))).getPageCount(),1,'one wide replacement glyph must shrink before wrapping; unchanged digits retain original glyphs');
+  assert.equal((await PDFDocument.load(await readFile(narrowExport.outputPath))).getPageCount(),1,'short prose and source-native numeric glyphs print naturally on one page');
   console.log('PDF extraction, lazy native images, layout export, move, legacy upgrade and failure boundaries passed');
-} finally { await rm(root,{recursive:true,force:true}); }
+} finally { if(process.env.YN_PDF_ADAPTATION_KEEP==='1')console.log('retained PDF test fixture '+root);else await rm(root,{recursive:true,force:true}); }
+
+}finally{if(printService)await printService.close();}

@@ -3,10 +3,12 @@ import { strict as assert } from "node:assert";
 import { lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 
 import { resolveBatchReviewChildForUpgrade } from "../../src/main/batchReviewUpgradePaths.ts";
 import { writeTextFilesAtomically } from "../../src/main/atomicFile.ts";
-import { upgradeLegacyReviewHtmlTree } from "../../src/main/reviewHtmlUpgrade.ts";
+import { upgradeLegacyReviewHtmlTree,prepareReviewHtmlOpen,prepareReviewHtmlChildOpen } from "../../src/main/reviewHtmlUpgrade.ts";
 import {
   BATCH_LINE_REVIEW_PROTOCOL_MARKER,
   BATCH_LINE_REVIEW_PROTOCOL_VERSION,
@@ -211,7 +213,9 @@ await test("legacy EPUB folder upgrade binds the extracted validation text in Ag
       writeFile(indexPath, index, "utf8")
     ]);
 
-    assert.equal(await upgradeLegacyReviewHtmlTree(indexPath), true);
+    const openedIndex=await prepareReviewHtmlOpen(indexPath);
+    assert.equal(await readFile(childPath,'utf8'),child,'the modern index does not execute an unrelated child migration');
+    await prepareReviewHtmlChildOpen(openedIndex,'batch/book.html');
     const upgraded = resolveReviewHtmlPaths(await readFile(childPath, "utf8"), childPath);
     const payload = upgraded.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
     assert.ok(payload, "upgraded EPUB child lost reviewData");
@@ -277,7 +281,9 @@ await test("legacy EPUB folder upgrade replaces an already persisted binary mani
       writeFile(indexPath, index, "utf8")
     ]);
 
-    assert.equal(await upgradeLegacyReviewHtmlTree(indexPath), true);
+    const openedIndex=await prepareReviewHtmlOpen(indexPath);
+    assert.equal(await readFile(childPath,'utf8'),child,'the modern index leaves the stale child intact until selected');
+    await prepareReviewHtmlChildOpen(openedIndex,'batch/book.html');
     const upgraded = resolveReviewHtmlPaths(await readFile(childPath, "utf8"), childPath);
     const payload = upgraded.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
     assert.ok(payload, "upgraded EPUB child lost reviewData");
@@ -289,6 +295,30 @@ await test("legacy EPUB folder upgrade replaces an already persisted binary mani
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+await test("lazy TXT child upgrade preserves an unread PDF sibling's complete projection binding", async () => {
+  const root=await mkdtemp(path.join(os.tmpdir(),"yn-lazy-folder-projection-"));
+  const outputDir=path.join(root,"output"),sourceDir=path.join(root,"source"),htmlDir=path.join(outputDir,".translation-workshop","html");
+  const childPath=path.join(htmlDir,"batch","note.html"),pdfChildPath=path.join(htmlDir,"batch","paper.html"),indexPath=path.join(htmlDir,"index.html");
+  const sourcePath=path.join(sourceDir,"note.txt"),pdfPath=path.join(sourceDir,"paper.pdf"),projectionPath=path.join(outputDir,".translation-workshop","extracted-text","paper","source.txt");
+  const pdfDocument={id:"paper.pdf",path:projectionPath,projection:{kind:"pdf-text",originalHash:"a".repeat(64),projectionHash:"b".repeat(64)}};
+  const documents=[{id:"note.txt",path:sourcePath},pdfDocument];
+  const nativeRead=fs.promises.readFile,reads=[];
+  try {
+    await mkdir(path.dirname(childPath),{recursive:true});
+    await writeFile(childPath,renderLineReviewHtml({title:"Note",sourceText:"original",translationText:"",lineReviewPath:childPath,workflow:{outputDir,sourcePath}}).replace(LINE_REVIEW_PROTOCOL_MARKER,"translation-workshop-line-review-v0"));
+    await writeFile(pdfChildPath,"<html>Unread PDF child: do not inspect or migrate this sibling.</html>");
+    await writeFile(indexPath,renderBatchLineReviewIndexHtml({title:"Mixed folder",files:[
+      {sourceName:"note.txt",sourcePath,outputPath:"batch/note.html",status:"missing-translation",sourceLineCount:1},
+      {sourceName:"paper.pdf",sourcePath:pdfPath,outputPath:"batch/paper.html",status:"missing-translation",sourceLineCount:1}
+    ],workflow:{sourcePath:sourceDir,sourceKind:"folder",outputDir,advanced:{folderSourceDocuments:documents}}}));
+    fs.promises.readFile=async(...args)=>{reads.push(path.resolve(String(args[0])));return nativeRead(...args);};syncBuiltinESMExports();
+    const parent=await prepareReviewHtmlOpen(indexPath),child=await prepareReviewHtmlChildOpen(parent,"batch/note.html");
+    assert.deepEqual(child.payload.workflow.advanced.folderSourceDocuments,documents);
+    assert.equal(reads.filter(file=>file===pdfChildPath).length,0,"unselected PDF HTML must stay unread");
+    assert.equal(reads.filter(file=>file===childPath).length,1,"selected child HTML is read once");
+  }finally {fs.promises.readFile=nativeRead;syncBuiltinESMExports();await rm(root,{recursive:true,force:true});}
 });
 
 await test("current folder index upgrades a stale v7 child to the folder-bound Agent route", async () => {
@@ -340,7 +370,9 @@ await test("current folder index upgrades a stale v7 child to the folder-bound A
       writeFile(childPath, staleChild, "utf8")
     ]);
 
-    assert.equal(await upgradeLegacyReviewHtmlTree(indexPath), true);
+    const openedIndex=await prepareReviewHtmlOpen(indexPath);
+    assert.equal(await readFile(childPath,'utf8'),staleChild,'the selected target, not index enumeration, owns the lazy upgrade');
+    await prepareReviewHtmlChildOpen(openedIndex,'batch/scene.html');
     assert.equal(await readFile(indexPath, "utf8"), portableReviewHtml(currentIndex, indexPath));
     const upgradedChild = await readFile(childPath, "utf8");
     assert.match(upgradedChild, new RegExp(agentChatFlowVersion));

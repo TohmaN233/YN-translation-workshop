@@ -1,3 +1,4 @@
+import { registerReviewHtmlFixtureReadIpc } from "../tests/helpers/review-html-fixture-ipc.ts";
 import { readSessionEntries, appendSessionMessage } from "../tests/helpers/pi-session.mjs";
 import { app, BrowserWindow, clipboard, ipcMain, nativeImage } from "electron";
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -762,6 +763,7 @@ async function run(): Promise<void> {
     });
     return { ok: true, surface: result.surface };
   });
+  registerReviewHtmlFixtureReadIpc();
   ipcMain.handle("html:persistState", async () => ({ ok: true }));
   ipcMain.handle("project:readState", async () => verifierProjectState);
   ipcMain.handle("project:patch", async (_event, args?: { outputDir?: unknown; patch?: unknown }) => {
@@ -1156,6 +1158,7 @@ async function run(): Promise<void> {
   revealVerificationWindow(folderWin);
   await waitFor(folderWin, 'document.querySelector("#fileFrame")?.contentDocument?.readyState === "complete"');
   await waitFor(folderWin, 'document.querySelector("#fileFrame")?.contentDocument?.querySelector("#openAgentChat")');
+  await folderWin.webContents.executeJavaScript('document.querySelector("#fileFrame").contentWindow.translationWorkshopLineReviewReady');
   const nestedAgentOpened = await folderWin.webContents.executeJavaScript(`(() => {
     const button = document.querySelector("#fileFrame")?.contentDocument?.querySelector("#openAgentChat");
     if (!button || typeof button.click !== "function") return false;
@@ -1214,6 +1217,7 @@ async function run(): Promise<void> {
     select.dispatchEvent(new Event("change", { bubbles: true }));
   })()`);
   await waitFor(folderWin, 'document.querySelector("#fileFrame")?.contentDocument?.title === "Folder native verifier b"');
+  await folderWin.webContents.executeJavaScript('document.querySelector("#fileFrame").contentWindow.translationWorkshopLineReviewReady');
   const secondNestedAgentOpened = await folderWin.webContents.executeJavaScript(`(() => {
     const button = document.querySelector("#fileFrame")?.contentDocument?.querySelector("#openAgentChat");
     if (!button || typeof button.click !== "function") return false;
@@ -1250,6 +1254,7 @@ async function run(): Promise<void> {
     console.log(`[renderer:${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`);
   });
   await win.loadFile(htmlPath);
+  await win.webContents.executeJavaScript("window.translationWorkshopLineReviewReady");
   mark("html-loaded");
   await win.webContents.executeJavaScript("(() => { window.confirm = () => true; return true; })()");
 
@@ -2445,6 +2450,7 @@ async function run(): Promise<void> {
   await win.loadFile(folderHtmlPath);
   await waitFor(win, 'document.querySelector("#fileFrame")?.contentDocument?.readyState === "complete"');
   await waitFor(win, 'document.querySelector("#fileFrame")?.contentDocument?.querySelector("#translatePrompt")');
+  await win.webContents.executeJavaScript('document.querySelector("#fileFrame").contentWindow.translationWorkshopLineReviewReady');
   const folderPromptClicked = await win.webContents.executeJavaScript(`(() => {
     const button = document.querySelector("#fileFrame")?.contentDocument?.querySelector("#translatePrompt");
     if (!button || typeof button.click !== "function") return false;
@@ -2691,6 +2697,7 @@ async function run(): Promise<void> {
   mark("translation-reuse-ui-decision");
 
   await win.loadFile(epubHtmlPath);
+  await win.webContents.executeJavaScript("window.translationWorkshopLineReviewReady");
   await waitFor(win, 'document.querySelector("#saveTxt") && document.querySelector("#exportEpub")');
   await clickSelector(win, "#openAgentChat");
   await waitFor(win, 'document.querySelector("#agentChatReactRoot textarea")');

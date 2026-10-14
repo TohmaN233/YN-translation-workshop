@@ -121,6 +121,7 @@ export async function prepareBuiltinTaskDocuments(settings: BuiltinTaskSettings,
     ? (await collectSourceTreeFiles(settings.sourcePath, (file) => allowed.test(file))).map((file) => ({ id: file.relativePath, path: file.path }))
     : [{ id: path.basename(settings.sourcePath), path: settings.sourcePath }];
   if (!inputs.length) throw new Error("No supported TXT, EPUB or PDF source documents were found.");
+  if(settings.inputMode==='bilingual'&&inputs.some(input=>/\.pdf$/iu.test(input.path)))throw new Error('PDF input requires separate source/translation mode.');
   const documents: BuiltinTaskDocument[] = [];
   for (const input of inputs) {
     signal?.throwIfAborted();

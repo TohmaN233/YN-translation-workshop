@@ -71,7 +71,7 @@ The [quality and reliability report](docs/quality.en.md) links public tests, rep
 
 ## 2.2.0 highlights
 
-- Text-layer PDF translation, on-demand image references and PDF export, with complete prose paragraphs, code/math/reference protection and academic identifier prescanning; parent-confirmed untranslated false positives across formats.
+- Text-layer PDFs must pass a complete mechanical draft, incremental native Pi structure edits, Host checks and an independent audit before HTML generation. Accepted logical units use code/math/reference protection and on-demand images; export reflows current HTML translations without original prose-box length limits. Academic identifier prescanning and parent-confirmed untranslated false positives remain available.
 - Official background Agent API reusing project preparation, translation, proofreading and reference workflows.
 - Improved large-session and candidate responsiveness, cancellation, recovery and character-name matching.
 

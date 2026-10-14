@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { PDFDocument, StandardFonts, beginMarkedContent, endMarkedContent } from "pdf-lib";
-import { preparePdfDocument } from "../src/main/pdfDocuments.ts";
+import {preparePdfDocument} from './helpers/pdf-structure-backend.mjs';
 import { createYnDomainTools } from "../src/main/agent/piNative/ynDomainTools.ts";
 import { createYnDomainRunContract } from "../src/main/agent/piNative/domainRunContract.ts";
 import { createTranslationAlignmentHostState, createTranslationChunkReviewAudit, translationAlignmentLinesInputHash } from "../src/main/agent/piNative/translationAlignmentState.ts";

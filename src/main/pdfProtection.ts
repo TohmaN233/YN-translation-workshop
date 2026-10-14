@@ -4,6 +4,7 @@ type Kind = NonNullable<PdfTextBlock["protection"]>;
 interface TextItem {
   str: string; fontName: string; transform: number[]; width: number; height: number; dir: string; hasEOL: boolean;
   color?: [number, number, number]; protection?: Kind; paintOperations?: number[];
+  paragraphScope?: string;
   paintSpans?: PdfTextPaintSpan[];
 }
 export interface PdfTextPaint { text: string; color: [number, number, number]; operator: number }
@@ -272,6 +273,23 @@ export function protectPdfText(content: { items: any[]; styles: Record<string, {
     } else {
       const kind = detect(unprotected.map(item => item.str).join(" ").trim(), unprotected.every(mono));
       if (kind) for (const item of unprotected) item.protection = kind;
+    }
+  }
+  // Display-equation numbers may be painted far from the equation. A detached
+  // right-hand math annotation and source margin establish its ownership;
+  // spelling alone does not. Display explanations remain writable prose.
+  // Keep this before paint binding so inseparable prose still fails visibly.
+  for(const row of rows) {
+    if(row.some(item=>item.protection||/^(?:TD|TH):/u.test(item.paragraphScope??''))||!/^\(\d+(?:\.\d+)*[a-z]?\)$/iu.test(row.map(item=>item.str).join('').replace(/\s/gu,'')))continue;
+    const label=row[0],size=Math.hypot(label.transform[2],label.transform[3]);
+    const right=Math.max(...row.map(item=>item.transform[4]+item.width));
+    const peers=rows.filter(other=>other!==row&&other.some(item=>Math.abs(item.transform[5]-label.transform[5])<size*.4)).flat();
+    const nearest=peers.slice().sort((a,b)=>b.transform[4]+b.width-a.transform[4]-a.width)[0];
+    const margin=rows.some(other=>other!==row&&other.some(item=>!item.protection&&/[\p{L}]{2,}/u.test(item.str))
+      &&Math.min(...other.map(item=>item.transform[4]))<label.transform[4]-size*4
+      &&Math.abs(Math.max(...other.map(item=>item.transform[4]+item.width))-right)<size*.25);
+    if(margin&&nearest?.protection==='math'&&label.transform[4]-nearest.transform[4]-nearest.width>size*1.5) {
+      for(const item of row)item.protection='math';
     }
   }
   const compact = (text: string) => text.replace(/\s/g, "");

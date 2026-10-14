@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile,stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -15,7 +15,23 @@ import { BATCH_LINE_REVIEW_PROTOCOL_VERSION, type HtmlWorkflowOptions } from "..
 import { writeTextFileAtomically, writeTextFilesAtomically } from "./atomicFile.ts";
 import { resolveBatchReviewChildForUpgrade } from "./batchReviewUpgradePaths.ts";
 import { formatFolderTranslationOrder } from "./agent/piNative/folderTranslationPlan.ts";
-import { portableReviewHtml, resolveReviewHtmlPaths, bindPdfReviewHtml } from "./reviewHtmlPortability.ts";
+import { portableReviewHtml, resolveReviewHtmlPaths,parseReviewHtml,resolvedReviewHtml,portableParsedReviewHtml,bindParsedPdfReviewHtml,type ParsedReviewHtml } from "./reviewHtmlPortability.ts";
+
+export interface ReviewHtmlOpenContext {
+  filePath:string;html:string;kind?:ParsedReviewHtml['kind'];payload?:any;changed:boolean;sourceStamp:string;
+}
+export async function readReviewHtmlSourceStamp(filePath:string):Promise<string> {
+  const value=await stat(filePath,{bigint:true});
+  return [value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');
+}
+async function readSource(file:string) {
+  const sourceStamp=await readReviewHtmlSourceStamp(file),html=await readFile(file,'utf8');
+  if(await readReviewHtmlSourceStamp(file)!==sourceStamp)throw new Error(`Review HTML changed while opening: ${file}`);
+  return {html,sourceStamp};
+}
+async function assertSource(file:string,stamp:string) {
+  if(await readReviewHtmlSourceStamp(file)!==stamp)throw new Error(`Review HTML changed before migration: ${file}`);
+}
 
 function prepareLegacyReviewHtmlFile(
   targetPath: string,
@@ -43,15 +59,6 @@ function prepareLegacyReviewHtmlFile(
     return upgraded;
   }
   return undefined;
-}
-
-async function upgradeLegacyReviewHtmlFile(targetPath: string, html?: string): Promise<boolean> {
-  const currentHtml = html ?? await readFile(targetPath, "utf8");
-  const resolved = resolveReviewHtmlPaths(currentHtml, targetPath);
-  const upgraded = portableReviewHtml(await bindPdfReviewHtml(targetPath,prepareLegacyReviewHtmlFile(targetPath, resolved) ?? resolved), targetPath);
-  if (upgraded === currentHtml) return false;
-  await writeTextFileAtomically(targetPath, upgraded);
-  return true;
 }
 
 function batchReviewOutputDir(targetPath: string): string | undefined {
@@ -88,20 +95,21 @@ function folderPromptWorkflowOverride(
       return undefined;
     }
   };
-  const sourcePaths = files.map((file, index) => {
+  const sourceDocuments = files.map((file, index) => {
+    const id=documentIds[index]!;
+    const existing=folderWorkflow.advanced?.folderSourceDocuments?.find(document=>document.id===id);
     const indexedSourcePath = file.sourcePath?.trim();
     const extractedSourcePath = validationSourcePath(childHtml[index] ?? "");
-    return (/\.(epub|pdf)$/i.test(indexedSourcePath ?? "") ? extractedSourcePath : indexedSourcePath)
-      || extractedSourcePath
+    // A lazy open has no sibling HTML evidence. Preserve the index's complete
+    // projection binding, and refine only a child that was actually read.
+    const sourcePath = extractedSourcePath
+      || existing?.path
+      || indexedSourcePath
       || (sourceRoot ? path.join(sourceRoot, documentIds[index]!) : undefined);
+    return sourcePath?{...existing,id,path:sourcePath}:undefined;
   });
-  const folderSourceDocuments = sourcePaths.every(Boolean)
-    ? files.map((_file, index) => ({
-      id: documentIds[index]!,
-      path: sourcePaths[index]!,
-      ...(folderWorkflow.advanced?.folderSourceDocuments?.find(document => document.id === documentIds[index])?.projection
-        ? { projection: folderWorkflow.advanced.folderSourceDocuments.find(document => document.id === documentIds[index])!.projection } : {})
-    }))
+  const folderSourceDocuments = sourceDocuments.every(document=>document!==undefined)
+    ? sourceDocuments
     : undefined;
   return {
     sourcePromptPath: folderWorkflow.sourcePath,
@@ -120,19 +128,29 @@ function folderPromptWorkflowOverride(
   };
 }
 
-export async function upgradeLegacyReviewHtmlTree(targetPath: string): Promise<boolean> {
+export async function prepareReviewHtmlOpen(targetPath:string,workflowOverride?:HtmlWorkflowOptions):Promise<ReviewHtmlOpenContext> {
+  return prepareReviewHtmlSource(targetPath,await readSource(path.resolve(targetPath)),workflowOverride);
+}
+async function prepareReviewHtmlSource(targetPath:string,source:{html:string;sourceStamp:string},workflowOverride?:HtmlWorkflowOptions):Promise<ReviewHtmlOpenContext> {
   const absoluteTargetPath = path.resolve(targetPath);
-  const rawHtml = await readFile(absoluteTargetPath, "utf8");
+  const rawHtml=source.html;
   const rawBatchVersion = batchLineReviewProtocolVersion(rawHtml);
   if (rawBatchVersion !== undefined && rawBatchVersion > BATCH_LINE_REVIEW_PROTOCOL_VERSION) {
     throw new Error(`Cannot open newer batch review protocol v${rawBatchVersion}; this app supports v${BATCH_LINE_REVIEW_PROTOCOL_VERSION}.`);
   }
-  const html = resolveReviewHtmlPaths(rawHtml, absoluteTargetPath);
-  const batchProtocolVersion = batchLineReviewProtocolVersion(html);
-  if (batchProtocolVersion === undefined) {
-    return upgradeLegacyReviewHtmlFile(absoluteTargetPath, rawHtml);
+  let context=parseReviewHtml(rawHtml,absoluteTargetPath);
+  const batchProtocolVersion=rawBatchVersion;
+  if(batchProtocolVersion===undefined) {
+    const legacy=needsLegacyLineReviewUpgrade(rawHtml)||needsLegacyProposalReviewUpgrade(rawHtml);
+    if(legacy)context=parseReviewHtml(prepareLegacyReviewHtmlFile(absoluteTargetPath,resolvedReviewHtml(context),workflowOverride)!,absoluteTargetPath);
+    await bindParsedPdfReviewHtml(context);
+    const stored=!legacy&&!context.boundChanged&&context.payload?.projectPaths?.version===1&&rawHtml.includes('<script id="yn-project-paths">')?rawHtml:portableParsedReviewHtml(context);
+    const changed=stored!==rawHtml;
+    await assertSource(absoluteTargetPath,source.sourceStamp);
+    if(changed)await writeTextFileAtomically(absoluteTargetPath,stored);
+    return {filePath:absoluteTargetPath,html:resolvedReviewHtml(context),kind:context.kind,payload:context.payload,changed,sourceStamp:changed?await readReviewHtmlSourceStamp(absoluteTargetPath):source.sourceStamp};
   }
-
+  const html=resolvedReviewHtml(context);
   const batchUpgrade = upgradeLegacyBatchLineReviewHtmlContent(
     html,
     path.basename(absoluteTargetPath),
@@ -155,15 +173,26 @@ export async function upgradeLegacyReviewHtmlTree(targetPath: string): Promise<b
   if (new Set(comparableChildPaths).size !== comparableChildPaths.length) {
     throw new Error(`Batch review data references the same child HTML more than once: ${absoluteTargetPath}`);
   }
-
-  const rawChildHtml = await Promise.all(childPaths.map((childPath) => readFile(childPath, "utf8")));
+  // v10 already has the canonical folder route/link schema. Its only required
+  // migration here is the v11 frame preparation hook, not every child body.
+  if(batchProtocolVersion>=10) {
+    if(batchUpgrade)context=parseReviewHtml(batchUpgrade,absoluteTargetPath);
+    const stored=!batchUpgrade&&context.payload?.projectPaths?.version===1&&rawHtml.includes('<script id="yn-project-paths">')?rawHtml:portableParsedReviewHtml(context),changed=stored!==rawHtml;
+    await assertSource(absoluteTargetPath,source.sourceStamp);
+    if(changed)await writeTextFileAtomically(absoluteTargetPath,stored);
+    return {filePath:absoluteTargetPath,html:batchUpgrade?resolvedReviewHtml(context):html,kind:context.kind,payload:context.payload,changed,sourceStamp:changed?await readReviewHtmlSourceStamp(absoluteTargetPath):source.sourceStamp};
+  }
+  // Legacy index migration is one atomic compatibility transaction. Modern
+  // indices prepare only the child actually requested by the frame/host hook.
+  const childSources=await Promise.all(childPaths.map(readSource)),rawChildHtml=childSources.map(source=>source.html);
   const childHtml = rawChildHtml.map((html, index) => resolveReviewHtmlPaths(html, childPaths[index]));
   const childUpgrades = await Promise.all(childPaths.map(async (childPath, index) => {
-    return portableReviewHtml(await bindPdfReviewHtml(childPath,prepareLegacyReviewHtmlFile(
+    const parsed=parseReviewHtml(prepareLegacyReviewHtmlFile(
       childPath,
       childHtml[index],
       folderWorkflow ? folderPromptWorkflowOverride(folderWorkflow, childReferences, childHtml) : undefined
-    ) ?? childHtml[index]), childPath);
+    ) ?? childHtml[index],childPath);
+    await bindParsedPdfReviewHtml(parsed);return portableParsedReviewHtml(parsed);
   }));
   const updates = [
     ...((portableReviewHtml(batchUpgrade ?? html, absoluteTargetPath) !== rawHtml)
@@ -173,7 +202,26 @@ export async function upgradeLegacyReviewHtmlTree(targetPath: string): Promise<b
       return upgraded !== rawChildHtml[index] ? [{ targetPath: childPath, text: upgraded }] : [];
     })
   ];
-  if (updates.length === 0) return false;
-  await writeTextFilesAtomically(updates);
-  return true;
+  await assertSource(absoluteTargetPath,source.sourceStamp);
+  await Promise.all(childPaths.map((file,index)=>assertSource(file,childSources[index].sourceStamp)));
+  if(updates.length)await writeTextFilesAtomically(updates);
+  const prepared=parseReviewHtml(updates.find(update=>update.targetPath===absoluteTargetPath)?.text??rawHtml,absoluteTargetPath);
+  return {filePath:absoluteTargetPath,html:resolvedReviewHtml(prepared),kind:prepared.kind,payload:prepared.payload,changed:updates.length>0,sourceStamp:await readReviewHtmlSourceStamp(absoluteTargetPath)};
+}
+
+export async function upgradeLegacyReviewHtmlTree(targetPath:string):Promise<boolean> {
+  return (await prepareReviewHtmlOpen(targetPath)).changed;
+}
+
+/** An iframe must await this exact target before executing its old scripts. */
+export async function prepareReviewHtmlChildOpen(parent:ReviewHtmlOpenContext,outputPath:string):Promise<ReviewHtmlOpenContext> {
+  await assertSource(parent.filePath,parent.sourceStamp);
+  if(parent.kind!=='batchData'||!Array.isArray(parent.payload?.files)||!parent.payload.files.some((file:any)=>file.outputPath===outputPath))throw new Error('Requested HTML child is not owned by this batch.');
+  const child=await resolveBatchReviewChildForUpgrade(parent.filePath,outputPath);
+  const source=await readSource(child);
+  // Child source is read once by the normal preparation path. The override is
+  // needed only for legacy folder metadata, and contains no model invocation.
+  const workflow=needsLegacyLineReviewUpgrade(source.html)?embeddedBatchLineReviewWorkflow(parent.html,batchReviewOutputDir(parent.filePath)):undefined;
+  const override=workflow?folderPromptWorkflowOverride(workflow,parent.payload.files,parent.payload.files.map((file:any)=>file.outputPath===outputPath?resolveReviewHtmlPaths(source.html,child):'')):undefined;
+  return prepareReviewHtmlSource(child,source,override);
 }

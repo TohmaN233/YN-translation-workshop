@@ -2,18 +2,25 @@ import { parentPort, workerData } from "node:worker_threads";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {pathToFileURL} from 'node:url';
 import path from "node:path";
 import { createCanvas, loadImage, DOMMatrix, ImageData, Path2D } from "@napi-rs/canvas";
-import { PDFDocument, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
-import { pdfTextBlocks, pdfParagraphStructure, wrapPdfText, flowPdfText, intersects } from "./pdfLayout.ts";
+import { pdfTextBlocks, pdfParagraphStructure, intersects, type PdfSegmentationDecision } from "./pdfLayout.ts";
 import { pdfInlineTokens, splitPdfInlineTranslation } from "../shared/validation/pdfPreservation.ts";
 import {pdfReferenceSections} from './pdfReferenceSections.ts';
+import {makePdfLogicalDocument} from './pdfLogicalDocument.ts';
+import {buildPdfReflowDocument} from './pdfReflowDocument.ts';
+import {renderPdfReflowHtml,type PdfReflowImage} from './pdfReflow.ts';
+import {classifyPdfGraphicRegions} from './pdfGraphicRegions.ts';
+import {pdfSourceTables} from './pdfSourceTables.ts';
+import {discoverPdfFigureGroups} from './pdfFigureGroups.ts';
 import { markPdfCodePanels, protectPdfText, selectPdfPaintGlyphs, type PdfTextPaint } from "./pdfProtection.ts";
 import { pdfOutlinedText } from "./pdfOutlinedText.ts";
 import { encodePdfPng } from "./pdfPng.ts";
 import { decodeProjectPaths, encodeProjectPaths } from "./projectPaths.ts";
 import { PDF_LAYOUT_VERSION, PDF_EXTRACTOR_REVISION, pdfProtectionHash, validatePdfLayout, type PdfBox, type PdfLayout, type PdfReference, type PdfWorkerOperation } from "./pdfTypes.ts";
+const unionBox=(a:PdfBox,b:PdfBox):PdfBox=>({x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),width:Math.max(a.x+a.width,b.x+b.width)-Math.min(a.x,b.x),height:Math.max(a.y+a.height,b.y+b.height)-Math.min(a.y,b.y)});
 
 const cancellation=new AbortController(),cancellers=new Set<()=>void>(),cleanupFailures:unknown[]=[];
 const checkCancelled=()=>cancellation.signal.throwIfAborted();
@@ -71,8 +78,8 @@ async function openPdf(file: string) {
   catch(error){await destroy();throw error;}
 }
 
-function imageReferences(ops: { fnArray: number[]; argsArray: any[] }, viewport: any, page: number): { images: PdfReference[]; areas: PdfBox[] } {
-  const result: PdfReference[] = [], areas: Array<{x:number;y:number;width:number;height:number}> = [];
+function imageReferences(ops: { fnArray: number[]; argsArray: any[] }, viewport: any, page: number): { images: PdfReference[]; areas: PdfBox[]; imagePaints:Array<{operator:number;id?:string}> } {
+  const result: PdfReference[] = [], areas: Array<{x:number;y:number;width:number;height:number}> = [],imagePaints:Array<{operator:number;id?:string}>=[];
   const stack: Array<{ matrix: number[]; clip: number[] | undefined }> = [];
   let matrix = [...viewport.transform];
   let visibleClip: number[] | undefined = [0, 0, viewport.width, viewport.height];
@@ -119,13 +126,14 @@ function imageReferences(ops: { fnArray: number[]; argsArray: any[] }, viewport:
       }
     }
     else if (op === pdfjs.OPS.paintImageXObject || op === pdfjs.OPS.paintInlineImageXObject) {
+      const paint:{operator:number;id?:string}={operator:i};imagePaints.push(paint);
       const visible = intersect(visibleClip,bounds([0,0,1,1]));
       if (!visible) continue;
       const [x,y] = visible, width = visible[2]-x, height = visible[3]-y;
-      if (width > 4 && height > 4) result.push({ id: `p${page}-image${result.length+1}`, page, x, y, width, height });
+      if (width > 0 && height > 0) {paint.id=`p${page}-image${result.length+1}`;result.push({ id:paint.id, page, x, y, width, height });}
     }
   }
-  return { images: result, areas };
+  return { images: result, areas,imagePaints };
 }
 
 function textColors(ops: { fnArray: number[]; argsArray: any[] }) {
@@ -152,6 +160,7 @@ async function extract() {
   await mkdir(directory, { recursive: true });
   const layout: PdfLayout = { version: PDF_LAYOUT_VERSION, extractorRevision: PDF_EXTRACTOR_REVISION, originalPath: input.originalPath, originalHash: hash,
     sourcePath: input.sourcePath, sourceHash: "", protectionHash: "", blocks: [], pages: [], references: [] };
+  const segmentationPages:Array<{page:number;blocks:number;decisions:Array<PdfSegmentationDecision&{line:number}>}>=[];
   try {
     for (let number = 1; number <= pdf.numPages; number++) {
       const page = await pdf.getPage(number), viewport = page.getViewport({ scale: 1 });
@@ -159,12 +168,23 @@ async function extract() {
       const ops = await page.getOperatorList({ annotationMode: pdfjs.AnnotationMode.DISABLE });
       const structTree=await page.getStructTree();
       const paints = textColors(ops);
+      const unsupportedPaints=new Map(Object.entries(pdfjs.OPS).filter(([name])=>['shadingFill','paintXObject','rawFillPath','stroke','closeStroke','fill','eoFill','fillStroke','eoFillStroke','closeFillStroke','closeEOFillStroke'].includes(name)||/^paint.*Image/u.test(name)&&!['paintImageXObject','paintInlineImageXObject'].includes(name)).map(([name,code])=>[code,name]));
+      for(const [operator,code] of ops.fnArray.entries())if(unsupportedPaints.has(code))throw new Error(`PDF page ${number}: unsupported source graphic ${unsupportedPaints.get(code)} at operator ${operator}; this content cannot be safely assigned for reflow.`);
       const {images,areas}=imageReferences(ops,viewport,number);
       const structuredContent=pdfParagraphStructure(content,structTree);
       const protectedText = protectPdfText({...structuredContent,items:markPdfCodePanels(structuredContent,areas,viewport.transform)}, structTree, paints,
         id => page.commonObjs.has(id) ? String(page.commonObjs.get(id).name ?? "") : "", number);
       const outlined=pdfOutlinedText(ops,pdfjs.OPS,id=>page.commonObjs.get(id),protectedText.retained,number,protectedText.items);
-      const blocks = pdfTextBlocks(protectedText.items, viewport, number);
+      const decisions:Array<PdfSegmentationDecision&{line:number}>=[],offset=layout.blocks.length;
+      const blocks = pdfTextBlocks(protectedText.items, viewport, number,decision=>decisions.push({...decision,line:offset+decision.paragraph}),{visualRowsOnly:input.visualRowsOnly});
+      if(input.visualRowsOnly) {
+        const groups=new Map<number,number[]>();
+        pdfTextBlocks(protectedText.items,viewport,number,decision=>{
+          const ids=groups.get(decision.paragraph)??[];ids.push(offset+decision.visualRow);groups.set(decision.paragraph,ids);
+        });
+        layout.mechanicalParagraphs??=[];layout.mechanicalParagraphs.push(...groups.values());
+      }
+      segmentationPages.push({page:number,blocks:blocks.length,decisions});
       if (!blocks.length && images.some(image => image.width*image.height > viewport.width*viewport.height*0.65)) {
         throw new Error(`PDF page ${number} appears to be scanned and has no text layer. OCR is required before translation.`);
       }
@@ -335,6 +355,16 @@ async function extract() {
       const numericOwnership = new Map<typeof blocks[number],Set<number>>();
       const numericGlyphs = new Map<typeof blocks[number],Map<number,Set<number>>>();
       for(const block of blocks) {
+        if(block.protection) {
+          const indexes=new Set((block.paintOperations??[]).flatMap(operator=>[
+            renderedPaints[paints.findIndex(paint=>paint.operator===operator)]?.index,
+            ...(outlined.owners.get(operator)??[]).map(pathIndex=>renderedPaths[originalPaths.findIndex(entry=>entry.index===pathIndex)]?.index)
+          ]).filter((index):index is number=>index!==undefined));
+          const bounds=[...indexes].filter(index=>ink&&index<ink.length&&!ink.isEmpty(index)).map(index=>({x:ink!.minX(index)*canvas.width/scale,y:ink!.minY(index)*canvas.height/scale,right:ink!.maxX(index)*canvas.width/scale,bottom:ink!.maxY(index)*canvas.height/scale}));
+          if(!bounds.length)throw new Error(`PDF page ${number}: protected source has no native ink geometry.`);
+          const x=Math.max(0,Math.min(...bounds.map(box=>box.x))),y=Math.max(0,Math.min(...bounds.map(box=>box.y))),right=Math.min(viewport.width,Math.max(...bounds.map(box=>box.right))),bottom=Math.min(viewport.height,Math.max(...bounds.map(box=>box.bottom)));
+          block.sourceInkBox={x,y,width:right-x,height:bottom-y};
+        }
         if(!block.protection && /^\d+$/u.test(block.text)) {
           const own = block.paintOperations ?? [];
           if(!own.length || !block.paintSpans?.length) throw new Error(`PDF page ${number}: numeric glyph ownership is missing.`);
@@ -362,6 +392,88 @@ async function extract() {
         }
 
       }
+      if(originalPaths.length!==renderedPaths.length||originalPaths.some((entry,index)=>entry.bounds!==renderedPaths[index].bounds))throw new Error(`PDF page ${number}: graphic paint ownership differs from extraction.`);
+      const graphicPaints:Array<PdfBox&{operator:number}>=[];
+      for(const [index,entry] of originalPaths.entries()) {
+        if(outlined.paired.has(entry.index)||ops.argsArray[entry.index][0]===pdfjs.OPS.endPath)continue;
+        const rendered=renderedPaths[index].index;
+        if(!ink||rendered>=ink.length)throw new Error(`PDF page ${number}: native graphic ${entry.index} has no recorded geometry.`);
+        if(ink.isEmpty(rendered))continue;
+        checkCancelled();
+        // recordedBBoxes includes conservative stroke/filter padding. Measure
+        // the original painter itself so a table rule cannot claim a nearby
+        // variable, and a fraction bar cannot disappear as "decoration".
+        const left=Math.max(0,Math.floor(ink.minX(rendered)*canvas.width)-1),top=Math.max(0,Math.floor(ink.minY(rendered)*canvas.height)-1),right=Math.min(canvas.width,Math.ceil(ink.maxX(rendered)*canvas.width)+1),bottom=Math.min(canvas.height,Math.ceil(ink.maxY(rendered)*canvas.height)+1);
+        const isolated=createCanvas(right-left,bottom-top),context=isolated.getContext('2d'),alteredPaths:Array<{list:any;index:number;args:any[]}>=[];
+        let pathIndex=0;
+        try {
+          await renderPdfPage(page,{canvas:null,canvasContext:context as any,viewport:renderedViewport,transform:[1,0,0,1,-left,-top],background:'rgba(0,0,0,0)',annotationMode:pdfjs.AnnotationMode.DISABLE,
+            operationsFilter:(operation,list)=>{
+              const code=list.fnArray[operation];
+              if(textPaint.has(code)||Object.entries(pdfjs.OPS).some(([name,value])=>code===value&&/^(?:paint.*Image|shadingFill)/u.test(name)))return false;
+              if(code===pdfjs.OPS.constructPath&&list.argsArray[operation][2]) {
+                const original=originalPaths[pathIndex++];
+                if(!original||original.bounds!==JSON.stringify(Array.from(list.argsArray[operation][2])))throw new Error(`PDF page ${number}: isolated graphic stream changed.`);
+                if(original.index!==entry.index&&list.argsArray[operation][0]!==pdfjs.OPS.endPath){const args=list.argsArray[operation];alteredPaths.push({list,index:operation,args});list.argsArray[operation]=[pdfjs.OPS.endPath,...args.slice(1)];}
+              }
+              return true;
+            }});
+          const pixels=context.getImageData(0,0,isolated.width,isolated.height).data;
+          let x0=isolated.width,y0=isolated.height,x1=-1,y1=-1;
+          for(let y=0;y<isolated.height;y++)for(let x=0;x<isolated.width;x++)if(pixels[(y*isolated.width+x)*4+3]){x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x);y1=Math.max(y1,y);}
+          if(x1<0||pathIndex!==originalPaths.length)throw new Error(`PDF page ${number}: native graphic ${entry.index} cannot be isolated completely.`);
+          graphicPaints.push({operator:entry.index,x:(left+x0)/scale,y:(top+y0)/scale,width:(x1-x0+1)/scale,height:(y1-y0+1)/scale});
+        }finally{for(const hidden of alteredPaths)hidden.list.argsArray[hidden.index]=hidden.args;isolated.width=isolated.height=1;}
+      }
+      const natives:Array<{id:string;box:PdfBox;kind:'math'|'code'}>=[];
+      const nativeSources=new Map<string,{nativePathOperations?:number[]}>();
+      const numericClipOwners=new Map<number,PdfBox>();
+      for(const paint of graphicPaints)if([pdfjs.OPS.clip,pdfjs.OPS.eoClip].includes(ops.fnArray[paint.operator-1])) {
+        const restore=ops.fnArray.findIndex((code,index)=>index>paint.operator&&code===pdfjs.OPS.restore),end=restore<0?ops.fnArray.length:restore;
+        const affected=blocks.filter(block=>block.paintOperations?.some(operator=>operator>paint.operator&&operator<end));
+        if(affected.length===1&&!affected[0].protection&&/^\d+$/u.test(affected[0].text))numericClipOwners.set(affected[0].line,paint);
+      }
+      for(const block of blocks)if(!block.protection&&/^\d+$/u.test(block.text)) {
+        const fraction=graphicPaints.find(paint=>{
+          if(paint.height>1||paint.width<=2||Math.abs(block.x+block.width/2-paint.x-paint.width/2)>block.fontSize/2
+            ||block.x<paint.x-1||block.x+block.width>paint.x+paint.width+1)return false;
+          const numericCenter=block.y+block.fontSize/2;
+          const opposite=protectedText.items.filter(item=>item.protection==='math').map(item=>{
+            const size=Math.hypot(item.transform[2],item.transform[3]),x=viewport.transform[0]*item.transform[4]+viewport.transform[2]*item.transform[5]+viewport.transform[4];
+            const y=viewport.transform[1]*item.transform[4]+viewport.transform[3]*item.transform[5]+viewport.transform[5]-size;
+            return {x,right:x+item.width,center:y+size/2};
+          }).filter(item=>(item.center-paint.y)*(numericCenter-paint.y)<0&&Math.abs(item.center-paint.y)<=block.fontSize*2
+            &&item.x>=paint.x-1&&item.right<=paint.x+paint.width+1);
+          return opposite.length>0&&Math.abs((Math.max(...opposite.map(item=>item.right))+Math.min(...opposite.map(item=>item.x)))/2-paint.x-paint.width/2)<=block.fontSize/2;
+        });
+        if(fraction||numericClipOwners.has(block.line)) {
+          block.protection='math';block.segmentation='protected';delete block.proseSegments;delete block.inlineProtections;
+          for(const operator of block.paintOperations??[]){protectedText.retained.add(operator);retainedRenderOps.add(renderedPaints[paints.findIndex(paint=>paint.operator===operator)].index);}
+        }
+      }
+      for(let index=0;index<blocks.length;index++) {
+        const block=blocks[index];
+        for(const node of block.inlineProtections??[]){natives.push({id:node.token,box:unionBox(node,node.inkBox!),kind:node.kind});nativeSources.set(node.token,node);}
+        if(block.protection) {
+          const group=[block];
+          while(index+1<blocks.length&&blocks[index+1].protection===block.protection&&blocks[index+1].y<=group.at(-1)!.y+group.at(-1)!.height+block.fontSize*2)group.push(blocks[++index]);
+          const boxes=group.map(row=>row.sourceInkBox&&row.sourceInkBox.width<viewport.width*.95?unionBox(row,row.sourceInkBox):row);
+          let box=boxes.reduce(unionBox);
+          const numericClip=numericClipOwners.get(block.line);if(numericClip)box=unionBox(box,numericClip);
+          const operators=group.flatMap(row=>row.paintOperations??[]);
+          if(block.protection==='math'&&group.length>1)for(const paint of graphicPaints)if(paint.height<=1&&paint.width>paint.height
+            &&paint.operator>Math.min(...operators)&&paint.operator<Math.max(...operators)&&paint.y>=box.y&&paint.y+paint.height<=box.y+box.height
+            &&paint.x>=box.x-block.fontSize*2&&paint.x+paint.width<=box.x+box.width+block.fontSize*2)box=unionBox(box,paint);
+          const id=`native:${block.line}`;natives.push({id,box,kind:block.protection});nativeSources.set(id,block);
+        }
+      }
+      const graphicInput={page:number,width:viewport.width,height:viewport.height,paints:graphicPaints,textBlocks:blocks,rasterReferences:images,natives,tableRegions:pdfSourceTables(blocks)};
+      await atomic(path.join(directory,`graphic-ownership-${number}.json`),JSON.stringify({input:graphicInput}));
+      const graphics=classifyPdfGraphicRegions(graphicInput);
+      await atomic(path.join(directory,`graphic-ownership-${number}.json`),JSON.stringify({input:graphicInput,result:graphics}));
+      for(const owner of graphics.nativeOwners)nativeSources.get(owner.id)!.nativePathOperations=owner.paintOperations;
+      layout.references.push(...graphics.references);
+      const graphicMetadata={graphicOperations:graphicPaints.map(paint=>paint.operator),tableRules:graphics.tableRuleOwners};
       const hiddenRenderPaths=new Set(originalPaths.flatMap((entry,index)=>outlined.hidden.has(entry.index)?[renderedPaths[index].index]:[]));
       const altered: Array<{ list: any; index: number; glyphs: any[] }> = [];
       try {
@@ -390,11 +502,17 @@ async function extract() {
       const background = encodePdfPng(canvas);
       const backgroundPath = path.join(directory, `background-${number}.png`);
       await atomic(backgroundPath, background);
-      layout.pages.push({ page: number, width: viewport.width, height: viewport.height, previewPath, previewHash: digest(preview), backgroundPath, backgroundHash: digest(background) });
+      layout.pages.push({ page: number, width: viewport.width, height: viewport.height, previewPath, previewHash: digest(preview), backgroundPath, backgroundHash: digest(background),...graphicMetadata });
+      const figureGroups=discoverPdfFigureGroups(number,images,blocks).map(({box,...group})=>({...group,...box}));
+      layout.figureGroups??=[];layout.figureGroups.push(...figureGroups);
+      for(const line of figureGroups.flatMap(group=>group.physicalLines)) {
+        const block=blocks.find(block=>block.line===line)!;
+        block.protection='math';block.segmentation='protected';delete block.proseSegments;delete block.inlineProtections;
+      }
       // Numbers keep their original glyphs in an isolated transparent layer.
       // Native ink bounds can exceed text advances and are quantized; cropping
       // the page preview would otherwise cut overhang or include nearby prose.
-      for(const block of blocks.filter(block=>block.sourceInkBox)) {
+      for(const block of blocks.filter(block=>numericOwnership.has(block))) {
         const own = numericOwnership.get(block)!;
         const masks = numericGlyphs.get(block)!;
         const keepText=new Set(paints.flatMap((paint,index)=>own.has(paint.operator)?[renderedPaints[index].index]:[]));
@@ -469,16 +587,22 @@ async function extract() {
       page.cleanup(); progress(number, pdf.numPages);
     }
     if (!layout.blocks.length) throw new Error("PDF contains no extractable text. OCR is required before translation.");
+    makePdfLogicalDocument(layout);
+    const logicalOwners=new Map(layout.blocks.flatMap(block=>block.fragments!.map(line=>[line,block.line] as const)));
+    for(const page of segmentationPages)for(const decision of page.decisions)Object.assign(decision,{physicalLine:decision.line,line:logicalOwners.get(decision.line)});
     const text = layout.blocks.map(block => block.text).join("\n");
     layout.sourceHash = digest(text);
     layout.protectionHash = pdfProtectionHash(layout);
     if (digest(await readFile(input.originalPath)) !== hash) throw new Error("PDF changed during extraction; no projection was committed.");
     validatePdfLayout(layout);
-    await atomic(input.sourcePath, text);
+    await atomic(input.sourcePath+'.pdf-mechanical.txt', text);
+    await atomic(input.sourcePath+'.pdf-segmentation.json',JSON.stringify({originalHash:hash,sourceHash:layout.sourceHash,version:layout.version,extractorRevision:layout.extractorRevision,pages:segmentationPages}));
     // Commit the manifest last: incomplete image extraction never becomes usable.
-    await atomic(input.sourcePath + ".pdf-layout.json", JSON.stringify(encodeProjectPaths(layout, input.projectRoot)));
+    await atomic(input.sourcePath+'.pdf-mechanical.json', JSON.stringify(encodeProjectPaths(layout, input.projectRoot)));
     return { sourcePath: input.sourcePath, sourceHash: layout.sourceHash, originalHash: hash, pages: pdf.numPages, lines: layout.blocks.length,
-      segmentation:{paragraphs:layout.blocks.filter(block=>block.segmentation==='paragraph').length,
+      segmentation:{physicalRows:layout.physicalBlocks!.length,mechanicalParagraphCandidates:layout.mechanicalParagraphs?.length??layout.physicalBlocks!.length,
+        logicalOwners:layout.blocks.length,multiSourceOwners:layout.blocks.filter(block=>block.fragments!.length>1).length,
+        paragraphs:layout.blocks.filter(block=>block.segmentation==='paragraph').length,
         protectedRows:layout.blocks.filter(block=>block.protection).length,
         ambiguousParallelRows:layout.blocks.filter(block=>block.segmentation==='parallel-region').length,
         inlineNodes:layout.blocks.reduce((sum,block)=>sum+(block.inlineProtections?.length??0),0)} };
@@ -487,31 +611,39 @@ async function extract() {
 
 /** Rebind reference glyph ownership from the hash-checked original; render a
  * transparent layer at full page size, so italic overhang cannot be cropped. */
-async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayout['blocks'], selectedRows: Set<number>, inline?: {tokens:Set<string>;background?:boolean}) {
+async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayout['blocks'], selectedRows: Set<number>, inline: {tokens:Set<string>;nativeRows?:boolean;includeImages?:Set<string>}) {
   const viewport=page.getViewport({scale:1}),content=await page.getTextContent({includeMarkedContent:true});
   const ops=await page.getOperatorList({annotationMode:pdfjs.AnnotationMode.DISABLE}),structure=await page.getStructTree(),paints=textColors(ops);
-  const {areas}=imageReferences(ops,viewport,number),structured=pdfParagraphStructure(content,structure);
+  const {areas,imagePaints}=imageReferences(ops,viewport,number),structured=pdfParagraphStructure(content,structure);
   const protectedText=protectPdfText({...structured,items:markPdfCodePanels(structured,areas,viewport.transform)},structure,paints,
     id=>page.commonObjs.has(id)?String(page.commonObjs.get(id).name??''):'',number);
   const outlined=pdfOutlinedText(ops,pdfjs.OPS,id=>page.commonObjs.get(id),protectedText.retained,number,protectedText.items);
-  const blocks=pdfTextBlocks(protectedText.items,viewport,number);
-  if(blocks.length!==boundBlocks.length||blocks.some((block,index)=>block.text!==boundBlocks[index].text))throw new Error(`PDF page ${number}: reference glyph ownership differs from its bound source.`);
+  let blocks=pdfTextBlocks(protectedText.items,viewport,number);
+  const matches=(candidate:typeof blocks)=>candidate.length===boundBlocks.length&&candidate.every((block,index)=>block.text===boundBlocks[index].text);
+  if(!matches(blocks))blocks=pdfTextBlocks(protectedText.items,viewport,number,undefined,{visualRowsOnly:true});
+  if(!matches(blocks))throw new Error(`PDF page ${number}: reference glyph ownership differs from its bound source.`);
+  for(const id of inline.includeImages??[])if(!imagePaints.some(paint=>paint.id===id))throw new Error(`PDF page ${number}: raster paint ownership is missing for ${id}.`);
   const selected=blocks.filter((_,index)=>selectedRows.has(boundBlocks[index].line));
   const spans=new Map<number,Array<{operator:number;start:number;end:number}>>();
-  const inlineOperations=new Set(blocks.flatMap(block=>(block.inlineProtections??[]).filter(node=>inline?.tokens.has(node.token)).flatMap(node=>node.paintOperations)));
-  if(inline) {
+  const inlineOperations=new Set(blocks.flatMap(block=>(block.inlineProtections??[]).filter(node=>inline.tokens.has(node.token)).flatMap(node=>node.paintOperations)));
     const reboundTokens=blocks.flatMap(block=>(block.inlineProtections??[]).filter(node=>inline.tokens.has(node.token)).map(node=>node.token));
     if(reboundTokens.length!==inline.tokens.size)throw new Error(`PDF page ${number}: inline glyph ownership differs from its bound source.`);
     for(const operator of inlineOperations)if(!protectedText.retained.has(operator))throw new Error(`PDF page ${number}: inline glyph is not protected native ink.`);
-    for(const paint of paints)if(inline.background?protectedText.retained.has(paint.operator)&&!inlineOperations.has(paint.operator):inlineOperations.has(paint.operator)) {
-      spans.set(paint.operator,[{operator:paint.operator,start:0,end:paint.text.replace(/\s/gu,'').length}]);
+    for(const node of blocks.flatMap(block=>block.inlineProtections??[]).filter(node=>inline.tokens.has(node.token))) {
+      if(!node.paintSpans?.length)throw new Error(`PDF page ${number}: inline native glyph has no precise character ownership.`);
+      for(const span of node.paintSpans)spans.set(span.operator,[...(spans.get(span.operator)??[]),span]);
     }
-  } else for(const block of selected)for(const span of block.paintSpans??[])if(!protectedText.retained.has(span.operator))spans.set(span.operator,[...(spans.get(span.operator)??[]),span]);
-  const keptPaths=new Set([...spans.keys()].flatMap(operator=>outlined.owners.get(operator)??[]));
-  const movedPaths=new Set([...inlineOperations].flatMap(operator=>outlined.owners.get(operator)??[]));
-  if(inline) {
-    if(blocks.some(block=>block.paintOperations?.some(operator=>!inlineOperations.has(operator)&&outlined.owners.get(operator)?.some(index=>movedPaths.has(index)))))throw new Error(`PDF page ${number}: inline outlines share ownership with other content.`);
-  } else if(blocks.some((block,index)=>!selectedRows.has(boundBlocks[index].line)&&block.paintOperations?.some(operator=>outlined.owners.get(operator)?.some(index=>keptPaths.has(index)))))throw new Error(`PDF page ${number}: reference outlines share ownership with translatable prose.`);
+    if(inline.nativeRows)for(const block of selected)for(const span of block.paintSpans??[])spans.set(span.operator,[...(spans.get(span.operator)??[]),span]);
+  const nativePaths=boundBlocks.flatMap(block=>[
+    ...(inline.nativeRows&&selectedRows.has(block.line)?block.nativePathOperations??[]:[]),
+    ...(block.inlineProtections??[]).filter(node=>inline.tokens.has(node.token)).flatMap(node=>node.nativePathOperations??[])
+  ]);
+  for(const operator of nativePaths)if(ops.fnArray[operator]!==pdfjs.OPS.constructPath||ops.argsArray[operator][0]===pdfjs.OPS.endPath)throw new Error(`PDF page ${number}: native graphic identity changed.`);
+  const keptPaths=new Set([...nativePaths,...[...spans.keys()].flatMap(operator=>outlined.owners.get(operator)??[])]);
+  if(inline.nativeRows)for(const [operator,owned] of spans)if(outlined.owners.get(operator)?.length
+    &&owned.reduce((total,span)=>total+span.end-span.start,0)!==paints.find(paint=>paint.operator===operator)!.text.replace(/\s/gu,'').length)throw new Error(`PDF page ${number}: native outlines cannot be safely separated between source rows.`);
+  const movedPaths=new Set([...nativePaths,...[...inlineOperations].flatMap(operator=>outlined.owners.get(operator)??[])]);
+  if(blocks.some(block=>block.paintOperations?.some(operator=>!inlineOperations.has(operator)&&outlined.owners.get(operator)?.some(index=>movedPaths.has(index)))))throw new Error(`PDF page ${number}: inline outlines share ownership with other content.`);
   const originalPaths=ops.fnArray.flatMap((op:number,index:number)=>op===pdfjs.OPS.constructPath&&ops.argsArray[index][2]?[{index,bounds:JSON.stringify(Array.from(ops.argsArray[index][2]))}]:[]);
   const scale=Math.min(2,3000/Math.max(viewport.width,viewport.height)),rendered=page.getViewport({scale});
   const canvas=createCanvas(Math.ceil(rendered.width),Math.ceil(rendered.height)),fonts=[...new Set(protectedText.items.map(item=>page.commonObjs.get(item.fontName)))];
@@ -519,15 +651,22 @@ async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayo
   if(fonts.some(font=>font.isInvalidPDFjsFont))throw new Error(`PDF page ${number}: unsupported reference glyph painter.`);
   for(const font of fonts)if(font.isType3Font)font.charProcOperatorList.set(hiddenId,{fnArray:[],argsArray:[]});
   const altered:Array<{list:any;index:number;args:any[]}>=[],images=new Set(Object.entries(pdfjs.OPS).filter(([name])=>/^(?:paint.*Image|shadingFill)/u.test(name)).map(([,code])=>code));
-  let paintIndex=0,pathIndex=0;
+  let paintIndex=0,pathIndex=0,imageIndex=0;
   try {
-    await renderPdfPage(page,{canvas:null,canvasContext:canvas.getContext('2d'),viewport:rendered,background:inline?.background?'rgb(255,255,255)':'rgba(0,0,0,0)',annotationMode:pdfjs.AnnotationMode.DISABLE,
+    await renderPdfPage(page,{canvas:null,canvasContext:canvas.getContext('2d'),viewport:rendered,background:'rgba(0,0,0,0)',annotationMode:pdfjs.AnnotationMode.DISABLE,
       operationsFilter:(index:number,list:any)=>{
         const op=list.fnArray[index];
-        if(images.has(op))return Boolean(inline?.background);
+        if(images.has(op)) {
+          if(op===pdfjs.OPS.paintImageXObject||op===pdfjs.OPS.paintInlineImageXObject) {
+            const original=imagePaints[imageIndex++];
+            if(!original||ops.fnArray[original.operator]!==op)throw new Error(`PDF page ${number}: raster paint stream changed.`);
+            return Boolean(original.id&&inline.includeImages?.has(original.id));
+          }
+          return false;
+        }
         if(op===pdfjs.OPS.constructPath&&list.argsArray[index][2]) {
           const original=originalPaths[pathIndex++];if(!original||original.bounds!==JSON.stringify(Array.from(list.argsArray[index][2])))throw new Error(`PDF page ${number}: reference outline stream changed.`);
-          const keep=inline?.background?!outlined.hidden.has(original.index)&&!movedPaths.has(original.index):keptPaths.has(original.index);
+          const keep=keptPaths.has(original.index);
           if(!keep){const args=list.argsArray[index];altered.push({list,index,args});list.argsArray[index]=[pdfjs.OPS.endPath,...args.slice(1)];}return true;
         }
         if(op!==pdfjs.OPS.showText&&op!==pdfjs.OPS.showSpacedText)return true;
@@ -537,7 +676,7 @@ async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayo
         const own=spans.get(paint.operator),mask=own?selectPdfPaintGlyphs(glyphs,own,pdfjs.normalizeUnicode):new Set<number>();
         const args=list.argsArray[index];altered.push({list,index,args});list.argsArray[index]=[glyphs.map((glyph:any,i:number)=>typeof glyph==='object'&&!mask.has(i)?{...glyph,isInFont:false,fontChar:'',unicode:'',accent:null,operatorListId:hiddenId}:glyph),...args.slice(1)];return true;
       }});
-    if(paintIndex!==paints.length||pathIndex!==originalPaths.length)throw new Error(`PDF page ${number}: incomplete reference paint ownership.`);
+    if(paintIndex!==paints.length||pathIndex!==originalPaths.length||imageIndex!==imagePaints.length)throw new Error(`PDF page ${number}: incomplete reference paint ownership.`);
     return encodePdfPng(canvas);
   } finally {
     for(const entry of altered.reverse())entry.list.argsArray[entry.index]=entry.args;
@@ -546,185 +685,93 @@ async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayo
   }
 }
 
-/** Reordered paragraphs flow native ink at its original size, alongside prose.
- * Source-order paragraphs retain the established source-slot layout. */
-function reorderedPdfParagraph(block:PdfLayout['blocks'][number],text:string,size:number,measure:(text:string)=>number,
-  native:Map<string,{bytes:Uint8Array;box:PdfBox;unitX:number;unitY:number}>):
-  {error:string}|{prose:Array<{text:string;box:PdfBox}>;ink:Array<{token:string;bytes:Uint8Array;box:PdfBox}>} {
-  const nodes=new Map(block.inlineProtections!.map(node=>[node.token,node]));
-  const areas=block.proseSegments!.flatMap(segment=>segment.boxes).sort((a,b)=>a.y-b.y||a.x-b.x);
-  const rows:PdfBox[]=[];
-  for(const area of areas) {
-    const previous=rows.at(-1);
-    if(previous&&Math.abs(previous.y-area.y)<.5) {
-      const right=Math.max(previous.x+previous.width,area.x+area.width);previous.x=Math.min(previous.x,area.x);previous.width=right-previous.x;previous.height=Math.min(previous.height,area.height);
-    } else rows.push({x:area.x,y:area.y,width:area.width,height:area.height});
-  }
-  const sourceRows=new Map<string,number>();
-  for(const node of block.inlineProtections!) {
-    const row=rows.filter(row=>row.y<node.y+node.height&&node.y<row.y+row.height).sort((a,b)=>Math.abs(a.y-node.y)-Math.abs(b.y-node.y))[0];
-    if(!row)throw new Error(`PDF L${block.line}: inline marker ${node.token} has no paragraph flow row.`);
-    sourceRows.set(node.token,row.y);
-    const right=Math.max(row.x+row.width,node.x+node.width);row.x=Math.min(row.x,node.x);row.width=right-row.x;
-  }
-  const prose:Array<{text:string;box:PdfBox}>=[],ink:Array<{token:string;bytes:Uint8Array;box:PdfBox}>=[];
-  let rowIndex=0,x=rows[0].x;
-  const advance=()=>{if(++rowIndex>=rows.length)return false;x=rows[rowIndex].x;return true;};
-  const parts=splitPdfInlineTranslation(block.text,text),tokens=pdfInlineTokens(text);
-  for(let index=0;index<parts.length;index++) {
-    const chunks=parts[index].match(/[^\S\r\n]+|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|[^\s\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+/gu)??[];
-    for(const chunk of chunks) {
-      const pieces=measure(chunk)>Math.max(...rows.map(row=>row.width))?[...chunk]:[chunk];
-      for(const piece of pieces) {
-        const width=measure(piece);
-        while(x+width>rows[rowIndex].x+rows[rowIndex].width+.01)if(!advance())return {error:`prose exceeds paragraph flow rows at ${JSON.stringify(piece)}`};
-        if(size>rows[rowIndex].height+.1)return {error:`prose font exceeds flow row height ${rows[rowIndex].height}`};
-        const previous=prose.at(-1);
-        if(previous&&previous.box.y===rows[rowIndex].y&&Math.abs(previous.box.x+previous.box.width-x)<.01){previous.text+=piece;previous.box.width+=width;}
-        else prose.push({text:piece,box:{x,y:rows[rowIndex].y,width,height:size}});
-        x+=width;
-      }
-    }
-    const token=tokens[index];if(!token)continue;
-    const node=nodes.get(token)!,asset=native.get(token)!;
-    const width=Math.max(node.width,asset.box.width)+1;
-    while(x+width>rows[rowIndex].x+rows[rowIndex].width+.01)if(!advance())return {error:`native glyph ${token} exceeds paragraph flow rows`};
-    // Quantize to the extraction raster grid: moving native pixels must not
-    // introduce interpolation, scale changes or clipped glyph overhang.
-    const destination={...asset.box,x:Math.ceil(x/asset.unitX)*asset.unitX,y:Math.round((rows[rowIndex].y+asset.box.y-sourceRows.get(token)!)/asset.unitY)*asset.unitY};
-    ink.push({token,bytes:asset.bytes,box:destination});x=destination.x+width;
-  }
-  for(const node of ink) {
-    const overlap=prose.find(part=>part.text.trim()&&intersects(node.box,part.box));
-    if(overlap)return {error:`native glyph ${node.token} overlaps prose: ink=${JSON.stringify(node.box)}, prose=${JSON.stringify(overlap.box)}`};
-  }
-  if(ink.some((node,index)=>ink.slice(index+1).some(other=>intersects(node.box,other.box))))return {error:'native glyphs overlap'};
-  return {prose,ink};
-}
-
 async function exportPdf() {
-  if (input.kind !== "export") throw new Error("Invalid PDF export operation.");
-  const layout = decodeProjectPaths(JSON.parse(await readFile(input.layoutPath, "utf8")) as PdfLayout, input.projectRoot);
+  if(input.kind!=='export')throw new Error('Invalid PDF export operation.');
+  const layout=decodeProjectPaths(JSON.parse(await readFile(input.layoutPath,'utf8')) as PdfLayout,input.projectRoot);
   validatePdfLayout(layout);
-  const references=pdfReferenceSections(layout),referenceRows=new Map(references.protectedLines.map(row=>[row.line,row]));
-  if (layout.version !== PDF_LAYOUT_VERSION || digest(await readFile(layout.originalPath)) !== layout.originalHash
-    || digest(await readFile(layout.sourcePath)) !== layout.sourceHash) throw new Error("PDF source or projection changed. Regenerate the review before exporting.");
-  if (input.lines.length !== layout.blocks.length || input.lines.some((line, i) => typeof line !== "string" || /[\r\n]/.test(line) || (layout.blocks[i].text.trim() && !line.trim()))) {
-    throw new Error("PDF export requires one non-empty translated line per source block, without extra physical line breaks.");
-  }
-  for (const block of layout.blocks) {
-    if(referenceRows.has(block.line)) {
-      if(input.lines[block.line-1]!==block.text)throw new Error(`PDF page ${block.page} L${block.line}: protected reference must remain exactly identical to its source.`);
-      continue;
+  if(digest(await readFile(layout.originalPath))!==layout.originalHash||digest(await readFile(layout.sourcePath))!==layout.sourceHash)throw new Error('PDF source or projection changed. Regenerate the review before exporting.');
+  if(input.lines.length!==layout.blocks.length||input.lines.some((line,index)=>typeof line!=='string'||/[\r\n]/u.test(line)||layout.blocks[index].text.trim()&&!line.trim()))throw new Error('PDF export requires one non-empty translated line per source block, without extra physical line breaks.');
+  const references=new Set(pdfReferenceSections(layout).protectedLines.map(row=>row.line));
+  const bundledFont=fontkit.create(await readFile(input.fontPath));
+  for(const block of layout.blocks) {
+    if((block.protection||references.has(block.line))&&input.lines[block.line-1]!==block.text)throw new Error(`PDF page ${block.page} L${block.line}: protected ${block.protection??'reference'} must remain exactly identical to its source.`);
+    try{splitPdfInlineTranslation(block.text,input.lines[block.line-1]);}catch(error){throw new Error(`PDF page ${block.page} L${block.line}: ${errorDetails(error)}`);}
+    if(!block.protection&&!references.has(block.line))for(const character of splitPdfInlineTranslation(block.text,input.lines[block.line-1]).join('').replace(/[\u2028\u2029]/gu,' ')) {
+      if(!bundledFont.hasGlyphForCodePoint(character.codePointAt(0)!))throw new Error(`PDF L${block.line}: bundled font cannot render ${JSON.stringify(character)}.`);
     }
-    if (block.protection && input.lines[block.line-1] !== block.text)
-      throw new Error(`PDF page ${block.page} L${block.line}: protected ${block.protection} must remain exactly identical to its source.`);
-    try {splitPdfInlineTranslation(block.text,input.lines[block.line-1]);}
-    catch(error){throw new Error(`PDF page ${block.page} L${block.line}: ${error instanceof Error?error.message:String(error)}`);}
   }
-  const pdf = await PDFDocument.create();
-  pdf.registerFontkit(fontkit);
-  const font = await pdf.embedFont(await readFile(input.fontPath), { subset: false });
-  const characterSet = new Set(font.getCharacterSet());
-  const blocksByPage = new Map<number, typeof layout.blocks>();
-  for (const block of layout.blocks) {
-    const blocks = blocksByPage.get(block.page) ?? [];
-    blocks.push(block); blocksByPage.set(block.page, blocks);
-  }
-  const reordered=layout.blocks.filter(block=>pdfInlineTokens(input.lines[block.line-1]).some((token,index)=>token!==block.inlineProtections?.[index]?.token));
-  const reorderedRows=new Set(reordered.map(block=>block.line));
-  const referenceSource=referenceRows.size||reordered.length?await openPdf(layout.originalPath):undefined;
+  const original=await openPdf(layout.originalPath);
   try {
-  if(referenceSource&&referenceSource.hash!==layout.originalHash)throw new Error('PDF reference source changed while opening; no output was replaced.');
-  for (const pageLayout of layout.pages) {
-    const page = pdf.addPage([pageLayout.width, pageLayout.height]);
-    let background:Uint8Array = await readFile(pageLayout.backgroundPath);
-    if (digest(background) !== pageLayout.backgroundHash) throw new Error(`PDF page ${pageLayout.page} background asset changed.`);
-    const moved=reordered.filter(block=>block.page===pageLayout.page),native=new Map<string,{bytes:Uint8Array;box:PdfBox;unitX:number;unitY:number}>();
-    if(moved.length) {
-      const originalPage=await referenceSource!.pdf.getPage(pageLayout.page),tokens=new Set(moved.flatMap(block=>block.inlineProtections!.map(node=>node.token)));
-      background=await referenceProseInk(originalPage,pageLayout.page,blocksByPage.get(pageLayout.page)!,new Set(),{tokens,background:true});
-      for(const block of moved)for(const node of block.inlineProtections!) {
-        const image=await loadImage(Buffer.from(await referenceProseInk(originalPage,pageLayout.page,blocksByPage.get(pageLayout.page)!,new Set(),{tokens:new Set([node.token])})));
-        const sx=image.width/pageLayout.width,sy=image.height/pageLayout.height,box=node.inkBox!;
-        const left=Math.max(0,Math.floor(box.x*sx)-1),top=Math.max(0,Math.floor(box.y*sy)-1),right=Math.min(image.width,Math.ceil((box.x+box.width)*sx)+1),bottom=Math.min(image.height,Math.ceil((box.y+box.height)*sy)+1);
-        const canvas=createCanvas(right-left,bottom-top);
+    if(original.hash!==layout.originalHash)throw new Error('PDF changed while preparing its structured source.');
+    const physical=layout.physicalBlocks??layout.blocks,inlineAssets=new Map<string,PdfReflowImage>(),preparedPages=new Set<number>();
+    const nativeAssets=new Map<string,PdfReflowImage>();
+    const imageValue=(bytes:Uint8Array,width:number,height:number):PdfReflowImage=>({dataUrl:'data:image/png;base64,'+Buffer.from(bytes).toString('base64'),width,height});
+    async function prepareInlinePage(number:number) {
+      if(preparedPages.has(number))return;
+      const pageLayout=layout.pages[number-1],blocks=physical.filter(block=>block.page===number),nodes=blocks.flatMap(block=>block.inlineProtections??[]);
+      if(!nodes.length){preparedPages.add(number);return;}
+      const page=await original.pdf.getPage(number),combined=await loadImage(Buffer.from(await referenceProseInk(page,number,blocks,new Set(),{tokens:new Set(nodes.map(node=>node.token))})));
+      const sx=combined.width/pageLayout.width,sy=combined.height/pageLayout.height;
+      const crops=new Map(nodes.map(node=>{
+        const box=node.inkBox!,left=Math.max(0,Math.floor(box.x*sx)-1),top=Math.max(0,Math.floor(box.y*sy)-1),right=Math.min(combined.width,Math.ceil((box.x+box.width)*sx)+1),bottom=Math.min(combined.height,Math.ceil((box.y+box.height)*sy)+1);
+        return [node.token,{left,top,right,bottom,box:{x:left/sx,y:top/sy,width:(right-left)/sx,height:(bottom-top)/sy}}] as const;
+      }));
+      const full=createCanvas(combined.width,combined.height);
+      try {
+        full.getContext('2d').drawImage(combined,0,0);const pixels=full.getContext('2d').getImageData(0,0,full.width,full.height).data;
+        for(let y=0;y<full.height;y++)for(let x=0;x<full.width;x++)if(pixels[(y*full.width+x)*4+3]&&!nodes.some(node=>{const crop=crops.get(node.token)!;return x>=crop.left&&x<crop.right&&y>=crop.top&&y<crop.bottom;}))throw new Error(`PDF page ${number}: native inline ink exceeds its bound crops at pixel ${x},${y}.`);
+      }finally{full.width=full.height=1;}
+      for(const node of nodes) {
+        checkCancelled();const crop=crops.get(node.token)!;
+        const isolate=nodes.some(other=>other!==node&&intersects(crop.box,other.inkBox!));
+        const image=isolate?await loadImage(Buffer.from(await referenceProseInk(page,number,blocks,new Set(),{tokens:new Set([node.token])}))):combined;
+        const canvas=createCanvas(crop.right-crop.left,crop.bottom-crop.top);
         try {
-          canvas.getContext('2d').drawImage(image,left,top,canvas.width,canvas.height,0,0,canvas.width,canvas.height);
-          const full=createCanvas(image.width,image.height);
-          try {
-            full.getContext('2d').drawImage(image,0,0);
-            const pixels=full.getContext('2d').getImageData(0,0,full.width,full.height).data;
-            for(let y=0;y<full.height;y++)for(let x=0;x<full.width;x++)if(pixels[(y*full.width+x)*4+3]&&(x<left||x>=right||y<top||y>=bottom)) {
-              throw new Error(`PDF page ${pageLayout.page} L${block.line}: native inline ink for ${node.token} exceeds its bound crop; no glyphs were clipped and no output was replaced.`);
-            }
-          } finally {full.width=full.height=1;}
-          native.set(node.token,{bytes:encodePdfPng(canvas),box:{x:left/sx,y:top/sy,width:canvas.width/sx,height:canvas.height/sy},unitX:1/sx,unitY:1/sy});
-        } finally {canvas.width=canvas.height=1;}
+          canvas.getContext('2d').drawImage(image,crop.left,crop.top,canvas.width,canvas.height,0,0,canvas.width,canvas.height);
+          if(!canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data.some((value,index)=>index%4===3&&value))throw new Error(`PDF ${node.token}: native glyph image is empty.`);
+          inlineAssets.set(node.token,imageValue(encodePdfPng(canvas),canvas.width/sx,canvas.height/sy));
+        }finally{canvas.width=canvas.height=1;}
       }
+      preparedPages.add(number);progress(number,layout.pages.length);
     }
-    page.drawImage(await pdf.embedPng(background), { x: 0, y: 0, width: pageLayout.width, height: pageLayout.height });
-    if(referenceSource&&(blocksByPage.get(pageLayout.page)??[]).some(block=>referenceRows.has(block.line))) {
-      const ink=await referenceProseInk(await referenceSource.pdf.getPage(pageLayout.page),pageLayout.page,blocksByPage.get(pageLayout.page)!,new Set(referenceRows.keys()));
-      page.drawImage(await pdf.embedPng(ink),{x:0,y:0,width:pageLayout.width,height:pageLayout.height});
-    }
-    for (const block of blocksByPage.get(pageLayout.page) ?? []) {
-      if (block.protection||referenceRows.has(block.line)) continue; // Original code/math/reference glyphs stay in the page image.
-      const text = input.lines[block.line - 1];
-      // Unchanged numeric labels use their actual source glyphs. A proportional
-      // PDF digit may be narrower than the replacement font even at its minimum
-      // readable size; substituting fonts needlessly would damage page folios.
-      if (/^\d+$/u.test(block.text) && text === block.text) {
-        const bytes=await readFile(block.sourceInkPath!);
-        if(digest(bytes)!==block.sourceInkHash)throw new Error(`PDF page ${pageLayout.page} numeric glyph asset changed.`);
-        const box=block.sourceInkBox!;
-        page.drawImage(await pdf.embedPng(bytes),{x:box.x,y:pageLayout.height-box.y-box.height,width:box.width,height:box.height});
-        continue;
+    const document=await buildPdfReflowDocument(layout,input.lines,{
+      inline:async token=>{await prepareInlinePage(Number(token.match(/:p(\d+):/u)![1]));const image=inlineAssets.get(token);if(!image)throw new Error(`PDF inline asset is missing: ${token}`);return image;},
+      native:async(number,owned)=>{
+        const key=number+':'+owned.join(',');if(nativeAssets.has(key))return nativeAssets.get(key)!;
+        checkCancelled();const pageLayout=layout.pages[number-1],blocks=physical.filter(block=>block.page===number),page=await original.pdf.getPage(number);
+        const image=await loadImage(Buffer.from(await referenceProseInk(page,number,blocks,new Set(owned),{tokens:new Set(),nativeRows:true}))),canvas=createCanvas(image.width,image.height);
+        try {
+          const context=canvas.getContext('2d');context.drawImage(image,0,0);const pixels=context.getImageData(0,0,canvas.width,canvas.height).data;
+          let left=canvas.width,top=canvas.height,right=-1,bottom=-1;
+          for(let y=0;y<canvas.height;y++)for(let x=0;x<canvas.width;x++)if(pixels[(y*canvas.width+x)*4+3]){left=Math.min(left,x);top=Math.min(top,y);right=Math.max(right,x);bottom=Math.max(bottom,y);}
+          if(right<0)throw new Error(`PDF page ${number}: native source rows ${owned.join(',')} have no ink.`);
+          left=Math.max(0,left-1);top=Math.max(0,top-1);right=Math.min(canvas.width,right+2);bottom=Math.min(canvas.height,bottom+2);
+          const cropped=createCanvas(right-left,bottom-top);
+          try{cropped.getContext('2d').drawImage(canvas,left,top,cropped.width,cropped.height,0,0,cropped.width,cropped.height);const result=imageValue(encodePdfPng(cropped),cropped.width/(canvas.width/pageLayout.width),cropped.height/(canvas.height/pageLayout.height));nativeAssets.set(key,result);return result;}
+          finally{cropped.width=cropped.height=1;}
+        }finally{canvas.width=canvas.height=1;}
+      },
+      figure:async id=>{
+        const ref=layout.figureGroups?.find(group=>group.id===id)??layout.references.find(ref=>ref.id===id);if(!ref)throw new Error(`PDF figure is missing: ${id}`);
+        const page=layout.pages[ref.page-1],bytes=await readFile(page.previewPath);if(digest(bytes)!==page.previewHash)throw new Error(`PDF page ${ref.page} preview asset changed.`);
+        // Raster crops own image paints plus audited pure panel labels. Page
+        // previews also contain foreign PDF prose/formulas and cannot be used.
+        // Vector references retain the extraction proof that their crop has no
+        // foreign body/native overlap.
+        const vector='kind' in ref&&ref.kind==='vector',ownedRows='physicalLines' in ref?ref.physicalLines:[];
+        const rasterIds=new Set('referenceIds' in ref?ref.referenceIds:[ref.id]);
+        const source=vector?bytes:await referenceProseInk(await original.pdf.getPage(ref.page),ref.page,physical.filter(block=>block.page===ref.page),new Set(ownedRows),{tokens:new Set(),nativeRows:true,includeImages:rasterIds});
+        const image=await loadImage(Buffer.from(source)),sx=image.width/page.width,sy=image.height/page.height,left=Math.max(0,Math.floor(ref.x*sx)),top=Math.max(0,Math.floor(ref.y*sy)),right=Math.min(image.width,Math.ceil((ref.x+ref.width)*sx)),bottom=Math.min(image.height,Math.ceil((ref.y+ref.height)*sy));
+        const canvas=createCanvas(right-left,bottom-top);
+        try{canvas.getContext('2d').drawImage(image,left,top,canvas.width,canvas.height,0,0,canvas.width,canvas.height);return imageValue(encodePdfPng(canvas),canvas.width/sx,canvas.height/sy);}finally{canvas.width=canvas.height=1;}
       }
-      // Unicode soft line separators in a single PDF text run are whitespace,
-      // not glyphs or additional physical translation rows.
-      const segments=splitPdfInlineTranslation(block.text,text).map(part=>part.replace(/[\u2028\u2029]/gu,' '));
-      const drawText = segments.join('');
-      for (const character of drawText) if (!characterSet.has(character.codePointAt(0)!)) {
-        throw new Error(`PDF L${block.line}: bundled font cannot render ${JSON.stringify(character)}.`);
-      }
-      const availableHeight = Math.min(block.height,...(blocksByPage.get(block.page)??[]).filter(other=>other!==block && other.y>block.y+.5 && other.x<block.x+block.width && other.x+other.width>block.x).map(other=>other.y-block.y));
-      let size = block.fontSize, rows: string[] = [];
-      let flow: Array<{text:string;box:PdfBox}> | undefined;
-      let movedInk:Array<{token:string;bytes:Uint8Array;box:PdfBox}>|undefined;
-      let placementFailure='';
-      const minSize = Math.min(size, 6);
-      for (;;) {
-        if(reorderedRows.has(block.line)) {
-          const placed=reorderedPdfParagraph(block,text,size,value=>font.widthOfTextAtSize(value,size),native);
-          if('error' in placed)placementFailure=placed.error;
-          else {
-            const conflict=placed.ink.find(node=>node.box.x<0||node.box.y<0||node.box.x+node.box.width>pageLayout.width||node.box.y+node.box.height>pageLayout.height
-              ||(blocksByPage.get(block.page)??[]).some(other=>other!==block&&intersects(node.box,other)));
-            if(!conflict){flow=placed.prose;movedInk=placed.ink;break;}
-            placementFailure=`native glyph ${conflict.token} leaves the page or overlaps another paragraph: ${JSON.stringify(conflict.box)}`;
-          }
-        } else if(block.proseSegments) {
-          const placed=segments.map((part,index)=>flowPdfText(part,block.proseSegments![index].boxes,size,value=>font.widthOfTextAtSize(value,size)));
-          if(placed.every(result=>result!==undefined)){flow=placed.flatMap(result=>result!);break;}
-        } else {
-        const glyphsFit = [...drawText].every(character => font.widthOfTextAtSize(character,size) <= block.width);
-        if (glyphsFit) rows = wrapPdfText(drawText, block.width, value => font.widthOfTextAtSize(value, size));
-        if (glyphsFit && rows.length * size * 1.2 <= availableHeight + 0.1) break;
-        }
-        if (size <= minSize) throw new Error(`PDF page ${block.page} L${block.line}: translation does not fit its text box. Shorten this line before exporting; no text was clipped and no output was replaced.${placementFailure?` Inline layout: ${placementFailure}.`:''}`);
-        size = Math.max(minSize, size - 0.25);
-      }
-      if(flow)for(const placed of flow)page.drawText(placed.text,{x:placed.box.x,y:pageLayout.height-placed.box.y-size,size,font,color:rgb(...(block.color??[0,0,0]))});
-      else rows.forEach((row, index) => page.drawText(row, { x: block.x, y: pageLayout.height - block.y - size - index * size * 1.2, size, font, color: rgb(...(block.color ?? [0,0,0])) }));
-      for(const node of movedInk??[])page.drawImage(await pdf.embedPng(node.bytes),{x:node.box.x,y:pageLayout.height-node.box.y-node.box.height,width:node.box.width,height:node.box.height});
-    }
-    progress(pageLayout.page, layout.pages.length);
-  }
-  const bytes = await pdf.save();
-  await atomic(input.outputPath, bytes);
-  return { outputPath: input.outputPath, pages: layout.pages.length };
-  } finally {await referenceSource?.destroy();}
+    });
+    checkCancelled();
+    const htmlPath=input.outputPath.replace(/\.pdf$/iu,'.html'),documentPath=input.outputPath.replace(/\.pdf$/iu,'.document.json');
+    await atomic(htmlPath,renderPdfReflowHtml(document,pathToFileURL(input.fontPath).href));
+    await atomic(documentPath,JSON.stringify(document));
+    return {outputPath:input.outputPath,htmlPath,documentPath,sourcePages:layout.pages.length,sourceLines:layout.blocks.length,structure:{nodes:document.nodes.length,nativeImages:nativeAssets.size,inlineGlyphs:inlineAssets.size,figures:document.nodes.filter(node=>node.type==='figure').length}};
+  }finally{await original.destroy();}
 }
 
 async function referenceImage() {
@@ -745,7 +792,7 @@ try {
 finally {
   if(failure||cleanupFailures.length) {
     const error=cleanupFailures.length?new AggregateError([...(failure?[failure]:[]),...cleanupFailures],'PDF operation and cleanup failed.'):failure;
-    parentPort?.postMessage({type:'error',error:errorDetails(error),cleanupFailure:cleanupFailures.length>0});process.exitCode=1;
+    parentPort?.postMessage({type:'error',error:errorDetails(error),stack:error instanceof Error?error.stack:undefined,cleanupFailure:cleanupFailures.length>0});process.exitCode=1;
   } else parentPort?.postMessage({type:'result',result});
   parentPort?.removeListener('message',cancelWorker);parentPort?.close();
 }

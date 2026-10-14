@@ -1,9 +1,12 @@
+import {configurePdfPrintBackend} from '../src/main/pdfPrint.ts';
+import {createNativePdfPrintBackend} from './helpers/pdf-print-backend.mjs';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {PDFDocument,StandardFonts,beginText,endText,setFontAndSize,moveText,showText,beginMarkedContent,endMarkedContent} from 'pdf-lib';
-import {preparePdfDocument,readPdfLayout,createTranslatedPdf,pdfReferencesForRange,assertPdfProtectedWrite} from '../src/main/pdfDocuments.ts';
+import {readPdfLayout,createTranslatedPdf,pdfReferencesForRange,assertPdfProtectedWrite} from '../src/main/pdfDocuments.ts';
+import {preparePdfDocument} from './helpers/pdf-structure-backend.mjs';
 import {writeTranslationChunk,prepareTranslationStagingCandidate} from '../src/main/agent/writeTranslationChunk.ts';
 import {validateTranslationCandidate} from '../src/shared/validation/translationValidator.ts';
 import {validateProofreadReplacement} from '../src/shared/validation/proofreadReplacement.ts';
@@ -13,6 +16,9 @@ import {writeReviewHtml,readReviewHtml} from '../src/main/reviewHtmlPortability.
 import {upgradeLegacyReviewHtmlTree} from '../src/main/reviewHtmlUpgrade.ts';
 import {pdfProtectionHash} from '../src/main/pdfTypes.ts';
 import {encodeProjectPaths} from '../src/main/projectPaths.ts';
+const printService=process.versions.electron?undefined:await createNativePdfPrintBackend();
+if(printService)configurePdfPrintBackend(printService.backend);
+try {
 const root=await mkdtemp(path.join(os.tmpdir(),'yn-pdf-paragraph-'));
 try {
   const pdf=await PDFDocument.create(),font=await pdf.embedFont(StandardFonts.Helvetica),page=pdf.addPage([600,800]);
@@ -72,3 +78,5 @@ try {
   await writeFile(prepared.sourcePath+'.pdf-layout.json',savedMap);
   console.log('PDF complete paragraph / inline ownership write, proofread, import, staging, HTML/legacy, export and old projection guards passed');
 } finally {await rm(root,{recursive:true,force:true});}
+
+}finally{if(printService)await printService.close();}

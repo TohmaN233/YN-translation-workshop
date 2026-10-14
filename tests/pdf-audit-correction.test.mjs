@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import {createPdfStructureDraft} from '../src/main/pdfStructureDraft.ts';
+import {preparePdfAuditCorrection,normalizedPdfAuditAttempt} from '../src/main/pdfAuditCorrection.ts';
+
+const rows=Array.from({length:7},(_,index)=>({line:index+1,page:1,text:`Literal source ${index+1}.`,x:40,y:50+index*15,width:200,height:12,fontSize:10,segmentation:'paragraph'}));
+const base={originalHash:'a'.repeat(64),physicalBlocks:rows,blocks:rows.map(row=>({...row,fragments:[row.line]})),pages:[{page:1,width:600,height:800}],references:[],figureGroups:[]};
+const draft=createPdfStructureDraft(base),before=JSON.stringify({base,draft});
+const seen={source:new Set(rows.map(row=>row.line)),prepared:new Set(rows.map(row=>row.line)),order:new Set()};
+const issue=id=>[{physicalLines:[id],message:'The source relationship needs this specific correction.'}];
+const merge={merges:[{anchors:[1,2],kind:'paragraph',reason:'Continuous source sentence.'}]};
+const changed=preparePdfAuditCorrection(base,draft,merge,issue(2),seen);
+assert.deepEqual(changed.draft.plan.paragraphs[0].physicalLines,[1,2]);assert.equal(changed.draft.revision,1);
+assert.ok(changed.changedPhysicalLines.includes(2));assert.equal(JSON.stringify({base,draft}),before,'validation stages an independent candidate without committing the source or current draft');
+assert.throws(()=>preparePdfAuditCorrection(base,draft,{paragraphs:[{...draft.plan.paragraphs[0],reason:'A different explanation.'}]},issue(1),seen),/no structural change/);
+assert.throws(()=>preparePdfAuditCorrection(base,draft,merge,issue(7),seen),/every issue/);
+assert.throws(()=>preparePdfAuditCorrection(base,draft,{...merge,expectedRevision:0},issue(1),seen),/forbidden fields/);
+assert.throws(()=>preparePdfAuditCorrection(base,draft,{paragraphs:[{...draft.plan.paragraphs[0],text:'Invented words.'}]},issue(1),seen),/forbidden fields text/);
+assert.throws(()=>preparePdfAuditCorrection(base,draft,merge,issue(1),{...seen,source:new Set([1])}),/complete original source/);
+assert.throws(()=>preparePdfAuditCorrection(base,draft,merge,issue(1),{...seen,prepared:new Set([1])}),/current prepared owner/);
+const orderOnly={source:new Set(),prepared:new Set(),order:new Set(rows.map(row=>row.line))};
+const moved=preparePdfAuditCorrection(base,draft,{moves:[{physicalLine:6,afterPhysicalLine:1}]},issue(6),orderOnly);
+assert.deepEqual(moved.draft.plan.paragraphs.slice(0,3).map(p=>p.physicalLines[0]),[1,6,2]);
+assert.throws(()=>preparePdfAuditCorrection(base,draft,merge,issue(1),orderOnly),/complete original source/,'an excerpt-only order outline cannot authorize new paragraph contents');
+const grouped=changed.draft;
+const audit=(correction,message='First observation')=>({version:1,checks:{paragraphs:false},issues:[{physicalLines:[1],message}],correction});
+const a=normalizedPdfAuditAttempt(grouped,audit({merges:[{anchors:[1,2],kind:'paragraph',reason:'First wording'}]}));
+const b=normalizedPdfAuditAttempt(grouped,audit({merges:[{anchors:[2],kind:'paragraph',reason:'Other wording'}]},'Changed message'));
+assert.deepEqual(a,b,'changing reasons or equivalent owner selectors cannot conceal an unchanged failed attempt');
+const ordered=preparePdfAuditCorrection(base,draft,{steps:[{merges:[{anchors:[1,2,3],kind:'paragraph',reason:'Complete source owners.'}]},
+  {splits:[{beforePhysicalLine:2,kind:'heading',reason:'Explicit new suffix role.'}]}]},issue(2),seen);
+assert.deepEqual(ordered.draft.plan.paragraphs.slice(0,2).map(p=>[p.physicalLines,p.kind]),[[[1],'paragraph'],[[2,3],'heading']]);
+assert.equal(ordered.draft.revision,2);assert.equal(JSON.stringify({base,draft}),before,'ordered correction steps are staged as one immutable transaction');
+assert.throws(()=>preparePdfAuditCorrection(base,draft,{steps:[merge,{merges:[{anchors:[99],kind:'paragraph',reason:'Invalid later step.'}]}]},issue(1),seen),/foreign/);
+assert.equal(JSON.stringify({base,draft}),before,'a later invalid step cannot commit an earlier valid one');
+assert.throws(()=>preparePdfAuditCorrection(base,draft,{steps:[],moves:[]},issue(1),seen),/nonempty explicit sequence/);
+const afterSplit=anchors=>audit({steps:[{splits:[{beforePhysicalLine:2,kind:'paragraph',reason:'Split current owner.'}]},{merges:[{anchors,kind:'paragraph',reason:'Different selected owner after split.'}]}]});
+assert.notDeepEqual(normalizedPdfAuditAttempt(grouped,afterSplit([1,3]),base),normalizedPdfAuditAttempt(grouped,afterSplit([2,3]),base),'step selectors resolve against the actual intermediate owner map, so different repairs never become a repeated attempt');
+const afterInvalid=anchors=>audit({steps:[{splits:[{beforePhysicalLine:99,kind:'paragraph',reason:'Invalid first step.'}]},{merges:[{anchors,kind:'paragraph',reason:'Unresolved later selector.'}]}]});
+assert.notDeepEqual(normalizedPdfAuditAttempt(grouped,afterInvalid([1,3]),base),normalizedPdfAuditAttempt(grouped,afterInvalid([2,3]),base),'after an invalid step, preserve distinct raw selectors rather than inventing an owner map');
+assert.equal(JSON.stringify({base,draft}),before);
+{
+ const source=structuredClone(base);source.physicalBlocks=source.physicalBlocks.slice(0,6);source.blocks=source.blocks.slice(0,6);
+ source.physicalBlocks[4].page=2;source.physicalBlocks[5].page=2;source.pages.push({page:2,width:600,height:800});
+ const cell=(id,column)=>({physicalLines:[id],column,columnSpan:1}),p=(id,kind)=>({physicalLines:[id],kind,reason:'Verified source ownership.'});
+ const t1={id:'t1',page:1,columnCount:2,rows:[[cell(1,0),cell(2,1)]],captionPhysicalLine:3},t2={id:'t2',page:2,columnCount:2,rows:[[cell(5,0),cell(6,1)]]};
+ const current={revision:0,plan:{version:1,paragraphs:[p(1,'table-cell'),p(2,'table-cell'),p(3,'caption'),p(4,'caption'),p(5,'table-cell'),p(6,'table-cell')],tables:[t1,t2],audit:{readingOrder:true,paragraphs:true,tables:true,figures:true,protectedContent:true,issues:[]}}};
+ const local={source:new Set([1,2,3,4]),prepared:new Set([1,2,3,4]),order:new Set()};
+ const columns=preparePdfAuditCorrection(source,current,{tables:[{...t1,rows:[[cell(1,1),cell(2,0)]]}]},issue(1),local);
+ assert.deepEqual(columns.draft.plan.tables.find(t=>t.page===2),t2,'implicit table pages match the actual patch API and never require unrelated source pages');
+ const caption=preparePdfAuditCorrection(source,current,{tables:[{...t1,captionPhysicalLine:4}],tablePages:[1]},issue(4),local);
+ assert.ok(caption.changedPhysicalLines.includes(3));assert.ok(caption.changedPhysicalLines.includes(4),'both old and new caption owners participate in the actual relationship change');
+}
+console.log('Typed audit corrections preserve immutable snapshots, require specific changed relationships and full investigation, and normalize equivalent failed attempts PASS.');

@@ -205,7 +205,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     exportTxt: "\u5bfc\u51fa TXT",
     saveTxt: "\u5199\u5165 TXT",
     exportEpub: "\u5bfc\u51fa EPUB",
-    exportPdf: "导出 PDF",
+    exportPdf: "导出重排 PDF",
     exportTxtMode: "TXT \u683c\u5f0f",
     exportTxtMono: "\u5355\u8bed",
     exportTxtBilingual: "\u53cc\u8bed",
@@ -393,7 +393,7 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     exportTxt: "Export TXT",
     saveTxt: "Save TXT",
     exportEpub: "Export EPUB",
-    exportPdf: "Export PDF",
+    exportPdf: "Export reflowed PDF",
     exportTxtMode: "TXT format",
     exportTxtMono: "Mono",
     exportTxtBilingual: "Bilingual",
@@ -986,7 +986,7 @@ const batchLabels: Record<UiLocale, Record<string, string>> = {
 // v3 removed the obsolete outer batch prompt sidebar. v4 added the compact,
 // Host-backed batch TXT action. v5 flushes the active child before Host preflight.
 // v6 keeps match state internal instead of presenting stale same-name-file status.
-export const BATCH_LINE_REVIEW_PROTOCOL_VERSION = 10;
+export const BATCH_LINE_REVIEW_PROTOCOL_VERSION = 11;
 export const BATCH_LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-batch-review-v${BATCH_LINE_REVIEW_PROTOCOL_VERSION}`;
 
 export function renderBatchLineReviewIndexHtml(options: BatchLineReviewIndexOptions): string {
@@ -1051,7 +1051,7 @@ export function renderBatchLineReviewIndexHtml(options: BatchLineReviewIndexOpti
         ${characterBibleTableButton(locale)}
         <span id="batchWriteStatus" class="batchWriteStatus" role="status" aria-live="polite"></span>
       </div>
-      <iframe id="fileFrame" src="${escapeHtml(firstFile?.outputPath ?? "about:blank")}"></iframe>
+      <iframe id="fileFrame" src="about:blank"></iframe>
     </section>
   </main>
   ${characterBibleTableHtml(locale)}
@@ -1061,12 +1061,33 @@ const data = JSON.parse(document.getElementById("batchData").textContent);
 const select = document.getElementById("fileSelect");
 const frame = document.getElementById("fileFrame");
 const title = document.getElementById("activeTitle");
-function applyFile(index) {
+let childLoadSequence = 0;
+async function applyFile(index) {
   const file = data.files[index] || data.files[0];
   if (!file) return;
+  const sequence = ++childLoadSequence;
   select.value = String(index);
-  frame.src = file.outputPath;
-  title.textContent = file.sourceName;
+  const status = document.getElementById("batchWriteStatus");
+  try {
+    const api = window.workshopHtml || window.workshop;
+    if (api) {
+      if (!api.prepareReviewHtmlChild) throw new Error("The HTML host must be updated before opening this batch child.");
+      status.textContent = data.locale === "en-US" ? "Preparing selected document…" : "正在打开所选文档…";
+      await api.prepareReviewHtmlChild({ outputPath: file.outputPath });
+    }
+    if (sequence !== childLoadSequence) return;
+    const flushChild = frame.contentWindow?.flushTranslationWorkshopLineReviewState;
+    if (typeof flushChild === "function") await flushChild.call(frame.contentWindow);
+    if (sequence !== childLoadSequence) return;
+    frame.src = file.outputPath;
+    title.textContent = file.sourceName;
+    status.textContent = "";
+  } catch (error) {
+    if (sequence !== childLoadSequence) return;
+    status.className = "batchWriteStatus error";
+    status.textContent = String(error && error.message ? error.message : error);
+    console.error(error);
+  }
 }
 select.addEventListener("change", () => applyFile(Number(select.value || 0)));
 document.getElementById("openActive").addEventListener("click", async () => {
@@ -1111,7 +1132,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 54;
+export const LINE_REVIEW_PROTOCOL_VERSION = 57;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 19;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
@@ -1188,6 +1209,17 @@ export function renderLineReviewHtml(options: LineReviewHtmlOptions): string {
 function lineReviewScript(): string {
   return String.raw`
 const data = JSON.parse(document.getElementById("reviewData").textContent);
+let resolveLineReviewReady;
+let rejectLineReviewReady;
+window.translationWorkshopLineReviewReady = new Promise((resolve, reject) => {
+  resolveLineReviewReady = resolve;
+  rejectLineReviewReady = reject;
+});
+// The Host awaits this same promise. Keep failures visible without an unhandled
+// rejection when the document is opened directly in a browser.
+void window.translationWorkshopLineReviewReady.catch(() => undefined);
+document.body.inert = true;
+let lineReviewInitializing = true;
 const workflow = data.workflow || {};
 const legacyKey = "translation-workshop:line:" + location.pathname;
 function lineReviewStorageKey() {
@@ -1254,6 +1286,10 @@ const changedCount = document.getElementById("changedCount");
 let lastHostStateWrite = Promise.resolve();
 let applyingCanonicalState = false;
 let canonicalStateHydrated = false;
+let initialCanonicalReadComplete = false;
+let lastCanonicalRevision = -1;
+let legacyMigrationBaseRevision = 0;
+const initialCanonicalUpdates = [];
 let localLineMutationSequence = 0;
 const pendingLineMutations = new Map();
 let queuedLineReviewStateWrite = null;
@@ -1275,7 +1311,9 @@ function storeLineReviewStateLocally() {
   // Electron sidecar is authoritative. Keep only small UI metadata locally;
   // serializing hundreds of thousands of draft rows on every edit blocks UI
   // and exceeds localStorage quota before the IPC write can even start.
-  const localState = invokeBridge()?.persistHtmlState ? Object.fromEntries(Object.entries(state).filter(([name]) => !lineScopedStateKeys.includes(name))) : state;
+  // Before a canonical sidecar exists, browser history is the only durable
+  // draft. Retain it until a real mutation successfully hydrates the sidecar.
+  const localState = invokeBridge()?.persistHtmlState && canonicalStateHydrated ? Object.fromEntries(Object.entries(state).filter(([name]) => !lineScopedStateKeys.includes(name))) : state;
   const serialized = JSON.stringify(localState);
   localStorage.setItem(key, serialized);
   if (key !== legacyKey) localStorage.setItem(legacyKey, serialized);
@@ -1446,17 +1484,23 @@ async function refreshSyncedLinesFromCanonical(path, syncedAt) {
     console.warn("translation-workshop could not refresh synchronized translation text", error);
   }
 }
-function applyCanonicalLineReviewState(payload) {
+function applyCanonicalLineReviewState(payload, initialSnapshot = false) {
+  if (!initialCanonicalReadComplete && !initialSnapshot) {
+    initialCanonicalUpdates.push(payload);
+    return;
+  }
   if (artifactImportBusy && payload?.clientId !== lineReviewClientId) { deferredArtifactCanonicalStates.push(payload); return; }
   const incoming = payload?.state;
   if (!incoming || typeof incoming !== "object" || !sameLineReviewPath(payload?.lineReviewPath)) return;
   const incomingRevision = Number(incoming.documentRevision || 0);
-  if (incomingRevision <= Number(state.documentRevision || 0)) return;
+  if (incomingRevision <= lastCanonicalRevision) return;
+  if (initialSnapshot) legacyMigrationBaseRevision = incomingRevision;
   const changedLines = normalizedChangedLines(payload?.changedLines);
   const changedStateKeys = Array.isArray(payload?.changedStateKeys) ? payload.changedStateKeys.map(String) : [];
   if (payload.ackOnly) {
     state.documentRevision = incomingRevision;
-    canonicalStateHydrated = true;
+    lastCanonicalRevision = incomingRevision;
+    if (!payload.partial) canonicalStateHydrated = true;
     storeLineReviewStateLocally();
     return;
   }
@@ -1477,7 +1521,8 @@ function applyCanonicalLineReviewState(payload) {
     if (Object.prototype.hasOwnProperty.call(incoming, key)) state[key] = incoming[key];
     else delete state[key];
   }
-  canonicalStateHydrated = true;
+  if (!payload.partial) canonicalStateHydrated = true;
+  lastCanonicalRevision = incomingRevision;
   state.documentRevision = incomingRevision;
   overlayPendingLineMutations();
   traceLineReviewSync("canonical-applied", {
@@ -1496,6 +1541,7 @@ function applyCanonicalLineReviewState(payload) {
   } catch (error) {
     console.warn("translation-workshop could not store synchronized line-review state", error);
   }
+  if (lineReviewInitializing) return;
   const activeEditor = document.activeElement?.closest?.(".target");
   if (activeEditor) {
     refreshRenderedCanonicalLines(hydrate ? pageRows().map(row => row.line) : changedLines, activeEditor);
@@ -1522,8 +1568,13 @@ function save(changedLines = [], changedStateKeys = []) {
   try {
     try { storeLineReviewStateLocally(); } catch (error) { console.warn("translation-workshop could not store UI metadata", error); }
     const persist = invokeBridge()?.persistHtmlState;
-    if (persist) {
-      const normalizedLines = normalizedChangedLines(changedLines);
+    // Rendering/restoring UI position is not a document mutation. Read-only
+    // initialization restores the sidecar; do not rewrite it to read it.
+    if (persist && (normalizedChangedLines(changedLines).length > 0 || changedStateKeys.length > 0)) {
+      const normalizedLines = normalizedChangedLines(canonicalStateHydrated ? changedLines : [
+        ...changedLines,
+        ...lineScopedStateKeys.flatMap(name => Object.keys(state[name] || {}))
+      ]);
       const snapshot = { ...state };
       for (const name of lineScopedStateKeys) {
         snapshot[name] = canonicalStateHydrated ? {} : { ...(state[name] || {}) };
@@ -1537,6 +1588,9 @@ function save(changedLines = [], changedStateKeys = []) {
         lineReviewPath: data.lineReviewPath || "",
         state: snapshot,
         hydrate: !canonicalStateHydrated,
+        // Partial notifications do not prove that untouched legacy rows are
+        // current. Migrate only against the complete read's original baseline.
+        ...(canonicalStateHydrated ? {} : { expectedRevision: legacyMigrationBaseRevision }),
         changedLines: normalizedLines,
         changedStateKeys: Array.isArray(changedStateKeys) ? changedStateKeys.map(String) : [],
         clientId: lineReviewClientId,
@@ -2491,13 +2545,13 @@ function readSyncedText() {
 function writeSyncedText(text) {
   return writeCacheValue(syncTextKey, text);
 }
-async function restoreSyncedText() {
+async function restoreSyncedText(renderAfterRestore = true) {
   if (!state.syncedFile) return;
   try {
     const text = await readSyncedText();
     if (typeof text !== "string") return;
     syncedLines = splitSyncedText(text);
-    render();
+    if (renderAfterRestore) render();
     setAiStatus((data.labels.synced || "Translation synced") + ": " + state.syncedFile + " (" + syncedLines.length + "/" + data.rows.length + ")");
   } catch {
     setAiStatus(state.syncedFile ? (data.labels.synced || "Translation synced") + ": " + state.syncedFile : "");
@@ -3539,10 +3593,10 @@ document.getElementById("exportPdf")?.addEventListener("click", async () => {
   try {
     const bridge = writeBridge();
     if (!bridge?.writePdfFile) throw new Error(data.locale === "en-US" ? "Open this HTML in YN to export PDF." : "请在 YN 内打开此 HTML 后导出 PDF。");
-    setAiStatus(data.locale === "en-US" ? "Preparing PDF…" : "正在排版 PDF…");
+    setAiStatus(data.locale === "en-US" ? "Preparing structured HTML and paginating PDF…" : "正在生成结构化 HTML 并自动分页 PDF…");
     const result = await bridge.writePdfFile({ templatePath: workflow.paths.sourcePath, sourcePath: workflow.paths.validationSourcePath,
       lines: currentTargetLines(), outputDir: workflow.paths.outputDir });
-    setAiStatus((data.locale === "en-US" ? "PDF exported: " : "PDF 已导出：") + result.path);
+    setAiStatus((data.locale === "en-US" ? "PDF exported: " : "PDF 已导出：") + result.path + (data.locale === "en-US" ? " · Editable HTML: " : " · 可编辑 HTML：") + result.htmlPath);
   } catch (error) { setAiStatus((data.locale === "en-US" ? "PDF export failed: " : "PDF 导出失败：") + (error?.message || String(error))); }
   finally { button.disabled = false; }
 });
@@ -4409,20 +4463,46 @@ addEventListener("beforeunload", () => {
   state.activeLine = activeLine;
   storeLineReviewStateLocally();
 });
-render();
 ensureSaveTxtButton();
 updateSaveTxtVisibility();
-restoreSyncedText();
-requestAnimationFrame(() => {
-  const line = lineFromLocationHash();
-  if (line) jumpToLine(line);
-  else if (activeLine) jumpToLine(activeLine);
-  else scrollTo(0, state.scrollY || 0);
-  requestAnimationFrame(() => {
+void (async () => {
+  try {
+    const bridge = invokeBridge();
+    if (bridge?.persistHtmlState && !bridge.readLineReviewState) {
+      throw new Error("The HTML host must be updated before restoring this document.");
+    }
+    if (bridge?.readLineReviewState) {
+      const result = await bridge.readLineReviewState({ lineReviewPath: currentLineReviewPath() });
+      if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid canonical line-review read result.");
+      if (result.state !== undefined) {
+        if (!result.state || typeof result.state !== "object" || Array.isArray(result.state)) throw new Error("Invalid canonical line-review state.");
+        applyCanonicalLineReviewState({ lineReviewPath: currentLineReviewPath(), state: result.state, partial: false }, true);
+      }
+    }
+    initialCanonicalReadComplete = true;
+    initialCanonicalUpdates.sort((left, right) => Number(left?.state?.documentRevision || 0) - Number(right?.state?.documentRevision || 0));
+    for (const payload of initialCanonicalUpdates.splice(0)) applyCanonicalLineReviewState(payload);
+    await restoreSyncedText(false);
+    lineReviewInitializing = false;
+    render();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const line = lineFromLocationHash();
+    if (line) jumpToLine(line);
+    else if (activeLine) jumpToLine(activeLine);
+    else scrollTo(0, state.scrollY || 0);
+    await new Promise(resolve => requestAnimationFrame(resolve));
     restoringPosition = false;
     save();
-  });
-});
+    document.body.inert = false;
+    resolveLineReviewReady();
+  } catch (error) {
+    const message = error?.message || String(error);
+    setAiStatus((document.documentElement.lang === "en-US" ? "Could not restore review: " : "恢复复核页面失败：") + message);
+    document.getElementById("aiStatus")?.setAttribute("role", "alert");
+    console.error("translation-workshop failed to restore line-review state", error);
+    rejectLineReviewReady(error);
+  }
+})();
 ${agentChatEmbedScript()}
 `;
 }

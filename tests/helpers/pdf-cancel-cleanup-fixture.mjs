@@ -3,7 +3,7 @@ import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {PDFDocument,StandardFonts} from 'pdf-lib';
-import {preparePdfDocument} from '../../src/main/pdfDocuments.ts';
+import {preparePdfDocument} from './pdf-structure-backend.mjs';
 const root=await mkdtemp(path.join(os.tmpdir(),'yn-pdf-cleanup-fault-'));
 try {
   const pdf=await PDFDocument.create(),font=await pdf.embedFont(StandardFonts.Helvetica);

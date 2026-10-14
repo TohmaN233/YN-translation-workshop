@@ -63,7 +63,8 @@ await test("folder proposal review filters by document and routes jump/apply thr
   assert.match(main, /ipcMain\.handle\("html:applyProposalLineReviewStates"/);
   assert.match(main, /writeTextFilesAtomically/);
   assert.match(main, /await assertLineReviewMatchesProposalRouting\(requestedLineReviewPath, routing\);/);
-  assert.match(main, /const needsLoad = upgradedOnDisk \|\| repairedOnDisk \|\|/);
+  // Actual changed-file reload, state restoration and lazy child preparation
+  // are exercised through production IPC by verify-electron-html-open.mjs.
   assert.match(main, /const openRouting = metadataOnly[\s\S]*?await openLineReviewRouting\(requestedLineReviewPath\)/);
   assert.match(main, /const document = metadataOnly && openRouting[\s\S]*?rows: \[\],[\s\S]*?state: \{\},/);
   assert.doesNotMatch(main, /html\.includes\('id="reviewData"'\)/, "proposal scripts mention reviewData and must not be misclassified as line-review documents");

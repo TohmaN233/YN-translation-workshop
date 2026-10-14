@@ -1,20 +1,25 @@
+import {configurePdfPrintBackend} from '../src/main/pdfPrint.ts';
+import {createNativePdfPrintBackend} from './helpers/pdf-print-backend.mjs';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import {createRequire} from 'node:module';
-import {PDFDocument,PDFName,PDFRawStream,decodePDFRawStream,StandardFonts,beginText,endText,setFontAndSize,moveText,showText,beginMarkedContent,endMarkedContent,setFillingRgbColor,rgb} from 'pdf-lib';
+import {PDFDocument,StandardFonts,beginText,endText,setFontAndSize,moveText,showText,beginMarkedContent,endMarkedContent,setFillingRgbColor,rgb} from 'pdf-lib';
 import {createCanvas,loadImage,DOMMatrix,Path2D,ImageData} from '@napi-rs/canvas';
-import {preparePdfDocument,readPdfLayout,createTranslatedPdf,assertPdfProtectedWrite} from '../src/main/pdfDocuments.ts';
+import {readPdfLayout,createTranslatedPdf,assertPdfProtectedWrite} from '../src/main/pdfDocuments.ts';
+import {preparePdfDocument} from './helpers/pdf-structure-backend.mjs';
 import {splitPdfInlineTranslation} from '../src/shared/validation/pdfPreservation.ts';
+const printService=process.versions.electron?undefined:await createNativePdfPrintBackend();
+if(printService)configurePdfPrintBackend(printService.backend);
+try {
 Object.assign(globalThis,{DOMMatrix,Path2D,ImageData});
 const pdfjs=await import('pdfjs-dist/legacy/build/pdf.mjs');
 const pdfjsRoot=path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'));
 const evidence=process.env.YN_PDF_INLINE_REORDER_EVIDENCE;
-const root=await mkdtemp(path.join(os.tmpdir(),'yn-inline-reorder-'));
+const root=await mkdtemp(path.resolve('.tmp-inline-reorder-'));
 try {
   const pdf=await PDFDocument.create(),font=await pdf.embedFont(StandardFonts.Helvetica),page=pdf.addPage([600,800]);
-  page.drawRectangle({x:35,y:680,width:530,height:50,color:rgb(.8,.9,1)});
+  page.drawRectangle({x:35,y:480,width:530,height:50,color:rgb(.8,.9,1)});
   const key=page.node.newFontDictionary(font.name,font.ref);
   page.pushOperators(beginText(),setFontAndSize(key,12),moveText(40,710),showText(font.encodeText('First ')),
     beginMarkedContent('Formula'),showText(font.encodeText('x + y')),endMarkedContent(),showText(font.encodeText(' relates to ')),
@@ -22,6 +27,11 @@ try {
   page.pushOperators(beginText(),setFontAndSize(key,12),moveText(40,650),showText(font.encodeText('Second ')),
     beginMarkedContent('Formula'),showText(font.encodeText('a + b')),endMarkedContent(),showText(font.encodeText(' belongs to another paragraph.')),endText());
   const original=path.join(root,'inline.pdf');await writeFile(original,await pdf.save());
+  const overlayPdf=await PDFDocument.create(),overlayPage=overlayPdf.addPage([600,800]),overlayFont=await overlayPdf.embedFont(StandardFonts.Helvetica);
+  overlayPage.drawRectangle({x:35,y:680,width:530,height:50,color:rgb(.8,.9,1)});
+  overlayPage.drawText('Unknown colored prose panel.',{x:40,y:710,size:12,font:overlayFont});
+  const overlayPath=path.join(root,'colored-prose-panel.pdf');await writeFile(overlayPath,await overlayPdf.save());
+  await assert.rejects(preparePdfDocument(overlayPath,path.join(root,'colored-prose-panel','.translation-workshop')),/ambiguous graphic ownership.*overlap.*source text/,'source prose and an unknown colored panel cannot be silently dropped or duplicated');
   const prepared=await preparePdfDocument(original,path.join(root,'.translation-workshop'));
   const layout=await readPdfLayout(prepared.sourcePath,root),block=layout.blocks[0];
   const [a,b]=block.inlineProtections.map(node=>node.token),foreign=layout.blocks[1].inlineProtections[0].token;
@@ -32,7 +42,12 @@ try {
   const exported=await createTranslatedPdf({templatePath:original,sourcePath:prepared.sourcePath,projectRoot:root,translatedLines:exportLines});
   const output=await readFile(exported.outputPath);
   const sourceLoader=pdfjs.getDocument({data:new Uint8Array(await readFile(original)),useSystemFonts:false,standardFontDataUrl:path.join(pdfjsRoot,'standard_fonts').replaceAll('\\','/')+'/'}),sourcePdf=await sourceLoader.promise;
-  const exportedPdf=await PDFDocument.load(output),nativeMasks=exportedPdf.context.enumerateIndirectObjects().filter(([,object])=>object instanceof PDFRawStream&&object.dict.get(PDFName.of('Subtype'))===PDFName.of('Image')&&object.dict.has(PDFName.of('SMask')));
+  const document=JSON.parse(await readFile(exported.documentPath,'utf8')),paragraph=document.nodes.find(node=>node.sourceLines.includes(1));
+  assert.ok(layout.references.some(reference=>reference.kind==='vector'),'non-overlapping colored panel has explicit source vector ownership');
+  assert.ok(document.nodes.some(node=>node.type==='figure'&&node.id.includes('vector')&&node.image),'successful reflow retains the independent colored source panel');
+  const nativeParts=paragraph.parts.filter(part=>part.image);
+  assert.deepEqual(nativeParts.map(part=>part.token),[b,a],'source HTML native images follow the translated marker order');
+  const nativeDimensions=new Map();
   try {
     const sourcePage=await sourcePdf.getPage(1),sourceViewport=sourcePage.getViewport({scale:2}),sourceOps=await sourcePage.getOperatorList(),paintOps=sourceOps.fnArray.flatMap((op,index)=>op===pdfjs.OPS.showText?[index]:[]);
     for(const node of block.inlineProtections) {
@@ -44,12 +59,12 @@ try {
           return true;
         }}).promise;
         const box=node.inkBox,left=Math.max(0,Math.floor(box.x*2)-1),top=Math.max(0,Math.floor(box.y*2)-1),width=Math.ceil((box.x+box.width)*2)+1-left,height=Math.ceil((box.y+box.height)*2)+1-top;
-        const rgba=isolated.getContext('2d').getImageData(left,top,width,height).data,alpha=Uint8Array.from({length:width*height},(_,i)=>rgba[i*4+3]);
+        const rgba=isolated.getContext('2d').getImageData(left,top,width,height).data;
         if(evidence) {await mkdir(evidence,{recursive:true});await writeFile(path.join(evidence,'isolated-'+node.kind+'.png'),isolated.toBuffer('image/png'));}
-        const match=nativeMasks.find(([,image])=>image.dict.get(PDFName.of('Width')).asNumber()===width&&image.dict.get(PDFName.of('Height')).asNumber()===height&&Buffer.from(decodePDFRawStream(exportedPdf.context.lookup(image.dict.get(PDFName.of('SMask')))).decode()).equals(Buffer.from(alpha)));
-        assert.ok(match,`actual exported ${node.token} keeps the exact native glyph alpha pixels (${width}x${height})`);
-        const colors=decodePDFRawStream(match[1]).decode();
-        assert.ok(alpha.every((value,i)=>!value||[0,1,2].every(channel=>colors[i*3+channel]===rgba[i*4+channel])),`actual exported ${node.token} keeps exact native glyph color pixels`);
+        const part=nativeParts.find(part=>part.token===node.token),sourceImage=await loadImage(Buffer.from(part.image.dataUrl.split(',')[1],'base64')),sourceCanvas=createCanvas(sourceImage.width,sourceImage.height);sourceCanvas.getContext('2d').drawImage(sourceImage,0,0);
+        assert.deepEqual([sourceImage.width,sourceImage.height],[width,height],`${node.token} keeps original PNG dimensions`);
+        assert.deepEqual(sourceCanvas.getContext('2d').getImageData(0,0,width,height).data,rgba,`${node.token} keeps every native alpha/color pixel in the editable source`);
+        nativeDimensions.set(node.token,[width,height]);
       } finally {for(const entry of hidden)entry.list.argsArray[entry.index][0]=entry.glyphs;isolated.width=isolated.height=1;}
     }
   } finally {await sourceLoader.destroy();}
@@ -64,34 +79,29 @@ try {
     await outPage.render({canvas,canvasContext:context,viewport}).promise;
     const preview=await loadImage(await readFile(layout.pages[0].previewPath)),source=createCanvas(preview.width,preview.height),sourceContext=source.getContext('2d');sourceContext.drawImage(preview,0,0);
     if(evidence) {await mkdir(evidence,{recursive:true});await writeFile(path.join(evidence,'reordered.png'),canvas.toBuffer('image/png'));await writeFile(path.join(evidence,'source.png'),source.toBuffer('image/png'));await writeFile(path.join(evidence,'layout.json'),JSON.stringify(block,null,2));}
-    // Locate every original native glyph crop in the actual exported page.
-    const positions=[];
-    for(const node of block.inlineProtections) {
-      const box=node.inkBox,x=Math.floor(box.x*2),y=Math.floor(box.y*2),width=Math.ceil((box.x+box.width)*2)-x,height=Math.ceil((box.y+box.height)*2)-y;
-      const native=sourceContext.getImageData(x,y,width,height).data;let found;
-      for(let yy=150;yy<220&&!found;yy++)for(let xx=70;xx<1000&&!found;xx++) {
-        const pixels=context.getImageData(xx,yy,width,height).data;
-        if(pixels.every((value,index)=>Math.abs(value-native[index])<=1))found={token:node.token,x:xx,y:yy,width,height};
-      }
-      assert.ok(found,`exported ${node.token} renders its native pixels within one color-compositing rounding level`);positions.push(found);
-    }
-    assert.ok(positions[1].x<positions[0].x,'actual glyphs follow the candidate marker order');
-    assert.deepEqual(context.getImageData(80,225,900,15).data,sourceContext.getImageData(80,225,900,15).data,'overlapping colored background remains intact');
-    if(evidence) {await mkdir(evidence,{recursive:true});await writeFile(path.join(evidence,'original.pdf'),await readFile(original));await writeFile(path.join(evidence,'reordered.pdf'),output);await writeFile(path.join(evidence,'reordered.png'),canvas.toBuffer('image/png'));await writeFile(path.join(evidence,'pixel-evidence.json'),JSON.stringify({translated,positions,nativeGlyphAlphaPixelsExactlyIdentical:true,maxCompositeColorDifference:1,coloredBackgroundIdentical:true,negativeCases:5},null,2));}
+    const operations=await outPage.getOperatorList(),images=operations.fnArray.flatMap((operation,index)=>operation===pdfjs.OPS.paintImageXObject?[operations.argsArray[index].slice(1,3)]:[]);
+    assert.deepEqual(images.slice(0,2),[nativeDimensions.get(b),nativeDimensions.get(a)],'actual Chromium PDF embeds original raster dimensions in translated marker order');
+    const printedText=(await outPage.getTextContent()).items.map(item=>item.str??'').join('').normalize('NFKC');
+    for(const text of ['正文','连接','结束','第二段','保留内容'])assert.ok(printedText.includes(text),`translated prose remains complete: ${text}`);
+    const html=await readFile(exported.htmlPath,'utf8');for(const part of nativeParts)assert.ok(html.includes(part.image.dataUrl),'printed HTML uses the verified source-native PNG');
+    if(evidence) {await mkdir(evidence,{recursive:true});await writeFile(path.join(evidence,'original.pdf'),await readFile(original));await writeFile(path.join(evidence,'reordered.pdf'),output);await writeFile(path.join(evidence,'reordered.html'),html);await writeFile(path.join(evidence,'reordered.document.json'),JSON.stringify(document,null,2));await writeFile(path.join(evidence,'reordered.png'),canvas.toBuffer('image/png'));await writeFile(path.join(evidence,'pixel-evidence.json'),JSON.stringify({translated,nativeOrder:[b,a],nativePngRgbaExactlyIdentical:true,pdfRasterDimensionsInCandidateOrder:true,negativeCases:5},null,2));}
     const originalOrder=`正文 ${a} 连接 ${b} 结束。`,roundtrip=await createTranslatedPdf({templatePath:original,sourcePath:prepared.sourcePath,projectRoot:root,translatedLines:[originalOrder,exportLines[1]]});
     const roundtripBytes=await readFile(roundtrip.outputPath),roundtripLoader=pdfjs.getDocument({data:new Uint8Array(roundtripBytes),useSystemFonts:false}),roundtripDoc=await roundtripLoader.promise;
     try {
       const roundtripPage=await roundtripDoc.getPage(1),roundtripCanvas=createCanvas(viewport.width,viewport.height),roundtripContext=roundtripCanvas.getContext('2d');
       try {
         await roundtripPage.render({canvas:roundtripCanvas,canvasContext:roundtripContext,viewport}).promise;
-        for(const node of block.inlineProtections) {
-          const box=node.inkBox,x=Math.floor(box.x*2),y=Math.floor(box.y*2),width=Math.ceil((box.x+box.width)*2)-x,height=Math.ceil((box.y+box.height)*2)-y;
-          assert.deepEqual(roundtripContext.getImageData(x,y,width,height).data,sourceContext.getImageData(x,y,width,height).data,'unchanged marker order retains exact source pixels and coordinates');
-        }
+        const sourceDocument=JSON.parse(await readFile(roundtrip.documentPath,'utf8')),sourceParts=sourceDocument.nodes.find(node=>node.sourceLines.includes(1)).parts.filter(part=>part.image);
+        assert.deepEqual(sourceParts.map(part=>part.token),[a,b],'original marker order remains explicit in the source HTML');
+        for(const part of sourceParts)assert.equal(part.image.dataUrl,nativeParts.find(native=>native.token===part.token).image.dataUrl,'reordering changes placement without changing source PNGs');
+        const sourceOperations=await roundtripPage.getOperatorList(),sourceImages=sourceOperations.fnArray.flatMap((operation,index)=>operation===pdfjs.OPS.paintImageXObject?[sourceOperations.argsArray[index].slice(1,3)]:[]);
+        assert.deepEqual(sourceImages.slice(0,2),[nativeDimensions.get(a),nativeDimensions.get(b)],'original marker order prints both native rasters in that order');
         if(evidence)await writeFile(path.join(evidence,'original-order.pdf'),roundtripBytes);
       } finally {roundtripCanvas.width=roundtripCanvas.height=1;}
     } finally {await roundtripLoader.destroy();}
     canvas.width=canvas.height=source.width=source.height=1;
   } finally {await loading.destroy();}
-  console.log('PDF same-paragraph marker reorder preserves original glyph pixels, candidate order, background and strict ownership/count/prose checks');
-} finally {await rm(root,{recursive:true,force:true});}
+  console.log('PDF marker reorder preserves source PNG RGBA, actual printed image order and strict ownership/count/prose checks');
+} finally {if(process.env.YN_PDF_ADAPTATION_KEEP==='1')console.log('retained PDF test fixture '+root);else await rm(root,{recursive:true,force:true});}
+
+}finally{if(printService)await printService.close();}

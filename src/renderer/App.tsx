@@ -1,11 +1,11 @@
-import { Clipboard, ExternalLink, FileSearch, FileText, FolderOpen, Languages, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { Clipboard, ExternalLink, FileSearch, FileText, FolderOpen, Languages, Plus, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { buildPrompt, promptAdvancedForSource } from "../shared/core/prompts.ts";
 import { YN_DEFAULT_SPLIT_SIZE, YN_WORKFLOW_SUBAGENT_COUNT } from "../shared/agent/piSessionContract.ts";
-import { builtinTaskDefaults, type BuiltinTaskKind, type BuiltinTaskSettings } from "../shared/builtinTasks.ts";
+import { builtinTaskDefaults, htmlPreparationProgressMessage, type BuiltinTaskKind, type BuiltinTaskSettings } from "../shared/builtinTasks.ts";
 import { normalizeHandwrittenCharacterRequiredTerms } from "../shared/validation/translationValidator.ts";
 import { getWorkflowTemplate, workflowTemplates, type WorkflowTemplateId } from "../shared/agent/workflowTemplates.ts";
 import {
@@ -275,6 +275,9 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
   const [lineHtmlBusy, setLineHtmlBusy] = useState(false);
   const [lineHtmlStatus, setLineHtmlStatus] = useState("");
   const lineHtmlActive = useRef(false);
+  const lineHtmlRequestId = useRef<string | undefined>(undefined);
+  const lineHtmlStopRequested = useRef(false);
+  const [lineHtmlStopping, setLineHtmlStopping] = useState(false);
   const [lastOutput, setLastOutput] = useState("");
   const [candidates, setCandidates] = useState<Array<{ path: string; size: number; modifiedAt: string }>>([]);
   const [reportCandidates, setReportCandidates] = useState<Array<{ path: string; size: number; modifiedMs: number; score: number; reasons: string[] }>>([]);
@@ -855,15 +858,19 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
       return;
     }
     lineHtmlActive.current = true;
+    const requestId = crypto.randomUUID();
+    lineHtmlRequestId.current = requestId;
+    lineHtmlStopRequested.current = false;
+    setLineHtmlStopping(false);
     setLineHtmlBusy(true);
-    showGenerationStatus(t.htmlGenerating);
+    showGenerationStatus(form.fileType === "pdf" || /\.pdf$/iu.test(form.sourcePath)
+      ? form.locale === "zh-CN" ? "先整理并检查 PDF 原文结构，通过后生成 HTML…" : "Organizing and checking PDF source structure before generating HTML…"
+      : t.htmlGenerating);
     let unsubscribe: (() => void) | undefined;
     try {
-      const requestId = crypto.randomUUID();
       unsubscribe = window.workshop.onLineReviewGenerationProgress(progress => {
-        if (progress.requestId !== requestId) return;
-        const filename = progress.sourcePath.split(/[\\/]/).pop() || progress.sourcePath;
-        showGenerationStatus(t.htmlPdfProgress.replace("{file}", filename).replace("{page}", String(progress.page)).replace("{total}", String(progress.totalPages)));
+        if (progress.requestId !== requestId || lineHtmlStopRequested.current) return;
+        showGenerationStatus(htmlPreparationProgressMessage(progress, form.locale));
       });
       const sourcePosition = bilingualPositionMode ? (form.sourcePosition === 1 ? 1 : 2) : form.sourcePosition;
       const translationPosition = bilingualPositionMode
@@ -898,7 +905,28 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
     } finally {
       unsubscribe?.();
       lineHtmlActive.current = false;
+      lineHtmlRequestId.current = undefined;
+      lineHtmlStopRequested.current = false;
+      setLineHtmlStopping(false);
       setLineHtmlBusy(false);
+    }
+  }
+
+  async function stopLineHtmlPreparation() {
+    const requestId = lineHtmlRequestId.current;
+    if (!requestId || lineHtmlStopRequested.current) return;
+    lineHtmlStopRequested.current = true;
+    setLineHtmlStopping(true);
+    const message = form.locale === "zh-CN" ? "正在停止，等待原文准备收尾…" : "Stopping. Waiting for source preparation to finish…";
+    setStatus(message);setLineHtmlStatus(message);
+    try {
+      const result = await window.workshop.cancelHtmlPreparation(requestId);
+      if (!result.ok) throw new Error(form.locale === "zh-CN" ? "当前准备请求无法停止。" : "The current preparation request could not be stopped.");
+    } catch (error) {
+      if (lineHtmlRequestId.current !== requestId) return;
+      lineHtmlStopRequested.current = false;setLineHtmlStopping(false);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(message);setLineHtmlStatus(message);
     }
   }
 
@@ -1536,6 +1564,7 @@ function App({ initialLocale, onClear }: { initialLocale: Locale; onClear: (loca
 
           <div className="actions">
             <IconButton icon={<FileText size={18} />} label={lineHtmlBusy ? t.htmlGenerating : t.generateLineHtml} onClick={generateLineHtml} disabled={lineHtmlBusy} primary />
+            {lineHtmlBusy && <IconButton icon={<X size={18} />} label={form.locale === "zh-CN" ? (lineHtmlStopping ? "正在停止…" : "停止准备") : (lineHtmlStopping ? "Stopping…" : "Stop preparation")} onClick={stopLineHtmlPreparation} disabled={lineHtmlStopping} />}
             <IconButton icon={<Languages size={18} />} label={t.generateTranslatePrompt} onClick={generateTranslatePrompt} />
             <IconButton icon={<ShieldCheck size={18} />} label={t.generateProofreadPrompt} onClick={generateProofreadPrompt} />
             <IconButton icon={<RefreshCw size={18} />} label={t.syncTranslation} onClick={syncTranslations} />

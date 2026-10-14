@@ -74,6 +74,8 @@ const persistedCards = [];
 const liveCards = [];
 const chunkReviews = [];
 let releaseFirstReview;
+let firstReviewEntered;
+const reviewEntered = new Promise((resolve) => { firstReviewEntered = resolve; });
 const firstReview = new Promise((resolve) => {
   releaseFirstReview = resolve;
 });
@@ -103,13 +105,17 @@ try {
     maxWorkers: 1,
     onChunkReadyForReview: async (review) => {
       chunkReviews.push(review);
-      if (chunkReviews.length === 1) return firstReview;
+      if (chunkReviews.length === 1) { firstReviewEntered(); return firstReview; }
       return { accepted: true };
     }
   });
-  for (let attempt = 0; attempt < 100 && chunkReviews.length === 0; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  // This is an ordering/barrier contract, not a one-second disk-throughput
+  // benchmark. Wait for the actual callback, then prove the next chunk has
+  // not started while its parent review remains unresolved.
+  let reviewTimer;
+  try { await Promise.race([reviewEntered,new Promise((_,reject) => {
+    reviewTimer = setTimeout(() => reject(new Error('The first translated chunk never reached its parent review gate.')),20_000);
+  })]); } finally { clearTimeout(reviewTimer); }
   const earlyBatch = supervisor.list()[0];
   const earlyTranscript = earlyBatch?.subagents[0]
     ? await supervisor.inspectTranscript(earlyBatch.subagents[0].id)

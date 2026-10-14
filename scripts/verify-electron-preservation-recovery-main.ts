@@ -1,3 +1,4 @@
+import { registerReviewHtmlFixtureReadIpc } from "../tests/helpers/review-html-fixture-ipc.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -33,6 +34,7 @@ async function verify() {
   ipcMain.handle("agent-provider:getConfig", () => ({ providers: {}, activeProviderId: "" }));
   ipcMain.handle("agent-provider:list", () => []);
   ipcMain.handle("html:applyLineReviewState", (_event, args) => args.lineState);
+  registerReviewHtmlFixtureReadIpc();
   ipcMain.handle("html:persistState", (_event, args) => args.lineState);
   ipcMain.handle("agent-interface:publish", () => ({ accepted: true }));
   const htmlPath = path.join(project, "review.html");
@@ -52,6 +54,7 @@ async function verify() {
   window = new BrowserWindow({ show: false, width: 1200, height: 900,
     webPreferences: { offscreen: true, preload: path.join(process.cwd(), "dist/main/preload.cjs"), contextIsolation: true } });
   await window.loadFile(htmlPath);
+  await window.webContents.executeJavaScript("window.translationWorkshopLineReviewReady");
   const args = { projectDir: project, sourcePath, candidatePath, languagePair: "ja->zh-CN" };
   const invoke = (method: string, params: unknown) => window!.webContents.executeJavaScript(`window.workshop.${method}(${JSON.stringify(params)})`);
   assert.equal((await invoke("validateAgentArtifact", args)).ok, true, "saved rules reach actual validator IPC");

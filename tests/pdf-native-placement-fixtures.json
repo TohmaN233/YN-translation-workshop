@@ -1,0 +1,1835 @@
+{
+  "source": "Retained original visual metadata from captured 38-page paper, mechanical v5/e13. Source IDs identify the captured rows; tests remap only their fixture IDs.",
+  "originalHash": "1fec87f08d1ce1480740ec8fcfb1d151575df4b9936a7b9ecaae650fff9ebca5",
+  "fixtures": [
+    {
+      "name": "formula-only wrapped tail",
+      "ids": [
+        286,
+        287,
+        288,
+        289
+      ],
+      "native": 288,
+      "join": [
+        286,
+        287,
+        288
+      ],
+      "rows": [
+        {
+          "x": 91.346,
+          "y": 662.9709,
+          "width": 429.51647978600033,
+          "height": 17.15462500000001,
+          "line": 286,
+          "page": 7,
+          "text": "By Section 2.3,{{formula:p7:31}}is unique up to orientation reversal in the open case and up to circular shift",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 163.534,
+              "y": 662.9709,
+              "width": 18.044413759999998,
+              "height": 17.15462500000001,
+              "kind": "math",
+              "token": "{{formula:p7:31}}",
+              "text": "β arc C",
+              "paintOperations": [
+                934,
+                937,
+                940
+              ],
+              "paintSpans": [
+                {
+                  "operator": 934,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 937,
+                  "start": 0,
+                  "end": 3
+                },
+                {
+                  "operator": 940,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 163.43849874055414,
+                "y": 666.912862232779,
+                "width": 17.993229219143576,
+                "height": 11.498497624703086
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "By Section 2.3,",
+              "boxes": [
+                {
+                  "x": 91.346,
+                  "y": 663.9909,
+                  "width": 69.14493034799999,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "is unique up to orientation reversal in the open case and up to circular shift",
+              "boxes": [
+                {
+                  "x": 185.119,
+                  "y": 663.9909,
+                  "width": 335.74347978600036,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 674.9,
+          "columnX": 73.504,
+          "segmentation": "paragraph"
+        },
+        {
+          "x": 74.409,
+          "y": 680.2499,
+          "width": 446.4573323000001,
+          "height": 14.590624999999932,
+          "line": 287,
+          "page": 7,
+          "text": "and reversal in the closed case. Therefore{{formula:p7:32}}inherits the same uniqueness, and{{formula:p7:33}}depends only on",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 257.463,
+              "y": 680.2499,
+              "width": 12.206756729999995,
+              "height": 14.590624999999932,
+              "kind": "math",
+              "token": "{{formula:p7:32}}",
+              "text": "β C",
+              "paintOperations": [
+                948,
+                951
+              ],
+              "paintSpans": [
+                {
+                  "operator": 948,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 951,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 257.4031402183039,
+                "y": 683.4107066508312,
+                "width": 12.495298068849705,
+                "height": 9.998693586698336
+              }
+            },
+            {
+              "x": 422.464,
+              "y": 680.2499,
+              "width": 24.198548990000006,
+              "height": 13.636375000000044,
+              "kind": "math",
+              "token": "{{formula:p7:33}}",
+              "text": "G ( C )",
+              "paintOperations": [
+                957,
+                960,
+                963,
+                966
+              ],
+              "paintSpans": [
+                {
+                  "operator": 957,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 960,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 963,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 966,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 422.34107472712003,
+                "y": 682.9107719714964,
+                "width": 23.491160369437445,
+                "height": 10.99856294536817
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "and reversal in the closed case. Therefore",
+              "boxes": [
+                {
+                  "x": 74.409,
+                  "y": 680.2499,
+                  "width": 180.33833209999997,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "inherits the same uniqueness, and",
+              "boxes": [
+                {
+                  "x": 273.447,
+                  "y": 680.2499,
+                  "width": 146.3019401000001,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "depends only on",
+              "boxes": [
+                {
+                  "x": 449.379,
+                  "y": 680.2499,
+                  "width": 71.48733230000005,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 691.159,
+          "columnX": 73.504,
+          "segmentation": "paragraph"
+        },
+        {
+          "x": 74.40899999999999,
+          "y": 696.5089,
+          "width": 31.018275000000003,
+          "height": 13.636375000000044,
+          "line": 288,
+          "page": 7,
+          "text": "C ∈ C .",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "protection": "math",
+          "paintOperations": [
+            972,
+            975,
+            978
+          ],
+          "baseline": 707.418,
+          "columnX": 73.504,
+          "segmentation": "protected",
+          "sourceInkBox": {
+            "x": 0,
+            "y": 0,
+            "width": 595.276,
+            "height": 841.89
+          }
+        },
+        {
+          "x": 74.409,
+          "y": 721.1889,
+          "width": 446.4620109279999,
+          "height": 13.636375000000044,
+          "line": 289,
+          "page": 7,
+          "text": "Definition 3.3 (Fast-walk and enclosed region). Let{{formula:p7:34}}and{{formula:p7:35}}be two rectifiable planar curves, and",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 311.528,
+              "y": 721.1889,
+              "width": 8.181825000000002,
+              "height": 13.636375000000001,
+              "kind": "math",
+              "token": "{{formula:p7:34}}",
+              "text": "A",
+              "paintOperations": [
+                997
+              ],
+              "paintSpans": [
+                {
+                  "operator": 997,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 311.3828278757346,
+                "y": 723.9054156769595,
+                "width": 7.996990764063811,
+                "height": 8.498889548693585
+              }
+            },
+            {
+              "x": 342.939,
+              "y": 721.1889,
+              "width": 8.27455235,
+              "height": 13.636375000000001,
+              "kind": "math",
+              "token": "{{formula:p7:35}}",
+              "text": "B",
+              "paintOperations": [
+                1004
+              ],
+              "paintSpans": [
+                {
+                  "operator": 1004,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 342.8709790092359,
+                "y": 724.4053503562944,
+                "width": 8.4968026868178,
+                "height": 7.998954869358669
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "Definition 3.3 (Fast-walk and enclosed region). Let",
+              "boxes": [
+                {
+                  "x": 74.409,
+                  "y": 721.1889,
+                  "width": 233.84966639600003,
+                  "height": 13.636375000000044
+                }
+              ]
+            },
+            {
+              "text": "and",
+              "boxes": [
+                {
+                  "x": 322.979,
+                  "y": 721.1889,
+                  "width": 16.690923000000005,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "be two rectifiable planar curves, and",
+              "boxes": [
+                {
+                  "x": 355.03,
+                  "y": 721.1889,
+                  "width": 165.84101092799995,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 732.098,
+          "columnX": 73.504,
+          "segmentation": "paragraph"
+        }
+      ]
+    },
+    {
+      "name": "wrapped complement tail",
+      "ids": [
+        314,
+        315,
+        316,
+        317
+      ],
+      "native": 315,
+      "join": [
+        314,
+        315
+      ],
+      "rows": [
+        {
+          "x": 73.799,
+          "y": 400.14989999999995,
+          "width": 447.0711442520002,
+          "height": 13.636374999999987,
+          "line": 314,
+          "page": 8,
+          "text": "That is,{{formula:p8:19}}is the boundary trace{{formula:p8:20}}together with the parity-one complement components of",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 108.566,
+              "y": 400.14989999999995,
+              "width": 35.78054899,
+              "height": 13.636374999999987,
+              "kind": "math",
+              "token": "{{formula:p8:19}}",
+              "text": "E ( α, β )",
+              "paintOperations": [
+                620,
+                623,
+                626,
+                629
+              ],
+              "paintSpans": [
+                {
+                  "operator": 620,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 623,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 626,
+                  "start": 0,
+                  "end": 3
+                },
+                {
+                  "operator": 629,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 108.95899916036942,
+                "y": 402.44741686460804,
+                "width": 34.48702267002518,
+                "height": 11.498497624703086
+              }
+            },
+            {
+              "x": 240.718,
+              "y": 400.14989999999995,
+              "width": 38.916548989999995,
+              "height": 13.636374999999987,
+              "kind": "math",
+              "token": "{{formula:p8:20}}",
+              "text": "W ( α, β )",
+              "paintOperations": [
+                635,
+                638,
+                641,
+                644
+              ],
+              "paintSpans": [
+                {
+                  "operator": 635,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 638,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 641,
+                  "start": 0,
+                  "end": 3
+                },
+                {
+                  "operator": 644,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 240.9093467674223,
+                "y": 402.44741686460804,
+                "width": 37.985706129303104,
+                "height": 11.498497624703086
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "That is,",
+              "boxes": [
+                {
+                  "x": 73.799,
+                  "y": 400.14989999999995,
+                  "width": 32.08344491800001,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "is the boundary trace",
+              "boxes": [
+                {
+                  "x": 147.025,
+                  "y": 400.14989999999995,
+                  "width": 91.01178493399999,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "together with the parity-one complement components of",
+              "boxes": [
+                {
+                  "x": 282.313,
+                  "y": 400.14989999999995,
+                  "width": 238.55714425200014,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 411.05899999999997,
+          "columnX": 73.799,
+          "segmentation": "paragraph"
+        },
+        {
+          "x": 74.409,
+          "y": 415.3889,
+          "width": 64.558275,
+          "height": 14.656374999999969,
+          "line": 315,
+          "page": 8,
+          "text": "R 2 \\ W ( α, β ) .",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "protection": "math",
+          "paintOperations": [
+            650,
+            653,
+            656,
+            659,
+            662,
+            665,
+            668,
+            671
+          ],
+          "baseline": 427.318,
+          "columnX": 73.799,
+          "segmentation": "protected",
+          "sourceInkBox": {
+            "x": 0,
+            "y": 0,
+            "width": 595.276,
+            "height": 841.89
+          }
+        },
+        {
+          "x": 74.409,
+          "y": 441.6339,
+          "width": 446.4574774140001,
+          "height": 13.636374999999987,
+          "line": 316,
+          "page": 8,
+          "text": "Definition 3.4 (Closure score and fast-walk band region). For{{formula:p8:21}}and{{formula:p8:22}}, define the",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 356.767,
+              "y": 441.6339,
+              "width": 45.73654899000002,
+              "height": 13.636374999999987,
+              "kind": "math",
+              "token": "{{formula:p8:21}}",
+              "text": "α ∈ G ( A )",
+              "paintOperations": [
+                691,
+                694,
+                697,
+                700,
+                703
+              ],
+              "paintSpans": [
+                {
+                  "operator": 691,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 694,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 697,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 700,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 703,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 356.86571284634755,
+                "y": 443.94199524940615,
+                "width": 44.483261125104946,
+                "height": 11.498497624703086
+              }
+            },
+            {
+              "x": 425.503,
+              "y": 441.6339,
+              "width": 46.103548990000036,
+              "height": 13.636374999999987,
+              "kind": "math",
+              "token": "{{formula:p8:22}}",
+              "text": "β ∈ G ( B )",
+              "paintOperations": [
+                709,
+                712,
+                715,
+                718,
+                721
+              ],
+              "paintSpans": [
+                {
+                  "operator": 709,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 712,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 715,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 718,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 721,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 425.3399462636439,
+                "y": 443.94199524940615,
+                "width": 45.48288497061292,
+                "height": 11.498497624703086
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "Definition 3.4 (Closure score and fast-walk band region). For",
+              "boxes": [
+                {
+                  "x": 74.409,
+                  "y": 441.6339,
+                  "width": 279.202812954,
+                  "height": 13.636374999999987
+                }
+              ]
+            },
+            {
+              "text": "and",
+              "boxes": [
+                {
+                  "x": 405.657,
+                  "y": 441.6339,
+                  "width": 16.690923000000005,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": ", define the",
+              "boxes": [
+                {
+                  "x": 471.606,
+                  "y": 441.6339,
+                  "width": 49.26047741400004,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 452.543,
+          "columnX": 73.799,
+          "segmentation": "paragraph"
+        },
+        {
+          "x": 74.409,
+          "y": 457.89289999999994,
+          "width": 57.66550259999999,
+          "height": 13.636375000000001,
+          "line": 317,
+          "page": 8,
+          "text": "closure score",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [],
+          "proseSegments": [
+            {
+              "text": "closure score",
+              "boxes": [
+                {
+                  "x": 74.409,
+                  "y": 457.89289999999994,
+                  "width": 57.66550259999999,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 468.80199999999996,
+          "columnX": 73.799,
+          "segmentation": "paragraph"
+        }
+      ]
+    },
+    {
+      "name": "native fraction between prose runs",
+      "ids": [
+        427,
+        428,
+        429,
+        430,
+        431
+      ],
+      "native": 429,
+      "join": [
+        428,
+        429,
+        430
+      ],
+      "rows": [
+        {
+          "x": 74.40899999999999,
+          "y": 685.9129,
+          "width": 446.4568854680001,
+          "height": 17.347624999999994,
+          "line": 427,
+          "page": 11,
+          "text": "Proof. For either band{{formula:p11:29}}and any pair{{formula:p11:30}}because{{formula:p11:31}}is a",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 177.993,
+              "y": 685.9129,
+              "width": 71.44055000000003,
+              "height": 17.347624999999994,
+              "kind": "math",
+              "token": "{{formula:p11:29}}",
+              "text": "b R ∈ {R , R FW }",
+              "paintOperations": [
+                786,
+                789,
+                792,
+                795,
+                798
+              ],
+              "paintSpans": [
+                {
+                  "operator": 786,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 789,
+                  "start": 0,
+                  "end": 4
+                },
+                {
+                  "operator": 792,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 795,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 798,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 177.93304450041978,
+                "y": 688.4100534441804,
+                "width": 70.97329303106632,
+                "height": 13.99817102137767
+              }
+            },
+            {
+              "x": 310.417,
+              "y": 685.9129,
+              "width": 137.49055000000004,
+              "height": 17.347624999999994,
+              "kind": "math",
+              "token": "{{formula:p11:30}}",
+              "text": "( i, j ) , 0 ≤ μ C ( b R ( C i , C j )) ≤ 1",
+              "paintOperations": [
+                804,
+                807,
+                810,
+                813,
+                816,
+                819,
+                822,
+                825,
+                828,
+                831,
+                834,
+                837,
+                840,
+                843,
+                846,
+                849,
+                852,
+                855,
+                858
+              ],
+              "paintSpans": [
+                {
+                  "operator": 804,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 807,
+                  "start": 0,
+                  "end": 3
+                },
+                {
+                  "operator": 810,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 813,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 816,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 819,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 822,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 825,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 828,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 831,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 834,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 837,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 840,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 843,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 846,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 849,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 852,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 855,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 858,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 310.88301595298066,
+                "y": 688.4100534441804,
+                "width": 136.44865491183876,
+                "height": 14.498105700712587
+              }
+            },
+            {
+              "x": 488.979,
+              "y": 688.6709,
+              "width": 12.609756730000015,
+              "height": 14.58962500000007,
+              "kind": "math",
+              "token": "{{formula:p11:31}}",
+              "text": "μ C",
+              "paintOperations": [
+                864,
+                867
+              ],
+              "paintSpans": [
+                {
+                  "operator": 864,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 867,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 488.81606045340044,
+                "y": 694.4092695961995,
+                "width": 12.995109991603693,
+                "height": 7.499020190023752
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "Proof. For either band",
+              "boxes": [
+                {
+                  "x": 74.40899999999999,
+                  "y": 688.6709,
+                  "width": 100.652093122,
+                  "height": 13.636375000000044
+                }
+              ]
+            },
+            {
+              "text": "and any pair",
+              "boxes": [
+                {
+                  "x": 252.361,
+                  "y": 688.6709,
+                  "width": 55.12455502799999,
+                  "height": 7.4220000000000255
+                }
+              ]
+            },
+            {
+              "text": "because",
+              "boxes": [
+                {
+                  "x": 450.835,
+                  "y": 688.6709,
+                  "width": 35.21784753000001,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "is a",
+              "boxes": [
+                {
+                  "x": 505.577,
+                  "y": 688.6709,
+                  "width": 15.288885468000048,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 699.5799999999999,
+          "columnX": 73.133,
+          "segmentation": "paragraph"
+        },
+        {
+          "x": 74.409,
+          "y": 704.9299,
+          "width": 192.8449607040001,
+          "height": 13.636375000000001,
+          "line": 428,
+          "page": 11,
+          "text": "probability measure. Each integral depth is a",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [],
+          "proseSegments": [
+            {
+              "text": "probability measure. Each integral depth is a",
+              "boxes": [
+                {
+                  "x": 74.409,
+                  "y": 704.9299,
+                  "width": 192.8449607040001,
+                  "height": 7.4220000000000255
+                }
+              ]
+            }
+          ],
+          "baseline": 715.8389999999999,
+          "columnX": 73.133,
+          "segmentation": "parallel-region"
+        },
+        {
+          "x": 269.982,
+          "y": 696.0929,
+          "width": 25.959514129999945,
+          "height": 25.500625000000014,
+          "line": 429,
+          "page": 11,
+          "text": "\u0000 n 2 \u0001 − 1",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "protection": "math",
+          "paintOperations": [
+            875,
+            878,
+            881,
+            884,
+            888,
+            891
+          ],
+          "baseline": 707.002,
+          "columnX": 243.526,
+          "segmentation": "protected",
+          "sourceInkBox": {
+            "x": 0,
+            "y": 0,
+            "width": 595.276,
+            "height": 841.89
+          }
+        },
+        {
+          "x": 296.439,
+          "y": 704.9299,
+          "width": 224.42418702000023,
+          "height": 13.636375000000001,
+          "line": 430,
+          "page": 11,
+          "text": "-weighted average of these quantities and hence lies",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [],
+          "proseSegments": [
+            {
+              "text": "-weighted average of these quantities and hence lies",
+              "boxes": [
+                {
+                  "x": 296.439,
+                  "y": 704.9299,
+                  "width": 224.42418702000023,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 715.8389999999999,
+          "columnX": 292.183,
+          "segmentation": "parallel-region"
+        },
+        {
+          "x": 74.409,
+          "y": 721.1889,
+          "width": 139.93847080599994,
+          "height": 13.636375000000044,
+          "line": 431,
+          "page": 11,
+          "text": "in{{formula:p11:32}}. Each infimal depth is a",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 85.744,
+              "y": 721.1889,
+              "width": 21.818097980000005,
+              "height": 13.636375000000044,
+              "kind": "math",
+              "token": "{{formula:p11:32}}",
+              "text": "[0 , 1]",
+              "paintOperations": [
+                899,
+                902,
+                905
+              ],
+              "paintSpans": [
+                {
+                  "operator": 899,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 902,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 905,
+                  "start": 0,
+                  "end": 2
+                }
+              ],
+              "inkBox": {
+                "x": 86.96727455919394,
+                "y": 723.4054809976246,
+                "width": 19.49266498740554,
+                "height": 11.498497624703086
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "in",
+              "boxes": [
+                {
+                  "x": 74.409,
+                  "y": 721.1889,
+                  "width": 8.614588997,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": ". Each infimal depth is a",
+              "boxes": [
+                {
+                  "x": 107.562,
+                  "y": 721.1889,
+                  "width": 106.78547080599996,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 732.098,
+          "columnX": 73.133,
+          "segmentation": "parallel-region"
+        }
+      ]
+    },
+    {
+      "name": "native fraction with scripts",
+      "ids": [
+        514,
+        515,
+        516,
+        517,
+        518
+      ],
+      "native": 517,
+      "join": [
+        516,
+        517,
+        518
+      ],
+      "rows": [
+        {
+          "x": 74.409,
+          "y": 695.1809,
+          "width": 446.45698765960003,
+          "height": 14.590625000000045,
+          "line": 514,
+          "page": 13,
+          "text": "assumption,{{formula:p13:41}}is Borel-measurable for every Borel{{formula:p13:42}}; applying this to{{formula:p13:43}}and",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 129.52,
+              "y": 695.1809,
+              "width": 56.549548990000005,
+              "height": 14.590625000000045,
+              "kind": "math",
+              "token": "{{formula:p13:41}}",
+              "text": "C 7 → μ C ( B )",
+              "paintOperations": [
+                1533,
+                1536,
+                1539,
+                1542,
+                1545,
+                1548,
+                1551
+              ],
+              "paintSpans": [
+                {
+                  "operator": 1533,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1536,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1536,
+                  "start": 1,
+                  "end": 2
+                },
+                {
+                  "operator": 1539,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1542,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1545,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1548,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1551,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 129.95109991603692,
+                "y": 697.408877672209,
+                "width": 54.9793115029387,
+                "height": 11.498497624703086
+              }
+            },
+            {
+              "x": 347.908,
+              "y": 695.1809,
+              "width": 8.27455235,
+              "height": 13.636375000000001,
+              "kind": "math",
+              "token": "{{formula:p13:42}}",
+              "text": "B",
+              "paintOperations": [
+                1557
+              ],
+              "paintSpans": [
+                {
+                  "operator": 1557,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 347.86909823677576,
+                "y": 698.4087470308788,
+                "width": 8.4968026868178,
+                "height": 7.998954869358669
+              }
+            },
+            {
+              "x": 433.066,
+              "y": 695.1809,
+              "width": 69.32954898999998,
+              "height": 14.537625000000048,
+              "kind": "math",
+              "token": "{{formula:p13:43}}",
+              "text": "B = R ( C i , C j )",
+              "paintOperations": [
+                1563,
+                1566,
+                1569,
+                1572,
+                1575,
+                1578,
+                1581,
+                1584,
+                1587
+              ],
+              "paintSpans": [
+                {
+                  "operator": 1563,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1566,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1569,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1572,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1575,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1578,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1581,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 1584,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1587,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 433.33693702770773,
+                "y": 697.408877672209,
+                "width": 67.9744214945424,
+                "height": 11.998432304038003
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "assumption,",
+              "boxes": [
+                {
+                  "x": 74.409,
+                  "y": 695.1809,
+                  "width": 52.37670546539999,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "is Borel-measurable for every Borel",
+              "boxes": [
+                {
+                  "x": 188.803,
+                  "y": 695.1809,
+                  "width": 156.36724303320008,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "; applying this to",
+              "boxes": [
+                {
+                  "x": 356.86590092359353,
+                  "y": 695.1809,
+                  "width": 73.47048041500653,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "and",
+              "boxes": [
+                {
+                  "x": 505.129,
+                  "y": 695.1809,
+                  "width": 15.736987659600004,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 706.0899999999999,
+          "columnX": 74.017,
+          "segmentation": "paragraph"
+        },
+        {
+          "x": 74.409,
+          "y": 711.4399,
+          "width": 446.45568844,
+          "height": 14.590625000000045,
+          "line": 515,
+          "page": 13,
+          "text": "{{formula:p13:44}}gives Borel-measurability of{{formula:p13:45}}for each fixed pair. The integral depths",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 74.409,
+              "y": 711.4399,
+              "width": 83.23854899000001,
+              "height": 14.590625000000045,
+              "kind": "math",
+              "token": "{{formula:p13:44}}",
+              "text": "B = R FW ( C i , C j )",
+              "paintOperations": [
+                1593,
+                1596,
+                1599,
+                1602,
+                1605,
+                1608,
+                1611,
+                1614,
+                1617,
+                1620
+              ],
+              "paintSpans": [
+                {
+                  "operator": 1593,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1596,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1599,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1602,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 1605,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1608,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1611,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1614,
+                  "start": 0,
+                  "end": 2
+                },
+                {
+                  "operator": 1617,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1620,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 74.47197649034423,
+                "y": 713.9067220902612,
+                "width": 82.46896725440804,
+                "height": 11.998432304038003
+              }
+            },
+            {
+              "x": 289.952,
+              "y": 711.4399,
+              "width": 56.58554898999995,
+              "height": 14.590625000000045,
+              "kind": "math",
+              "token": "{{formula:p13:45}}",
+              "text": "C 7 → μ C ( B )",
+              "paintOperations": [
+                1626,
+                1629,
+                1632,
+                1635,
+                1638,
+                1641,
+                1644
+              ],
+              "paintSpans": [
+                {
+                  "operator": 1626,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1629,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1629,
+                  "start": 1,
+                  "end": 2
+                },
+                {
+                  "operator": 1632,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1635,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1638,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1641,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1644,
+                  "start": 0,
+                  "end": 1
+                }
+              ],
+              "inkBox": {
+                "x": 290.39072712006714,
+                "y": 713.9067220902612,
+                "width": 54.9793115029387,
+                "height": 11.498497624703086
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "",
+              "boxes": []
+            },
+            {
+              "text": "gives Borel-measurability of",
+              "boxes": [
+                {
+                  "x": 160.392,
+                  "y": 711.4399,
+                  "width": 126.81763295399999,
+                  "height": 7.423000000000002
+                }
+              ]
+            },
+            {
+              "text": "for each fixed pair. The integral depths",
+              "boxes": [
+                {
+                  "x": 349.282,
+                  "y": 711.4399,
+                  "width": 171.58268844000003,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 722.3489999999999,
+          "columnX": 74.017,
+          "segmentation": "paragraph"
+        },
+        {
+          "x": 74.409,
+          "y": 727.6989,
+          "width": 83.56041132200001,
+          "height": 14.590625000000045,
+          "line": 516,
+          "page": 13,
+          "text": "{{formula:p13:46}}and{{formula:p13:47}}are",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [
+            {
+              "x": 74.409,
+              "y": 727.6989,
+              "width": 19.150838959999987,
+              "height": 14.537625000000048,
+              "kind": "math",
+              "token": "{{formula:p13:46}}",
+              "text": "D int",
+              "paintOperations": [
+                1650,
+                1653
+              ],
+              "paintSpans": [
+                {
+                  "operator": 1650,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1653,
+                  "start": 0,
+                  "end": 3
+                }
+              ],
+              "inkBox": {
+                "x": 74.47197649034423,
+                "y": 730.9045011876484,
+                "width": 18.992853064651552,
+                "height": 9.498758907363419
+              }
+            },
+            {
+              "x": 117.052,
+              "y": 727.6989,
+              "width": 23.25145540999999,
+              "height": 14.590625000000045,
+              "kind": "math",
+              "token": "{{formula:p13:47}}",
+              "text": "D FW",
+              "paintOperations": [
+                1659,
+                1662
+              ],
+              "paintSpans": [
+                {
+                  "operator": 1659,
+                  "start": 0,
+                  "end": 1
+                },
+                {
+                  "operator": 1662,
+                  "start": 0,
+                  "end": 2
+                }
+              ],
+              "inkBox": {
+                "x": 117.45580184718722,
+                "y": 730.9045011876484,
+                "width": 22.991348446683457,
+                "height": 9.498758907363419
+              }
+            }
+          ],
+          "proseSegments": [
+            {
+              "text": "",
+              "boxes": []
+            },
+            {
+              "text": "and",
+              "boxes": [
+                {
+                  "x": 97.519,
+                  "y": 727.6989,
+                  "width": 16.067795208000003,
+                  "height": 13.636375000000001
+                }
+              ]
+            },
+            {
+              "text": "are",
+              "boxes": [
+                {
+                  "x": 144.383,
+                  "y": 727.6989,
+                  "width": 13.586411322000002,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 738.608,
+          "columnX": 74.017,
+          "segmentation": "parallel-region"
+        },
+        {
+          "x": 161.434,
+          "y": 718.8629,
+          "width": 25.95951413000003,
+          "height": 25.499625000000037,
+          "line": 517,
+          "page": 13,
+          "text": "\u0000 n 2 \u0001 − 1",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "protection": "math",
+          "paintOperations": [
+            1668,
+            1671,
+            1674,
+            1677,
+            1680,
+            1683
+          ],
+          "baseline": 729.7719999999999,
+          "segmentation": "protected",
+          "sourceInkBox": {
+            "x": 0,
+            "y": 0,
+            "width": 595.276,
+            "height": 841.89
+          }
+        },
+        {
+          "x": 187.891,
+          "y": 727.6989,
+          "width": 334.8866790720003,
+          "height": 13.636375000000001,
+          "line": 518,
+          "page": 13,
+          "text": "-weighted finite sums of these measurable maps, hence Borel-measurable.",
+          "fontSize": 10.9091,
+          "color": [
+            0,
+            0,
+            0
+          ],
+          "inlineProtections": [],
+          "proseSegments": [
+            {
+              "text": "-weighted finite sums of these measurable maps, hence Borel-measurable.",
+              "boxes": [
+                {
+                  "x": 187.891,
+                  "y": 727.6989,
+                  "width": 334.8866790720003,
+                  "height": 13.636375000000001
+                }
+              ]
+            }
+          ],
+          "baseline": 738.608,
+          "columnX": 187.891,
+          "segmentation": "parallel-region"
+        }
+      ]
+    }
+  ]
+}

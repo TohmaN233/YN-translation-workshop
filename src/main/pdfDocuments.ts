@@ -1,17 +1,21 @@
-import { createHash } from "node:crypto";
+import { createHash,randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { extractedWorkshopTextPath } from "./agent/translationBindingResolve.ts";
-import { decodeProjectPaths, projectRelativePath } from "./projectPaths.ts";
-import { PDF_LAYOUT_VERSION, PDF_EXTRACTOR_REVISION, validatePdfLayout, type PdfLayout, type PdfWorkerOperation } from "./pdfTypes.ts";
+import { projectRelativePath } from "./projectPaths.ts";
+import { PDF_LAYOUT_VERSION, PDF_EXTRACTOR_REVISION,pdfBlockPages, type PdfLayout, type PdfWorkerOperation } from "./pdfTypes.ts";
 import { splitPdfInlineTranslation, type PdfProtectedLine } from "../shared/validation/pdfPreservation.ts";
 import type { PdfPreservedSpan } from "../shared/validation/pdfAcademicPrescan.ts";
 import type { PiSessionPromptRequest } from "../shared/agent/piSessionContract.ts";
 import { RequiredWorkflowFileError, withRequiredWorkflowFile } from "./agent/requiredWorkflowFile.ts";
 import { NonRetryableAssignmentError } from "./agent/piNative/assignmentFailure.ts";
 import {pdfReferenceSections} from './pdfReferenceSections.ts';
+import {printPdfHtml} from './pdfPrint.ts';
+import {improvePdfStructure,currentPdfPreparationContext,PDF_STRUCTURE_PROMPT_VERSION,type PdfStructurePreparationOptions} from './pdfStructurePreparation.ts';
+import {encodeProjectPaths} from './projectPaths.ts';
+import {writeTextFileAtomically} from './atomicFile.ts';
 
 const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
 const pdfErrorDetails=(error:unknown):string=>error instanceof AggregateError
@@ -44,6 +48,7 @@ async function runPdfWorker(operation: PdfWorkerOperation, signal?: AbortSignal,
         if (message.type === "result") result = message.result;
         else if (message.type === "error") {
           const error=new Error(message.error);
+          Object.assign(error,{workerStack:message.stack});
           if(message.cleanupFailure&&failure)failure=new AggregateError([failure,error],`PDF cancellation cleanup failed: ${pdfErrorDetails(failure)}; ${error.message}`);
           else if(message.cleanupFailure)failure=new AggregateError([error],error.message);
           else failure ??= error;
@@ -65,10 +70,10 @@ async function runPdfWorker(operation: PdfWorkerOperation, signal?: AbortSignal,
       if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
     });
     signal?.throwIfAborted();
-    await record("completed", { pages: result.pages, segmentation:result.segmentation });
+    await record(operation.kind==='export'?"source_prepared":"completed", { pages: result.pages, segmentation:result.segmentation,structure:result.structure,htmlPath:result.htmlPath });
     return result;
   } catch (error) {
-    try { await record(signal?.aborted&&!(error instanceof AggregateError) ? "cancelled" : "failed", { error: pdfErrorDetails(error) }); }
+    try { await record(signal?.aborted&&!(error instanceof AggregateError) ? "cancelled" : "failed", { error: pdfErrorDetails(error),workerStack:(error as {workerStack?:string})?.workerStack }); }
     catch (journalError) { throw new AggregateError([error, journalError], "PDF operation and diagnostic persistence failed."); }
     throw error;
   }
@@ -144,13 +149,36 @@ export async function readPdfLayout(sourcePath: string, projectRoot: string, sig
   return binding.layout;
 }
 
-export async function preparePdfDocument(originalPath: string, workspaceDir: string, options: { signal?: AbortSignal; onProgress?: (page: number, total: number) => void } = {}) {
+const pdfPreparationTails=new Map<string,Promise<void>>();
+function reservePdfPath(tails:Map<string,Promise<void>>,key:string) {
+  const prior=tails.get(key)??Promise.resolve();let release!:()=>void;
+  const own=new Promise<void>(resolve=>{release=resolve;});
+  const barrier=prior.then(()=>own);tails.set(key,barrier);
+  return {
+    wait:(signal?:AbortSignal)=>new Promise<void>((resolve,reject)=>{
+      const abort=()=>{signal?.removeEventListener('abort',abort);reject(signal?.reason??new Error('PDF operation cancelled.'));};
+      if(signal?.aborted){abort();return;}
+      signal?.addEventListener('abort',abort,{once:true});
+      void prior.then(()=>{signal?.removeEventListener('abort',abort);resolve();});
+    }),
+    release:()=>{release();void barrier.then(()=>{if(tails.get(key)===barrier)tails.delete(key);});}
+  };
+}
+export async function preparePdfDocument(originalPath:string,workspaceDir:string,options:PdfStructurePreparationOptions&{onProgress?:(page:number,total:number)=>void}={}) {
+  options={...currentPdfPreparationContext(),...options};
+  const stage=options.onStage;options.onStage=(value,details)=>stage?.(value,{...details,sourcePath:originalPath});
+  const key=path.resolve(workspaceDir)+'\0'+path.resolve(originalPath);
+  const ownership=reservePdfPath(pdfPreparationTails,key);
+  try {await ownership.wait(options.signal);options.signal?.throwIfAborted();return await preparePdfDocumentOwned(originalPath,workspaceDir,options);}
+  finally {ownership.release();}
+}
+async function preparePdfDocumentOwned(originalPath: string, workspaceDir: string, options: PdfStructurePreparationOptions&{onProgress?: (page: number, total: number) => void}) {
   options.signal?.throwIfAborted();
   const projectRoot = path.dirname(workspaceDir);
   const identityPath = extractedWorkshopTextPath(workspaceDir, originalPath, "source");
   const originalHash = await runBindingWorker({ kind: "hash", file: originalPath }, options.signal) as string;
   const identityDirectory = path.dirname(path.dirname(identityPath));
-  const sourcePath = path.join(path.dirname(identityDirectory), path.basename(identityDirectory) + "-pdf-" + originalHash.slice(0,16) + `-v${PDF_LAYOUT_VERSION}-e${PDF_EXTRACTOR_REVISION}`, "source", path.parse(originalPath).name + ".txt");
+  const sourcePath = path.join(path.dirname(identityDirectory), path.basename(identityDirectory) + "-pdf-" + originalHash.slice(0,16) + `-v${PDF_LAYOUT_VERSION}-e${PDF_EXTRACTOR_REVISION}-p${PDF_STRUCTURE_PROMPT_VERSION}`, "source", path.parse(originalPath).name + ".txt");
   const existing = await readPdfLayout(sourcePath, projectRoot, options.signal);
   if (existing) {
     if (path.resolve(existing.originalPath) !== path.resolve(originalPath) || originalHash !== existing.originalHash) throw new NonRetryableAssignmentError("PDF projection has an incompatible original binding. Start a new task.");
@@ -158,25 +186,86 @@ export async function preparePdfDocument(originalPath: string, workspaceDir: str
     await runBindingWorker({ kind: "verify-assets", sourcePath, projectRoot }, options.signal);
     return { sourcePath, text: sourceBytes.toString("utf8"), originalHash: existing.originalHash, sourceHash: existing.sourceHash };
   }
-  try { await runPdfWorker({ kind: "extract", originalPath, projectRoot, sourcePath, fontPath: fontPath() }, options.signal, options.onProgress); }
+  let hasMechanical=false;
+  try {await stat(sourcePath+'.pdf-mechanical.json');hasMechanical=true;}
+  catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  try {if(!hasMechanical)await runPdfWorker({ kind: "extract", originalPath, projectRoot, sourcePath, fontPath: fontPath(),visualRowsOnly:options.visualRowsOnly!==false }, options.signal, options.onProgress);}
   catch (error) {
     if (options.signal?.aborted) throw error;
     throw new NonRetryableAssignmentError(`PDF extraction cannot safely prepare ${originalPath}: ${error instanceof Error ? error.message : String(error)}`, error);
   }
-  const layout = await readPdfLayout(sourcePath, projectRoot);
+  const mechanical=(await runBindingWorker({kind:'verify-mechanical',sourcePath,projectRoot},options.signal) as VerifiedPdfBinding).layout;
+  await runBindingWorker({kind:'verify-assets',sourcePath,projectRoot,pending:true},options.signal);
+  const journal=path.join(projectRoot,'.translation-workshop','pdf','events.jsonl');
+  const attemptId=randomUUID(),diagnosticDirectory=sourcePath+'.pdf-preparation-attempts/'+attemptId;
+  const stageRecord=(stage:string,value:unknown)=>appendFile(journal,JSON.stringify({event:stage,kind:'structure',attemptId,at:new Date().toISOString(),sourcePath,...value as object})+'\n');
+  const retain=async(stage:string,value:unknown)=>{
+    const text=JSON.stringify(value),diagnosticPath=path.join(diagnosticDirectory,stage+'.json');
+    await mkdir(diagnosticDirectory,{recursive:true});
+    await writeTextFileAtomically(diagnosticPath,text);
+    await writeTextFileAtomically(sourcePath+`.pdf-${stage}.json`,text);
+    await stageRecord(stage,{retained:true,diagnosticPath:projectRelativePath(projectRoot,diagnosticPath)});
+  };
+  let prepared:Awaited<ReturnType<typeof improvePdfStructure>>;
+  let committed=false;
+  try {
+    prepared=await improvePdfStructure(mechanical,projectRoot,options,retain,
+      async(layout,plan)=>await runBindingWorker({kind:'apply-structure',layout,plan},options.signal));
+    options.signal?.throwIfAborted();
+    const finalMechanical=(await runBindingWorker({kind:'verify-mechanical',sourcePath,projectRoot},options.signal) as VerifiedPdfBinding).layout;
+    if(finalMechanical.protectionHash!==mechanical.protectionHash)throw new Error('PDF mechanical structure changed during model preparation.');
+    await runBindingWorker({kind:'verify-assets',sourcePath,projectRoot,pending:true},options.signal);
+    if(await runBindingWorker({kind:'hash',file:originalPath},options.signal)!==originalHash)throw new Error('PDF changed before structure acceptance; no usable projection or HTML was committed.');
+    // The layout is the sole commit record and is published last. A failed or
+    // cancelled creation leaves inspectable candidate files, never a usable
+    // projection. Accepted projections are reused and never overwritten here.
+    await writeTextFileAtomically(sourcePath,prepared.sourceText,options.signal);
+    options.signal?.throwIfAborted();
+    await writeTextFileAtomically(sourcePath+'.pdf-structure.json',JSON.stringify(prepared.receipt),options.signal);
+    options.signal?.throwIfAborted();
+    await writeTextFileAtomically(sourcePath+'.pdf-layout.json',JSON.stringify(encodeProjectPaths(prepared.layout,projectRoot)),options.signal);
+    committed=true;
+    await stageRecord('accepted',{metrics:prepared.metrics,sourceHash:prepared.layout.sourceHash,planHash:prepared.layout.preparation!.planHash});
+    options.onStage?.('accepted',{metrics:prepared.metrics});
+  } catch(error) {
+    let failure=error;
+    try {await stageRecord(committed?'committed-operation-failed':options.signal?.aborted?'cancelled':'rejected',{error:pdfErrorDetails(error)});}
+    catch(diagnosticError){failure=new AggregateError([error,diagnosticError],'PDF preparation and diagnostic persistence both failed.');}
+    throw new NonRetryableAssignmentError(`PDF structure preparation failed for ${originalPath}: ${pdfErrorDetails(failure)}. ${committed?'Accepted source was retained. ':''}No review HTML was generated.`,failure);
+  }
+  const layout = await readPdfLayout(sourcePath, projectRoot,options.signal);
   if (!layout) throw new Error("PDF extraction did not commit its layout manifest.");
   return { sourcePath, text: await readFile(sourcePath, "utf8"), originalHash: layout.originalHash, sourceHash: layout.sourceHash };
 }
 
+const pdfExportTails=new Map<string,Promise<void>>();
 export async function createTranslatedPdf(args: { templatePath: string; sourcePath: string; translatedLines: string[]; projectRoot: string; signal?: AbortSignal }) {
+  const translatedLines=[...args.translatedLines];
   const layout = await readPdfLayout(args.sourcePath, args.projectRoot);
   if (!layout || path.resolve(layout.originalPath) !== path.resolve(args.templatePath)) throw new Error("PDF export template does not match this review's extracted source.");
   if (projectRelativePath(path.join(args.projectRoot, ".translation-workshop", "extracted-text"), args.sourcePath) === undefined) throw new Error("PDF export requires a project-owned source projection.");
   const relativeInput = projectRelativePath(args.projectRoot, args.templatePath);
   const outputDirectory = relativeInput ? path.dirname(relativeInput) : path.join("pdf", path.basename(path.dirname(path.dirname(args.sourcePath))));
   const outputPath = path.join(args.projectRoot, "AI_translation", outputDirectory, `${path.parse(args.templatePath).name}.translated.pdf`);
-  return runPdfWorker({ kind: "export", layoutPath: args.sourcePath + ".pdf-layout.json", projectRoot: args.projectRoot,
-    lines: args.translatedLines, outputPath, fontPath: fontPath() }, args.signal);
+  const key=process.platform==='win32'?path.resolve(outputPath).toLowerCase():path.resolve(outputPath);
+  const ownership=reservePdfPath(pdfExportTails,key);
+  try {
+  await ownership.wait(args.signal);args.signal?.throwIfAborted();
+  const prepared=await runPdfWorker({ kind: "export", layoutPath: args.sourcePath + ".pdf-layout.json", projectRoot: args.projectRoot,
+    lines: translatedLines, outputPath, fontPath: fontPath() }, args.signal);
+  const journal=path.join(args.projectRoot,'.translation-workshop','pdf','events.jsonl'),started=performance.now();
+  const record=(event:string,details={})=>appendFile(journal,JSON.stringify({event,kind:'print',at:new Date().toISOString(),elapsedMs:performance.now()-started,htmlPath:prepared.htmlPath,...details})+'\n');
+  await record('started');
+  try {
+    const printed=await printPdfHtml(prepared.htmlPath,outputPath,args.signal);
+    await record('completed',{pages:printed.pages,sourcePages:prepared.sourcePages,sourceLines:prepared.sourceLines,structure:prepared.structure});
+    return {...prepared,pages:printed.pages};
+  }catch(error){
+    try{await record(args.signal?.aborted?'cancelled':'failed',{error:pdfErrorDetails(error)});}
+    catch(journalError){throw new AggregateError([error,journalError],'PDF print and diagnostic persistence failed.');}
+    throw error;
+  }
+  }finally{ownership.release();}
 }
 
 export async function pdfReferencesForRange(sourcePath: string, projectRoot: string, fromLine: number, toLine: number) {
@@ -186,15 +275,15 @@ export async function pdfReferencesForRange(sourcePath: string, projectRoot: str
     return undefined;
   }
   const blocks = layout.blocks.filter(block => block.line >= fromLine && block.line <= toLine);
-  const pages = new Set(blocks.map(block => block.page));
+  const pages = new Set(blocks.flatMap(block => pdfBlockPages(layout,block)));
   const references = layout.references.filter(ref => pages.has(ref.page) || blocks.some(block => refersToCaption(block.text, ref.caption)))
     .map(({ id, page, caption, captionLine }) => ({ id, page, caption, captionLine }));
   const scannedSpans = preservedSpansCache.get(layout);
   if (!scannedSpans) throw new Error('Verified PDF binding is missing its academic preservation prescan.');
   const preservedSpans = scannedSpans.filter(span=>span.line>=fromLine&&span.line<=toLine);
   return { references, preservedSpans, segmentationWarnings:blocks.filter(block=>block.segmentation==='parallel-region').map(block=>({line:block.line,reason:'Unmarked aligned columns/table areas are ambiguous; this visual row remains independent. Do not complete neighboring rows here.'})),
-    inlineProtections:blocks.flatMap(block=>(block.inlineProtections??[]).map(({token,text,kind})=>({line:block.line,token,text,kind,readOnly:true}))), protectedLines: (await readPdfProtectedLines(sourcePath,projectRoot))!.filter(block=>block.line>=fromLine&&block.line<=toLine).map(block=>({...block,readOnly:true})),
-    instruction: "PDF paragraphs combine visual wraps within each page. A paragraph can continue on the next page: consult adjacent source rows for context without copying prose between rows. Inline {{formula:pN:id}} / {{code:pN:id}} markers stand for native glyphs; retain their exact identity and count within their original paragraph; they may be reordered within that paragraph to fit translated syntax. Export places each original glyph at its matching translated marker. inlineProtections supplies their read-only original text. Translate the complete surrounding prose without expanding it or completing another paragraph. PDF code, mathematical formulas and References/Bibliography sections are immutable Host-prepared rows. protectedLines is read-only context; never submit, copy, translate or diagnose those rows as untranslated. Translate only the writable sourceBlocks or translatableLines. The Host merges the original protected content at its physical line numbers. preservedSpans are source-evidenced software names, dataset names, defined acronyms, labels and reference identifiers: retain them unless an explicit project glossary requests a different target; do not diagnose their unchanged text as untranslated. Surrounding prose still needs translation. Images are read-only PDF context, not automatic model input. When a passage refers to a figure/table or needs visual context, call viewPdfReference with the corresponding reference id and source line." };
+    inlineProtections:blocks.flatMap(block=>(block.inlineProtections??[]).map(({token,text,kind,sourcePage,physicalLines})=>({line:block.line,token,text,kind,sourcePage,display:Boolean(physicalLines),readOnly:true}))), protectedLines: (await readPdfProtectedLines(sourcePath,projectRoot))!.filter(block=>block.line>=fromLine&&block.line<=toLine).map(block=>({...block,readOnly:true})),
+    instruction: "Each PDF source row owns one logical paragraph or independent source region. Source-evidenced page continuations and sentences interrupted by display formulas are already joined; translate the complete row once, without completing or copying a neighboring row. The output is structured HTML with automatic wrapping and pagination, so translated length is not restricted by the original text box. Inline {{formula:pN:id}} / {{code:pN:id}} markers stand for original native glyphs; retain exact identity, count and paragraph ownership. They may be reordered within their paragraph to fit translated syntax. Display formula markers retain their original display image. inlineProtections supplies read-only original text and source pages. Translate the complete surrounding prose. PDF code, independent mathematical formulas and References/Bibliography sections are immutable Host-prepared rows. protectedLines is read-only context; never submit, copy, translate or diagnose those rows as untranslated. Translate only writable sourceBlocks or translatableLines; the Host retains protected content at its logical source row. preservedSpans are source-evidenced software names, dataset names, defined acronyms, labels and reference identifiers: retain them unless an explicit project glossary requests a different target; do not diagnose unchanged retained text as untranslated. Surrounding prose still needs translation. Images are read-only PDF context, not automatic model input. When a passage refers to a figure/table or needs visual context, call viewPdfReference with its reference id and source line." };
 }
 
 export async function readPdfPreservedSpans(sourcePath: string | undefined, projectRoot: string, signal?: AbortSignal): Promise<PdfPreservedSpan[] | undefined> {
@@ -207,7 +296,7 @@ export async function readPdfPreservedSpans(sourcePath: string | undefined, proj
 }
 
 export function isPdfSourceProjection(sourcePath: string): boolean {
-  return /[\\/]\.translation-workshop[\\/]extracted-text[\\/][^\\/]+-pdf-[a-f0-9]{16}(?:-v\d+)?(?:-e\d+)?[\\/]source[\\/]/i.test(sourcePath);
+  return /[\\/]\.translation-workshop[\\/]extracted-text[\\/][^\\/]+-pdf-[a-f0-9]{16}(?:-v\d+)?(?:-e\d+)?(?:-p\d+)?[\\/]source[\\/]/i.test(sourcePath);
 }
 
 const protectedRowsCache = new WeakMap<PdfLayout, PdfProtectedLine[]>();
@@ -281,7 +370,7 @@ export async function readPdfReferenceImage(sourcePath: string, projectRoot: str
   const layout = await readPdfLayout(sourcePath, projectRoot, signal);
   if (!layout) throw new RequiredWorkflowFileError(sourcePath + ".pdf-layout.json");
   const block = layout.blocks.find(block => block.line === sourceLine), ref = layout.references.find(ref => ref.id === id);
-  if (!block || !ref || (block.page !== ref.page && !refersToCaption(block.text, ref.caption))) throw new Error("PDF reference must belong to the cited source line's page or be explicitly cited by its figure/table label.");
+  if (!block || !ref || (!pdfBlockPages(layout,block).includes(ref.page) && !refersToCaption(block.text, ref.caption))) throw new Error("PDF reference must belong to the cited source paragraph's pages or be explicitly cited by its figure/table label.");
   const page = layout.pages.find(page => page.page === ref.page)!;
   const bytes = await withRequiredWorkflowFile(page.previewPath, () => readFile(page.previewPath), signal);
   if (hash(bytes) !== page.previewHash) throw new NonRetryableAssignmentError("PDF reference image changed; restore the project assets before resuming.");

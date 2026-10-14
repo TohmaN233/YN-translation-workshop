@@ -1,6 +1,6 @@
 import type { CustomPreserveRule } from "../shared/validation/customPreserveRules.ts";
 import { contextBridge, ipcRenderer } from "electron";
-import type { StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
+import type { HtmlPreparationProgress, StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
 
 const agentArtifactApi = {
   cancelAgentArtifact: (requestId?: string) => ipcRenderer.invoke("agent-artifacts:cancel", { requestId }),
@@ -123,13 +123,16 @@ contextBridge.exposeInMainWorld("workshop", {
   approveAssetProposal: (args: { outputDir: string; proposalId: string; entry?: Record<string, unknown> }) => ipcRenderer.invoke("agent-assets:approveProposal", args),
   buildPrompt: (args: unknown) => ipcRenderer.invoke("prompts:build", args),
   generateLineReview: (args: unknown) => ipcRenderer.invoke("html:generateLineReview", args),
-  onLineReviewGenerationProgress: (callback: (progress: { requestId: string; sourcePath: string; page: number; totalPages: number }) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, progress: { requestId: string; sourcePath: string; page: number; totalPages: number }) => callback(progress);
+  cancelHtmlPreparation: (requestId: string) => ipcRenderer.invoke("html:cancelPreparation", requestId),
+  onLineReviewGenerationProgress: (callback: (progress: HtmlPreparationProgress) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: HtmlPreparationProgress) => callback(progress);
     ipcRenderer.on("html:lineGenerationProgress", listener);
     return () => ipcRenderer.removeListener("html:lineGenerationProgress", listener);
   },
   generateProposalReview: (args: unknown) => ipcRenderer.invoke("html:generateProposalReview", args),
   openReviewHtml: (args: unknown) => ipcRenderer.invoke("html:openReviewHtml", args),
+  prepareReviewHtmlChild: (args: { outputPath: string }) => ipcRenderer.invoke("html:prepareReviewHtmlChild", args),
+  readLineReviewState: (args: { lineReviewPath: string }) => ipcRenderer.invoke("html:readLineReviewState", args),
   findProofreadReport: (outputDir: string) => ipcRenderer.invoke("reports:findProofreadReport", outputDir),
   scanTranslations: (outputDir: string) => ipcRenderer.invoke("files:scanTranslations", outputDir),
   copyText: (text: string) => ipcRenderer.invoke("clipboard:writeText", text),
@@ -178,6 +181,8 @@ contextBridge.exposeInMainWorld("workshopHtml", {
   writePdfFile: (args: { templatePath: string; sourcePath: string; lines: string[]; outputDir: string }) => ipcRenderer.invoke("files:writePdfFile", args),
   generateProposalReview: (args: unknown) => ipcRenderer.invoke("html:generateProposalReview", args),
   openReviewHtml: (args: unknown) => ipcRenderer.invoke("html:openReviewHtml", args),
+  prepareReviewHtmlChild: (args: { outputPath: string }) => ipcRenderer.invoke("html:prepareReviewHtmlChild", args),
+  readLineReviewState: (args: { lineReviewPath: string }) => ipcRenderer.invoke("html:readLineReviewState", args),
   buildPrompt: (args: unknown) => ipcRenderer.invoke("prompts:build", args),
   applyLineReviewState: (args: { lineReviewPath?: string; lineState?: unknown; line?: number; lines?: number[]; activate?: boolean }) => ipcRenderer.invoke("html:applyLineReviewState", args),
   prepareProposalLineReviewBatch: (args: { outputDir?: string; reportPath?: string; lineReviewPath?: string; locale?: "zh-CN" | "en-US"; documents?: Array<{ documentId?: string; sourcePath?: string; translationPath?: string }> }) =>

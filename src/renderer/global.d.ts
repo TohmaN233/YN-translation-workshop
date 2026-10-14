@@ -276,9 +276,12 @@ declare global {
       approveAssetProposal: (args: { outputDir: string; proposalId: string; entry?: Record<string, unknown> }) => Promise<{ id: string; status: string }>;
       buildPrompt: (args: WorkshopPromptBuildArgs) => Promise<string>;
       generateLineReview: (args: unknown) => Promise<{ outputPath: string; fileCount?: number; matchedCount?: number; warningCount?: number }>;
-      onLineReviewGenerationProgress: (callback: (progress: { requestId: string; sourcePath: string; page: number; totalPages: number }) => void) => () => void;
+      cancelHtmlPreparation: (requestId: string) => Promise<{ok:boolean}>;
+      onLineReviewGenerationProgress: (callback: (progress: import("../shared/builtinTasks.ts").HtmlPreparationProgress) => void) => () => void;
       generateProposalReview: (args: unknown) => Promise<WorkshopProposalReviewResult>;
       openReviewHtml: (args: { htmlPath: string; outputDir?: string; activate?: boolean }) => Promise<{ ok: boolean }>;
+      prepareReviewHtmlChild: (args: { outputPath: string }) => Promise<{ outputPath: string }>;
+      readLineReviewState: (args: { lineReviewPath: string }) => Promise<{ state?: Record<string,unknown> }>;
       findProofreadReport: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedMs: number; score: number; reasons: string[] }>>;
       scanTranslations: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedAt: string }>>;
       copyText: (text: string) => Promise<boolean>;
@@ -287,6 +290,8 @@ declare global {
       agentChatEmbeddedEntryUrl: () => Promise<{ ok: boolean; url?: string; cssUrl?: string; message?: string }>;
     };
     workshopHtml?: WorkshopAgentArtifactApi & WorkshopAgentProviderApi & {
+      prepareReviewHtmlChild: (args: { outputPath: string }) => Promise<{ outputPath: string }>;
+      readLineReviewState: (args: { lineReviewPath: string }) => Promise<{ state?: Record<string,unknown> }>;
       mutateProjectCharacterBibleEntry: (args: unknown) => Promise<unknown>;
       agentSession: WorkshopAgentSessionApi;
       publishAgentInterfaceContext: (args: import("../shared/agent/ynInterfaceContext.ts").YnInterfaceContext) => Promise<import("../shared/agent/ynInterfaceContext.ts").YnInterfaceContextPublishResult>;
@@ -353,7 +358,7 @@ declare global {
       }>;
       writeAuditWhitelistFile: (args: { outputDir?: string; documentId?: string; sourcePath?: string; lines?: number[]; lineReviewPath?: string; lineState?: unknown; changedLines?: number[] }) => Promise<{ ok: boolean; path: string; backupPath?: string; lineCount: number; lineReviewPath?: string; state?: Record<string, unknown>; changedLines?: number[] }>;
       writeEpubFile: (args: { templatePath: string; lines: string[]; outputDir?: string; mode?: "all" | "pair-position"; replacePosition?: number; pairSize?: number }) => Promise<{ ok: boolean; path: string; changedDocuments: number }>;
-      writePdfFile: (args: { templatePath: string; sourcePath: string; lines: string[]; outputDir: string }) => Promise<{ ok: boolean; path: string; pages: number }>;
+      writePdfFile: (args: { templatePath: string; sourcePath: string; lines: string[]; outputDir: string }) => Promise<{ ok: boolean; path: string; pages: number;htmlPath:string }>;
       generateProposalReview: (args: unknown) => Promise<WorkshopProposalReviewResult>;
       buildPrompt: (args: WorkshopPromptBuildArgs) => Promise<string>;
       applyLineReviewState: (args: { lineReviewPath?: string; lineState?: unknown; line?: number; lines?: number[]; activate?: boolean }) => Promise<{ ok: boolean }>;

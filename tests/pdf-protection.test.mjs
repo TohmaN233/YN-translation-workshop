@@ -1,11 +1,14 @@
+import {configurePdfPrintBackend} from '../src/main/pdfPrint.ts';
+import {createNativePdfPrintBackend} from './helpers/pdf-print-backend.mjs';
 import { prepareTranslationReuseAudit, readTranslationReuseAuditBatch, applyTranslationReuseAudits } from '../src/main/agent/piNative/translationReuseAudit.ts';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, open } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, open, utimes, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PDFDocument, StandardFonts, beginMarkedContent, endMarkedContent, beginText, endText, setFontAndSize, moveText, showText } from 'pdf-lib';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
-import { preparePdfDocument, readPdfLayout, readPdfProtectedLines, createTranslatedPdf, preflightPdfRequest, pdfReferencesForRange, assertPdfProtectedWrite } from '../src/main/pdfDocuments.ts';
+import { readPdfLayout, readPdfProtectedLines, createTranslatedPdf, preflightPdfRequest, pdfReferencesForRange, assertPdfProtectedWrite } from '../src/main/pdfDocuments.ts';
+import {preparePdfDocument} from './helpers/pdf-structure-backend.mjs';
 import { protectPdfText } from '../src/main/pdfProtection.ts';
 import { validateTranslationCandidate } from '../src/shared/validation/translationValidator.ts';
 import { validateProofreadReplacement } from '../src/shared/validation/proofreadReplacement.ts';
@@ -17,9 +20,12 @@ import { resolvePiSourceManifest } from '../src/main/agent/piNative/sourceManife
 import { buildProofreadDeterministicSignals } from '../src/main/agent/piNative/proofreadPrescan.ts';
 import { writeReviewHtml, readReviewHtml } from '../src/main/reviewHtmlPortability.ts';
 import { renderLineReviewHtml } from '../src/shared/core/html.ts';
-import { pdfProtectionHash } from '../src/main/pdfTypes.ts';
+import { pdfProtectionHash, PDF_LAYOUT_VERSION } from '../src/main/pdfTypes.ts';
 import { PiNativeSessionService } from '../src/main/agent/piNative/sessionService.ts';
 
+const printService=process.versions.electron?undefined:await createNativePdfPrintBackend();
+if(printService)configurePdfPrintBackend(printService.backend);
+try {
 const protectedJapanese = '// 太郎の名前を表示する';
 const options = { languagePair:'ja->zh-CN', pdfProtectedLines:[{line:501,kind:'code',text:protectedJapanese}], lineOffset:500,
   glossaryEntries:[{source:'太郎',target:'太朗'}], styleForbiddenTerms:['太郎'], customPreserveRules:[] };
@@ -68,7 +74,7 @@ try {
   await writeFile(originalPath,await pdf.save());const original=await readFile(originalPath);
   const extracted=await preparePdfDocument(originalPath,path.join(project,'.translation-workshop'));
   const layout=await readPdfLayout(extracted.sourcePath,project), protections=await readPdfProtectedLines(extracted.sourcePath,project);
-  assert.equal(layout.version,3);assert.equal(protections[500].line,501);assert.ok(protections.length>501);
+  assert.equal(layout.version,PDF_LAYOUT_VERSION);assert.equal(protections[500].line,501);assert.ok(protections.length>501);
   assert.equal(protections.find(p=>p.text.startsWith('Do not')).kind,'code');assert.ok(protections.some(p=>p.kind==='math'));
   assert.equal(layout.blocks.find(p=>p.text==='Translate surrounding prose.').protection,undefined);
   const refs=await pdfReferencesForRange(extracted.sourcePath,project,501,501);assert.equal(refs.protectedLines[0].line,501);
@@ -118,22 +124,39 @@ try {
   assert.deepEqual(pixels(preview),pixels(background));
   if(process.env.YN_PDF_VISUAL_EVIDENCE){const evidence=path.resolve(process.env.YN_PDF_VISUAL_EVIDENCE);await mkdir(evidence,{recursive:true});await writeFile(path.join(evidence,'protected-source.pdf'),original);await writeFile(path.join(evidence,'protected-translated.pdf'),bytes);await writeFile(path.join(evidence,'layout.json'),JSON.stringify(layout,null,2));}
   const sourceBytes=await readFile(extracted.sourcePath);await writeFile(extracted.sourcePath,sourceBytes.toString().replace('const n0','const z0'));
-  await assert.rejects(readPdfProtectedLines(extracted.sourcePath,project),error=>error.name==='NonRetryableAssignmentError'&&/source binding changed/.test(error.message));
+  await assert.rejects(readPdfProtectedLines(extracted.sourcePath,project),error=>error.name==='NonRetryableAssignmentError'&&/source binding changed/.test(error.message),'Changed projection bytes are rejected by the verified source hash.');
   await writeFile(extracted.sourcePath,sourceBytes);
   const forgedFolder=path.join(project,'forged');await mkdir(forgedFolder);const forgedOriginal=path.join(forgedFolder,'test.pdf'), forgedProjection=path.join(forgedFolder,'flat.txt');
   await writeFile(forgedOriginal,original);await writeFile(forgedProjection,extracted.text);
   const forgedRequest={...request,sourcePath:forgedFolder,sourceSelection:{kind:'folder',path:forgedFolder},folderSourceSelection:'prepared-inputs',folderSourceDocuments:[{id:'test.pdf',path:forgedProjection,projection:{kind:'pdf-text',originalHash:extracted.originalHash,projectionHash:extracted.sourceHash}}]};
   await assert.rejects(preflightPdfRequest(forgedRequest),/protected project projection/);await assert.rejects(resolvePiSourceManifest(forgedRequest),/protected project projection/);
-  const largePdf=path.join(project,'large-bound.pdf'),handle=await open(largePdf,'w');await handle.truncate(256*1024*1024);await handle.close();
+  const largePdf=path.join(project,'large-bound.pdf');
+  const largeDocument=await PDFDocument.create();largeDocument.addPage([600,800]).drawText('Performance source paragraph.',{x:40,y:740,size:12,font:await largeDocument.embedFont(StandardFonts.Helvetica)});
+  const largePrefix=await largeDocument.save(),handle=await open(largePdf,'w');
+  try{await handle.write(largePrefix);await handle.truncate(256*1024*1024);}finally{await handle.close();}
+  assert.equal((await stat(largePdf)).size,256*1024*1024);
+  const largePrepared=await preparePdfDocument(largePdf,path.join(project,'.translation-workshop'));
+  assert.equal(largePrepared.text,'Performance source paragraph.','The padded original remains a valid PDF and produces a real accepted source projection.');
+  const largeLayout=await readPdfLayout(largePrepared.sourcePath,project);
+  assert.equal(largeLayout.originalPath,largePdf);assert.equal(largeLayout.originalHash,largePrepared.originalHash);
+  assert.ok(largeLayout.preparation,'The 256MB fixture has genuine extraction/plan/audit acceptance, not a fabricated receipt.');
   const performanceMap={...layout,originalPath:largePdf,originalHash:'0'.repeat(64)};performanceMap.protectionHash=pdfProtectionHash(performanceMap);
   const realMap=await readFile(extracted.sourcePath+'.pdf-layout.json');await writeFile(extracted.sourcePath+'.pdf-layout.json',JSON.stringify(performanceMap));
+  await assert.rejects(readPdfProtectedLines(extracted.sourcePath,project),error=>error.name==='NonRetryableAssignmentError'&&/no valid acceptance/.test(error.message),'A forged large-file binding is rejected before hashing or model selection.');
+  await writeFile(extracted.sourcePath+'.pdf-layout.json',realMap);
+  const largeRequest={...request,sourcePath:largePrepared.sourcePath};
+  let stampTime=Date.now();
+  const invalidateLargeStamp=async()=>{stampTime+=2000;await utimes(largePdf,new Date(stampTime),new Date(stampTime));};
+  await invalidateLargeStamp();
   let pulses=0,maxGap=0,then=performance.now();const heartbeat=setInterval(()=>{const now=performance.now();maxGap=Math.max(maxGap,now-then);then=now;pulses++;},5);
-  try { await assert.rejects(readPdfProtectedLines(extracted.sourcePath,project),/source binding changed/); } finally {clearInterval(heartbeat);}
+  try { await preflightPdfRequest(largeRequest); } finally {clearInterval(heartbeat);}
   assert.ok(pulses>5&&maxGap<200,`PDF hashing must remain off the main thread: pulses=${pulses}, maxGap=${maxGap}`);
-  const controller=new AbortController();const cancelled=preflightPdfRequest(request,controller.signal);setTimeout(()=>controller.abort(new DOMException('stop','AbortError')),15);await assert.rejects(cancelled,error=>error.name==='AbortError');
+  await invalidateLargeStamp();
+  const controller=new AbortController();const cancelled=preflightPdfRequest(largeRequest,controller.signal);setTimeout(()=>controller.abort(new DOMException('stop','AbortError')),15);await assert.rejects(cancelled,error=>error.name==='AbortError');
   let stopSelections=0;const stopService=new PiNativeSessionService({createModelSelection:async()=>{stopSelections++;throw new Error('Stopped PDF preparation must not select a provider.');}}),stopSession=await stopService.createSession(project);
   const journalPath=path.join(project,'.translation-workshop','pdf','events.jsonl'), priorJournal=(await readFile(journalPath,'utf8')).split('binding_verification_started').length;
-  const stopping=stopService.prompt({...request,sessionId:stopSession.id}).then(()=>({accepted:true}),error=>({error}));
+  await invalidateLargeStamp();
+  const stopping=stopService.prompt({...largeRequest,sessionId:stopSession.id}).then(()=>({accepted:true}),error=>({error}));
   const deadline=Date.now()+5000;
   while((await readFile(journalPath,'utf8')).split('binding_verification_started').length===priorJournal){assert.ok(Date.now()<deadline,'real service must enter PDF background preflight');await new Promise(resolve=>setTimeout(resolve,2));}
   await stopService.abort(project,stopSession.id);const stopped=await stopping;assert.equal(stopped.error?.name,'AbortError');assert.equal(stopSelections,0);
@@ -143,10 +166,10 @@ try {
   raw.blocks[500].protection=undefined;await writeFile(mapPath,JSON.stringify(raw));
   await assert.rejects(readPdfProtectedLines(extracted.sourcePath,project),error=>error.name==='NonRetryableAssignmentError');
   raw.version=1;await writeFile(mapPath,JSON.stringify(raw));
-  await assert.rejects(preflightPdfRequest(request),/predates paragraph/);await assert.rejects(resolvePiSourceManifest(request),/predates paragraph/);
+  await assert.rejects(preflightPdfRequest(request),/obsolete paragraph/);await assert.rejects(resolvePiSourceManifest(request),/obsolete paragraph/);
   let selections=0;const service=new PiNativeSessionService({createModelSelection:async()=>{selections++;throw new Error('Provider must not be selected.');}});
   const oldSession=await service.createSession(project);
-  await assert.rejects(service.prompt({...request,sessionId:oldSession.id}),/predates paragraph/);assert.equal(selections,0,'cold old-PDF resume must stop before provider preparation');
+  await assert.rejects(service.prompt({...request,sessionId:oldSession.id}),/obsolete paragraph/);assert.equal(selections,0,'cold old-PDF resume must stop before provider preparation');
   await writeFile(mapPath,mapBytes);await rm(mapPath);await assert.rejects(preflightPdfRequest(request),error=>error.name==='RequiredWorkflowFileError');
   await writeFile(mapPath,mapBytes);
   const ambiguous=await PDFDocument.create(),aPage=ambiguous.addPage([600,800]);aPage.drawText('Energy is E = mc2',{x:40,y:740,font:await ambiguous.embedFont(StandardFonts.Helvetica),size:12});
@@ -165,3 +188,5 @@ try {
   const aPath=path.join(project,'ambiguous.pdf');await writeFile(aPath,await ambiguous.save());await assert.rejects(preparePdfDocument(aPath,path.join(project,'.translation-workshop')),/mixed with unmarked prose/);
   console.log('PDF Host code/math extraction, exact range writes, child/proofreading/import, original glyph export, old map and ambiguity guards passed');
 } finally {await rm(root,{recursive:true,force:true});}
+
+}finally{if(printService)await printService.close();}

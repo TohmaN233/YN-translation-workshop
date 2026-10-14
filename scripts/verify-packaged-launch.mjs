@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createPdfStructureHttpProvider } from "../tests/helpers/pdf-structure-http-provider.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(readFileSync(path.join(rootDir, "package.json"), "utf8"));
@@ -58,6 +59,18 @@ const baselineProcessIds = new Set(baselineProcesses.map((item) => Number(item.P
 
 const tempDir = await mkdtemp(path.join(os.tmpdir(), "yn-packaged-smoke-"));
 const markerPath = path.join(tempDir, "ready.json");
+// main.ts assigns marker-directory/user-data before app.whenReady, then sets
+// the global Agent store to user-data/agent. Seed only this explicit smoke's
+// isolated profile; normal application settings and model selection are intact.
+const provider = await createPdfStructureHttpProvider();
+const smokeAgentDir = path.join(tempDir, "user-data", "agent");
+try {
+  await mkdir(smokeAgentDir, { recursive: true });
+  await writeFile(path.join(smokeAgentDir, "provider-config.json"), JSON.stringify({
+    activeProviderId: provider.config.id,
+    providers: { [provider.config.id]: provider.config }
+  }, null, 2));
+} catch (error) { await provider.close(); throw error; }
 const startedAt = Date.now();
 const launcher = spawn(packagedPath, [
   "--disable-gpu",
@@ -94,6 +107,7 @@ launcher.stderr?.on("data", (chunk) => {
 const wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
 let marker;
 let leaveDiagnostics = false;
+let failure;
 
 try {
   while (Date.now() - startedAt < timeoutMs) {
@@ -123,6 +137,11 @@ try {
   assert.ok(marker.sourcePreparationHeartbeatTicks > 0, "Packaged source preparation blocked the main event loop");
   assert.equal(marker.pdfWorkerVerified, true, "Packaged PDF extraction/reference/export failed");
   assert.ok(marker.pdfHeartbeatTicks > 0, "Packaged PDF processing blocked the main event loop");
+  for (const name of ["readPdfStructureSource", "readPdfStructureDraft", "revisePdfStructureDraft", "checkPdfStructureDraft", "readPdfStructureAuditScope", "submitPdfStructureAudit"]) {
+    assert.ok(provider.records.some(record => record.name === name), `Packaged PDF smoke did not execute its native Pi ${name} protocol.`);
+  }
+  assert.ok(provider.records.some(record => record.phase === "audit" && record.event === "completed"), "Packaged PDF smoke did not complete its independent native audit.");
+  assert.ok(!provider.records.some(record => record.event === "fixture-error"), JSON.stringify(provider.records.filter(record => record.event === "fixture-error")));
   assert.match(String(marker.rendererUrl), /dist\/renderer\/index\.html/i, "Packaged smoke marker did not report the packaged renderer");
 
   const exitDeadline = Date.now() + 15_000;
@@ -150,16 +169,29 @@ try {
     sourcePreparationHeartbeatTicks: marker.sourcePreparationHeartbeatTicks,
     pdfWorkerVerified: marker.pdfWorkerVerified,
     pdfHeartbeatTicks: marker.pdfHeartbeatTicks,
+    nativePdfStructureVerified: true,
+    localProviderRequests: provider.records.filter(record => Array.isArray(record.tools)).length,
+    paidCalls: 0,
     cleanExit: true
   }, null, 2));
 } catch (error) {
   leaveDiagnostics = true;
-  launcher.stdout?.destroy();
-  launcher.stderr?.destroy();
-  launcher.unref();
-  throw error;
+  failure = error;
+  process.exitCode = 1;
+  console.error(error instanceof Error ? error.stack : String(error));
+  console.error(`Packaged smoke diagnostics retained at ${tempDir}; no process was forcibly stopped.`);
 } finally {
+  await writeFile(path.join(tempDir, "provider-events.json"), JSON.stringify(provider.records, null, 2));
+  if (launcherExit || launchError) {
+    await provider.close();
+  } else {
+    // A timeout must preserve both the app and its local model endpoint. Keep
+    // serving until the app's own exit, rather than severing an active turn.
+    launcher.once("exit", () => { void provider.close().catch(error => { console.error(error); process.exitCode = 1; }); });
+    console.error(`The retained packaged process ${launcher.pid} still owns its loopback provider; waiting for its normal exit.`);
+  }
   if (!leaveDiagnostics) {
     await rm(tempDir, { recursive: true, force: true });
   }
 }
+if (failure && launcherExit) process.exitCode = 1;

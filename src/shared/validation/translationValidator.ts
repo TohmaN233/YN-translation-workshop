@@ -324,14 +324,32 @@ function sharedHanSequenceResidue(sourcePayload: string, candidatePayload: strin
 }
 
 function sharedLatinWords(sourcePayload: string, candidatePayload: string, minLength: number): boolean {
-  const words: string[] = sourcePayload.match(/[A-Za-z]+/g) ?? [];
-  const hits = words.filter((word) => word.length >= minLength && candidatePayload.includes(word));
+  const words = [...new Set(sourcePayload.match(/(?<![A-Za-z0-9_])[A-Za-z]+(?![A-Za-z0-9_])/g) ?? [])];
+  const candidateWords = new Set(candidatePayload.match(/(?<![A-Za-z0-9_])[A-Za-z]+(?![A-Za-z0-9_])/g) ?? []);
+  const hits = words.filter((word) => word.length >= minLength && candidateWords.has(word));
   if (hits.length === 0) {
     return false;
   }
   const hitChars = hits.reduce((sum, word) => sum + word.length, 0);
   const sourceChars = words.reduce((sum, word) => sum + word.length, 0);
-  return hits.length >= 2 || (sourceChars > 0 && hitChars / sourceChars >= 0.6);
+  // Scattered names/identifiers are not evidence that prose was copied. Require
+  // a whole whitespace-connected phrase with two distinct significant words;
+  // short intervening words still belong to a copied phrase ("estimates the curves").
+  if (sourceChars > 0 && hitChars / sourceChars >= 0.6) return true;
+  const phrases = (payload: string): Set<string> => {
+    const result = new Set<string>();
+    for (const run of payload.match(/(?<![A-Za-z0-9_])[A-Za-z]+(?:\s+[A-Za-z]+)+(?![A-Za-z0-9_])/g) ?? []) {
+      const tokens = run.split(/\s+/u);
+      const significant = tokens.flatMap((token,index) => token.length >= minLength ? [index] : []);
+      for (let index = 1; index < significant.length; index += 1) {
+        const start = significant[index - 1], end = significant[index];
+        if (tokens[start] !== tokens[end]) result.add(tokens.slice(start,end + 1).join(" "));
+      }
+    }
+    return result;
+  };
+  const sourcePhrases = phrases(sourcePayload);
+  return [...phrases(candidatePayload)].some(phrase => sourcePhrases.has(phrase));
 }
 
 function languageSpecificResidue(
@@ -524,14 +542,21 @@ function stripPayloadWithCustomRules(
   line: string,
   extractPlaceholders: (line: string) => string[],
   extractTags: (line: string) => string[],
-  rules: RegExp[]
+  rules: RegExp[],
+  additionalSpans: Array<{start:number;end:number}> = []
 ): string {
-  if (rules.length === 0) return stripPreservedPayload(line, extractPlaceholders, extractTags);
-  const spans = rules.flatMap(regex => {
+  if (rules.length === 0 && additionalSpans.length === 0) return stripPreservedPayload(line, extractPlaceholders, extractTags);
+  const tokenSpans:Array<{start:number;end:number}>=[];
+  for(const token of [...extractPlaceholders(line),...extractTags(line)]) {
+    if(!token)continue;
+    for(let start=line.indexOf(token);start>=0;start=line.indexOf(token,start+token.length))tokenSpans.push({start,end:start+token.length});
+  }
+  tokenSpans.push(...[...line.matchAll(/\{\{(?:formula|code):p\d+:\d+\}\}/gu)].map(match=>({start:match.index,end:match.index+match[0].length})));
+  const spans = [...additionalSpans, ...tokenSpans, ...rules.flatMap(regex => {
     regex.lastIndex = 0;
     return [...line.matchAll(regex)].filter(match => match[0].length > 0)
       .map(match => ({ start: match.index, end: match.index + match[0].length }));
-  }).sort((left, right) => left.start - right.start);
+  })].sort((left, right) => left.start - right.start);
   const pieces: string[] = [];
   let cursor = 0;
   for (const span of spans) {
@@ -540,7 +565,7 @@ function stripPayloadWithCustomRules(
     cursor = Math.max(cursor, span.end);
   }
   pieces.push(line.slice(cursor));
-  return stripPreservedPayload(pieces.join(""), () => extractPlaceholders(line), () => extractTags(line));
+  return pieces.join("");
 }
 
 export function isTranslationResidueApproved(options: ValidationOptions, line: number, source: string, candidate: string): boolean {
@@ -548,15 +573,22 @@ export function isTranslationResidueApproved(options: ValidationOptions, line: n
     && approval.sourceText === source && approval.candidateText === candidate && Boolean(approval.reason.trim())) === true;
 }
 
-export function createTranslationPreservedPayloadStripper(
+function createTranslationPayloadStripperWithSpans(
   options: Pick<ValidationOptions, "extractPlaceholders" | "extractTags" | "customPreserveRules"> = {}
-): (line: string) => string {
+): (line: string, additionalSpans?: Array<{start:number;end:number}>) => string {
   const extractTags = options.extractTags ?? defaultExtractTags;
   const customRules = normalizeCustomPreserveRules(options.customPreserveRules)
     .map((rule) => compileCustomPreserveRule(rule));
   const extractPlaceholders = options.extractPlaceholders ?? ((line: string) => defaultPlaceholdersWithSelectedEscapes(line, customRules));
-  return (line) => stripPayloadWithCustomRules(line, extractPlaceholders, extractTags, customRules)
+  return (line, additionalSpans) => stripPayloadWithCustomRules(line, extractPlaceholders, extractTags, customRules, additionalSpans)
     .replace(/\{\{(?:formula|code):p\d+:\d+\}\}/gu, ' ');
+}
+
+export function createTranslationPreservedPayloadStripper(
+  options: Pick<ValidationOptions, "extractPlaceholders" | "extractTags" | "customPreserveRules"> = {}
+): (line: string) => string {
+  const strip = createTranslationPayloadStripperWithSpans(options);
+  return line => strip(line);
 }
 
 /** Exclude only same-row glossary pairs, consuming each source/target occurrence once. */
@@ -628,27 +660,42 @@ function createPdfResidueReaders(options: Pick<ValidationOptions, 'pdfPreservedS
   const readers = new Map([...groups].map(([line, spans]) => {
     const entries = spans.filter(span => !(options.glossaryEntries ?? []).some(entry =>
       comparableTerm(entry.source ?? '') === comparableTerm(span.text) && comparableTerm(entry.target ?? '') !== comparableTerm(span.text)))
-      .map(span => ({source:span.text,target:span.text}));
-    return [line, {entries,read:createGlossaryAlignedPayloadReader(entries)}] as const;
+      .sort((left,right)=>left.start-right.start);
+    return [line, entries] as const;
   }));
-  return (source: string, payloads: {source: string; candidate: string}, line: number) => {
+  for(const spans of groups.values()) {
+    const ordered=[...spans].sort((left,right)=>left.start-right.start);
+    if(ordered.some((span,index)=>index>0&&span.start<ordered[index-1].end))throw new Error('Overlapping PDF preservation prescan spans.');
+  }
+  return (source: string, candidate: string, line: number) => {
     for (const span of groups.get(line) ?? []) if (source.slice(span.start,span.end) !== span.text) throw new Error(`PDF preservation prescan is stale at L${line}.`);
-    const reader=readers.get(line);
-    if (!reader) return payloads;
-    const exact=reader.entries.filter(entry=>payloads.candidate.includes(entry.target));
-    return (exact.length===reader.entries.length?reader.read:createGlossaryAlignedPayloadReader(exact))(payloads.source,payloads.candidate);
+    const sourceSpans:Array<{start:number;end:number}>=[],candidateSpans:Array<{start:number;end:number}>=[];
+    const byText=new Map<string,NonNullable<ValidationOptions['pdfPreservedSpans']>>();
+    for(const span of readers.get(line)??[]) {const entries=byText.get(span.text)??[];entries.push(span);byText.set(span.text,entries);}
+    for(const [text,entries] of [...byText].sort((left,right)=>right[0].length-left[0].length)) {
+      const matches:Array<{start:number;end:number}>=[];
+      for(let start=candidate.indexOf(text);start>=0;start=candidate.indexOf(text,start+text.length)) {
+        const end=start+text.length;
+        if ((/^[A-Za-z0-9_]/u.test(text)&&/[A-Za-z0-9_]/u.test(candidate[start-1]??''))
+          ||(/[A-Za-z0-9_]$/u.test(text)&&/[A-Za-z0-9_]/u.test(candidate[end]??''))) continue;
+        if(!candidateSpans.some(span=>start<span.end&&span.start<end))matches.push({start,end});
+      }
+      if(matches.length>entries.length)continue; // Extra copies cannot create a preservation exemption.
+      sourceSpans.push(...entries.slice(0,matches.length));candidateSpans.push(...matches);
+    }
+    return {source,candidate,sourceSpans,candidateSpans};
   };
 }
 
 export function createTranslationResiduePayloadReader(
   options: Pick<ValidationOptions, "extractPlaceholders" | "extractTags" | "customPreserveRules" | "glossaryEntries" | "pdfPreservedSpans"> = {}
 ): (source: string, candidate: string, line?: number) => { source: string; candidate: string } {
-  const strip = createTranslationPreservedPayloadStripper(options);
+  const strip = createTranslationPayloadStripperWithSpans(options);
   const readPairs = createGlossaryAlignedPayloadReader((options.glossaryEntries ?? []).filter(entry => entry.source?.trim() && entry.target?.trim()));
   const readPdf = createPdfResidueReaders(options);
   return (source, candidate, line = 1) => {
-    const payloads = readPdf(source,{source:strip(source),candidate:strip(candidate)},line);
-    return readPairs(payloads.source,payloads.candidate);
+    const payloads = readPdf(source,candidate,line);
+    return readPairs(strip(payloads.source,payloads.sourceSpans),strip(payloads.candidate,payloads.candidateSpans));
   };
 }
 
@@ -1165,7 +1212,8 @@ export function validateTranslationCandidate(
   const customPreserveRegexes = compiledCustomPreserveRules.map(({ regex }) => regex);
   const comparePlaceholders = options.extractPlaceholders ?? ((line: string) =>
     defaultPlaceholdersWithSelectedEscapes(line, customPreserveRegexes));
-  const stripPayload = createTranslationPreservedPayloadStripper(options);
+  const stripWithSpans = createTranslationPayloadStripperWithSpans(options);
+  const stripPayload = (line: string) => stripWithSpans(line);
   const detectUntranslated = options.detectUntranslated ?? true;
   const residueApprovals = new Map((options.translationResidueApprovals ?? [])
     .filter(approval => approval.sourcePath === options.sourceBinding && approval.reason.trim()).map(approval => [approval.line, approval]));
@@ -1413,8 +1461,8 @@ export function validateTranslationCandidate(
       });
     }
 
-    const pdfPayloads = readPdfPayloads(src,{source:sourcePayload,candidate:candidatePayload},lineNo);
-    const residuePayloads = readGlossaryPayloads(pdfPayloads.source, pdfPayloads.candidate);
+    const pdfPayloads = readPdfPayloads(src,cand,lineNo);
+    const residuePayloads = readGlossaryPayloads(stripWithSpans(pdfPayloads.source,pdfPayloads.sourceSpans), stripWithSpans(pdfPayloads.candidate,pdfPayloads.candidateSpans));
     const residueApproval = residueApprovals.get(lineNo);
     if (
       detectUntranslated

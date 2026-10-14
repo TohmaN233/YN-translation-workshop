@@ -15,6 +15,9 @@ or placeholder prose inside the artifact.
   terminology, or scene continuity.
 - Translate human-language text naturally for the requested style without
   altering code-like fragments.
+- Retain every PDF inline formula/code marker's exact identity and count in its
+  assigned paragraph. Reorder markers within that paragraph when translated
+  syntax requires it; never move markers or prose into another paragraph.
 - PDF code and mathematical formulas are immutable rows prepared by the Host.
   Treat them as read-only context; submit only writable sourceBlocks and never
   copy or translate protected rows. The Host retains their original physical

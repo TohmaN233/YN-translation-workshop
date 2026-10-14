@@ -64,11 +64,15 @@ assert.ok(mixed[0].text.endsWith('visual line.'));assert.equal(mixed[0].proseSeg
 const source='Body {{formula:p1:1}} connects {{formula:p1:2}} end.';
 const valid='正文 {{formula:p1:1}} 连接 {{formula:p1:2}} 结束。';
 assert.deepEqual(splitPdfInlineTranslation(source,valid),['正文 ',' 连接 ',' 结束。']);
+const reordered='正文 {{formula:p1:2}} 连接 {{formula:p1:1}} 结束。';
+assert.deepEqual(splitPdfInlineTranslation(source,reordered),['正文 ',' 连接 ',' 结束。']);
+assert.equal(validateTranslationCandidate(source,reordered,{extractPlaceholders:()=>[],extractTags:()=>[],detectUntranslated:false}).ok,true);
+assert.equal(validateProofreadReplacement(source,reordered,{extractPlaceholders:()=>[]}).length,0);
 for(const candidate of [valid.replace('{{formula:p1:1}}',''),valid.replace('p1:1','p9:1'),valid+'{{formula:p1:1}}',
-  '正文 {{formula:p1:2}} 连接 {{formula:p1:1}}', '{{formula:p1:1}}{{formula:p1:2}}']) {
+  valid.replace('p1:1','p1:2'), '{{formula:p1:1}}{{formula:p1:2}}']) {
   assert.throws(()=>splitPdfInlineTranslation(source,candidate));
   assert.ok(validateTranslationCandidate(source,candidate,{extractPlaceholders:()=>[],extractTags:()=>[],detectUntranslated:false}).blocking.some(f=>f.code==='pdf_protected_content_mismatch'));
-  assert.ok(validateProofreadReplacement(source,candidate,{extractPlaceholders:()=>[]}).length,'proofreading cannot delete/reorder markers either');
+  assert.ok(validateProofreadReplacement(source,candidate,{extractPlaceholders:()=>[]}).length,'proofreading must preserve marker identity/count/paragraph ownership and prose');
 }
 assert.throws(()=>splitPdfInlineTranslation('ordinary prose','正文 {{formula:p1:1}}'));
 const boxes=[{x:30,y:40,width:35,height:12},{x:70,y:40,width:15,height:12},{x:30,y:56,width:50,height:12}];

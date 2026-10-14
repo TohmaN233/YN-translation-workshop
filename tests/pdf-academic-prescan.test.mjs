@@ -65,6 +65,59 @@ assert.ok(table.some(s=>s.line===3&&s.text==='nor'));
 assert.ok(!table.some(s=>s.line===6),'a letter-code label must never exempt its spelling in ordinary prose');
 console.log('ok PDF source prescan exempts evidenced identifiers and labels while retaining prose and glossary checks');
 
+const datasetSource=[
+  'We evaluate the MOBISIG online-signature dataset.',
+  'Clustering comparisons on UCI Character Trajectories (Williams, 2006).',
+  'UCI Character Trajectories supports this clustering analysis.'
+];
+const datasetSpans=scanPdfPreservedSpans(datasetSource.map((text,index)=>({line:index+1,page:1,text})));
+assert.ok(datasetSpans.some(span=>span.text==='MOBISIG'&&span.line===1),'explicit dataset declarations qualify names');
+assert.ok(datasetSpans.some(span=>span.text==='UCI Character Trajectories'&&span.line===3),'declared corpus names propagate to actual occurrences');
+assert.equal(validateTranslationCandidate(datasetSource.join('\n'),[
+  '我们评估 MOBISIG 在线签名数据集。',
+  '在 UCI Character Trajectories 上进行聚类比较（Williams，2006）。',
+  'UCI Character Trajectories 为该聚类分析提供数据。'
+].join('\n'),{languagePair:'en->zh-CN',pdfPreservedSpans:datasetSpans}).warnings.some(f=>f.code==='likely_untranslated'),false);
+assert.ok(validateTranslationCandidate(datasetSource.join('\n'),datasetSource.join('\n'),{languagePair:'en->zh-CN',pdfPreservedSpans:datasetSpans})
+  .blocking.some(f=>f.code==='likely_untranslated'),'declared datasets never exempt surrounding copied prose');
+for(const word of ['THIS','THE','OUR','THESE','OTHER','NEW','ITS']) {
+  const text=word+' dataset contains standard samples.';
+  const rejectedNames=scanPdfPreservedSpans([{line:1,page:1,text},{line:2,page:1,text:word}]);
+  assert.ok(!rejectedNames.some(span=>span.text===word),'ordinary uppercase determiners are not dataset declarations: '+word);
+  assert.ok(validateTranslationCandidate(word,word,{languagePair:'en->zh-CN',pdfPreservedSpans:rejectedNames,lineOffset:1})
+    .blocking.some(f=>f.code==='likely_untranslated'),'ordinary body words remain checked outside a dataset clause');
+}
+const occurrenceSource='Spectrum is the model name. Spectrum estimates curves.';
+const occurrenceSpan={line:1,start:0,end:8,text:'Spectrum',kind:'software',evidenceLine:1};
+const occurrenceRead=createTranslationResiduePayloadReader({pdfPreservedSpans:[occurrenceSpan]});
+assert.ok(occurrenceRead(occurrenceSource,'Spectrum 是模型名。Spectrum estimates curves.').source.includes('Spectrum estimates curves'),
+  'only the evidenced source occurrence may be removed; equal spellings elsewhere remain prose');
+assert.equal(occurrenceRead('Spectrum is the model name.','Spectrum 是模型名。').source.trim(),'is the model name.');
+const acronymSource=['Curve band depth (CBD) and feature-weighted curve band depth (FW-CBD) are compared.','CBD FW-CBD'];
+const acronymSpans=scanPdfPreservedSpans(acronymSource.map((text,index)=>({line:index+1,page:1,text})));
+const acronymReader=createTranslationResiduePayloadReader({pdfPreservedSpans:acronymSpans});
+for(const candidate of ['CBD FW-CBD','FW-CBD CBD']) {
+  assert.equal(acronymReader(acronymSource[1],candidate,2).source.trim(),'','longer compound names allocate candidate occurrences first');
+  assert.equal(validateTranslationCandidate(acronymSource[1],candidate,{languagePair:'en->zh-CN',pdfPreservedSpans:acronymSpans,lineOffset:1})
+    .blocking.some(f=>f.code==='likely_untranslated'),false);
+}
+assert.equal(acronymReader(acronymSource[1],'CBD CBD FW-CBD',2).source.trim(),'CBD','extra copies cannot manufacture a preservation exemption');
+const contextSpan={line:1,start:0,end:8,text:'mrfDepth',kind:'software',evidenceLine:1};
+for(const pattern of ['(?<=mrfDepth )HELLO','^mrfDepth HELLO']) {
+  const protectedContext={languagePair:'en->zh-CN',pdfPreservedSpans:[contextSpan],customPreserveRules:[{pattern,flags:'u'}]};
+  assert.equal(validateTranslationCandidate('mrfDepth HELLO','mrfDepth HELLO',protectedContext).blocking.length,0,
+    'regex context is evaluated on original text before PDF exclusions: '+pattern);
+  const extra=validateTranslationCandidate('mrfDepth HELLO; HELLO','mrfDepth HELLO; HELLO',protectedContext);
+  assert.ok(extra.blocking.some(f=>f.code==='likely_untranslated'),'equal spelling outside the actual regex match remains prose');
+}
+const markerNames=['We use the R package formula and the R package mrfDepth.','mrfDepth {{formula:p1:1}}'];
+const markerNameSpans=scanPdfPreservedSpans(markerNames.map((text,index)=>({line:index+1,page:1,text})));
+assert.equal(validateTranslationCandidate(markerNames[1],markerNames[1],{languagePair:'en->zh-CN',pdfPreservedSpans:markerNameSpans,lineOffset:1})
+  .blocking.length,0,'software-name spans inside a Host marker cannot damage that marker before exclusion');
+const placeholderSpan={line:1,start:1,end:9,text:'mrfDepth',kind:'software',evidenceLine:1};
+assert.equal(validateTranslationCandidate('{mrfDepth}','{mrfDepth}',{languagePair:'en->zh-CN',pdfPreservedSpans:[placeholderSpan]})
+  .blocking.length,0,'placeholder positions are combined with overlapping PDF spans on original text');
+
 const root=await mkdtemp(path.join(os.tmpdir(),'yn-pdf-academic-'));
 let repository,worker,reviewer;
 try {
@@ -94,6 +147,8 @@ try {
   },input=>{
     const result=JSON.parse(input.messages.filter(m=>m.role==='toolResult').at(-1).content[0].text);
     assert.deepEqual(result.requiredBatchLines,[8],'only genuinely untranslated prose becomes repair debt');
+    assert.deepEqual(result.submittedValidation.rejectedLines,[8],'submitted rejection is distinguished from persisted candidate validation');
+    assert.ok(result.submittedValidation.blockingCount>0);
     return call('readAssignedSource');
   },call('repairAssignedTranslation',{entries:[{line:8,translation:translated[7]}]}),call('validateAssignedTranslation')]);
   let reviews=0;

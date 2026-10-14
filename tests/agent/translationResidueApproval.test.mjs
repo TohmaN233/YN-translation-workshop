@@ -34,7 +34,10 @@ try {
     {line:3,translation:'%d ProtocolNamespace',reason:'namespace'}]}),/structural.*placeholder_mismatch/i);
   assert.deepEqual(await readProjectState(root),before,'one bad row rolls back the entire confirmation');
   const entries=[{line:1,translation:source[0],reason:'Exact software package name.'},{line:2,translation:source[1],reason:'Exact public API namespace.'}];
-  await execute('confirmTranslationResidueSafe',{entries});
+  await execute('confirmTranslationResidueSafe',{entries:entries.slice(0,1)});
+  await execute('confirmTranslationResidueSafe',{entries:entries.slice(1)});
+  assert.deepEqual((await readProjectState(root)).translationResidueApprovals.map(entry=>entry.line),[1,2],
+    'a later exact-row confirmation must append after reloading existing decisions');
   const refreshedReuse=await prepareTranslationReuseAudit(reuseArgs);assert.equal(refreshedReuse.auditId,cachedReuse.auditId,'refresh existing audit without losing other evidence');
   const reuse=await readTranslationReuseAuditSelection({outputDir:root,ownerSessionId:'parent',auditId:refreshedReuse.auditId,documentId:'source.txt',lines:[1,2]});
   assert.ok(reuse.lines.every(row=>!row.semanticSignals.some(code=>['likely_untranslated','target_language_not_observed'].includes(code))));

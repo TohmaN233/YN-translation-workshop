@@ -1,5 +1,6 @@
 import { mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { normalizeCustomPreserveRules } from "../shared/validation/customPreserveRules.ts";
 import { writeTextFileAtomically } from "./atomicFile.ts";
@@ -161,7 +162,7 @@ export async function transactProjectState<T>(args: {
   return enqueueProjectWrite(root, async () => {
     const current = await readProjectState(root);
     for (const [key, value] of Object.entries(args.expected)) {
-      if (current[key] !== value) throw new Error(`Project state changed before the atomic update: ${key} no longer matches the inspected value.`);
+      if (!isDeepStrictEqual(current[key], value)) throw new Error(`Project state changed before the atomic update: ${key} no longer matches the inspected value.`);
     }
     const state = canonicalProjectState({ ...current, ...args.patch, outputDir: root, updatedAt: new Date().toISOString() });
     const filePath = projectStatePath(root);
@@ -206,7 +207,7 @@ export async function patchProjectStateIfUnchanged(
   return enqueueProjectWrite(root, async () => {
     const current = await readProjectState(root);
     for (const [key, value] of Object.entries(expected)) {
-      if (current[key] !== value) {
+      if (!isDeepStrictEqual(current[key], value)) {
         throw new Error(
           `Project state changed before the atomic update: ${key} no longer matches the inspected value.`
         );

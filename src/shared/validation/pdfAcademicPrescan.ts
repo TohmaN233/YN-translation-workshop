@@ -1,22 +1,33 @@
 /** Derived from the hash-verified PDF source, never from a model's candidate. */
 export interface PdfPreservedSpan {
   line: number; start: number; end: number; text: string;
-  kind: 'software' | 'acronym' | 'label' | 'reference';
+  kind: 'software' | 'acronym' | 'dataset' | 'label' | 'reference';
   evidenceLine: number;
 }
 type SourceBlock = {line: number; page: number; text: string; protection?: string; x?: number; y?: number};
 const identifier = '[A-Za-z][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*';
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 const boundary = (text: string, start: number, end: number) => !/[A-Za-z0-9_]/u.test(text[start-1]??'') && !/[A-Za-z0-9_]/u.test(text[end]??'');
+const ordinaryIdentifier = /^(?:the|a|an|this|that|these|those|our|your|their|its|my|his|her|any|each|all|some|other|another|no|new|old|given|software|version|for|is|was|contains|provides|implements|supports|uses|offers|includes|has|can|will)$/iu;
 
 /** A declaration qualifies a name; capitalization alone never qualifies prose. */
 export function scanPdfPreservedSpans(blocks: SourceBlock[]): PdfPreservedSpan[] {
-  const names = new Map<string,{kind:'software'|'acronym'|'label';evidenceLine:number}>();
-  const addName = (text: string, kind: 'software'|'acronym'|'label', evidenceLine: number) => {
+  const names = new Map<string,{kind:'software'|'acronym'|'dataset'|'label';evidenceLine:number}>();
+  const addName = (text: string, kind: 'software'|'acronym'|'dataset'|'label', evidenceLine: number) => {
     if (!names.has(text)) names.set(text,{kind,evidenceLine});
   };
   for (const [index,block] of blocks.entries()) {
     if (block.protection) continue;
+    // Machine/corpus names need a data declaration or an explicit analysis
+    // context, rather than capitalization alone. Keep the complete named corpus.
+    const datasetName='[A-Z]{2,}[A-Z0-9_-]*(?:\\s+[A-Z][a-z]+(?:-[A-Za-z]+)*)*';
+    for(const pattern of [
+      new RegExp('\\b('+datasetName+')(?:-derived)?(?:[ -]+[a-z][a-z-]*){0,3}\\s+(?:dataset|data set|database|corpus|benchmark|digits|images)\\b','gu'),
+      new RegExp('\\b(?:dataset|data set|database|corpus|benchmark)\\s+(?:(?:called|named)\\s+)?('+datasetName+')\\b','gu'),
+      new RegExp('\\b(?:analysis|clustering|comparisons|classification)\\s+(?:[a-z]+\\s+){0,3}on\\s+('+datasetName+')\\b','gu')
+    ]) for(const match of block.text.matchAll(pattern)) {
+      if(!ordinaryIdentifier.test(match[1].split(/\s+/u)[0]))addName(match[1],'dataset',block.line);
+    }
     const software = [
       new RegExp('\\b(?:package|library|framework|toolkit)\\s+('+identifier+')(?:[.,;)]|(?=\\s|$))','gu'),
       new RegExp('\\b('+identifier+')\\s+(?:package|library|framework|toolkit)\\b','gu')
@@ -25,7 +36,7 @@ export function scanPdfPreservedSpans(blocks: SourceBlock[]): PdfPreservedSpan[]
       const name=match[1];
       // Ordinary predicates/determiners are not identifiers. Lowercase names
       // need citation punctuation or an explicit language-package declaration.
-      if (/^(?:the|a|an|this|that|our|software|version|for|is|was|contains|provides|implements|supports|uses|offers|includes|has|can|will)$/iu.test(name)) continue;
+      if (ordinaryIdentifier.test(name)) continue;
       const distinctive=/[a-z][A-Z]|[_0-9]|[.-][A-Za-z]/u.test(name);
       const qualified = /\b(?:R|Python|Julia|Java|JavaScript|Rust)\s+(?:package|library|framework|toolkit)\s+/u.test(match[0])
         || new RegExp('\\b(?:R|Python|Julia|Java|JavaScript|Rust)\\s+(?:package|library|framework|toolkit)\\s+'+escapeRegex(name)+'\\b','u').test(block.text)

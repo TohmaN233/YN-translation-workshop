@@ -8,7 +8,8 @@ import {
   patchProjectStateIfUnchanged,
   readProjectState,
   saveProjectState,
-  subscribeProjectState
+  subscribeProjectState,
+  transactProjectState
 } from "../../src/main/projectState.ts";
 
 let passed = 0;
@@ -199,6 +200,27 @@ await test("conditional project updates reject a stale glossary binding without 
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
+});
+
+await test("structured CAS compares reloaded values and rejects actual concurrent changes", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-project-state-"));
+  try {
+    const first = [{ line: 8, evidence: { reason: "Retain the author", tokens: ["Smith"] } }];
+    await patchProjectState(outputDir, { decisions: first });
+    const inspected = (await readProjectState(outputDir)).decisions;
+    const second = [...inspected, { line: 9, evidence: { reason: "Retain the API", tokens: ["point.in.polygon"] } }];
+    await patchProjectStateIfUnchanged(outputDir, { decisions: inspected }, { decisions: second });
+    assert.deepEqual((await readProjectState(outputDir)).decisions, second);
+    await assert.rejects(patchProjectStateIfUnchanged(outputDir, { decisions: inspected }, { decisions: first }), /decisions no longer matches/);
+    let applied = false, rolledBack = false;
+    const current = (await readProjectState(outputDir)).decisions;
+    await transactProjectState({ outputDir, expected: { decisions: current }, patch: { transactionPassed: true },
+      apply: async () => { applied = true; }, rollback: async () => { rolledBack = true; } });
+    assert.equal(applied, true); assert.equal(rolledBack, false);
+    await assert.rejects(transactProjectState({ outputDir, expected: { decisions: inspected }, patch: { decisions: first },
+      apply: async () => { throw new Error("A stale writer must never mutate its asset"); }, rollback: async () => {} }), /decisions no longer matches/);
+    assert.deepEqual((await readProjectState(outputDir)).decisions, second, "stale updates cannot erase another decision");
+  } finally { await rm(outputDir, { recursive: true, force: true }); }
 });
 
 console.log("");

@@ -38,7 +38,14 @@ try {
   assert.equal(validateTranslationCandidate(prepared.text,entries.map(e=>e.text).join('\n'),options).ok,true);
   const staged=await prepareTranslationStagingCandidate({outputDir:root,sourcePaths:[prepared.sourcePath],documentId:'paragraph.pdf',subagentId:'fixture',sessionId:'fixture',assignmentId:'fixture'});
   const staging=(await readFile(staged,'utf8')).split('\n');assert.equal(staging[1],'','an inline paragraph is unfinished, never a marker-only completed skeleton');
-  for(const bad of [translated.replace(a,''),translated.replace(a,b),translated.replace(a,'TEMP').replace(b,a).replace('TEMP',b),a+b]) {
+  const reordered=translated.replace(a,'TEMP').replace(b,a).replace('TEMP',b);
+  await assertPdfProtectedWrite(prepared.sourcePath,root,[{line:2,text:reordered}]);
+  await writeTranslationChunk({outputDir:root,sourcePaths:[prepared.sourcePath],documentId:'paragraph.pdf',fromLine:2,toLine:2,lines:[reordered]});
+  assert.ok(!validateProofreadReplacement(block.text,reordered,{},2).some(f=>f.code==='pdf_protected_content_mismatch'));
+  const reorderedCandidate=entries.map(e=>e.line===2?reordered:e.text).join('\n');
+  assert.equal(validateTranslationCandidate(prepared.text,reorderedCandidate,options).ok,true);
+  assert.equal(buildCandidateImportPlan(prepared.text,reorderedCandidate,'zh-CN','en->zh-CN',undefined,undefined,undefined,undefined,options.pdfProtectedLines).ok,true);
+  for(const bad of [translated.replace(a,''),translated.replace(a,b),translated.replace(a,'{{formula:p2:999}}'),translated+a,a+b]) {
     await assert.rejects(assertPdfProtectedWrite(prepared.sourcePath,root,[{line:2,text:bad}]),/PDF L2/);
     await assert.rejects(writeTranslationChunk({outputDir:root,sourcePaths:[prepared.sourcePath],documentId:'paragraph.pdf',fromLine:2,toLine:2,lines:[bad]}),/PDF L2/);
     assert.ok(validateProofreadReplacement(block.text,bad,{},2).some(f=>f.code==='pdf_protected_content_mismatch'));
@@ -56,6 +63,7 @@ try {
     } finally {window.close();}
   }
   const exported=await createTranslatedPdf({templatePath:original,sourcePath:prepared.sourcePath,projectRoot:root,translatedLines:entries.map(e=>e.text)});
+  await createTranslatedPdf({templatePath:original,sourcePath:prepared.sourcePath,projectRoot:root,translatedLines:entries.map(e=>e.line===2?reordered:e.text)});
   const bytes=await readFile(exported.outputPath);
   await assert.rejects(createTranslatedPdf({templatePath:original,sourcePath:prepared.sourcePath,projectRoot:root,translatedLines:entries.map(e=>e.line===2?translated.replace(a,''):e.text)}),/markers/);
   assert.deepEqual(await readFile(exported.outputPath),bytes);

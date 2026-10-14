@@ -14,6 +14,7 @@ Recorded version changes. Public availability and downloads follow [Releases](ht
 - Prescan source-evidenced package names, acronyms and structural labels; translation, review and residue checks share the retained identifiers to avoid false untranslated findings.
 - Let the parent Agent confirm specific untranslated false positives in TXT, EPUB and PDF with a reason. Source or translation changes invalidate the confirmation; format, formula and code protection remain active.
 - Prefill and protect PDF References/Bibliography in the Host, skip model translation of reference rows and retain their original glyphs on export. Cancellation waits for background resource cleanup and reports cleanup failures explicitly.
+- Fix untranslated false positives from scattered English names, datasets and function names, and false project-change errors during later parent confirmations; retain copied-prose detection. Inline formulas may follow translated syntax within their paragraph, with native glyph export by marker identity; missing, repeated or cross-paragraph markers remain rejected.
 - Reuse glossary longest-match coverage for character names, avoiding embedded short-name warnings while still checking independent occurrences.
 - Save session recovery indexes on Stop and exit to avoid lengthy replay after restart; allow candidate discovery, validation and import with external read-only sources.
 - Check and import large candidates in the background with progress and cancellation; commit drafts once without blocking the window on hundreds of thousands of lines.

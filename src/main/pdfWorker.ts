@@ -7,7 +7,7 @@ import { createCanvas, loadImage, DOMMatrix, ImageData, Path2D } from "@napi-rs/
 import { PDFDocument, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { pdfTextBlocks, pdfParagraphStructure, wrapPdfText, flowPdfText, intersects } from "./pdfLayout.ts";
-import { splitPdfInlineTranslation } from "../shared/validation/pdfPreservation.ts";
+import { pdfInlineTokens, splitPdfInlineTranslation } from "../shared/validation/pdfPreservation.ts";
 import {pdfReferenceSections} from './pdfReferenceSections.ts';
 import { markPdfCodePanels, protectPdfText, selectPdfPaintGlyphs, type PdfTextPaint } from "./pdfProtection.ts";
 import { pdfOutlinedText } from "./pdfOutlinedText.ts";
@@ -487,7 +487,7 @@ async function extract() {
 
 /** Rebind reference glyph ownership from the hash-checked original; render a
  * transparent layer at full page size, so italic overhang cannot be cropped. */
-async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayout['blocks'], selectedRows: Set<number>) {
+async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayout['blocks'], selectedRows: Set<number>, inline?: {tokens:Set<string>;background?:boolean}) {
   const viewport=page.getViewport({scale:1}),content=await page.getTextContent({includeMarkedContent:true});
   const ops=await page.getOperatorList({annotationMode:pdfjs.AnnotationMode.DISABLE}),structure=await page.getStructTree(),paints=textColors(ops);
   const {areas}=imageReferences(ops,viewport,number),structured=pdfParagraphStructure(content,structure);
@@ -498,9 +498,20 @@ async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayo
   if(blocks.length!==boundBlocks.length||blocks.some((block,index)=>block.text!==boundBlocks[index].text))throw new Error(`PDF page ${number}: reference glyph ownership differs from its bound source.`);
   const selected=blocks.filter((_,index)=>selectedRows.has(boundBlocks[index].line));
   const spans=new Map<number,Array<{operator:number;start:number;end:number}>>();
-  for(const block of selected)for(const span of block.paintSpans??[])if(!protectedText.retained.has(span.operator))spans.set(span.operator,[...(spans.get(span.operator)??[]),span]);
+  const inlineOperations=new Set(blocks.flatMap(block=>(block.inlineProtections??[]).filter(node=>inline?.tokens.has(node.token)).flatMap(node=>node.paintOperations)));
+  if(inline) {
+    const reboundTokens=blocks.flatMap(block=>(block.inlineProtections??[]).filter(node=>inline.tokens.has(node.token)).map(node=>node.token));
+    if(reboundTokens.length!==inline.tokens.size)throw new Error(`PDF page ${number}: inline glyph ownership differs from its bound source.`);
+    for(const operator of inlineOperations)if(!protectedText.retained.has(operator))throw new Error(`PDF page ${number}: inline glyph is not protected native ink.`);
+    for(const paint of paints)if(inline.background?protectedText.retained.has(paint.operator)&&!inlineOperations.has(paint.operator):inlineOperations.has(paint.operator)) {
+      spans.set(paint.operator,[{operator:paint.operator,start:0,end:paint.text.replace(/\s/gu,'').length}]);
+    }
+  } else for(const block of selected)for(const span of block.paintSpans??[])if(!protectedText.retained.has(span.operator))spans.set(span.operator,[...(spans.get(span.operator)??[]),span]);
   const keptPaths=new Set([...spans.keys()].flatMap(operator=>outlined.owners.get(operator)??[]));
-  if(blocks.some((block,index)=>!selectedRows.has(boundBlocks[index].line)&&block.paintOperations?.some(operator=>outlined.owners.get(operator)?.some(index=>keptPaths.has(index)))))throw new Error(`PDF page ${number}: reference outlines share ownership with translatable prose.`);
+  const movedPaths=new Set([...inlineOperations].flatMap(operator=>outlined.owners.get(operator)??[]));
+  if(inline) {
+    if(blocks.some(block=>block.paintOperations?.some(operator=>!inlineOperations.has(operator)&&outlined.owners.get(operator)?.some(index=>movedPaths.has(index)))))throw new Error(`PDF page ${number}: inline outlines share ownership with other content.`);
+  } else if(blocks.some((block,index)=>!selectedRows.has(boundBlocks[index].line)&&block.paintOperations?.some(operator=>outlined.owners.get(operator)?.some(index=>keptPaths.has(index)))))throw new Error(`PDF page ${number}: reference outlines share ownership with translatable prose.`);
   const originalPaths=ops.fnArray.flatMap((op:number,index:number)=>op===pdfjs.OPS.constructPath&&ops.argsArray[index][2]?[{index,bounds:JSON.stringify(Array.from(ops.argsArray[index][2]))}]:[]);
   const scale=Math.min(2,3000/Math.max(viewport.width,viewport.height)),rendered=page.getViewport({scale});
   const canvas=createCanvas(Math.ceil(rendered.width),Math.ceil(rendered.height)),fonts=[...new Set(protectedText.items.map(item=>page.commonObjs.get(item.fontName)))];
@@ -510,13 +521,14 @@ async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayo
   const altered:Array<{list:any;index:number;args:any[]}>=[],images=new Set(Object.entries(pdfjs.OPS).filter(([name])=>/^(?:paint.*Image|shadingFill)/u.test(name)).map(([,code])=>code));
   let paintIndex=0,pathIndex=0;
   try {
-    await renderPdfPage(page,{canvas:null,canvasContext:canvas.getContext('2d'),viewport:rendered,background:'rgba(0,0,0,0)',annotationMode:pdfjs.AnnotationMode.DISABLE,
+    await renderPdfPage(page,{canvas:null,canvasContext:canvas.getContext('2d'),viewport:rendered,background:inline?.background?'rgb(255,255,255)':'rgba(0,0,0,0)',annotationMode:pdfjs.AnnotationMode.DISABLE,
       operationsFilter:(index:number,list:any)=>{
         const op=list.fnArray[index];
-        if(images.has(op))return false;
+        if(images.has(op))return Boolean(inline?.background);
         if(op===pdfjs.OPS.constructPath&&list.argsArray[index][2]) {
           const original=originalPaths[pathIndex++];if(!original||original.bounds!==JSON.stringify(Array.from(list.argsArray[index][2])))throw new Error(`PDF page ${number}: reference outline stream changed.`);
-          if(!keptPaths.has(original.index)){const args=list.argsArray[index];altered.push({list,index,args});list.argsArray[index]=[pdfjs.OPS.endPath,...args.slice(1)];}return true;
+          const keep=inline?.background?!outlined.hidden.has(original.index)&&!movedPaths.has(original.index):keptPaths.has(original.index);
+          if(!keep){const args=list.argsArray[index];altered.push({list,index,args});list.argsArray[index]=[pdfjs.OPS.endPath,...args.slice(1)];}return true;
         }
         if(op!==pdfjs.OPS.showText&&op!==pdfjs.OPS.showSpacedText)return true;
         const paint=paints[paintIndex++],glyphs=list.argsArray[index][0];
@@ -532,6 +544,62 @@ async function referenceProseInk(page: any, number: number, boundBlocks: PdfLayo
     for(const [index,font] of fonts.entries()){const descriptor=descriptors[index];if(descriptor)Object.defineProperty(font,'missingFile',descriptor);else delete font.missingFile;if(font.isType3Font)font.charProcOperatorList.delete(hiddenId);}
     canvas.width=canvas.height=1;
   }
+}
+
+/** Reordered paragraphs flow native ink at its original size, alongside prose.
+ * Source-order paragraphs retain the established source-slot layout. */
+function reorderedPdfParagraph(block:PdfLayout['blocks'][number],text:string,size:number,measure:(text:string)=>number,
+  native:Map<string,{bytes:Uint8Array;box:PdfBox;unitX:number;unitY:number}>):
+  {error:string}|{prose:Array<{text:string;box:PdfBox}>;ink:Array<{token:string;bytes:Uint8Array;box:PdfBox}>} {
+  const nodes=new Map(block.inlineProtections!.map(node=>[node.token,node]));
+  const areas=block.proseSegments!.flatMap(segment=>segment.boxes).sort((a,b)=>a.y-b.y||a.x-b.x);
+  const rows:PdfBox[]=[];
+  for(const area of areas) {
+    const previous=rows.at(-1);
+    if(previous&&Math.abs(previous.y-area.y)<.5) {
+      const right=Math.max(previous.x+previous.width,area.x+area.width);previous.x=Math.min(previous.x,area.x);previous.width=right-previous.x;previous.height=Math.min(previous.height,area.height);
+    } else rows.push({x:area.x,y:area.y,width:area.width,height:area.height});
+  }
+  const sourceRows=new Map<string,number>();
+  for(const node of block.inlineProtections!) {
+    const row=rows.filter(row=>row.y<node.y+node.height&&node.y<row.y+row.height).sort((a,b)=>Math.abs(a.y-node.y)-Math.abs(b.y-node.y))[0];
+    if(!row)throw new Error(`PDF L${block.line}: inline marker ${node.token} has no paragraph flow row.`);
+    sourceRows.set(node.token,row.y);
+    const right=Math.max(row.x+row.width,node.x+node.width);row.x=Math.min(row.x,node.x);row.width=right-row.x;
+  }
+  const prose:Array<{text:string;box:PdfBox}>=[],ink:Array<{token:string;bytes:Uint8Array;box:PdfBox}>=[];
+  let rowIndex=0,x=rows[0].x;
+  const advance=()=>{if(++rowIndex>=rows.length)return false;x=rows[rowIndex].x;return true;};
+  const parts=splitPdfInlineTranslation(block.text,text),tokens=pdfInlineTokens(text);
+  for(let index=0;index<parts.length;index++) {
+    const chunks=parts[index].match(/[^\S\r\n]+|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|[^\s\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+/gu)??[];
+    for(const chunk of chunks) {
+      const pieces=measure(chunk)>Math.max(...rows.map(row=>row.width))?[...chunk]:[chunk];
+      for(const piece of pieces) {
+        const width=measure(piece);
+        while(x+width>rows[rowIndex].x+rows[rowIndex].width+.01)if(!advance())return {error:`prose exceeds paragraph flow rows at ${JSON.stringify(piece)}`};
+        if(size>rows[rowIndex].height+.1)return {error:`prose font exceeds flow row height ${rows[rowIndex].height}`};
+        const previous=prose.at(-1);
+        if(previous&&previous.box.y===rows[rowIndex].y&&Math.abs(previous.box.x+previous.box.width-x)<.01){previous.text+=piece;previous.box.width+=width;}
+        else prose.push({text:piece,box:{x,y:rows[rowIndex].y,width,height:size}});
+        x+=width;
+      }
+    }
+    const token=tokens[index];if(!token)continue;
+    const node=nodes.get(token)!,asset=native.get(token)!;
+    const width=Math.max(node.width,asset.box.width)+1;
+    while(x+width>rows[rowIndex].x+rows[rowIndex].width+.01)if(!advance())return {error:`native glyph ${token} exceeds paragraph flow rows`};
+    // Quantize to the extraction raster grid: moving native pixels must not
+    // introduce interpolation, scale changes or clipped glyph overhang.
+    const destination={...asset.box,x:Math.ceil(x/asset.unitX)*asset.unitX,y:Math.round((rows[rowIndex].y+asset.box.y-sourceRows.get(token)!)/asset.unitY)*asset.unitY};
+    ink.push({token,bytes:asset.bytes,box:destination});x=destination.x+width;
+  }
+  for(const node of ink) {
+    const overlap=prose.find(part=>part.text.trim()&&intersects(node.box,part.box));
+    if(overlap)return {error:`native glyph ${node.token} overlaps prose: ink=${JSON.stringify(node.box)}, prose=${JSON.stringify(overlap.box)}`};
+  }
+  if(ink.some((node,index)=>ink.slice(index+1).some(other=>intersects(node.box,other.box))))return {error:'native glyphs overlap'};
+  return {prose,ink};
 }
 
 async function exportPdf() {
@@ -563,13 +631,38 @@ async function exportPdf() {
     const blocks = blocksByPage.get(block.page) ?? [];
     blocks.push(block); blocksByPage.set(block.page, blocks);
   }
-  const referenceSource=referenceRows.size?await openPdf(layout.originalPath):undefined;
+  const reordered=layout.blocks.filter(block=>pdfInlineTokens(input.lines[block.line-1]).some((token,index)=>token!==block.inlineProtections?.[index]?.token));
+  const reorderedRows=new Set(reordered.map(block=>block.line));
+  const referenceSource=referenceRows.size||reordered.length?await openPdf(layout.originalPath):undefined;
   try {
   if(referenceSource&&referenceSource.hash!==layout.originalHash)throw new Error('PDF reference source changed while opening; no output was replaced.');
   for (const pageLayout of layout.pages) {
     const page = pdf.addPage([pageLayout.width, pageLayout.height]);
-    const background = await readFile(pageLayout.backgroundPath);
+    let background:Uint8Array = await readFile(pageLayout.backgroundPath);
     if (digest(background) !== pageLayout.backgroundHash) throw new Error(`PDF page ${pageLayout.page} background asset changed.`);
+    const moved=reordered.filter(block=>block.page===pageLayout.page),native=new Map<string,{bytes:Uint8Array;box:PdfBox;unitX:number;unitY:number}>();
+    if(moved.length) {
+      const originalPage=await referenceSource!.pdf.getPage(pageLayout.page),tokens=new Set(moved.flatMap(block=>block.inlineProtections!.map(node=>node.token)));
+      background=await referenceProseInk(originalPage,pageLayout.page,blocksByPage.get(pageLayout.page)!,new Set(),{tokens,background:true});
+      for(const block of moved)for(const node of block.inlineProtections!) {
+        const image=await loadImage(Buffer.from(await referenceProseInk(originalPage,pageLayout.page,blocksByPage.get(pageLayout.page)!,new Set(),{tokens:new Set([node.token])})));
+        const sx=image.width/pageLayout.width,sy=image.height/pageLayout.height,box=node.inkBox!;
+        const left=Math.max(0,Math.floor(box.x*sx)-1),top=Math.max(0,Math.floor(box.y*sy)-1),right=Math.min(image.width,Math.ceil((box.x+box.width)*sx)+1),bottom=Math.min(image.height,Math.ceil((box.y+box.height)*sy)+1);
+        const canvas=createCanvas(right-left,bottom-top);
+        try {
+          canvas.getContext('2d').drawImage(image,left,top,canvas.width,canvas.height,0,0,canvas.width,canvas.height);
+          const full=createCanvas(image.width,image.height);
+          try {
+            full.getContext('2d').drawImage(image,0,0);
+            const pixels=full.getContext('2d').getImageData(0,0,full.width,full.height).data;
+            for(let y=0;y<full.height;y++)for(let x=0;x<full.width;x++)if(pixels[(y*full.width+x)*4+3]&&(x<left||x>=right||y<top||y>=bottom)) {
+              throw new Error(`PDF page ${pageLayout.page} L${block.line}: native inline ink for ${node.token} exceeds its bound crop; no glyphs were clipped and no output was replaced.`);
+            }
+          } finally {full.width=full.height=1;}
+          native.set(node.token,{bytes:encodePdfPng(canvas),box:{x:left/sx,y:top/sy,width:canvas.width/sx,height:canvas.height/sy},unitX:1/sx,unitY:1/sy});
+        } finally {canvas.width=canvas.height=1;}
+      }
+    }
     page.drawImage(await pdf.embedPng(background), { x: 0, y: 0, width: pageLayout.width, height: pageLayout.height });
     if(referenceSource&&(blocksByPage.get(pageLayout.page)??[]).some(block=>referenceRows.has(block.line))) {
       const ink=await referenceProseInk(await referenceSource.pdf.getPage(pageLayout.page),pageLayout.page,blocksByPage.get(pageLayout.page)!,new Set(referenceRows.keys()));
@@ -598,9 +691,20 @@ async function exportPdf() {
       const availableHeight = Math.min(block.height,...(blocksByPage.get(block.page)??[]).filter(other=>other!==block && other.y>block.y+.5 && other.x<block.x+block.width && other.x+other.width>block.x).map(other=>other.y-block.y));
       let size = block.fontSize, rows: string[] = [];
       let flow: Array<{text:string;box:PdfBox}> | undefined;
+      let movedInk:Array<{token:string;bytes:Uint8Array;box:PdfBox}>|undefined;
+      let placementFailure='';
       const minSize = Math.min(size, 6);
       for (;;) {
-        if(block.proseSegments) {
+        if(reorderedRows.has(block.line)) {
+          const placed=reorderedPdfParagraph(block,text,size,value=>font.widthOfTextAtSize(value,size),native);
+          if('error' in placed)placementFailure=placed.error;
+          else {
+            const conflict=placed.ink.find(node=>node.box.x<0||node.box.y<0||node.box.x+node.box.width>pageLayout.width||node.box.y+node.box.height>pageLayout.height
+              ||(blocksByPage.get(block.page)??[]).some(other=>other!==block&&intersects(node.box,other)));
+            if(!conflict){flow=placed.prose;movedInk=placed.ink;break;}
+            placementFailure=`native glyph ${conflict.token} leaves the page or overlaps another paragraph: ${JSON.stringify(conflict.box)}`;
+          }
+        } else if(block.proseSegments) {
           const placed=segments.map((part,index)=>flowPdfText(part,block.proseSegments![index].boxes,size,value=>font.widthOfTextAtSize(value,size)));
           if(placed.every(result=>result!==undefined)){flow=placed.flatMap(result=>result!);break;}
         } else {
@@ -608,11 +712,12 @@ async function exportPdf() {
         if (glyphsFit) rows = wrapPdfText(drawText, block.width, value => font.widthOfTextAtSize(value, size));
         if (glyphsFit && rows.length * size * 1.2 <= availableHeight + 0.1) break;
         }
-        if (size <= minSize) throw new Error(`PDF page ${block.page} L${block.line}: translation does not fit its text box. Shorten this line before exporting; no text was clipped and no output was replaced.`);
+        if (size <= minSize) throw new Error(`PDF page ${block.page} L${block.line}: translation does not fit its text box. Shorten this line before exporting; no text was clipped and no output was replaced.${placementFailure?` Inline layout: ${placementFailure}.`:''}`);
         size = Math.max(minSize, size - 0.25);
       }
       if(flow)for(const placed of flow)page.drawText(placed.text,{x:placed.box.x,y:pageLayout.height-placed.box.y-size,size,font,color:rgb(...(block.color??[0,0,0]))});
       else rows.forEach((row, index) => page.drawText(row, { x: block.x, y: pageLayout.height - block.y - size - index * size * 1.2, size, font, color: rgb(...(block.color ?? [0,0,0])) }));
+      for(const node of movedInk??[])page.drawImage(await pdf.embedPng(node.bytes),{x:node.box.x,y:pageLayout.height-node.box.y-node.box.height,width:node.box.width,height:node.box.height});
     }
     progress(pageLayout.page, layout.pages.length);
   }

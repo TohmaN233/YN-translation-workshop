@@ -2900,6 +2900,13 @@ export function createPiTranslationSubagentTools(
           repairIssues: repairIssues.slice(0, MAX_TRANSLATION_REPAIR_ISSUE_SAMPLES),
           omittedRepairIssueCount: Math.max(0, repairIssues.length - MAX_TRANSLATION_REPAIR_ISSUE_SAMPLES),
           accepted,
+          submittedValidation: {
+            ok: proposedValidation.ok,
+            summary: proposedValidation.summary,
+            blockingCount: proposedValidation.blocking.length,
+            warningCount: proposedValidation.warnings.length,
+            rejectedLines: [...submittedRejectedLines].sort((left,right)=>left-right)
+          },
           validation: {
             ok: persistedValidation.ok,
             summary: persistedValidation.summary,

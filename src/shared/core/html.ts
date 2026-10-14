@@ -1134,7 +1134,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 58;
+export const LINE_REVIEW_PROTOCOL_VERSION = 59;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 19;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
@@ -4570,12 +4570,14 @@ void (async () => {
     await restoreSyncedText(false);
     lineReviewInitializing = false;
     render();
-    await new Promise(resolve => requestAnimationFrame(resolve));
+    // Host activation waits for this readiness promise. A hidden/background
+    // BrowserView cannot supply a paint frame before activation; DOM layout and
+    // position restoration must complete without awaiting the compositor.
     const line = lineFromLocationHash();
     if (line) jumpToLine(line);
     else if (activeLine) jumpToLine(activeLine);
     else scrollTo(0, state.scrollY || 0);
-    await new Promise(resolve => requestAnimationFrame(resolve));
+    if (line || activeLine) scrollToActiveLine();
     restoringPosition = false;
     save();
     document.body.inert = false;

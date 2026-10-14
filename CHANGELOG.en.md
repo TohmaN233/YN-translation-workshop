@@ -6,6 +6,9 @@ Recorded version changes. Public availability and downloads follow [Releases](ht
 
 ## What's new in 2.2.0
 
+- Fix PDF export failing at image 257 with default GPU rendering. Decode and release each source bitmap; corrupt images still fail without replacing the previous PDF.
+- Fix generated HTML waiting for a tab click. Hidden tabs restore before automatic activation; existing HTML upgrades while preserving translations.
+
 - Fix draft revision conflicts when importing translations without LAN sync: commit content and file bindings together, preserve manual edits during first-sidecar migration, and allow closing after a rejected import has rolled back. Ordinary save failures no longer report a LAN sync error.
 - Fix oversized session loading, compact older sessions with verified backups, and reuse verified recovery state to avoid replaying history before chat; add loading progress and cancellation.
 - Stabilize translation, review, and proofreading child prompt and tool prefixes for cache reuse across chunks. Context still resets after each chunk, with unchanged Host scope validation.

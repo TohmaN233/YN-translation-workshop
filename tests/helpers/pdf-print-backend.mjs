@@ -13,14 +13,14 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const serviceMode = process.env.YN_PDF_PRINT_TEST_SERVICE === '1';
 
 /** Real Chromium printing for Node integration tests; no alternate PDF engine. */
-export async function createNativePdfPrintBackend() {
+export async function createNativePdfPrintBackend({ disableGpu = true } = {}) {
   await mkdir(path.join(root, '.translation-workshop'), { recursive: true });
   const directory = await mkdtemp(path.join(root, '.translation-workshop/pdf-print-test-'));
   const entry = path.join(directory, 'service.mjs');
   await build({ entryPoints: [fileURLToPath(import.meta.url)], outfile: entry, bundle: true, platform: 'node', format: 'esm', packages: 'external' });
   const env = { ...process.env, YN_PDF_PRINT_TEST_SERVICE: '1', YN_PDF_PRINT_TEST_DIRECTORY: directory };
   delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(require('electron'), ['--disable-gpu', '--no-sandbox', entry], { cwd: root, windowsHide: true,
+  const child = spawn(require('electron'), [...(disableGpu ? ['--disable-gpu'] : []), '--no-sandbox', entry], { cwd: root, windowsHide: true,
     env, stdio: ['pipe', 'pipe', 'pipe'] });
   let log = '', nextId = 0, closing = false, closePromise, connection;
   const pending = new Map();

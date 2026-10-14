@@ -60,17 +60,35 @@ async function nativePrint(sourcePath: string, signal?: AbortSignal): Promise<Ui
     await window.loadFile(sourcePath);
     signal?.throwIfAborted();
     phase = 'waiting for fonts and image decode';
-    await window.webContents.executeJavaScript(`(async () => {
+    const resources = await window.webContents.executeJavaScript(`(async () => {
       // Image-only protected documents still verify the bundled font; no text
       // node may have triggered lazy @font-face loading before this point.
       await document.fonts.load('11px PdfReflow', '中');
       await document.fonts.ready;
       if (!document.fonts.check('11px PdfReflow') || !Array.from(document.fonts).some(font => font.family === 'PdfReflow' && font.status === 'loaded')) throw new Error('PDF reflow font failed to load');
-      await Promise.all(Array.from(document.images, async (image, index) => { try { await image.decode(); } catch (error) { throw new Error('PDF reflow image ' + (index + 1) + ' failed to decode: ' + (error.message || String(error))); } if (!image.naturalWidth || !image.naturalHeight) throw new Error('PDF reflow image failed to decode'); }));
-      return true;
+      const images = Array.from(document.images);
+      for (const [index, image] of images.entries()) {
+        // HTMLImageElement.decode() retains GPU decode-cache locks until a
+        // compositor frame. Hidden print windows exhaust that cache on large
+        // documents, including valid PNGs. Validate pixels using a bitmap whose
+        // lifetime we own, and release it before decoding the next source.
+        let bitmap;
+        try {
+          bitmap = await createImageBitmap(image);
+          if (!bitmap.width || !bitmap.height || !image.naturalWidth || !image.naturalHeight) throw new Error('Image has no decoded pixels');
+        } catch (error) {
+          const owner = image.closest('[data-node-type]');
+          throw new Error('PDF reflow image ' + (index + 1) + ' failed to decode: ' + (error.message || String(error))
+            + ' ' + JSON.stringify({ node: owner?.id, sourceLines: owner?.dataset.sourceLines,
+              sourcePages: owner?.dataset.sourcePages, token: image.dataset.token,
+              width: image.naturalWidth, height: image.naturalHeight }));
+        } finally { bitmap?.close(); }
+      }
+      return { imageCount: images.length };
     })()`, false);
     signal?.throwIfAborted();
     if (blocked.size) throw new Error(`PDF print blocked non-local resources: ${[...blocked].join(', ')}`);
+    console.info('[pdf-print] resources-ready', { sourcePath, ...resources });
     console.info('[pdf-print] printing', { sourcePath });
     phase = 'printing PDF';
     const bytes = await window.webContents.printToPDF({ pageSize: 'A4', preferCSSPageSize: true, printBackground: true,

@@ -75,6 +75,16 @@ void app.whenReady().then(async()=>{
     const start=performance.now();await batchView.executeJavaScript('applyFile(1)');const next=await wait(()=>batchView.mainFrame.framesInSubtree.find(frame=>frame.url.includes('part-1.html')),Boolean,'second child');await ready(next,5000);result.metrics.push({name:'batch-child-switch',readyMs:performance.now()-start});
     const denied=await batchView.executeJavaScript('window.workshopHtml.prepareReviewHtmlChild({outputPath:"../single.html"}).then(()=>false,error=>String(error.message))');assert.match(denied,/child|batch|outside|index|member/i);
     const wrongSender=await web.executeJavaScript('window.workshop.prepareReviewHtmlChild({outputPath:"parts/part-0.html"}).then(()=>false,error=>String(error.message))');assert.match(wrongSender,/actual open batch parent/);
+    // Use the real Generate -> Open path in a hidden non-offscreen window.
+    // Offscreen rendering masks the initialization/activation circular wait.
+    const generated=await invoke('generateLineReview',{sourcePath:path.join(project,'Single.txt'),outputDir:project,fileType:'txt',pageSize:100,locale:'en-US'});
+    assert.equal(await invoke('openPath',generated.outputPath),'');
+    const generatedView=await wait(()=>findView(generated.outputPath),Boolean,'generated active BrowserView');
+    const generatedOwner=BrowserWindow.getAllWindows().find(window=>window.getBrowserViews().some(view=>view.webContents.id===generatedView.id));
+    const generatedBounds=generatedOwner.getBrowserViews().find(view=>view.webContents.id===generatedView.id).getBounds();
+    assert.ok(generatedBounds.width>0&&generatedBounds.height>0,'generation automatically activates the document without a tab click');
+    assert.equal(await generatedView.executeJavaScript('(async()=>{await window.translationWorkshopLineReviewReady;return document.body.inert})()'),false);
+    result.generatedAutomaticActivation={path:generated.outputPath,bounds:generatedBounds};
     // Drive the real production IPC and native viewer close after a first
     // translation-file import. No LAN session or model is involved.
     const importHtml=path.join(htmlDir,'fresh-import.html'),importSource=path.join(project,'import-source.txt'),importTarget=path.join(project,'AI_translation','import-target.txt');
@@ -95,7 +105,7 @@ void app.whenReady().then(async()=>{
 const entry=path.join(mainDir,'html-open-verifier.mjs');
 await build({absWorkingDir:root,stdin:{contents:driver,resolveDir:root,sourcefile:'html-open-verifier.ts'},bundle:true,platform:'node',format:'esm',outfile:entry,external,banner});
 const output=[];
-const code=await new Promise((resolve,reject)=>{const child=spawn(electronPath,['--disable-gpu','--no-sandbox',`--user-data-dir=${path.join(evidence,'user-data')}`,entry],{cwd:root,windowsHide:true,env:{...process.env,ELECTRON_DISABLE_SECURITY_WARNINGS:'true',YN_ELECTRON_VERIFY_HEADLESS:'1',YN_ELECTRON_VERIFY_OFFSCREEN:'1'},stdio:['ignore','pipe','pipe']});for(const stream of [child.stdout,child.stderr])stream.on('data',bytes=>output.push(bytes.toString()));child.once('error',reject);child.once('close',resolve);});
+const code=await new Promise((resolve,reject)=>{const child=spawn(electronPath,['--disable-gpu','--no-sandbox',`--user-data-dir=${path.join(evidence,'user-data')}`,entry],{cwd:root,windowsHide:true,env:{...process.env,ELECTRON_DISABLE_SECURITY_WARNINGS:'true',YN_ELECTRON_VERIFY_HEADLESS:'1',YN_ELECTRON_VERIFY_OFFSCREEN:'0'},stdio:['ignore','pipe','pipe']});for(const stream of [child.stdout,child.stderr])stream.on('data',bytes=>output.push(bytes.toString()));child.once('error',reject);child.once('close',resolve);});
 await writeFile(path.join(evidence,'electron.log'),output.join(''));
 const result=JSON.parse(await readFile(path.join(evidence,'result.json'),'utf8'));
 console.log(JSON.stringify({evidence,...result}));

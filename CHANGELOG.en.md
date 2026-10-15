@@ -6,26 +6,11 @@ Recorded version changes. Public availability and downloads follow [Releases](ht
 
 ## What's new in 2.2.0
 
-- Fix PDF export failures with many formula images under default GPU rendering. Decode and release each source bitmap, and replace the previous PDF after validation.
-- Fix generated HTML waiting for a tab click. Hidden tabs restore before automatic activation; existing HTML upgrades while preserving translations.
-
-- Fix draft revision conflicts when importing translations without LAN sync: commit content and file bindings together, preserve manual edits during first-sidecar migration, and allow closing after a rejected import has rolled back. Ordinary save failures no longer report a LAN sync error.
-- Fix oversized session loading, compact older sessions with verified backups, and reuse verified recovery state to avoid replaying history before chat; add loading progress and cancellation.
-- Stabilize translation, review, and proofreading child prompt and tool prefixes for cache reuse across chunks. Context still resets after each chunk, with unchanged Host scope validation.
-- Add a background Agent API: confirm the location and settings, then reuse lazy-mode preparation and execution; query status, stop, resume and answer questions.
-- Reuse one prepared read and already loaded views when opening HTML. Batch indexes prepare the selected child on demand. Restore saved translations and revisions through read-only hydration before editing, without an empty write. PDF inspection requests geometry on demand and avoids repeating complete layouts and plans.
-- Require mechanical extraction, a native Pi structure proposal, Host source/ownership checks and a fresh independent typed audit before PDF review HTML. Models edit source-ID groups, roles, reading order and tables without rewriting source text. Full inspection, complete source coverage and native glyph/graphic/image ownership must pass; failed preparation retains diagnostics and creates no new HTML.
-- Keep a complete Host structure draft for incremental merges, splits and table edits under revision checks. Explicit owner selectors expand complete source groups with trace data; redundant selections within one merge expand once, while conflicts across operations remain errors. Normalized repeated attempts without structural progress stop preparation. Final acceptance still requires the independent audit and completed native persistence/cleanup.
-- Export PDFs through structured HTML, source mappings and automatic Chromium pagination. Complete paragraphs and source-evidenced page continuations retain native formulas, fraction bars and graphics without original prose-box length limits. Older row projections must be regenerated; prior translations and sessions remain retained.
-- Support text-layer PDFs with extracted text, page/image references on demand for vision models, Host protection of identified code and mathematical formulas, and one-click translated PDF export. See the [PDF guide](docs/pdf.en.md).
-- Fix mathematical PDF font detection and glyph binding; prefill and lock code/formulas in the Host so models submit only prose and cannot omit protected rows.
-- Prescan source-evidenced package names, acronyms and structural labels; translation, review and residue checks share the retained identifiers to avoid false untranslated findings.
-- Let the parent Agent confirm specific untranslated false positives in TXT, EPUB and PDF with a reason. Source or translation changes invalidate the confirmation; format, formula and code protection remain active.
-- Prefill and protect PDF References/Bibliography in the Host, skip model translation of reference rows and retain their original glyphs on export. Cancellation waits for background resource cleanup and reports cleanup failures explicitly.
-- Fix untranslated false positives from scattered English names, datasets and function names, and false project-change errors during later parent confirmations; retain copied-prose detection. Inline formulas may follow translated syntax within their paragraph, with native glyph export by marker identity; missing, repeated or cross-paragraph markers remain rejected.
-- Reuse glossary longest-match coverage for character names, avoiding embedded short-name warnings while still checking independent occurrences.
-- Save session recovery indexes on Stop and exit to avoid lengthy replay after restart; allow candidate discovery, validation and import with external read-only sources.
-- Check and import large candidates in the background with progress and cancellation; commit drafts once without blocking the window on hundreds of thousands of lines.
+- Add text-layer PDF translation: extract prose, formulas, code and figure assets, organize and audit the document structure, then generate review HTML and reflow translated prose with preserved assets into a new PDF. Support complete paragraphs, page continuations and paragraph-local formula reordering while preserving code, formulas and references. See the [PDF guide](docs/pdf.en.md).
+- Add the official background Agent API, reusing project preparation, translation, proofreading and reference workflows, with status queries, Stop, resume and user replies.
+- Improve large-project handling: load large histories and validate/import translation candidates in the background with progress and cancellation; optimize session recovery and cross-chunk cache reuse.
+- Improve editing: activate generated HTML automatically and streamline page opening, translation imports, saving and closing while preserving manual edits.
+- Reduce false untranslated and terminology findings from English identifiers and character names; let the parent Agent confirm specific untranslated false positives.
 
 ## What's new in 2.1.9
 

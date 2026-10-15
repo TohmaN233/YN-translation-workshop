@@ -208,7 +208,7 @@ await test("structured CAS compares reloaded values and rejects actual concurren
     const first = [{ line: 8, evidence: { reason: "Retain the author", tokens: ["Smith"] } }];
     await patchProjectState(outputDir, { decisions: first });
     const inspected = (await readProjectState(outputDir)).decisions;
-    const second = [...inspected, { line: 9, evidence: { reason: "Retain the API", tokens: ["point.in.polygon"] } }];
+    const second = [...inspected, { line: 9, evidence: { reason: "Retain the API", tokens: ["label.render"] } }];
     await patchProjectStateIfUnchanged(outputDir, { decisions: inspected }, { decisions: second });
     assert.deepEqual((await readProjectState(outputDir)).decisions, second);
     await assert.rejects(patchProjectStateIfUnchanged(outputDir, { decisions: inspected }, { decisions: first }), /decisions no longer matches/);

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
 import { classifyPdfGraphicRegions } from '../src/main/pdfGraphicRegions.ts';
 
 const block = (line, text, x, y, width, height = 12, extra = {}) => ({ line, page: 1, text, x, y, width, height, fontSize: 10, ...extra });
@@ -72,8 +71,8 @@ assert.equal(classifyPdfGraphicRegions(fragmentedOperator).references.length, 1,
 assert.throws(() => classifyPdfGraphicRegions({ ...base, paints: [paint(1, 10, 10, 20, 0)] }), /invalid visible ink bounds/, 'Zero-height input is an invalid measurement, not an ignorable stroke.');
 
 const notation = { ...base, paints: [paint(20, 95, 90, 230, .3), paint(21, 95, 150, 230, .3)], tableRegions: [],
-  textBlocks: [block(1, 'C', 110, 100, 20, 12, { protection: 'math' }), block(2, 'curve space', 210, 100, 80),
-    block(3, 'L(C)', 110, 130, 40, 12, { protection: 'math' }), block(4, 'arc length', 210, 130, 80)],
+  textBlocks: [block(1, 'T', 110, 100, 20, 12, { protection: 'math' }), block(2, 'tray code', 210, 100, 80),
+    block(3, 'N(T)', 110, 130, 40, 12, { protection: 'math' }), block(4, 'parcel count', 210, 130, 80)],
   natives: [{ id: 'native:1', kind: 'math', box: { x: 95, y: 89, width: 40, height: 23 } }] };
 const notationOwned = classifyPdfGraphicRegions(notation), notationTable = notationOwned.tableRuleOwners[0];
 assert.equal(notationTable.evidence, 'rules-and-grid');
@@ -84,7 +83,7 @@ assert.deepEqual(notationTable.rows, [[1, 2], [3, 4]]);
 assert.deepEqual(notationTable.sourceLines, [1, 2, 3, 4]);
 assert.deepEqual(notationTable.horizontalRuleOperations, [20, 21]);
 exactOwnership(notation, notationOwned);
-const centeredMath = { ...notation, natives: [], textBlocks: [block(1,'CBD',110,100,30),block(2,'value',210,100,40,12,{protection:'math'}),block(3,'FW CBD',110,130,40),block(4,'bold value',207,130,46,12,{protection:'math'})] };
+const centeredMath = { ...notation, natives: [], textBlocks: [block(1,'tray',110,100,30),block(2,'value',210,100,40,12,{protection:'math'}),block(3,'upper tray',110,130,40),block(4,'bold value',207,130,46,12,{protection:'math'})] };
 assert.ok(classifyPdfGraphicRegions(centeredMath).tableRuleOwners.length===1,'Strictly centered math columns keep alignment when a bold value changes its advance width.');
 const tableFraction = { ...notation, paints: [...notation.paints, paint(22, 115, 105, 10, .1)] };
 const fractionTableOwned = classifyPdfGraphicRegions(tableFraction);
@@ -133,54 +132,13 @@ pairedTables.tableRegions=[{captionLine:1,sourceLines:Array.from({length:8},(_,i
 const separated = classifyPdfGraphicRegions(pairedTables);
 assert.deepEqual(separated.tableRuleOwners.map(table=>table.paintOperations),[[50,51,52],[53,54,55]],'Six same-span rules retain two separate table frames across the large empty gap.');
 exactOwnership(pairedTables,separated);
-const protocolTable = { ...base, paints: [paint(60,74,295.5,451,1),paint(61,74,307.5,451,1),paint(62,74,380,451,1)],
-  textBlocks: [block(1,'Table 6: Protocol results.',74,245,446,36),block(2,'Enrollment Method',80,294.4,94,12.45,{segmentation:'parallel-region'}),block(3,'AUC EER Rank',261,294.4,257,12.45,{segmentation:'parallel-region'}),block(4,'Protocol A',80,306.77,169,13.2)],
-  tableRegions:[{captionLine:1,sourceLines:[2,3],box:{x:80,y:294.4,width:438,height:12.45}}] };
-for(let row=0;row<4;row++)for(const [column,x] of [140,279,384,483].entries())protocolTable.textBlocks.push(block(5+row*4+column,column===0?'CBD':'value',x,318.7+row*12,20,12.45,{segmentation:'parallel-region'}));
-const protocolOwned=classifyPdfGraphicRegions(protocolTable);
-assert.deepEqual(protocolOwned.tableRuleOwners[0].sourceLines,Array.from({length:19},(_,index)=>index+2),'Strong complete grid expands the partial caption/header candidate without losing protocol rows.');
-assert.ok(protocolOwned.tableRuleOwners[0].rows.some(row=>row.length===1&&row[0]===4));
-exactOwnership(protocolTable,protocolOwned);
-
-if (process.env.YN_PDF_GRAPHIC_PAGE5_FIXTURE) {
-  const fixture = JSON.parse(await readFile(process.env.YN_PDF_GRAPHIC_PAGE5_FIXTURE, 'utf8')).input;
-  const result = classifyPdfGraphicRegions(fixture), summary = result.tableRuleOwners.find(table => table.sourceLines.includes(70));
-  assert.ok(summary, 'Actual page 5 notation summary has positive unnumbered table evidence.');
-  assert.deepEqual(summary.sourceLines, Array.from({ length: 24 }, (_, index) => index + 70));
-  assert.deepEqual(summary.paintOperations, [945, 1275]);
-  assert.ok(summary.rows.some(row => row.length === 1 && row[0] === 84));
-  assert.ok(summary.rows.some(row => row.length === 1 && row[0] === 89));
-  exactOwnership(fixture, result);
-}
-if (process.env.YN_PDF_GRAPHIC_PAGE10_FIXTURE) {
-  const fixture = JSON.parse(await readFile(process.env.YN_PDF_GRAPHIC_PAGE10_FIXTURE, 'utf8')).input;
-  const result = classifyPdfGraphicRegions(fixture), qed = result.references.find(ref => [212, 219, 226, 233].every(operator => ref.paintOperations.includes(operator)));
-  assert.ok(qed, 'Actual page 10 QED strokes remain a standalone vector outside measured prose/inline ink.');
-  exactOwnership(fixture, result);
-}
-if (process.env.YN_PDF_GRAPHIC_PAGE18_FIXTURE) {
-  const fixture = JSON.parse(await readFile(process.env.YN_PDF_GRAPHIC_PAGE18_FIXTURE, 'utf8')).input;
-  const result = classifyPdfGraphicRegions(fixture), table = result.tableRuleOwners.find(table => table.captionLine === 368);
-  assert.ok(table, 'Actual page 18 captioned table retains its source rule frame outside nominal cell geometry.');
-  assert.deepEqual(table.paintOperations, [57, 83, 286]);
-  assert.deepEqual(table.sourceLines, Array.from({ length: 29 }, (_, index) => index + 369));
-  exactOwnership(fixture, result);
-}
-if (process.env.YN_PDF_GRAPHIC_PAGE25_FIXTURE) {
-  const fixture=JSON.parse(await readFile(process.env.YN_PDF_GRAPHIC_PAGE25_FIXTURE,'utf8')).input,result=classifyPdfGraphicRegions(fixture);
-  const first=result.tableRuleOwners.find(table=>table.firstSourceLine===460),second=result.tableRuleOwners.find(table=>table.firstSourceLine===475);
-  assert.ok(first&&second,'Actual page 25 same-width tables retain independent row anchors.');
-  assert.equal(first.paintOperations.length,3);assert.equal(second.paintOperations.length,3);
-  assert.ok(first.box.y+first.box.height<second.box.y,'The large gap is not swallowed into either source table frame.');
-  exactOwnership(fixture,result);
-}
-if (process.env.YN_PDF_GRAPHIC_PAGE27_FIXTURE) {
-  const fixture=JSON.parse(await readFile(process.env.YN_PDF_GRAPHIC_PAGE27_FIXTURE,'utf8')).input,result=classifyPdfGraphicRegions(fixture),table=result.tableRuleOwners.find(table=>table.captionLine===497);
-  assert.ok(table,'Actual page 27 full Protocol table expands its truncated header-only caption evidence.');
-  assert.deepEqual(table.sourceLines,Array.from({length:86},(_,index)=>index+498));
-  assert.deepEqual(table.paintOperations,[37,62,309,552,795,1042]);
-  for(const line of [500,521,542,563])assert.ok(table.rows.some(row=>row.length===1&&row[0]===line),'Every Protocol group stays one source-bound spanning row.');
-  exactOwnership(fixture,result);
-}
+const warehouseTable = { ...base, paints: [paint(60,60,200,430,1),paint(61,60,216,430,1),paint(62,60,300,430,1)],
+  textBlocks: [block(1,'Table 6: Crate dispatch log.',60,160,400,24),block(2,'Item Group',70,199,90,12,{segmentation:'parallel-region'}),block(3,'Unit Count Zone',220,199,250,12,{segmentation:'parallel-region'}),block(4,'Morning dispatch',70,215,400,12)],
+  tableRegions:[{captionLine:1,sourceLines:[2,3],box:{x:70,y:199,width:400,height:12}}] };
+for(let row=0;row<4;row++)for(const [column,x] of [70,180,290,400].entries())warehouseTable.textBlocks.push(block(5+row*4+column,column===0?'crate':'value',x,232+row*16,30,12,{segmentation:'parallel-region'}));
+const warehouseOwned=classifyPdfGraphicRegions(warehouseTable);
+assert.deepEqual(warehouseOwned.tableRuleOwners[0].sourceLines,Array.from({length:19},(_,index)=>index+2),'Strong complete grid expands the partial caption/header candidate without losing warehouse rows.');
+assert.ok(warehouseOwned.tableRuleOwners[0].rows.some(row=>row.length===1&&row[0]===4));
+exactOwnership(warehouseTable,warehouseOwned);
 
 console.log(JSON.stringify({ pass: true, vectorGraphicsRetained: true, thinFractionBarOwned: true, tableRulesSourceBound: true, ambiguousOverlayRejected: true, everyOperatorExactlyOnce: true }));

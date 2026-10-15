@@ -6,26 +6,26 @@ const options={languagePair:'en->zh-CN'};
 const residue=(source,candidate,extra={})=>[...validateTranslationCandidate(source,candidate,{...options,...extra}).blocking,
   ...validateTranslationCandidate(source,candidate,{...options,...extra}).warnings].some(f=>f.code==='likely_untranslated');
 for(const [source,candidate] of [
-  ['The method of Smith and Jones (2020) gives stable estimates.','Smith 和 Jones（2020）的方法给出了稳定的估计。'],
-  ['Smith compared the method with Smith (2020).','Smith 将该方法与 Smith（2020）进行了比较。'],
-  ['We compare Smith and Jones.','我们比较 Smithson 和 Jones。'],
-  ['The Borel structure has a Hausdorff metric and a Lebesgue measure (Molchanov, 2017).','Borel 结构具有 Hausdorff 度量和 Lebesgue 测度（Molchanov，2017）。'],
-  ['The polygo-nal regions determine target-point membership via sp::point.in.polygon in R (Bivand et al., 2013).',
-    '使用 R 中的 sp::point.in.polygon 判定目标点是否属于多边形区域（Bivand 等，2013）。'],
-  ['We compare curves from mrfDepth with MNIST digit trajectories and the MOBISIG online-signature dataset; CBD and HCD give geometric comparisons.',
-    '我们比较 mrfDepth 曲线、MNIST 数字轨迹与 MOBISIG 在线签名数据集；CBD 和 HCD 给出几何比较。']
+  ['Marlow and Quill (2041) reserved the blue loading bay.','Marlow 和 Quill（2041）预订了蓝色装货区。'],
+  ['Marlow packed the crate described by Marlow (2041).','Marlow 打包了 Marlow（2041）描述的箱子。'],
+  ['Marlow and Quill booked the loading dock.','Marlowson 和 Quill 预约了装货码头。'],
+  ['The Marlow route links the Quill depot and the Rook station (Venn, 2044).','Marlow 路线连接 Quill 仓库与 Rook 站（Venn，2044）。'],
+  ['The pack-age labels travel with each crate through crateTools::label.render in R (Venn et al., 2044).',
+    '各个箱子的包裹标签由 R 中的 crateTools::label.render 处理（Venn 等，2044）。'],
+  ['At the depot, cedarKit checks the LUMOCRATE parcel dataset while SLS and HLS rank the delivery lanes.',
+    '在仓库，cedarKit 检查 LUMOCRATE 包裹数据集，SLS 和 HLS 则为配送道评分。']
 ]) {
   assert.equal(residue(source,candidate),false,source);
   assert.equal(isYnTranslationChunkWritable(validateTranslationCandidate(source,candidate,options)),true,'Host must accept translated prose retaining scattered names');
 }
 for(const candidate of [
-  'This method estimates curves and gives robust results.',
-  'This method estimates curves and gives robust results.（已译）',
-  '该方法 estimates curves 并给出稳健的结果。',
-  '该方法 estimates\tcurves 并给出稳健的结果。',
-  '该方法 estimates the curves 并给出稳健的结果。'
+  'The courier stacks crates and sorts delivery labels.',
+  'The courier stacks crates and sorts delivery labels.（已译）',
+  '快递员 stacks crates 并整理配送标签。',
+  '快递员 stacks\tcrates 并整理配送标签。',
+  '快递员 stacks the crates 并整理配送标签。'
 ]) {
-  const source=candidate.includes('estimates the curves')?'This method estimates the curves and gives robust results.':'This method estimates curves and gives robust results.';
+  const source=candidate.includes('stacks the crates')?'The courier stacks the crates and sorts delivery labels.':'The courier stacks crates and sorts delivery labels.';
   assert.equal(residue(source,candidate),true,'copied English prose must remain visible: '+candidate);
 }
 assert.equal(residue('Estimate','Estimate（估计）'),true,'mostly copied short prose remains visible');

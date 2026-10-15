@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {pdfNativePlacement,pdfNativePlacementEvidence} from '../src/main/pdfNativePlacement.ts';
 import {makePdfLogicalDocument} from '../src/main/pdfLogicalDocument.ts';
@@ -8,29 +7,52 @@ import {buildPdfReflowDocument} from '../src/main/pdfReflowDocument.ts';
 import {PDF_LAYOUT_VERSION,PDF_EXTRACTOR_REVISION,pdfProtectionHash,validatePdfLayout} from '../src/main/pdfTypes.ts';
 
 const hash=text=>createHash('sha256').update(text).digest('hex');
-const retained=JSON.parse(await readFile(new URL('./pdf-native-placement-fixtures.json',import.meta.url),'utf8'));
 const box={x:40,y:90,width:170,height:14};
 const prose=(text,extra={})=>({...box,line:0,page:1,text,fontSize:11,baseline:101,columnX:40,inlineProtections:[],proseSegments:[{text,boxes:[{...box,...extra}]}],...extra});
 const math=(extra={})=>({...box,line:0,page:1,text:'x/y',fontSize:11,protection:'math',paintOperations:[20],...extra});
+function inlineProse(prefix,suffix,index,extra={}) {
+  const row=prose('',extra),token=`{{formula:p1:${index}}}`,middle={x:row.x+75,y:row.y,width:20,height:14};
+  return {...row,text:prefix+token+suffix,inlineProtections:[{...middle,kind:'math',token,text:'q',paintOperations:[index],inkBox:{...middle}}],
+    proseSegments:[{text:prefix,boxes:prefix?[{...row,width:75}]:[]},{text:suffix,boxes:suffix?[{...row,x:middle.x+middle.width,width:row.width-95}]:[]}]};
+}
+// Independently authored text and integer geometry; no document captures.
+const fixtures=[
+  {name:'wrapped symbol after a complete-width prose run',native:3,join:[1,2,3],hints:[[1,2],[3],[4]],rows:[
+    inlineProse('The rack has ',' slots before the next parcel',81,{y:74,baseline:85}),
+    prose('The last sorting label on that rack equals'),
+    math({x:40,y:106,width:30,height:14,baseline:117,columnX:40}),
+    prose('A separate shelf stores the empty crates.',{y:154,baseline:165})]},
+  {name:'wrapped symbol after a leading protected token',native:3,join:[1,2,3],hints:[[1,2],[3],[4]],rows:[
+    prose('The first packing step fills the lower tray',{y:74,baseline:85}),
+    inlineProse('',' identifies the remaining shelf position',82),
+    math({x:40,y:106,width:30,height:14,baseline:117,columnX:40}),
+    prose('The courier checks a different cabinet.',{y:154,baseline:165})]},
+  {name:'fraction between adjacent prose runs',native:2,join:[1,2,3],rows:[
+    prose('Each parcel receives a'),math({x:213,y:82,width:24,height:25,baseline:93}),
+    prose(' stamp before dispatch.',{x:240,width:170})]},
+  {name:'scripted fraction beside another protected token',native:2,join:[1,2,3],rows:[
+    inlineProse('The tray holds ',' parcels with a',83),math({x:213,y:78,width:24,height:30,baseline:94,text:'u_2/v_3'}),
+    inlineProse(' delivery mark and ',' spare tags.',84,{x:240,width:170})]}
+];
 function source(rows,hints) {
   rows.forEach((row,index)=>row.line=index+1);
-  return {version:PDF_LAYOUT_VERSION,extractorRevision:PDF_EXTRACTOR_REVISION,originalHash:retained.originalHash,originalPath:'/source.pdf',sourcePath:'/source.txt',sourceHash:hash(rows.map(row=>row.text).join('\n')),protectionHash:'',blocks:rows,references:[],figureGroups:[],mechanicalParagraphs:hints,
+  return {version:PDF_LAYOUT_VERSION,extractorRevision:PDF_EXTRACTOR_REVISION,originalHash:hash('synthetic-native-placement'),originalPath:'/source.pdf',sourcePath:'/source.txt',sourceHash:hash(rows.map(row=>row.text).join('\n')),protectionHash:'',blocks:rows,references:[],figureGroups:[],mechanicalParagraphs:hints,
     pages:Array.from({length:Math.max(...rows.map(row=>row.page))},(_,index)=>({page:index+1,width:600,height:850,previewPath:'/preview.png',previewHash:hash('preview'),backgroundPath:'/background.png',backgroundHash:hash('background'),graphicOperations:[]}))};
 }
 function seal(layout){layout.sourceHash=hash(layout.blocks.map(row=>row.text).join('\n'));layout.protectionHash=pdfProtectionHash(layout);validatePdfLayout(layout);}
-for(const fixture of retained.fixtures) {
-  const rows=structuredClone(fixture.rows),local=id=>fixture.ids.indexOf(id)+1;
-  const hints=fixture.name==='formula-only wrapped tail'?[[1,2],[3],[4]]:rows.map((_,index)=>[index+1]);
-  const layout=source(rows,hints),raw=structuredClone(rows),native=local(fixture.native);
+for(const fixture of fixtures) {
+  const rows=structuredClone(fixture.rows);
+  const hints=fixture.hints??rows.map((_,index)=>[index+1]);
+  const layout=source(rows,hints),raw=structuredClone(rows),native=fixture.native;
   assert.equal(pdfNativePlacement(rows,[native]),'inline',fixture.name);
   makePdfLogicalDocument(layout);seal(layout);
   assert.deepEqual(layout.physicalBlocks,raw,'geometry inference cannot change native source text/paint/boxes');
   const owner=layout.blocks.find(block=>block.fragments.includes(native));
-  assert.ok(fixture.join.map(local).every(id=>owner.fragments.includes(id)),`${fixture.name}: complete inline owner`);
+  assert.ok(fixture.join.every(id=>owner.fragments.includes(id)),`${fixture.name}: complete inline owner`);
   const node=owner.inlineProtections.find(node=>node.physicalLines?.includes(native));
   assert.equal(node.placement,'inline');assert.deepEqual(node.physicalLines,[native]);
   assert.deepEqual(node.paintOperations,raw[native-1].paintOperations);
-  const plan={version:1,paragraphs:layout.blocks.map(block=>({physicalLines:block.fragments,kind:block.protection?'preserved':'paragraph',reason:'Retained source geometry.'})),tables:[],audit:{readingOrder:true,paragraphs:true,tables:true,figures:true,protectedContent:true,issues:[]}};
+  const plan={version:1,paragraphs:layout.blocks.map(block=>({physicalLines:block.fragments,kind:block.protection?'preserved':'paragraph',reason:'Synthetic paragraph geometry.'})),tables:[],audit:{readingOrder:true,paragraphs:true,tables:true,figures:true,protectedContent:true,issues:[]}};
   const applied=applyPdfStructurePlan(layout,plan).layout;
   assert.equal(applied.blocks.find(block=>block.fragments.includes(native)).inlineProtections.find(node=>node.physicalLines?.includes(native)).placement,'inline','plan rebuilding uses the same raw placement evidence');
   const nativeCalls=[],assets={inline:async()=>({dataUrl:'data:image/png;base64,fixture',width:10,height:10}),native:async(page,ids)=>{nativeCalls.push(ids);return {dataUrl:'data:image/png;base64,fixture',width:26,height:25};},figure:async()=>{throw Error('No source figure');}};
@@ -67,4 +89,4 @@ assert.throws(()=>validatePdfLayout(forged),/inline placement lacks original sou
 delete displayLayout.blocks[0].inlineProtections[0].placement;seal(displayLayout);
 const legacy=await buildPdfReflowDocument(displayLayout,displayLayout.blocks.map(block=>block.text),{native:async()=>({dataUrl:'data:image/png;base64,fixture',width:90,height:14}),inline:async()=>{throw Error('No inline token');},figure:async()=>{throw Error('No figure');}});
 assert.equal(legacy.nodes[0].parts[1].image.display,true,'old physical-backed markers without placement retain display compatibility');
-console.log('PDF native placement: retained wrap/fraction geometry, full source/native ownership, plan/IR inline rendering, true columns/cells/display boundaries and legacy compatibility PASS.');
+console.log('PDF native placement: synthetic wrap/fraction geometry, full source/native ownership, plan/IR inline rendering, true columns/cells/display boundaries and legacy compatibility PASS.');

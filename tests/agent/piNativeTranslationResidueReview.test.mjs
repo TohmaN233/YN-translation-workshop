@@ -12,7 +12,7 @@ import {PiSessionRepository} from '../../src/main/agent/piNative/sessionReposito
 const root=await mkdtemp(path.join(os.tmpdir(),'yn-residue-review-'));
 let repository,worker;
 try {
-  const sourcePath=path.join(root,'source.txt');await writeFile(sourcePath,'mrfDepth\nThirdPartyPackageCore\n');
+  const sourcePath=path.join(root,'source.txt');await writeFile(sourcePath,'cedarKit\nThirdPartyPackageCore\n');
   repository=new PiSessionRepository(root);await repository.create('parent');
   const request={outputDir:root,sourcePath,sessionId:'parent',prompt:'Translate.',workflowIntent:'translation',languagePair:'en->zh-CN',subagentEnabled:true,subagentCount:1,glossaryCandidates:false,characterBible:false};
   const alignment=createTranslationAlignmentHostState(),domainRun=createYnDomainRunContract({workflowIntent:'translation',fullWorkflow:true,subagentEnabled:true,subagentCount:1});
@@ -20,7 +20,7 @@ try {
   const tools=createYnDomainTools({request,domainRun,translationAlignmentState:alignment,publishCustomMessage:async()=>{},persistHostState:async()=>{},
     subagents:{hasRunning:()=>false,startTranslationBatch(options){batch=options;return{id:options.batchId,subagents:[],status:'running'};}}});
   await tools.find(t=>t.name==='confirmTranslationResidueSafe').execute('confirm',{entries:[
-    {line:1,translation:'mrfDepth',reason:'Exact package identifier.'},{line:2,translation:'ThirdPartyPackageCore',reason:'Exact namespace.'}]});
+    {line:1,translation:'cedarKit',reason:'Exact package identifier.'},{line:2,translation:'ThirdPartyPackageCore',reason:'Exact namespace.'}]});
   await tools.find(t=>t.name==='runTranslationSubagents').execute('start',{});
   const stage=await prepareTranslationStagingCandidate({outputDir:root,sourcePaths:[sourcePath],documentId:'source.txt',sessionId:'parent',subagentId:'child',assignmentId:'source.txt:L1-L2'});
   await writeFile(stage,await readFile(sourcePath));

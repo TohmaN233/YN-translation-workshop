@@ -9,13 +9,13 @@ import {executeArtifactOperation} from '../../src/main/agent/artifactValidationW
 const root=await mkdtemp(path.join(os.tmpdir(),'yn-english-residue-gate-'));
 try {
   const source=[
-    'The method of Smith and Jones (2020) gives stable estimates.',
-    'Smith compared the method with Smith (2020).',
-    'The polygo-nal regions determine target-point membership via sp::point.in.polygon in R.',
-    'This method estimates the curves and gives robust results.'
+    'Marlow and Quill (2041) reserved the blue loading bay.',
+    'Marlow packed the crate described by Marlow (2041).',
+    'The pack-age labels travel with each crate through crateTools::label.render in R.',
+    'The courier stacks the crates and sorts delivery labels.'
   ];
-  const candidate=['Smith 和 Jones（2020）的方法给出了稳定的估计。','Smith 将该方法与 Smith（2020）进行了比较。',
-    '使用 R 中的 sp::point.in.polygon 判定目标点是否属于多边形区域。','该方法估计曲线并给出稳健的结果。'];
+  const candidate=['Marlow 和 Quill（2041）预订了蓝色装货区。','Marlow 打包了 Marlow（2041）描述的箱子。',
+    '各个箱子的包裹标签由 R 中的 crateTools::label.render 处理。','快递员堆好箱子并整理配送标签。'];
   const sourcePath=path.join(root,'source.txt');await writeFile(sourcePath,source.join('\n')+'\n');
   const request={outputDir:root,sourcePath,sessionId:'parent',prompt:'Translate.',languagePair:'en->zh-CN',glossaryCandidates:false,characterBible:false};
   const tools=createYnDomainTools({request,domainRun:createYnDomainRunContract({workflowIntent:'translation',fullWorkflow:false}),
@@ -28,7 +28,7 @@ try {
   const child=spec.tools('child'),execute=(name,args)=>child.find(tool=>tool.name===name).execute(name,args);
   await execute('readAssignedSource',{});
   const rejected=await execute('repairAssignedTranslation',{entries:candidate.map((translation,index)=>({line:index+1,
-    translation:index===3?'该方法 estimates the curves 并给出稳健的结果。':translation}))});
+    translation:index===3?'快递员 stacks the crates 并整理配送标签。':translation}))});
   assert.equal(rejected.details.accepted,false);
   assert.deepEqual(rejected.details.requiredBatchLines,[4],'names and function identifiers must not become repair debt');
   assert.deepEqual(rejected.details.submittedValidation.rejectedLines,[4]);

@@ -20,12 +20,12 @@ const setup=request=>createYnDomainTools({request,domainRun:createYnDomainRunCon
   subagents:{hasRunning:()=>false},publishCustomMessage:async()=>{},persistHostState:async()=>{}});
 try {
   const sourcePath=path.join(root,'source.txt');
-  const source=['mrfDepth','ThirdPartyPackageCore','%s ProtocolNamespace'];
+  const source=['cedarKit','ThirdPartyPackageCore','%s ProtocolNamespace'];
   await writeFile(sourcePath,source.join('\n')+'\n');
   const request={outputDir:root,sourcePath,sessionId:'parent',prompt:'Translate.',languagePair:'en->zh-CN',glossaryCandidates:false,characterBible:false};
   const candidate=path.join(root,'AI_translation/source_translated.txt');await mkdir(path.dirname(candidate),{recursive:true});
   await writeFile(candidate,source.slice(0,2).join('\n')+'\n%s 协议命名空间\n');
-  const reuseArgs={outputDir:root,ownerSessionId:'parent',sourcePath,candidatePath:candidate,documentId:'source.txt',languagePair:'en->zh-CN',validationOptions:{styleForbiddenTerms:['mrfDepth']}};
+  const reuseArgs={outputDir:root,ownerSessionId:'parent',sourcePath,candidatePath:candidate,documentId:'source.txt',languagePair:'en->zh-CN',validationOptions:{styleForbiddenTerms:['cedarKit']}};
   const cachedReuse=await prepareTranslationReuseAudit(reuseArgs);
   const tools=setup(request),execute=(name,params)=>tools.find(t=>t.name===name).execute(name,params);
   await assert.rejects(execute('writeTranslationChunk',{fromLine:1,toLine:1,lines:[source[0]]}),/validation failed|未翻译/i);
@@ -55,8 +55,8 @@ try {
   const options=await createYnTranslationValidationOptions(request);
   const hasResidue=(a,b,opts=options)=>[...validateTranslationCandidate(a,b,opts).blocking,...validateTranslationCandidate(a,b,opts).warnings].some(f=>f.code==='likely_untranslated');
   assert.equal(hasResidue(source[0],source[0]),false);
-  assert.equal(hasResidue(source[0],'mrfDepth v2'),true,'changed candidate invalidates approval');
-  assert.equal(hasResidue('mrfDepth v2','mrfDepth v2'),true,'changed source invalidates approval');
+  assert.equal(hasResidue(source[0],'cedarKit v2'),true,'changed candidate invalidates approval');
+  assert.equal(hasResidue('cedarKit v2','cedarKit v2'),true,'changed source invalidates approval');
   assert.equal(hasResidue(source[0],source[0],{...options,sourceBinding:path.join(root,'other.txt')}),true,'decision cannot cross documents');
   await cp(root,moved,{recursive:true});
   const movedRequest={...request,outputDir:moved,sourcePath:path.join(moved,'source.txt')};

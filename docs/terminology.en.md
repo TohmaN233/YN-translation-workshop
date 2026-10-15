@@ -216,7 +216,7 @@ Deterministic checks that can be repeated without asking a model to understand m
 
 Examples include alignment, protected payloads, blank lines, obvious placeholder text, formatting, and some terminology consistency.
 
-It cannot replace semantic review of meaning, tone, and context.
+Semantic review examines meaning, tone and context.
 
 ## Semantic Review / Reviewer
 
@@ -256,7 +256,7 @@ A hash is a content fingerprint; hash-bound means a conclusion is tied to specif
 
 When input changes, only the relevant evidence and authority are invalidated instead of applying stale conclusions to new text.
 
-A matching hash proves identity, not translation quality.
+Matching hashes identify unchanged content.
 
 ## Completion Gate
 

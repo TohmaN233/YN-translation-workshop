@@ -30,9 +30,9 @@ Subsequent exports read current review-HTML translations. Saving TXT remains a s
 
 ## Supported inputs and migration
 
-Horizontal text-layer PDFs are supported; OCR is not provided. Scans, hidden OCR, full-page bitmap/text overlays, rotated or vertical text, text clipping masks and unsafe separation or ownership are rejected. Complex columns may need reading-order corrections. Structure audits involve model judgment; inspect prose order, formulas and figures after export. Annotations and interactive forms are not exported; original bookmarks are not copied.
+Horizontal text-layer PDFs are supported; OCR is not provided. Scans, hidden OCR, full-page bitmap/text overlays, rotated or vertical text, text clipping masks and unsafe separation or ownership are rejected. Complex columns may need reading-order corrections. Review the accepted reading order, formulas and figures in HTML before export. Annotations and interactive forms are not exported; original bookmarks are not copied.
 
-Output uses A4 and bundled Noto Sans SC, with selectable prose and proportionally scaled images. Native glyph/image assets are rasterized at up to 2x and a 3000-pixel longest edge; they are not original vectors or selectable text.
+Output uses A4 and bundled Noto Sans SC, with selectable prose and proportionally scaled images. Native glyph/image assets are retained as raster images at up to 2x and a 3000-pixel longest edge.
 
 Current layout is v5/e15 with structure prompt contract v9. Accepted projections are reused after verifying the original PDF, structure evidence and asset bindings, without extra structure-model calls. Changed paragraph maps do not automatically migrate old translations or review proof by row number. Old files and sessions remain; verify source correspondence and protected markers before reusing translations.
 
@@ -40,4 +40,4 @@ Current layout is v5/e15 with structure prompt contract v9. Accepted projections
 
 Working text, layouts and source assets are under `.translation-workshop/extracted-text`. Mechanical extraction, drafts, proposals and audits have separate records; each attempt retains its diagnostics. PDF events are in `.translation-workshop/pdf/events.jsonl` and HTML generation events in `.translation-workshop/html-generation/events.jsonl`. Image errors identify the source node, page, logical row and formula marker.
 
-PDF.js extracts and renders source assets; the existing Pi Runtime revises and audits structure; Electron Chromium typesets HTML into PDF. See [BabelDOC](https://github.com/funstory-ai/BabelDOC) for intermediate structures, [EasyRead](https://github.com/Edwardxlai/easyread) for continuous reading, and the [quality and reliability report](quality.en.md) for validation evidence.
+PDF.js extracts and renders source assets; the existing Pi Runtime revises and audits structure; Electron Chromium typesets HTML into PDF. See [BabelDOC](https://github.com/funstory-ai/BabelDOC) for intermediate structures, [EasyRead](https://github.com/Edwardxlai/easyread) for continuous reading, and the [quality checks](quality.en.md) for validation evidence.

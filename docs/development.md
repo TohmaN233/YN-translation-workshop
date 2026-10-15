@@ -32,8 +32,8 @@ npm run verify:release
 npm run verify:packaged-launch
 ```
 
-`package:win` 使用仓库 electron-builder 配置；以上列出命令不授权公开发布。源码或文档改动后，包内版本、构建、README 与 checksum 需一致。Windows 验收运行隐藏的 win-unpacked 应用并正常退出，不使用已知退出异常的 portable 外壳，不强杀验收进程。
+`package:win` 使用仓库 electron-builder 配置。包内版本、构建、README 与 checksum 应保持一致。Windows 检查隐藏启动 `release/win-unpacked/translation-workshop.exe`，等待内置 smoke 正常退出。
 
-工作流代码地图见 [运行时地图](agent-runtime-codegraph.md)，协议见 [翻译 child](../translation-protocol/translation-child.md) 和 [校对 child](../translation-protocol/proofread-child.md)。内部排障记录不是产品质量排行。
+工作流代码地图见 [运行时地图](agent-runtime-codegraph.md)，协议见 [翻译 child](../translation-protocol/translation-child.md) 和 [校对 child](../translation-protocol/proofread-child.md)。
 
 文档站以中英文 Markdown 为正文来源。修改后运行 `node docs/yn-guide/build.mjs`，生成静态页面与搜索索引；无需额外安装构建工具。

@@ -82,5 +82,4 @@ files outside the owner are reported as errors rather than silently accepted.
 Storage conformance is checked against Pi's native Storage and Session behavior.
 Regression fixtures cover files larger than V8's single-string limit, legacy
 Host deltas, branch history, cancellation, concurrent source edits, torn tails,
-append/fsync failures and backup/receipt publication failures. Real-project
-acceptance uses a copy of the affected session; no provider request is needed.
+append/fsync failures and backup/receipt publication failures.

@@ -19,7 +19,7 @@ const pages=[
   {id:'pdf',file:'pdf',md:'docs/pdf',zh:'PDF 翻译',en:'PDF translation',section:'tutorial'},
   {id:'api',file:'agent-api',md:'docs/agent-api',zh:'后台 Agent API',en:'Background Agent API',section:'tutorial'},
   {id:'examples',file:'examples',md:'docs/examples',zh:'翻译项目例子',en:'Project examples',section:'evidence'},
-  {id:'quality',file:'quality',md:'docs/quality',zh:'质量与可靠性',en:'Quality and reliability',section:'evidence'},
+  {id:'quality',file:'quality',md:'docs/quality',zh:'质量检查',en:'Quality checks',section:'evidence'},
   {id:'workflows',file:'workflows',md:'docs/workflows',zh:'流程与恢复',en:'Workflows and recovery',section:'technical'},
   {id:'harness',file:'harness',md:'docs/architecture',zh:'Harness 架构',en:'Harness architecture',section:'technical'},
   {id:'development',file:'development',md:'docs/development',zh:'开发与验证',en:'Development and validation',section:'technical'},
@@ -99,7 +99,7 @@ for(const page of pages)for(const en of [false,true]){
       h('header',{className:'topbar'},h('a',{className:'brand',href:fileName(pages[0],en)},h('img',{src:'assets/app-icon.png',alt:'YN'}),h('strong',null,'YN Translation Workshop')),
         h('button',{className:'search-trigger',type:'button','data-search-open':true},en?'Search docs':'搜索文档'),
         h('div',{className:'topmeta'},h('span',null,version),h('a',{href:other,hrefLang:en?'zh-CN':'en'},en?'中文':'English'),h('button',{type:'button',className:'menu-button','data-menu':true,'aria-label':en?'Navigation':'导航'},'☰'))),
-      h('aside',{className:'sidebar','aria-label':en?'Documentation navigation':'文档导航'},...nav,h('div',{className:'sidebar-foot'},(en?'Docs for ':'文档对应 ')+version+' · 2026-10-13')),
+      h('aside',{className:'sidebar','aria-label':en?'Documentation navigation':'文档导航'},...nav,h('div',{className:'sidebar-foot'},(en?'Docs for ':'文档对应 ')+version)),
       h('main',{className:'layout'},h('article',{className:'content',id:'content','data-source':sourceFile,dangerouslySetInnerHTML:{__html:body}})),
       h('aside',{className:'toc'},h('strong',null,en?'On this page':'本页目录'),h('div',{id:'toc-links'},...headings.map(heading=>h('a',{href:'#'+heading.id,className:'level-'+heading.level,key:heading.id},heading.text)))),
       h('dialog',{className:'search-dialog',id:'search-dialog'},h('div',{className:'search-head'},h('input',{type:'search',id:'global-search',placeholder:en?'Search title or topic':'搜索标题或内容','aria-label':en?'Search documentation':'搜索文档'}),h('button',{type:'button','data-search-close':true,'aria-label':en?'Close search':'关闭搜索'},'×')),h('div',{className:'search-results',id:'search-results'})),
@@ -109,7 +109,7 @@ for(const page of pages)for(const en of [false,true]){
   await writeFile(path.join(directory,file),'<!doctype html>\n'+renderToStaticMarkup(html)+'\n');
   index.push({locale:en?'en':'zh',file,title,headings,summary:load(body)('body').text().replace(/\s+/g,' ').trim()});
 }
-await writeFile(path.join(directory,'content.js'),'// Generated from current Markdown by build.mjs; no stale copy overrides.\nwindow.YN_GUIDE = '+JSON.stringify({schemaVersion:4,version,verified:'2026-10-13',pages:index})+';\n');
+await writeFile(path.join(directory,'content.js'),'// Generated from current Markdown by build.mjs; no stale copy overrides.\nwindow.YN_GUIDE = '+JSON.stringify({schemaVersion:4,version,pages:index})+';\n');
 await writeFile(path.join(directory,'sitemap.xml'),'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+index.map(page=>'<url><loc>'+site+page.file+'</loc></url>').join('')+'</urlset>\n');
 await writeFile(path.join(directory,'robots.txt'),'User-agent: *\nAllow: /\n\nSitemap: '+site+'sitemap.xml\n');
 console.log(JSON.stringify({pages:index.length,staticContent:true,languages:['zh-CN','en']}));

@@ -6,7 +6,7 @@
 
 给 Agent 的提示词示例：
 
-> 请阅读 YN 的 `docs/agent-api.md`，用官方 Agent API 准备并翻译 `原文绝对路径`。先告诉我默认项目位置、模型和完整参数，询问我是否同意；我确认后再生成项目并启动。未指定参数沿用已有项目或懒人模式默认值。
+> 请阅读 YN 的 `docs/agent-api.md`，用官方 Agent API 准备并翻译 `C:\example\source.txt`。先告诉我默认项目位置、模型和完整参数，询问我是否同意；我确认后再生成项目并启动。未指定参数沿用已有项目或懒人模式默认值。
 
 把“翻译”换成“整理这些资料为译名表和角色表”，即可使用资料任务。校对时提供已有译文路径，并在确认时询问是否自动应用校对意见。自动应用只修改 HTML；最终写入 TXT 仍由用户手动操作。
 
@@ -28,7 +28,7 @@
 关闭其他 YN 实例，以免两份 Host 同时写项目。需要 Node.js 22.19 或更新版。把**安装后的应用 EXE**（不是安装器），或完整解包目录里的应用 EXE 传给官方启动器：
 
 ```text
-node agent-tools/yn-agent-server.mjs "D:/YN/translation-workshop.exe"
+node agent-tools/yn-agent-server.mjs "C:/example/translation-workshop.exe"
 ```
 
 开发环境：`node agent-tools/yn-agent-server.mjs node_modules/electron/dist/electron.exe .`。Windows Electron 的普通 stdin 管道不可用，因此启动器通过独占本地命名管道连接后台 YN；不启动网络服务。后台可能加载隐藏的 HTML 参数表以保持与手动启动完全相同的提示词，但不会显示主窗口或聊天窗口。后台模式不检查自动更新。
@@ -42,7 +42,7 @@ stdin/stdout 是 UTF-8 NDJSON，每个非空行一个 JSON，空行作为分隔�
 请求：
 
 ```json
-{"id":1,"method":"plan","params":{"task":"translation","settings":{"sourcePath":"D:\\Book\\source.txt","outputDir":"D:\\Book\\Translation"}}}
+{"id":1,"method":"plan","params":{"task":"translation","settings":{"sourcePath":"C:\\example\\source.txt","outputDir":"C:\\example\\Translation"}}}
 {"id":2,"method":"start","params":{"planId":"从计划返回的 UUID","confirmed":true}}
 ```
 
@@ -70,10 +70,10 @@ stdin/stdout 是 UTF-8 NDJSON，每个非空行一个 JSON，空行作为分隔�
 
 ```js
 import { connectYnAgent } from "./agent-tools/yn-agent-client.mjs";
-const yn = connectYnAgent("D:/YN/translation-workshop.exe");
+const yn = connectYnAgent("C:/example/translation-workshop.exe");
 await yn.ready;
 const plan = await yn.call("plan", {
-  task: "translation", settings: { sourcePath: "D:/Book/source.txt" }
+  task: "translation", settings: { sourcePath: "C:/example/source.txt" }
 });
 // 此处展示 plan 并询问用户；保持进程和连接存活，等待真实答复。
 // 用户确认后才执行：

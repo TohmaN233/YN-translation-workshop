@@ -6,7 +6,7 @@ Recorded version changes. Public availability and downloads follow [Releases](ht
 
 ## What's new in 2.2.0
 
-- Fix PDF export failing at image 257 with default GPU rendering. Decode and release each source bitmap; corrupt images still fail without replacing the previous PDF.
+- Fix PDF export failures with many formula images under default GPU rendering. Decode and release each source bitmap, and replace the previous PDF after validation.
 - Fix generated HTML waiting for a tab click. Hidden tabs restore before automatic activation; existing HTML upgrades while preserving translations.
 
 - Fix draft revision conflicts when importing translations without LAN sync: commit content and file bindings together, preserve manual edits during first-sidecar migration, and allow closing after a rejected import has rolled back. Ordinary save failures no longer report a LAN sync error.

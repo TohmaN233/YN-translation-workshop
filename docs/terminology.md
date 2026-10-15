@@ -216,7 +216,7 @@ translation candidate 是正式写回前的候选译文；glossary candidate 是
 
 例如行对齐、保护载荷、空行、明显占位文本、格式和部分术语一致性。
 
-不能代替误译、语气和上下文含义的语义审阅。
+语义审阅检查误译、语气和上下文含义。
 
 ## Semantic Review / Reviewer
 
@@ -256,7 +256,7 @@ Hash 是内容指纹；hash-bound 表示结论绑定某份具体输入；hash-cu
 
 输入变化时只让相关证据和授权失效，避免把旧结论套到新文本。
 
-Hash 证明内容相同，不证明翻译质量正确。
+相同 Hash 用于识别未变化的内容。
 
 ## Completion Gate
 

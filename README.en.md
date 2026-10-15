@@ -9,9 +9,9 @@
 
 YN turns TXT, EPUB and text-layer PDF into editable source/translation views. Glossaries, character references, structural preservation, chunked translation and proofreading belong to one project. Run AI across a whole project or ask about selected lines, then decide what to write to the final file.
 
-[中文](README.md) · [Windows downloads](https://github.com/TohmaN233/YN-translation-workshop/releases) · [User guide](https://tohman233.github.io/YN-translation-workshop/index.en.html) · [Project introduction (Chinese)](https://tgy233.top/tgypage/yn/)
+[中文](README.md) · [Windows downloads](https://github.com/TohmaN233/YN-translation-workshop/releases) · [User guide](https://tohman233.github.io/YN-translation-workshop/index.en.html) · [Project tutorial](docs/guide.en.md) · [GitHub repository](https://github.com/TohmaN233/YN-translation-workshop)
 
-Use it for cross-chapter terminology, game control codes, manual line review and resumable long tasks. It is not a live screen translator. PDF support currently requires selectable text and does not include OCR. Cloud models receive the text needed for their assignments; translation quality still depends on the model, references and human review.
+Use it for file translation that needs cross-chapter terminology, preserved game control codes, manual line review and resumable long tasks. PDFs need horizontal selectable text. AI tasks send the required text to your selected model provider.
 
 ## Requirements
 
@@ -21,7 +21,7 @@ Use it for cross-chapter terminology, game control codes, manual line review and
 
 ## Download and installation
 
-Choose `translation-workshop-Setup-2.2.0-x64.exe` or `translation-workshop-Portable-2.2.0-x64.exe` from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). Public availability follows the published release; these docs describe 2.2.0.
+Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.0.
 
 Installers support in-app updates; portable builds are replaced using the release page. Releases include `SHA256SUMS.txt`.
 
@@ -37,8 +37,6 @@ Use reference preparation before translation when you already have terminology, 
 2. Use the translation preparation shortcut and confirm its settings. YN checks the content, trials preservation rules, opens line-review HTML and starts the same translation workflow. Generate HTML first when you prefer more manual control.
 3. Refresh the candidate and edit or inspect the rows. Bind an existing translation before starting proofreading.
 4. Accept, reject or edit suggestions. Auto-apply changes HTML only; **writing the final TXT is manual**. EPUB/PDF use their export controls.
-
-![Line-review page for comparing source text, editing translations and reviewing suggestions](docs/yn-guide/assets/screens/line-review.png)
 
 [Complete tutorial](https://tohman233.github.io/YN-translation-workshop/guides.en.html) · [PDF guide](docs/pdf.en.md) · [Background Agent API](docs/agent-api.en.md)
 
@@ -57,18 +55,18 @@ See the [feature guide](docs/features.en.md) for settings, reuse, sampled proofr
 
 ## Projects translated with YN
 
-- **Japanese to Chinese:** [Megido72, a game translation project of about 10 million characters](https://www.bilibili.com/video/BV12ypy68EEF/). The [first-chapter description](https://www.bilibili.com/video/BV15spk6iEVR/) describes improved naming consistency and accuracy after retranslation with YN.
+- **Japanese to Chinese:** [Megido72 game-text translation demonstration](https://www.bilibili.com/video/BV12ypy68EEF/).
 - **Japanese to Chinese:** [game localization demonstrations by 美希命](https://space.bilibili.com/1863789519), including many localized games.
 - **Japanese to Chinese:** [the Steins;Gate “圆环” novel](https://tgy233.top/tgypage/%E7%A7%91%E5%AD%A6ADV%E5%B0%8F%E8%AF%B4%E6%B1%87%E6%80%BB_2026-0828.html).
 - **Chinese to English:** [a Robotics;Notes novel translation](https://drive.google.com/file/d/1pPVFPxdwOxNnT_8TO1wJGEY9D3FVFNeK/view).
 
 See [case notes](docs/examples.en.md) for more projects.
 
-## Quality and reliability evidence
+## Quality checks
 
-YN checks line alignment, placeholders, protected content, write scope and recovery proof in code before independent AI review. A model saying “done” does not replace artifact validation. These checks reveal structural and workflow failures; they do not prove every semantic choice is correct.
+YN checks line alignment, placeholders, protected content, write scope and recovery evidence, then runs independent AI review. Findings identify specific rows for repair and human inspection.
 
-The [quality and reliability report](docs/quality.en.md) links public tests, reproduction commands, limits and failure handling. It does not claim measured semantic accuracy, a cross-tool ranking or universal cost savings.
+[Quality checks](docs/quality.en.md) lists the checks, their test sources and reproduction commands.
 
 ## 2.2.0 highlights
 

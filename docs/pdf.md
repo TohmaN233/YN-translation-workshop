@@ -30,9 +30,9 @@ YN 从原 PDF 提取正文、公式／代码字形、图片和图表等资产，
 
 ## 支持范围与迁移
 
-支持横排文字层 PDF，不提供 OCR。扫描件、隐藏 OCR、整页位图叠字、旋转／竖排、文字剪裁蒙版及不能安全分离或归属的内容会报错。复杂多栏仍可能需要整理阅读顺序；结构审计是模型判断，导出后仍应检查正文顺序、公式和图表。注释、交互表单不导出，原书签不复制。
+支持横排文字层 PDF，不提供 OCR。扫描件、隐藏 OCR、整页位图叠字、旋转／竖排、文字剪裁蒙版及不能安全分离或归属的内容会报错。复杂多栏仍可能需要整理阅读顺序；可在 HTML 中查看已接受的正文顺序、公式和图表后导出。注释、交互表单不导出，原书签不复制。
 
-输出使用 A4 和内置 Noto Sans SC，正文为可选中文字；图像按比例适配页面。原生字形／图像以最高 2 倍、最长边 3000 像素资产保存，不能视为原矢量或可选文字。
+输出使用 A4 和内置 Noto Sans SC，正文为可选中文字；图像按比例适配页面。原生字形／图像以位图资产保留，最高 2 倍、最长边 3000 像素。
 
 当前布局 v5/e15、结构准备提示契约 v9。已接受的投影在核验原 PDF、结构证据及资产绑定后复用，不新增结构模型请求。段落映射改变时，旧译文和复核证据不会按旧行号自动迁移；旧文件与会话保留，复用译文须核对来源与保留标识。
 
@@ -40,4 +40,4 @@ YN 从原 PDF 提取正文、公式／代码字形、图片和图表等资产，
 
 工作文本、布局和源资产位于 `.translation-workshop/extracted-text`；机械提取、结构草稿、提案和审计结果分别留档，每次尝试保留独立诊断。PDF 事件记录在 `.translation-workshop/pdf/events.jsonl`，HTML 生成事件在 `.translation-workshop/html-generation/events.jsonl`。图片失败日志包含源节点、页码、逻辑行和公式标识。
 
-PDF.js 负责提取与原生渲染，现有 Pi Runtime 负责结构修订及审计，Electron Chromium 将 HTML 排版为 PDF。参考 [BabelDOC](https://github.com/funstory-ai/BabelDOC) 的中间结构及 [EasyRead](https://github.com/Edwardxlai/easyread) 的连续阅读思路；验证依据见 [质量与可靠性说明](quality.md)。
+PDF.js 负责提取与原生渲染，现有 Pi Runtime 负责结构修订及审计，Electron Chromium 将 HTML 排版为 PDF。参考 [BabelDOC](https://github.com/funstory-ai/BabelDOC) 的中间结构及 [EasyRead](https://github.com/Edwardxlai/easyread) 的连续阅读思路；验证依据见 [质量检查](quality.md)。

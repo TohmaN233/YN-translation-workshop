@@ -1,14 +1,14 @@
-# YN Quality and Reliability Report
+# YN quality checks
 
 [中文](quality.md) · [Project](../README.en.md) · [Project examples](examples.en.md)
 
-This 2.2.0 report separates code-enforced structural constraints, AI semantic review and actual user projects. It is not a tool ranking, and passing tests does not establish semantic translation accuracy.
+YN combines structural checks, independent AI review and editable line inspection. This page links the checks and their reproduction commands.
 
-## Public evidence
+## Check coverage
 
 | Failure | Reproducible source | Scope |
 | --- | --- | --- |
-| Damaged placeholders, tags, control codes or row counts | [Translation validator tests](../tests/validation/translationValidator.test.mjs) | Declared structure; not semantic judgment |
+| Damaged placeholders, tags, control codes or row counts | [Translation validator tests](../tests/validation/translationValidator.test.mjs) | Declared row and token structure |
 | Proofreading suggestions breaking preservation | [Replacement validator](../src/shared/validation/proofreadReplacement.ts) | Physical-line, placeholder and preservation checks at submission |
 | Preserved text colliding with residue/terminology checks | [Matcher parity tests](../tests/validation/glossaryMatcherParity.test.mjs) | Exclude actual preserved positions; still check prose |
 | False untranslated findings blocking valid candidates | [Parent decisions](../tests/agent/translationResidueApproval.test.mjs) · [Native review](../tests/agent/piNativeTranslationResidueReview.test.mjs) | Exact row/text/reason decisions across formats; other structure remains enforced |
@@ -19,13 +19,7 @@ This 2.2.0 report separates code-enforced structural constraints, AI semantic re
 | Omitted or rewritten PDF code/math | [Child-write regression](../tests/pdf-child-write-rejection.test.mjs) · [PDF protection tests](../tests/pdf-protection.test.mjs) | Host skeleton, prose-only writes, no translation requests for all-protected chunks |
 | Exit after file replacement but before checkpoint | [Cold PDF recovery](../tests/pdf-protected-recovery.test.mjs) | Isolated process exits at the commit window; a new Host verifies its write-ahead receipt |
 | Long history and shutdown persistence | [Stop/storage test](../tests/agent/piNativeStopStorageFlush.test.mjs) · [Session storage](session-storage.md) | Native history retained; derived indexes do not replace proof |
-| Large-candidate validation, import and cancellation | [Responsiveness test](../tests/main/artifactResponsiveness.test.mjs) · [Cancellation test](../tests/main/artifactCancelSettlement.test.mjs) | Background work and transactional commits; not an unlimited-size latency promise |
-
-## Current acceptance scope
-
-On 2026-10-13, the full local Windows x64 `npm test` run passed 223 test files under Node.js 24.14.1. Hidden Electron 39.8.10 / Node.js 22.22.1 verified PDF prescanning, translation, repair and independent review. [package.json](../package.json) and the [lockfile](../package-lock.json) define versions.
-
-This is local acceptance, not a public CI badge. Native Pi workflow regressions use controlled test Provider responses to verify scope, write and recovery contracts; they do not measure real-model translation quality. The test count is a dated snapshot.
+| Large-candidate validation, import and cancellation | [Responsiveness test](../tests/main/artifactResponsiveness.test.mjs) · [Cancellation test](../tests/main/artifactCancelSettlement.test.mjs) | Background validation, cancellation and transactional commits |
 
 ## Reproduce
 
@@ -42,10 +36,10 @@ Run the cold PDF recovery regression alone:
 node --experimental-strip-types tests/pdf-protected-recovery.test.mjs
 ```
 
-See [development and validation](development.en.md) for real desktop/package checks and hidden Windows acceptance rules. Time, memory, retries and cache hits vary with model, material, machine and network. Stable prompts and 500-line chunks do not establish universal cost savings.
+Desktop, LAN, API and package check commands are listed in [development and validation](development.en.md). Dependency versions are defined by [package.json](../package.json) and the [lockfile](../package-lock.json).
 
-## Detected failures and limits
+## Review and recovery
 
-Code can reject missing rows, damaged control tokens, unauthorized writes and incompatible proof. Independent AI review examines risky rows and stable samples; split proofreading covers its owned rows, while Monte Carlo samples. Models can miss mistranslations, pronouns, voice or logic. No uniform public blind evaluation is reported here.
+Structural checks inspect rows, control tokens, write scope and evidence bindings. Independent AI review checks meaning and terminology using source text and context. Split proofreading covers its assigned rows; Monte Carlo uses stratified samples. Findings are available in the review page for editing and acceptance.
 
-Failures must not masquerade as completion. Missing required bindings, unretryable internal errors and no-progress repairs stop with drafts and diagnostics retained. PDF protection depends on document metadata and paint structure. Unsafe separation is rejected explicitly; see [PDF limits](pdf.en.md).
+Missing required files, internal errors and stalled repairs stop the task while retaining drafts and diagnostics. Recovery verifies the saved content and evidence before resuming. PDF input requirements and asset handling are described in the [PDF guide](pdf.en.md).

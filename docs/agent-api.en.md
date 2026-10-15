@@ -6,7 +6,7 @@ External agents such as Codex can start YN in the background to prepare a projec
 
 Example prompt for your agent:
 
-> Read YN's `docs/agent-api.en.md` and use its official Agent API to prepare and translate `absolute source path`. Show me the default project location, model and complete settings, then ask for confirmation. Create the project and start only after I confirm. Use existing project settings or lazy-mode defaults for unspecified fields.
+> Read YN's `docs/agent-api.en.md` and use its official Agent API to prepare and translate `C:\example\source.txt`. Show me the default project location, model and complete settings, then ask for confirmation. Create the project and start only after I confirm. Use existing project settings or lazy-mode defaults for unspecified fields.
 
 For references, ask to “organize these materials into YN's glossary and character bible.” For proofreading, provide an existing translation and ask whether suggestions should be applied automatically. Automatic application updates HTML only; TXT export remains manual.
 
@@ -28,7 +28,7 @@ New projects default to `Translation` in the source's parent directory. Referenc
 Close other YN instances first to avoid competing Host writers. Node.js 22.19 or later is required. Pass the **installed application's EXE**, not its installer, or the application in a complete unpacked directory to the official launcher:
 
 ```text
-node agent-tools/yn-agent-server.mjs "D:/YN/translation-workshop.exe"
+node agent-tools/yn-agent-server.mjs "C:/example/translation-workshop.exe"
 ```
 
 For development: `node agent-tools/yn-agent-server.mjs node_modules/electron/dist/electron.exe .`. Electron's Windows GUI executable cannot receive ordinary piped stdin, so the launcher uses a private local named pipe to connect to YN; it opens no network service. YN may load a hidden HTML parameter form to preserve exactly the manual-start prompt; it does not show a main or chat window or check for updates in this mode.
@@ -42,7 +42,7 @@ stdin/stdout use UTF-8 NDJSON, one JSON object per non-empty line; empty separat
 Example requests:
 
 ```json
-{"id":1,"method":"plan","params":{"task":"translation","settings":{"sourcePath":"D:\\Book\\source.txt","outputDir":"D:\\Book\\Translation"}}}
+{"id":1,"method":"plan","params":{"task":"translation","settings":{"sourcePath":"C:\\example\\source.txt","outputDir":"C:\\example\\Translation"}}}
 {"id":2,"method":"start","params":{"planId":"UUID returned by plan","confirmed":true}}
 ```
 
@@ -70,10 +70,10 @@ The official `agent-tools/yn-agent-client.mjs` module handles process launch, re
 
 ```js
 import { connectYnAgent } from "./agent-tools/yn-agent-client.mjs";
-const yn = connectYnAgent("D:/YN/translation-workshop.exe");
+const yn = connectYnAgent("C:/example/translation-workshop.exe");
 await yn.ready;
 const plan = await yn.call("plan", {
-  task: "translation", settings: { sourcePath: "D:/Book/source.txt" }
+  task: "translation", settings: { sourcePath: "C:/example/source.txt" }
 });
 // Show plan, ask the user, and keep the connection alive while awaiting their answer.
 // Only after the user confirms:

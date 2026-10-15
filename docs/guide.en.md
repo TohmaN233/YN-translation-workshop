@@ -22,8 +22,6 @@ Prepare existing terminology, character records and notes before translation. Re
 
 The preparation shortcut checks settings against the text, samples preservation candidates, trials rules, then opens HTML and uses the same parameters and prompt as manual startup. Generate HTML first when you want to adjust settings yourself and invoke AI selectively.
 
-![Line-by-line editing and review](yn-guide/assets/screens/line-review.png)
-
 A preservation regex protects its actual matched positions. Inspect examples so a prefix rule does not lock dialogue. Prose outside matches still needs translation. Explicitly untranslated names can be confirmed source-to-identical-target terms in the formal glossary.
 
 ## Existing translations
@@ -32,7 +30,7 @@ Bind a translation aligned with the source. Reuse mechanically screens old rows,
 
 ## Proofread and write
 
-Proofreading requires an existing translation. Split review checks each owned row; Monte Carlo uses stratified sampling and is not exhaustive proofreading.
+Proofreading requires an existing translation. Split review checks each assigned row; Monte Carlo uses stratified sampling.
 
 ![Accept, reject or edit proofreading suggestions](yn-guide/assets/screens/proofread-review.png)
 

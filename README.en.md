@@ -9,7 +9,7 @@
 
 YN turns TXT, EPUB and text-layer PDF into editable source/translation views. Glossaries, character references, structural preservation, chunked translation and proofreading belong to one project. Run AI across a whole project or ask about selected lines, then decide what to write to the final file.
 
-[中文](README.md) · [Windows downloads](https://github.com/TohmaN233/YN-translation-workshop/releases) · [User guide](https://tohman233.github.io/YN-translation-workshop/index.en.html) · [Project tutorial](docs/guide.en.md) · [GitHub repository](https://github.com/TohmaN233/YN-translation-workshop)
+[中文](README.md) · [Windows downloads](https://github.com/TohmaN233/YN-translation-workshop/releases) · [User guide](https://tohman233.github.io/YN-translation-workshop/index.en.html) · [Project introduction (Chinese)](https://tgy233.top/tgypage/yn/) · [Project tutorial](docs/guide.en.md) · [GitHub repository](https://github.com/TohmaN233/YN-translation-workshop)
 
 Use it for file translation that needs cross-chapter terminology, preserved game control codes, manual line review and resumable long tasks. PDFs need horizontal selectable text. AI tasks send the required text to your selected model provider.
 

@@ -9,7 +9,7 @@
 
 YN 把 TXT、EPUB 和文字层 PDF 变成可编辑的原译文对照页面。它把术语表、角色资料、格式保留、分块翻译和校对放在同一项目中；你可以让 AI 处理整批文本，也可以只让它检查指定行，自己决定最终写入。
 
-[English](README.en.md) · [下载 Windows 版本](https://github.com/TohmaN233/YN-translation-workshop/releases) · [使用手册](https://tohman233.github.io/YN-translation-workshop/) · [项目教程](docs/guide.md) · [GitHub 仓库](https://github.com/TohmaN233/YN-translation-workshop)
+[English](README.en.md) · [下载 Windows 版本](https://github.com/TohmaN233/YN-translation-workshop/releases) · [使用手册](https://tohman233.github.io/YN-translation-workshop/) · [项目介绍](https://tgy233.top/tgypage/yn/) · [项目教程](docs/guide.md) · [GitHub 仓库](https://github.com/TohmaN233/YN-translation-workshop)
 
 适合需要跨章节保持译名、保留游戏控制符、逐行人工检查并继续长任务的文件翻译项目。PDF 使用横排文字层文档。AI 任务将所需文本发送给你选择的模型供应商。
 

@@ -5,20 +5,31 @@
 
 [![MIT Licensed](https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat-square)](LICENSE)
 
-**An open-source workbench for translators working with AI on long-form fiction and game localization.**
+**An open-source translation and proofreading workbench for long-form fiction and game localization, with all-AI, fully manual or mixed workflows.**
 
-YN brings a translator's judgment, manual editing and AI assistance into one workflow. Translate yourself, ask AI for a draft, or request help with selected lines. You guide terminology, character voice, revisions and the finished text.
+YN supports TXT, EPUB and text-layer PDF, bringing AI translation, AI proofreading, aligned editing and project references into one workspace. Let AI translate and proofread a whole work, translate entirely yourself, or use AI only for the parts you choose.
 
-TXT, EPUB and text-layer PDF open in aligned source/translation views. Line editing, terminology and character records, format preservation, translation reuse and chunked processing belong to the same project, supporting the close revision, consistent expression and ongoing project maintenance needed in professional translation.
+Chunked parallel processing, reusable terminology and character references, automatic format preservation and resumable tasks support sustained translation across chapters and files.
 
 [中文](README.md) · [Windows downloads](https://github.com/TohmaN233/YN-translation-workshop/releases) · [User guide](https://tohman233.github.io/YN-translation-workshop/index.en.html) · [Project introduction (Chinese)](https://tgy233.top/tgypage/yn/) · [Project tutorial](docs/guide.en.md) · [GitHub repository](https://github.com/TohmaN233/YN-translation-workshop)
 
-Use it for file translation that needs cross-chapter terminology, preserved game control codes, manual line review and resumable long tasks. PDFs need horizontal selectable text. AI tasks send the required text to your selected model provider.
+Use it for file translation that needs consistent terminology across chapters, preserved game control codes and resumable long tasks. PDFs need horizontal selectable text. AI tasks send the required text to your selected model provider.
+
+## Main features
+
+- **AI translation:** Translate complete source texts using the selected language direction, style and project references. Preparation checks settings and content, then parallel agents translate line-based chunks. The program validates line counts, placeholders and preserved content; independent AI review covers every mechanically risky row and sampled ordinary rows, with precise automatic repairs for failures. Existing translations can be audited and selectively reused, and long tasks can stop and resume.
+- **AI proofreading:** Compare an existing translation with its source for mistranslations, omissions, terminology, forms of address and expression. Split review checks each row; Monte Carlo combines full programmatic scans with stratified AI sampling. Findings include row numbers, evidence and complete replacement suggestions, which can be applied to HTML automatically or accepted, rejected or edited individually.
+- **References and consistency:** AI can organize glossary and character records and collect new candidates. Translation and proofreading reuse approved terms, character names and voice, style requirements and existing translations. References can also be maintained manually.
+- **Automatic format preservation:** During preparation, AI uses task requirements and real source examples to identify preservation-rule candidates for variables, tags and control codes. The program trials the rules and validates them during translation and proofreading; custom rules can be added when needed.
+- **Manual editing and collaboration:** Translate, edit rows, search and manage references in the aligned source/translation view. Ask AI about a selected row or assign only part of the work to AI.
+- **PDF extraction and reflow:** Extract prose and formula/figure assets, organize the structure mechanically, then use AI revisions and independent auditing before generating HTML. Translated text and source assets rebuild structured HTML, which automatically reflows into an exported PDF.
+
+See the [feature guide](docs/features.en.md) for settings, translation reuse, proofreading modes, LAN access and artifact locations.
 
 ## Requirements
 
 - Current releases target Windows x64. Packaged desktop use does not require Node.js.
-- AI features require a provider, model and authorization configured in YN. Manual editing remains available with the Agent off.
+- AI features require a provider, model and authorization configured in YN. Manual editing is also available with the Agent closed.
 - Use TXT, EPUB or a text-layer PDF. Proofreading requires an existing translation aligned with the source.
 
 ## Download and installation
@@ -29,32 +40,18 @@ Installers support in-app updates; portable builds are replaced using the releas
 
 ## Configuration
 
-Choose the source, project location, language direction and style. Configure a provider and model at the top of the start page when using AI features. New AI tasks default to **500 lines per chunk** and **up to 3 child agents**; explicit settings in existing projects are retained.
+Choose the source, project location, language direction and translation style. Configure a provider and model at the top of the start page when using AI features. New AI tasks default to **500 lines per chunk** and **up to 3 child agents**; explicit settings in existing projects are retained.
 
-Use reference preparation before translation when you already have terminology, characters or project notes. For game text, inspect preservation-rule matches before starting so a regex does not lock translatable dialogue.
+If the project already has a glossary, character bible or reference material, you can organize it before translation. When format preservation is needed, translation preparation uses source examples to propose rule candidates, then the program trials and validates them. Custom regex rules and match examples are optional tools for adjustments.
 
-## Choose how to work together
+## Choose how to work
 
-1. Select the source and project location. Bind an existing translation when available, keeping its rows aligned with the source.
-2. For manual translation or revision, generate review HTML, edit in the page and ask AI when needed. For an AI draft, use the translation preparation shortcut, confirm the settings and start chunked processing.
-3. Edit, search and check translations against the source. Give AI context from a selected row, or start proofreading on an existing translation.
-4. Accept, reject or edit suggestions. Auto-apply changes HTML only; **writing the final TXT is manual**. EPUB/PDF use their export controls.
+1. Select the source, project location, language direction and style. For proofreading, bind an existing translation aligned with the source.
+2. Choose AI translation, AI proofreading, manual editing or a mixed workflow. Start AI translation from the start-page shortcut; proofreading requires an existing translation.
+3. When you want to participate manually, edit and search rows in the aligned HTML, ask AI about selected lines, or handle proofreading suggestions one by one.
+4. After AI processing or manual editing, use the controls to write the final TXT or export EPUB/PDF. Automatic proofreading application updates HTML; the write/export controls save the final file.
 
 [Complete tutorial](https://tohman233.github.io/YN-translation-workshop/guides.en.html) · [PDF guide](docs/pdf.en.md) · [Background Agent API](docs/agent-api.en.md)
-
-## Collaboration designed for translation work
-
-| Translation work | Collaboration support |
-| --- | --- |
-| Close reading and revision | Aligned source/translation rows, search and direct editing; ask AI about selected lines and edit, accept or reject proofreading suggestions |
-| Terminology and characterization | Maintain approved terms, candidates and character records, including forms of address, pronouns, relationships and voice; AI organizes references and flags conflicts |
-| Style and project requirements | Translation style, references and editable prompts carry the translator's preferences and the work's requirements |
-| Game control codes and formatting | Inspect preservation-rule examples before protecting variables, tags and control codes; translation and proofreading share those requirements |
-| Continue an existing translation | Bind aligned previous translations, retain reusable content and continue editing, translating or proofreading |
-| Sustained work on long projects | Process chunks, Stop and resume, keeping text, references and review state in one project |
-| PDF review and export | Extract prose and formula/figure assets, edit translations in HTML, then reflow them into a PDF |
-
-See the [feature guide](docs/features.en.md) for settings, reuse, sampled proofreading, LAN access and artifact locations.
 
 ## Projects translated with YN
 
@@ -67,7 +64,7 @@ See [case notes](docs/examples.en.md) for more projects.
 
 ## Quality checks
 
-YN checks line alignment, placeholders, protected content, write scope and recovery evidence, then runs independent AI review. Findings identify specific rows for repair and human inspection.
+YN checks line alignment, placeholders, preserved content, write scope and recovery evidence, then runs independent AI review. Findings identify specific rows and can support precise automatic repair or optional manual handling.
 
 [Quality checks](docs/quality.en.md) lists the checks, their test sources and reproduction commands.
 

@@ -1,6 +1,6 @@
 # Features and settings
 
-These features support a shared workflow between translators and AI. Translators maintain project requirements, revise translations and decide the finished text; AI helps organize references, draft and proofread as needed. Aligned editing, terminology and character records, translation reuse and game-format preservation support that workflow.
+YN supports all-AI translation and proofreading, fully manual translation and editing, or a mix chosen for each project. Automatic translation, proofreading, reference preparation and format preservation share the same project with aligned editing, selected-row questions and suggestion handling.
 
 ## 1. Projects, inputs, and bindings
 
@@ -13,7 +13,7 @@ These features support a shared workflow between translators and AI. Translators
 - Ordered folder stages support barriers. `A, {B, C}, D` completes A, runs B/C in parallel, then starts D.
 - Translation and report outputs rebind to the current project's `AI_translation/` and `report/` directories when projects change.
 - One canonical chunk size drives translation and proofreading. Translation and review Worker counts are ceilings that shrink to actual demand.
-- Custom preserve rules protect variables, event codes, tags, control codes, and other immutable payloads. Invalid regular expressions fail visibly.
+- During preparation, AI uses task requirements and source examples to identify preservation-rule candidates for variables, event codes, tags and control codes. The program trials the rules and validates their matches. Custom rules can also be added when needed; invalid regular expressions fail visibly.
 - Chinese/English UI, HTML themes, a project Agent-proxy switch, and persistent project settings.
 
 ## 2. Line-by-line translation and review frontend
@@ -24,9 +24,9 @@ These features support a shared workflow between translators and AI. Translators
 - Pagination, page jump, full-text search, scroll restoration, last-focused-row location, and file tabs.
 - Issue severity, row highlighting, explicit clearing, read-only mechanical evidence, and ignore handling.
 - Ask the Agent about bounded context from a selected row without loading the whole document into chat.
-- Accept, reject, or manually edit actionable proofreading suggestions.
+- Proofreading suggestions contain complete replacement text. Accept, reject or edit them individually, or configure automatic application to HTML.
 - Apply accepted proposals in one action and synchronize every canonical child in a folder batch.
-- Export TXT or write to the bound translation after binding, baseline, sidecar, line-count, and conflict checks.
+- After AI processing or manual editing, write the final TXT, update the bound translation or export EPUB/PDF. Writing checks bindings, baselines, sidecars, line counts and conflicts.
 - Timestamped backups before overwrite. Source files are always read-only.
 - Legacy HTML upgrades through explicit protocol markers when opened; users do not need to regenerate every page.
 
@@ -58,8 +58,9 @@ These features support a shared workflow between translators and AI. Translators
 - Long sessions use native Pi compaction. Full Child conversations stay in Child JSONL; the Parent stores only lightweight state and a session reference.
 - Large sessions load on demand. Older v4 sessions automatically compact repeated state on opening and retain a verified gzip backup of the original file; see [session storage](session-storage.md).
 
-## 5. Full initial-translation Workflow
+## 5. AI translation Workflow
 
+- Preparation checks the settings and actual source. For requested preservation, the model uses source examples to propose scoped rule candidates; the program trials the rules and validates the matches. After confirmation, the task starts with the same HTML settings and regular translation prompt.
 - The Parent reads current interface bindings and Host state, chooses real concurrency within the project ceiling, and owns final consolidation.
 - The Host plans real debt from the authoritative manifest, file stages, canonical chunk size, reuse mask, and accepted evidence. The model cannot invent documents or ranges.
 - Persistent translation Workers dynamically claim non-overlapping assignments, avoiding long per-file private queues.
@@ -86,13 +87,14 @@ These features support a shared workflow between translators and AI. Translators
 - The later queue contains only real retranslation debt. Retained rows are not resent to make coverage contiguous.
 - Cold recovery binds owner, document, source hash, and retained baseline, so output written by the current run is not mistaken for old input.
 
-## 7. Full proofreading Workflow
+## 7. AI proofreading Workflow
 
 - Before any semantic Worker starts, the Host runs deterministic H3/H4/H7/H8/H9 scans over all aligned rows in every manifest document.
 - Evidence binds source, candidate, glossary, character-bible, and style hashes. Any input change invalidates stale evidence.
 - Deterministic signals are evidence for contextual judgment, not automatic findings.
 - **Split review** semantically checks every owned row. Chunk size is only a dispatch and persistence boundary.
 - **Monte Carlo** uses Host-planned, non-overlapping HOT / WARM / COLD strata with real coverage tracking.
+- Monte Carlo separates full deterministic scans from sampled semantic review; the sampled mode does not semantically review every row.
 - After minimum rounds, convergence requires two consecutive rounds with no new findings. At the round limit, the user can add three rounds, switch to HOT split review, or stop with current results.
 - Proofread Workers are read-only and may submit only evidence-bound structured findings and proper-name candidates.
 - Folder mode prescans all files before entering one cross-file staged assignment queue.

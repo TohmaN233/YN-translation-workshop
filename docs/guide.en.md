@@ -2,13 +2,13 @@
 
 [中文](guide.md) · [Project](../README.en.md) · [Full settings](features.en.md)
 
-YN keeps manual editing and collaboration with AI in one translation project. These instructions describe 2.2.0. Try a small sample before a whole novel or game-text batch.
+YN supports all-AI translation and proofreading, fully manual translation and editing, or a mix chosen for each project. This page describes 2.2.0. Try a small sample before a whole novel or game-text batch.
 
-## Choose where AI participates
+## Choose how to work
 
-- **Manual translation and revision:** edit aligned source/translation rows and ask AI about selected lines when needed.
-- **AI drafting:** prepare terminology, characters, style and preservation rules, then let AI translate chunks and revise them against the source.
-- **Proofread an existing translation:** bind aligned translated text, ask AI for suggestions, then edit, accept or reject them yourself.
+- **AI translation:** prepare settings and source text, then process line-based chunks with mechanical checks, independent review and precise repairs. Chunks can run across parallel agents.
+- **AI proofreading:** bind an existing translation aligned with the source and choose split review or Monte Carlo stratified sampling. Findings provide specific issues and complete replacement suggestions, which can be applied automatically or handled individually.
+- **Manual or mixed editing:** generate aligned source/translation HTML and edit translations yourself. You can optionally ask AI about selected lines, maintain terminology and character records, or send only part of the work to AI.
 
 ## Download and model
 
@@ -22,25 +22,25 @@ Set the language direction and one project style. Defaults are 500 lines per chu
 
 ### Glossary and characters
 
-Prepare existing terminology, character records and notes before translation. Reference preparation can create a project without existing translated text, uses editable drafts, checks them and commits formal assets. Tables can later be viewed, edited and deleted from HTML.
+If the project already has a glossary, character records or notes, AI can organize them into project references. This workflow can create a project without an existing translation. AI prepares and checks drafts before committing formal assets; drafts can also be edited when needed. Tables can later be viewed, edited and deleted from HTML.
 
 ## Start translating
 
-The preparation shortcut checks settings against the text, samples preservation candidates, trials rules, then opens HTML and uses the same parameters and prompt as manual startup. Generate HTML first when you want to adjust settings yourself and invoke AI selectively.
+The start-page translation shortcut checks settings against the actual source. For requested preservation, the model uses real text samples to propose scoped rule candidates; the program trials the rules and validates their matches before starting translation with the same settings and prompt used by the HTML controls. Translation is split by line and can use parallel agents. Each chunk gets mechanical checks, then independent review covers every mechanically risky row and samples ordinary rows. Failed rows return to the translation agent for precise repair. Existing translations can be audited and selectively reused, and stopped tasks can resume. You can also generate aligned HTML first, adjust settings yourself, and invoke AI selectively.
 
-A preservation regex protects its actual matched positions. Inspect examples so a prefix rule does not lock dialogue. Prose outside matches still needs translation. Explicitly untranslated names can be confirmed source-to-identical-target terms in the formal glossary.
+Preservation rules protect only their actual matched positions; prose outside the matches remains translatable. Custom regex rules and match examples are optional adjustment tools. Explicitly untranslated names can be recorded as confirmed source-to-identical-target terms in the formal glossary.
 
 ## Existing translations
 
-Bind a translation aligned with the source. Reuse mechanically screens old rows, semantically audits risky ones, then asks for one batch decision. Accepted rows remain; only actual retranslation debt goes back to translation. Resolve binding or line-count mismatches first.
+Bind a translation aligned with the source. Reuse mechanically screens old rows, semantically audits risky ones, then asks for one batch decision. Accepted rows remain; only rows that need translation go back into the queue. Resolve binding or line-count mismatches first.
 
 ## Proofread and write
 
-Proofreading requires an existing translation. Split review checks each assigned row; Monte Carlo uses stratified sampling.
+Proofreading requires an existing translation aligned with the source. Split review semantically checks every assigned row. Monte Carlo combines full deterministic scans with stratified semantic sampling and does not semantically review every row. Findings identify the row, include supporting evidence and provide a complete replacement suggestion.
 
 ![Accept, reject or edit proofreading suggestions](yn-guide/assets/screens/proofread-review.png)
 
-Auto-apply affects HTML only. Review the result, then write TXT or batch-write files; EPUB/PDF have export controls. Candidate refresh, HTML editing and final file output are separate operations.
+Suggestions can be applied to HTML automatically or accepted, rejected or edited individually. After AI processing or manual editing, use the controls to write the final TXT, batch-write files or export EPUB/PDF. Automatic application updates HTML; the write/export controls save the final file.
 
 ## PDF, code and formulas
 

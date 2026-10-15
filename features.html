@@ -1,6 +1,6 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="preload" as="image" href="assets/app-icon.png"/><meta name="description" content="为译者与 AI 协作设计的开源翻译工作台，面向长篇小说与游戏本地化。"/><meta name="robots" content="index,follow"/><meta http-equiv="Content-Security-Policy" content="default-src &#x27;self&#x27; data:; script-src &#x27;self&#x27;; style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27;; img-src &#x27;self&#x27; data: https://img.shields.io;"/><link rel="canonical" href="https://tohman233.github.io/YN-translation-workshop/features.html"/><link rel="alternate" hrefLang="zh-CN" href="https://tohman233.github.io/YN-translation-workshop/features.html"/><link rel="alternate" hrefLang="en" href="https://tohman233.github.io/YN-translation-workshop/features.en.html"/><link rel="icon" href="assets/app-icon.png"/><title>功能与参数 · YN Translation Workshop 2.2.0</title><link rel="stylesheet" href="styles.css"/><script src="content.js" defer=""></script><script src="app.js" defer=""></script></head><body data-page="features" data-locale="zh" data-version="2.2.0"><header class="topbar"><a class="brand" href="index.html"><img src="assets/app-icon.png" alt="YN"/><strong>YN Translation Workshop</strong></a><button class="search-trigger" type="button" data-search-open="true">搜索文档</button><div class="topmeta"><span>2.2.0</span><a href="features.en.html" hrefLang="en">English</a><button type="button" class="menu-button" data-menu="true" aria-label="导航">☰</button></div></header><aside class="sidebar" aria-label="文档导航"><section class="nav-section"><p class="nav-label">项目</p><a class="nav-link" href="index.html">认识 YN</a></section><section class="nav-section"><p class="nav-label">使用 YN</p><a class="nav-link" href="guides.html">第一次使用</a><a class="nav-link active" href="features.html">功能与参数</a><a class="nav-link" href="pdf.html">PDF 翻译</a><a class="nav-link" href="agent-api.html">后台 Agent API</a></section><section class="nav-section"><p class="nav-label">案例与证据</p><a class="nav-link" href="examples.html">翻译项目例子</a><a class="nav-link" href="quality.html">质量检查</a></section><section class="nav-section"><p class="nav-label">技术参考</p><a class="nav-link" href="workflows.html">流程与恢复</a><a class="nav-link" href="harness.html">Harness 架构</a><a class="nav-link" href="development.html">开发与验证</a><a class="nav-link" href="functions.html">Function 参考</a><a class="nav-link" href="terminology.html">Agent 术语</a><a class="nav-link" href="changelog.html">版本记录</a></section><div class="sidebar-foot">文档对应 2.2.0</div></aside><main class="layout"><article class="content" id="content" data-source="docs/features.md"><h1 id="功能与参数">功能与参数</h1>
-<p>这些功能围绕译者与 AI 的分工设计：译者维护项目要求、推敲译文并决定成稿，AI 按需整理资料、起草和校对。对照编辑、译名与角色管理、旧译复用及游戏格式保护支撑同一套协作流程。</p>
+<html lang="zh-CN"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="preload" as="image" href="assets/app-icon.png"/><meta name="description" content="面向长篇小说与游戏本地化的开源翻译与校对工作台，可选全 AI、全人工或人与 AI 协作。"/><meta name="robots" content="index,follow"/><meta http-equiv="Content-Security-Policy" content="default-src &#x27;self&#x27; data:; script-src &#x27;self&#x27;; style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27;; img-src &#x27;self&#x27; data: https://img.shields.io;"/><link rel="canonical" href="https://tohman233.github.io/YN-translation-workshop/features.html"/><link rel="alternate" hrefLang="zh-CN" href="https://tohman233.github.io/YN-translation-workshop/features.html"/><link rel="alternate" hrefLang="en" href="https://tohman233.github.io/YN-translation-workshop/features.en.html"/><link rel="icon" href="assets/app-icon.png"/><title>功能与参数 · YN Translation Workshop 2.2.0</title><link rel="stylesheet" href="styles.css"/><script src="content.js" defer=""></script><script src="app.js" defer=""></script></head><body data-page="features" data-locale="zh" data-version="2.2.0"><header class="topbar"><a class="brand" href="index.html"><img src="assets/app-icon.png" alt="YN"/><strong>YN Translation Workshop</strong></a><button class="search-trigger" type="button" data-search-open="true">搜索文档</button><div class="topmeta"><span>2.2.0</span><a href="features.en.html" hrefLang="en">English</a><button type="button" class="menu-button" data-menu="true" aria-label="导航">☰</button></div></header><aside class="sidebar" aria-label="文档导航"><section class="nav-section"><p class="nav-label">项目</p><a class="nav-link" href="index.html">认识 YN</a></section><section class="nav-section"><p class="nav-label">使用 YN</p><a class="nav-link" href="guides.html">第一次使用</a><a class="nav-link active" href="features.html">功能与参数</a><a class="nav-link" href="pdf.html">PDF 翻译</a><a class="nav-link" href="agent-api.html">后台 Agent API</a></section><section class="nav-section"><p class="nav-label">案例与证据</p><a class="nav-link" href="examples.html">翻译项目例子</a><a class="nav-link" href="quality.html">质量检查</a></section><section class="nav-section"><p class="nav-label">技术参考</p><a class="nav-link" href="workflows.html">流程与恢复</a><a class="nav-link" href="harness.html">Harness 架构</a><a class="nav-link" href="development.html">开发与验证</a><a class="nav-link" href="functions.html">Function 参考</a><a class="nav-link" href="terminology.html">Agent 术语</a><a class="nav-link" href="changelog.html">版本记录</a></section><div class="sidebar-foot">文档对应 2.2.0</div></aside><main class="layout"><article class="content" id="content" data-source="docs/features.md"><h1 id="功能与参数">功能与参数</h1>
+<p>YN 支持全 AI 翻译与校对、全人工翻译与编辑，或按项目混合使用。自动翻译、校对、资料整理和格式保留，与对照编辑、逐行提问及建议处理共用同一项目。</p>
 <h2 id="1-项目-输入与文件绑定">1. 项目、输入与文件绑定</h2>
 <ul>
 <li>新建、载入、保存和切换独立项目；项目设置、工作流状态、资产和会话都保存在项目自己的 <code>.translation-workshop/</code> 中。</li>
@@ -12,7 +12,7 @@
 <li>文件顺序支持阶段屏障。例如 <code>A, {B, C}, D</code> 会先完成 A，再并行处理 B/C，最后处理 D。</li>
 <li>翻译输出和校对报告默认绑定当前项目的 <code>AI_translation/</code> 与 <code>report/</code>，切换项目时不会沿用上一个项目的路径。</li>
 <li>一个统一的分片大小同时用于初翻与校对；并发 Worker 数和独立复审 Worker 数分别设置为上限，实际数量会随任务量缩减。</li>
-<li>自定义保留规则可保护变量、事件码、标签、控制码和其他不可改载荷；无效正则会直接报错。</li>
+<li>翻译准备时，AI 根据任务要求和原文样例识别变量、事件码、标签与控制码等保留规则候选，程序试跑并校验匹配。也可按需添加自定义规则；无效正则会直接报错。</li>
 <li>支持中英文界面、HTML 主题、项目级 Agent 代理开关和持久项目设置。</li>
 </ul>
 <h2 id="2-行对行翻译与审阅前端">2. 行对行翻译与审阅前端</h2>
@@ -23,9 +23,9 @@
 <li>分页、页码跳转、全文搜索、滚动位置恢复、最近焦点行定位和文件标签切换。</li>
 <li>按问题严重度标记行、显示高亮、清除问题、管理只读机械证据与可忽略项。</li>
 <li>从选中行向 Agent 询问有界上下文，不需要把整份文件塞进对话。</li>
-<li>校对建议默认可执行；可逐条接受、拒绝或手动改写完整替换文本。</li>
+<li>校对建议包含完整替换文本；可逐条接受、拒绝或手动改写，也可按设置自动应用到 HTML。</li>
 <li>一键应用已接受建议，并把批次内全部 canonical 子页面同步到当前译文。</li>
-<li>可导出 TXT，也可写回已绑定译文；写回前检查路径绑定、基线、sidecar、行数和冲突。</li>
+<li>AI 处理或人工编辑后，可写出最终 TXT、写回已绑定译文或导出 EPUB/PDF；写回前检查路径绑定、基线、sidecar、行数和冲突。</li>
 <li>写回和覆盖前创建时间戳备份；原文文件始终只读。</li>
 <li>旧版 HTML 打开时按明确版本标记自动升级到当前协议，不要求重新生成全部页面。</li>
 </ul>
@@ -57,8 +57,9 @@
 <li>长会话使用 Pi 原生 compaction；完整 Child 对话留在自己的 JSONL，Parent 只保存轻量状态和会话引用。</li>
 <li>大会话按需读取；旧 v4 会话打开时自动压缩重复状态并保留可校验的 gzip 原文件备份，详见<a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/docs/session-storage.md">会话存储说明</a>。</li>
 </ul>
-<h2 id="5-完整初翻-workflow">5. 完整初翻 Workflow</h2>
+<h2 id="5-ai-翻译-workflow">5. AI 翻译 Workflow</h2>
 <ul>
+<li>准备流程核对已设参数与真实原文；针对用户提出的保留要求，模型依据源文样例提出范围明确的规则候选，程序试跑并校验匹配。确认后沿用同一 HTML 参数表和正常翻译提示启动。</li>
 <li>Parent 读取当前界面绑定和 Host 状态，选择不超过项目上限的实际并发数，并负责最终汇总。</li>
 <li>Host 根据权威 manifest、文件阶段、统一分片大小、旧译复用掩码和现有证据规划真实债务；模型不能自创文件或行范围。</li>
 <li>翻译池使用持久 Worker 动态领取互不重叠的 assignment，完成一块后再领下一块，避免每个文件私有队列造成长尾。</li>
@@ -85,13 +86,14 @@
 <li>后续翻译队列只包含真实重译债务，不会为了连续覆盖把保留行再次交给模型。</li>
 <li>冷启动按 owner、document、source hash 和保留基线恢复，不会把本轮刚写出的候选误当成启动前旧译。</li>
 </ul>
-<h2 id="7-完整校对-workflow">7. 完整校对 Workflow</h2>
+<h2 id="7-ai-校对-workflow">7. AI 校对 Workflow</h2>
 <ul>
 <li>任何语义 Worker 启动前，Host 对清单内所有文档和全部对齐行运行 H3/H4/H7/H8/H9 等确定性扫描。</li>
 <li>扫描结果绑定 source、candidate、glossary、character bible 和 style hash；输入变化会使旧证据失效。</li>
 <li>确定性信号只是供 Worker 结合原文、译文和邻近上下文判断的证据，不会直接变成 finding。</li>
 <li><strong>逐片精审</strong>：Worker 语义检查自己范围内的每一行；分片大小只决定派发和保存边界。</li>
 <li><strong>Monte Carlo</strong>：Host 规划不重复的 HOT / WARM / COLD 分层样本，并记录真实覆盖。</li>
+<li>Monte Carlo 将全量确定性扫描与抽样语义审查分开；抽样模式不对每一行都做语义审查。</li>
 <li>达到最低轮数后，只有连续两轮无新增才算收敛；轮数上限仍有新增时由用户选择继续三轮、只精审 HOT 区域或按当前结果停止。</li>
 <li>校对 Worker 只读原文、译文和项目资产，只能提交带证据的结构化 findings 与专名候选。</li>
 <li>文件夹模式先预扫描全部文件，再把所有文档放进同一个跨文件 staged assignment 队列。</li>
@@ -162,4 +164,4 @@
 <h2 id="12-pdf-与后台-agent-入口">12. PDF 与后台 Agent 入口</h2>
 <p>横排文字层 PDF 会先提取正文、原生字形和图表资产，机械整理逻辑结构，再由当前 Pi 模型修订剩余结构问题并进行独立审计，通过后生成审阅 HTML。翻译可译正文后，程序使用当前译文和保留资产重建结构化 HTML，并自动重排生成 PDF；原文保持只读。已有 HTML 打开时恢复已保存译文，不重新运行结构模型。详见 <a href="pdf.html">PDF 说明</a>。</p>
 <p>外部 Agent 使用 <a href="agent-api.html">官方 Agent API</a> 先预览位置、模型和参数，确认后复用首页同一准备与启动链路。它使用 YN 配置的供应商，不借用外部 Agent 当前聊天的模型。</p>
-<p><a href="features.en.html">English</a> · <a href="guides.html">首次使用</a> · <a href="index.html">首页</a></p></article></main><aside class="toc"><strong>本页目录</strong><div id="toc-links"><a href="#1-项目-输入与文件绑定" class="level-2">1. 项目、输入与文件绑定</a><a href="#2-行对行翻译与审阅前端" class="level-2">2. 行对行翻译与审阅前端</a><a href="#3-术语-角色-文风与翻译记忆" class="level-2">3. 术语、角色、文风与翻译记忆</a><a href="#4-模型-provider-与-agent-会话" class="level-2">4. 模型、Provider 与 Agent 会话</a><a href="#5-完整初翻-workflow" class="level-2">5. 完整初翻 Workflow</a><a href="#6-旧译审计与选择性复用" class="level-2">6. 旧译审计与选择性复用</a><a href="#7-完整校对-workflow" class="level-2">7. 完整校对 Workflow</a><a href="#8-harness-host-与可靠性" class="level-2">8. Harness、Host 与可靠性</a><a href="#稳定性的设计依据" class="level-3">稳定性的设计依据</a><a href="#减少重复上下文的设计" class="level-3">减少重复上下文的设计</a><a href="#9-网页与本地参考资料" class="level-2">9. 网页与本地参考资料</a><a href="#10-局域网与远程操作" class="level-2">10. 局域网与远程操作</a><a href="#11-更新-恢复与兼容" class="level-2">11. 更新、恢复与兼容</a><a href="#12-pdf-与后台-agent-入口" class="level-2">12. PDF 与后台 Agent 入口</a></div></aside><dialog class="search-dialog" id="search-dialog"><div class="search-head"><input type="search" id="global-search" placeholder="搜索标题或内容" aria-label="搜索文档"/><button type="button" data-search-close="true" aria-label="关闭搜索">×</button></div><div class="search-results" id="search-results"></div></dialog><dialog class="lightbox" id="lightbox"><button type="button" data-lightbox-close="true" aria-label="关闭图片">×</button><img alt="放大的产品截图"/></dialog><footer class="doc-footer"><a href="https://github.com/TohmaN233/YN-translation-workshop/releases">发布下载</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/docs/features.md">Markdown 源文</a> · MIT</footer></body></html>
+<p><a href="features.en.html">English</a> · <a href="guides.html">首次使用</a> · <a href="index.html">首页</a></p></article></main><aside class="toc"><strong>本页目录</strong><div id="toc-links"><a href="#1-项目-输入与文件绑定" class="level-2">1. 项目、输入与文件绑定</a><a href="#2-行对行翻译与审阅前端" class="level-2">2. 行对行翻译与审阅前端</a><a href="#3-术语-角色-文风与翻译记忆" class="level-2">3. 术语、角色、文风与翻译记忆</a><a href="#4-模型-provider-与-agent-会话" class="level-2">4. 模型、Provider 与 Agent 会话</a><a href="#5-ai-翻译-workflow" class="level-2">5. AI 翻译 Workflow</a><a href="#6-旧译审计与选择性复用" class="level-2">6. 旧译审计与选择性复用</a><a href="#7-ai-校对-workflow" class="level-2">7. AI 校对 Workflow</a><a href="#8-harness-host-与可靠性" class="level-2">8. Harness、Host 与可靠性</a><a href="#稳定性的设计依据" class="level-3">稳定性的设计依据</a><a href="#减少重复上下文的设计" class="level-3">减少重复上下文的设计</a><a href="#9-网页与本地参考资料" class="level-2">9. 网页与本地参考资料</a><a href="#10-局域网与远程操作" class="level-2">10. 局域网与远程操作</a><a href="#11-更新-恢复与兼容" class="level-2">11. 更新、恢复与兼容</a><a href="#12-pdf-与后台-agent-入口" class="level-2">12. PDF 与后台 Agent 入口</a></div></aside><dialog class="search-dialog" id="search-dialog"><div class="search-head"><input type="search" id="global-search" placeholder="搜索标题或内容" aria-label="搜索文档"/><button type="button" data-search-close="true" aria-label="关闭搜索">×</button></div><div class="search-results" id="search-results"></div></dialog><dialog class="lightbox" id="lightbox"><button type="button" data-lightbox-close="true" aria-label="关闭图片">×</button><img alt="放大的产品截图"/></dialog><footer class="doc-footer"><a href="https://github.com/TohmaN233/YN-translation-workshop/releases">发布下载</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/docs/features.md">Markdown 源文</a> · MIT</footer></body></html>

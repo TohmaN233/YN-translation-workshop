@@ -1,5 +1,7 @@
 # Features and settings
 
+These features support a shared workflow between translators and AI. Translators maintain project requirements, revise translations and decide the finished text; AI helps organize references, draft and proofread as needed. Aligned editing, terminology and character records, translation reuse and game-format preservation support that workflow.
+
 ## 1. Projects, inputs, and bindings
 
 - Create, load, save, and switch isolated projects. Settings, workflow state, assets, and sessions live under each project's `.translation-workshop/` directory.

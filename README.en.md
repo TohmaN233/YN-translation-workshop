@@ -5,9 +5,11 @@
 
 [![MIT Licensed](https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat-square)](LICENSE)
 
-**An open-source AI translation, proofreading and line-review workbench for long-form fiction and game localization.**
+**An open-source workbench for translators working with AI on long-form fiction and game localization.**
 
-YN turns TXT, EPUB and text-layer PDF into editable source/translation views. Glossaries, character references, structural preservation, chunked translation and proofreading belong to one project. Run AI across a whole project or ask about selected lines, then decide what to write to the final file.
+YN brings a translator's judgment, manual editing and AI assistance into one workflow. Translate yourself, ask AI for a draft, or request help with selected lines. You guide terminology, character voice, revisions and the finished text.
+
+TXT, EPUB and text-layer PDF open in aligned source/translation views. Line editing, terminology and character records, format preservation, translation reuse and chunked processing belong to the same project, supporting the close revision, consistent expression and ongoing project maintenance needed in professional translation.
 
 [中文](README.md) · [Windows downloads](https://github.com/TohmaN233/YN-translation-workshop/releases) · [User guide](https://tohman233.github.io/YN-translation-workshop/index.en.html) · [Project introduction (Chinese)](https://tgy233.top/tgypage/yn/) · [Project tutorial](docs/guide.en.md) · [GitHub repository](https://github.com/TohmaN233/YN-translation-workshop)
 
@@ -27,29 +29,30 @@ Installers support in-app updates; portable builds are replaced using the releas
 
 ## Configuration
 
-Configure your provider and model at the top of the start page, then select the source, project location, language direction and style. New tasks default to **500 lines per chunk** and **up to 3 child agents**; explicit settings in existing projects are retained.
+Choose the source, project location, language direction and style. Configure a provider and model at the top of the start page when using AI features. New AI tasks default to **500 lines per chunk** and **up to 3 child agents**; explicit settings in existing projects are retained.
 
 Use reference preparation before translation when you already have terminology, characters or project notes. For game text, inspect preservation-rule matches before starting so a regex does not lock translatable dialogue.
 
-## First translation
+## Choose how to work together
 
-1. Select the source and confirm the project location. Try a small sample first.
-2. Use the translation preparation shortcut and confirm its settings. YN checks the content, trials preservation rules, opens line-review HTML and starts the same translation workflow. Generate HTML first when you prefer more manual control.
-3. Refresh the candidate and edit or inspect the rows. Bind an existing translation before starting proofreading.
+1. Select the source and project location. Bind an existing translation when available, keeping its rows aligned with the source.
+2. For manual translation or revision, generate review HTML, edit in the page and ask AI when needed. For an AI draft, use the translation preparation shortcut, confirm the settings and start chunked processing.
+3. Edit, search and check translations against the source. Give AI context from a selected row, or start proofreading on an existing translation.
 4. Accept, reject or edit suggestions. Auto-apply changes HTML only; **writing the final TXT is manual**. EPUB/PDF use their export controls.
 
 [Complete tutorial](https://tohman233.github.io/YN-translation-workshop/guides.en.html) · [PDF guide](docs/pdf.en.md) · [Background Agent API](docs/agent-api.en.md)
 
-## What it helps with
+## Collaboration designed for translation work
 
-| Need | YN behavior |
+| Translation work | Collaboration support |
 | --- | --- |
-| Names and character references across chapters | Formal glossary, candidates, character records and direct reference matches; conflicts stay visible |
-| Damaged game tags, variables or control codes | Preservation rules and mechanical checks, including proofreading suggestions |
-| Human inspection of many rows | Source/target view, search, editing, candidate refresh and suggestion decisions |
-| Continue an interrupted translation | Verify drafts and review evidence before resuming; stop blind retries of internal failures |
-| PDFs containing code, formulas or figures | Extract prose and glyph/figure assets, reconstruct structured HTML, translate prose, then reflow into a new PDF |
-| Run without opening the main window | External agents preview and confirm a plan through the official background API |
+| Close reading and revision | Aligned source/translation rows, search and direct editing; ask AI about selected lines and edit, accept or reject proofreading suggestions |
+| Terminology and characterization | Maintain approved terms, candidates and character records, including forms of address, pronouns, relationships and voice; AI organizes references and flags conflicts |
+| Style and project requirements | Translation style, references and editable prompts carry the translator's preferences and the work's requirements |
+| Game control codes and formatting | Inspect preservation-rule examples before protecting variables, tags and control codes; translation and proofreading share those requirements |
+| Continue an existing translation | Bind aligned previous translations, retain reusable content and continue editing, translating or proofreading |
+| Sustained work on long projects | Process chunks, Stop and resume, keeping text, references and review state in one project |
+| PDF review and export | Extract prose and formula/figure assets, edit translations in HTML, then reflow them into a PDF |
 
 See the [feature guide](docs/features.en.md) for settings, reuse, sampled proofreading, LAN access and artifact locations.
 

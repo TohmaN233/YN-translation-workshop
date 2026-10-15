@@ -2,11 +2,17 @@
 
 [English](guide.en.md) · [首页](../README.md) · [完整参数](features.md)
 
-本页对应 2.2.0。先用一小段原文跑通流程，再处理整本小说或整批游戏文本。
+YN 让译者在同一项目中完成人工编辑与 AI 协作。本页对应 2.2.0，先用一小段原文熟悉流程，再处理整本小说或整批游戏文本。
+
+## 先决定 AI 参与哪一部分
+
+- **人工翻译与精修：**在原译文对照页面逐行编辑，需要时从选中行向 AI 提问。
+- **AI 起草：**先准备译名、角色、风格和保留规则，让 AI 分块翻译，再对照原文修改。
+- **校对已有译文：**绑定逐行对应的译文，让 AI 提交建议，由译者修改、接受或拒绝。
 
 ## 下载与模型
 
-从 [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases) 下载 Windows 安装版或便携版。在首页顶部配置供应商、模型和授权。AI 任务使用 YN 的配置；外部 Agent 发起任务也一样。
+从 [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases) 下载 Windows 安装版或便携版。使用 AI 相关功能时，在首页顶部配置供应商、模型和授权。AI 任务使用 YN 的配置；外部 Agent 发起任务也一样。
 
 ## 创建项目
 

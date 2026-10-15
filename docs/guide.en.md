@@ -2,11 +2,17 @@
 
 [中文](guide.md) · [Project](../README.en.md) · [Full settings](features.en.md)
 
-These instructions describe 2.2.0. Try a small sample before a whole novel or game-text batch.
+YN keeps manual editing and collaboration with AI in one translation project. These instructions describe 2.2.0. Try a small sample before a whole novel or game-text batch.
+
+## Choose where AI participates
+
+- **Manual translation and revision:** edit aligned source/translation rows and ask AI about selected lines when needed.
+- **AI drafting:** prepare terminology, characters, style and preservation rules, then let AI translate chunks and revise them against the source.
+- **Proofread an existing translation:** bind aligned translated text, ask AI for suggestions, then edit, accept or reject them yourself.
 
 ## Download and model
 
-Get the Windows installer or portable build from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). Configure the provider, model and authorization at the top of the start page. External agents use this same YN configuration.
+Get the Windows installer or portable build from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). Configure the provider, model and authorization at the top of the start page when using AI features. External agents use this same YN configuration.
 
 ## Create the project
 

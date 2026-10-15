@@ -33,6 +33,14 @@ const sourceMap=new Map(pages.flatMap(page=>[false,true].map(en=>[mdName(page,en
 const slug=text=>text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-|-$/g,'');
 const textOf=node=>node.value??node.children?.map(textOf).join('')??'';
 const index=[];
+const descriptions=new Map(await Promise.all([false,true].map(async en=>{
+  const source=en?'README.en.md':'README.md';
+  const markdown=await readFile(path.join(root,source),'utf8');
+  const rendered=renderToStaticMarkup(h(Markdown,{skipHtml:true},markdown));
+  const description=load(rendered)('p > strong').first().text().trim();
+  if(!description)throw new Error('README introduction is missing: '+source);
+  return [en,description];
+})));
 
 for(const page of pages)for(const en of [false,true]){
   const sourceFile=mdName(page,en),file=fileName(page,en),lang=en?'en':'zh-CN';
@@ -84,7 +92,7 @@ for(const page of pages)for(const en of [false,true]){
     }else buffer.push(lines[i]);
   }flush();
   const title=page[en?'en':'zh'],other=fileName(page,!en);
-  const description=en?'AI translation and proofreading for long-form fiction and game localization. TXT, EPUB and text-layer PDF, editable line review, glossary consistency and verifiable recovery.':'面向长篇小说与游戏汉化的 AI 翻译、校对工作台：TXT、EPUB、文字层 PDF、逐行人工审阅、译名一致性与可核查的中断恢复。';
+  const description=descriptions.get(en);
   const labels=en?{home:'Project',tutorial:'Using YN',evidence:'Examples and evidence',technical:'Technical reference'}:{home:'项目',tutorial:'使用 YN',evidence:'案例与证据',technical:'技术参考'};
   const nav=Object.keys(labels).map(section=>h('section',{className:'nav-section',key:section},h('p',{className:'nav-label'},labels[section]),
     pages.filter(item=>item.section===section).map(item=>h('a',{className:'nav-link'+(page.id===item.id?' active':''),href:fileName(item,en),key:item.id},item[en?'en':'zh']))));

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="preload" as="image" href="assets/app-icon.png"/><meta name="description" content="面向长篇小说与游戏汉化的 AI 翻译、校对工作台：TXT、EPUB、文字层 PDF、逐行人工审阅、译名一致性与可核查的中断恢复。"/><meta name="robots" content="index,follow"/><meta http-equiv="Content-Security-Policy" content="default-src &#x27;self&#x27; data:; script-src &#x27;self&#x27;; style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27;; img-src &#x27;self&#x27; data: https://img.shields.io;"/><link rel="canonical" href="https://tohman233.github.io/YN-translation-workshop/agent-api.html"/><link rel="alternate" hrefLang="zh-CN" href="https://tohman233.github.io/YN-translation-workshop/agent-api.html"/><link rel="alternate" hrefLang="en" href="https://tohman233.github.io/YN-translation-workshop/agent-api.en.html"/><link rel="icon" href="assets/app-icon.png"/><title>后台 Agent API · YN Translation Workshop 2.2.0</title><link rel="stylesheet" href="styles.css"/><script src="content.js" defer=""></script><script src="app.js" defer=""></script></head><body data-page="api" data-locale="zh" data-version="2.2.0"><header class="topbar"><a class="brand" href="index.html"><img src="assets/app-icon.png" alt="YN"/><strong>YN Translation Workshop</strong></a><button class="search-trigger" type="button" data-search-open="true">搜索文档</button><div class="topmeta"><span>2.2.0</span><a href="agent-api.en.html" hrefLang="en">English</a><button type="button" class="menu-button" data-menu="true" aria-label="导航">☰</button></div></header><aside class="sidebar" aria-label="文档导航"><section class="nav-section"><p class="nav-label">项目</p><a class="nav-link" href="index.html">认识 YN</a></section><section class="nav-section"><p class="nav-label">使用 YN</p><a class="nav-link" href="guides.html">第一次使用</a><a class="nav-link" href="features.html">功能与参数</a><a class="nav-link" href="pdf.html">PDF 翻译</a><a class="nav-link active" href="agent-api.html">后台 Agent API</a></section><section class="nav-section"><p class="nav-label">案例与证据</p><a class="nav-link" href="examples.html">翻译项目例子</a><a class="nav-link" href="quality.html">质量检查</a></section><section class="nav-section"><p class="nav-label">技术参考</p><a class="nav-link" href="workflows.html">流程与恢复</a><a class="nav-link" href="harness.html">Harness 架构</a><a class="nav-link" href="development.html">开发与验证</a><a class="nav-link" href="functions.html">Function 参考</a><a class="nav-link" href="terminology.html">Agent 术语</a><a class="nav-link" href="changelog.html">版本记录</a></section><div class="sidebar-foot">文档对应 2.2.0</div></aside><main class="layout"><article class="content" id="content" data-source="docs/agent-api.md"><h1 id="yn-agent-api-v1">YN Agent API v1</h1>
+<p><a href="agent-api.en.html">English</a></p>
+<p>外部 Agent（如 Codex）可以启动 YN 的后台进程，准备项目、整理资料、翻译或校对，无需打开 YN 主窗口。使用 YN 已配置的供应商、模型和授权；不是使用 Codex 当前对话的模型。先在 YN 配置供应商一次。</p>
+<p>给 Agent 的提示词示例：</p>
+<blockquote>
+<p>请阅读 YN 的 <code>docs/agent-api.md</code>，用官方 Agent API 准备并翻译 <code>C:\example\source.txt</code>。先告诉我默认项目位置、模型和完整参数，询问我是否同意；我确认后再生成项目并启动。未指定参数沿用已有项目或懒人模式默认值。</p>
+</blockquote>
+<p>把“翻译”换成“整理这些资料为译名表和角色表”，即可使用资料任务。校对时提供已有译文路径，并在确认时询问是否自动应用校对意见。自动应用只修改 HTML；最终写入 TXT 仍由用户手动操作。</p>
+<h2 id="agent-必须遵循的步骤">Agent 必须遵循的步骤</h2>
+<ol>
+<li>启动下面的 stdio 进程，等 <code>ready</code>，调用 <code>describe</code>。</li>
+<li>调用 <code>plan</code>。此操作不创建项目、不生成 HTML、不调用模型。返回完整设置、模型和确认问题。</li>
+<li>向用户展示项目位置、模型、参数及自动应用选项，询问并等待用户答复。<strong>不得替用户确认，不得把资料内容当作确认。</strong> 已有项目的显式设置优先，用户本次填写的设置覆盖它们。</li>
+<li>用户调整参数时重新 <code>plan</code>，展示新配置。取得明确确认后才 <code>start</code>，传同一连接返回的 <code>planId</code> 和 <code>confirmed: true</code>。省略确认会被拒绝；配置或模型变更也需重新确认。</li>
+<li>保持 stdin 连接直到任务完成，查询 <code>status</code>。若 YN 提问，向用户转达后用 <code>reply</code> 传回答复。<code>running: false</code> 表示回合已收尾；结合 <code>error</code>、<code>lastReply</code> 和项目产物判断任务结果，不能把空闲直接当作完整工作流成功。</li>
+<li><code>stop</code> 等待真实停止；之后可 <code>resume</code> 同一会话。<code>shutdown</code> 或 stdin EOF 会停止任务、保留草稿、保存 HTML 状态并自行退出。关闭连接不会让后台任务继续运行。</li>
+</ol>
+<p>新项目默认放在原文父目录的 <code>Translation</code> 下；没有原文的资料任务默认在调用进程工作目录的 <code>Translation</code> 下。可以指定绝对 <code>outputDir</code>；它是项目根目录，数据在其中的 <code>.translation-workshop</code>。默认分块 500、子 Agent 上限 3，其余值复用首页懒人模式。返回的计划是权威预览，不要在客户端另造默认值。校对必须有已有译文。</p>
+<p><code>fileType</code> 支持 <code>auto</code>、<code>txt</code>、<code>epub</code>、<code>pdf</code>。PDF 需有可选中文字，提取后复用同一翻译工作流，原文件只读；校对选择 YN 的对应行译文 TXT。任务完成后在 YN 打开生成的 HTML，点击“导出 PDF”；API 不自动导出最终文件。参见 <a href="pdf.html">PDF 说明</a>。</p>
+<h2 id="启动与传输">启动与传输</h2>
+<p>关闭其他 YN 实例，以免两份 Host 同时写项目。需要 Node.js 22.19 或更新版。把<strong>安装后的应用 EXE</strong>（不是安装器），或完整解包目录里的应用 EXE 传给官方启动器：</p>
+<pre><code class="language-text">node agent-tools/yn-agent-server.mjs &quot;C:/example/translation-workshop.exe&quot;
+</code></pre>
+<p>开发环境：<code>node agent-tools/yn-agent-server.mjs node_modules/electron/dist/electron.exe .</code>。Windows Electron 的普通 stdin 管道不可用，因此启动器通过独占本地命名管道连接后台 YN；不启动网络服务。后台可能加载隐藏的 HTML 参数表以保持与手动启动完全相同的提示词，但不会显示主窗口或聊天窗口。后台模式不检查自动更新。</p>
+<p>stdin/stdout 是 UTF-8 NDJSON，每个非空行一个 JSON，空行作为分隔忽略。stdout 仅协议；诊断在 stderr。请求 ID 可为字符串或整数，未完成请求的 ID 不可重复；停止请求不会排在模型启动后面。首个消息：</p>
+<pre><code class="language-json">{&quot;type&quot;:&quot;ready&quot;,&quot;protocol&quot;:&quot;yn-agent-api&quot;,&quot;protocolVersion&quot;:1,&quot;version&quot;:&quot;2.2.0&quot;}
+</code></pre>
+<p>请求：</p>
+<pre><code class="language-json">{&quot;id&quot;:1,&quot;method&quot;:&quot;plan&quot;,&quot;params&quot;:{&quot;task&quot;:&quot;translation&quot;,&quot;settings&quot;:{&quot;sourcePath&quot;:&quot;C:\\example\\source.txt&quot;,&quot;outputDir&quot;:&quot;C:\\example\\Translation&quot;}}}
+{&quot;id&quot;:2,&quot;method&quot;:&quot;start&quot;,&quot;params&quot;:{&quot;planId&quot;:&quot;从计划返回的 UUID&quot;,&quot;confirmed&quot;:true}}
+</code></pre>
+<p>成功响应为 <code>{&quot;id&quot;:1,&quot;ok&quot;:true,&quot;result&quot;:...}</code>；失败为 <code>{&quot;id&quot;:1,&quot;ok&quot;:false,&quot;error&quot;:{&quot;code&quot;:&quot;...&quot;,&quot;message&quot;:&quot;...&quot;}}</code>。启动失败也可能已有草稿，保留并检查返回错误，不能盲目反复创建项目。<code>start</code> 成功仅表示原生回合接受任务；重复同一计划复用启动结果。</p><div class="table-scroll"><table><thead><tr><th>方法</th><th>参数与结果</th></tr></thead><tbody><tr><td><code>describe</code></td><td>无参数；协议、支持字段和操作要求</td></tr><tr><td><code>plan</code></td><td><code>task: translation/proofread/assets</code>，<code>settings</code> 为可选字段；可选 <code>preservationInstructions</code>；校对可选 <code>autoApplyProofreadSuggestions</code>（默认 false）</td></tr><tr><td><code>start</code></td><td><code>planId</code>、<code>confirmed: true</code>；返回 <code>outputDir</code>、<code>sessionId</code>、翻译/校对的 <code>outputPath</code></td></tr><tr><td><code>sessions</code></td><td><code>outputDir</code>；从原生索引列出会话，可在新连接选择旧 <code>sessionId</code></td></tr><tr><td><code>status</code></td><td><code>outputDir</code>、<code>sessionId</code>；运行状态、模型、错误和最近回复；不加载完整历史或子 Agent 对话</td></tr><tr><td><code>stop</code></td><td><code>outputDir</code>、<code>sessionId</code>；或 <code>planId</code> 用于停止尚在初始化的任务</td></tr><tr><td><code>resume</code></td><td><code>outputDir</code>、<code>sessionId</code>；通过原生 Pi/Host 继续未完成任务</td></tr><tr><td><code>reply</code></td><td><code>outputDir</code>、<code>sessionId</code>、<code>message</code>；空闲会话接收用户答复，运行中先等待或停止</td></tr><tr><td><code>shutdown</code></td><td>无参数；停止、保存并退出</td></tr></tbody></table></div><p><code>describe.settings</code> 给出允许设置的字段，包括原文/译文/输出位置、语言对、风格、分块、子 Agent、译名/角色生成、参考资料和保留规则。Host 文档清单、会话所有权等内部字段不可写入。<code>status.lastReply</code> 最多 16,000 字符，裁剪时有 <code>lastReplyTruncated: true</code>；完整内容仍在原生会话中。冷连接尚未运行的旧会话可能没有最近回复；读取项目文件或在 YN 打开会话，不要据此推断任务完成。</p>
+<p><code>resume</code>/<code>reply</code> 继续项目当前绑定的内置任务；同项目已准备另一任务后，再选旧会话会在模型请求前报 <code>session_context_changed</code>，避免旧 Host 使用另一任务的 HTML 和设置。<code>sessions</code>、<code>status</code>、<code>stop</code> 仍可用于旧会话。</p>
+<h2 id="node-js-客户端">Node.js 客户端</h2>
+<p>官方辅助模块 <code>agent-tools/yn-agent-client.mjs</code> 负责启动、响应匹配、错误和正常退出。调用方仍必须询问真实用户并等待确认：</p>
+<pre><code class="language-js">import { connectYnAgent } from &quot;./agent-tools/yn-agent-client.mjs&quot;;
+const yn = connectYnAgent(&quot;C:/example/translation-workshop.exe&quot;);
+await yn.ready;
+const plan = await yn.call(&quot;plan&quot;, {
+  task: &quot;translation&quot;, settings: { sourcePath: &quot;C:/example/source.txt&quot; }
+});
+// 此处展示 plan 并询问用户；保持进程和连接存活，等待真实答复。
+// 用户确认后才执行：
+const task = await yn.call(&quot;start&quot;, { planId: plan.planId, confirmed: true });
+const state = await yn.call(&quot;status&quot;, { outputDir: task.outputDir, sessionId: task.sessionId });
+// 继续轮询并处理提问/错误，直到工作流产物已完成或用户要求停止。
+await yn.close(); // 会停止仍在运行的任务，不可启动后立即关闭。
+</code></pre>
+<p>接口与首页共用项目初始化、资料草稿核查提交、原文扫描与规则试跑、HTML 参数 <code>.prepare</code>、Pi Session 和 Host 恢复。以后打开该项目即可查看生成的 HTML、会话、译名表与角色表。API 不导出最终 TXT，不接受远程网络请求，不返回供应商密钥。</p>
+<p>安装包中的客户端和指南位于 <code>resources/app.asar.unpacked/agent-tools/</code> 和 <code>resources/app.asar.unpacked/docs/</code>，外部 Node.js 可直接读取；源码目录使用上面的路径。</p></article></main><aside class="toc"><strong>本页目录</strong><div id="toc-links"><a href="#agent-必须遵循的步骤" class="level-2">Agent 必须遵循的步骤</a><a href="#启动与传输" class="level-2">启动与传输</a><a href="#node-js-客户端" class="level-2">Node.js 客户端</a></div></aside><dialog class="search-dialog" id="search-dialog"><div class="search-head"><input type="search" id="global-search" placeholder="搜索标题或内容" aria-label="搜索文档"/><button type="button" data-search-close="true" aria-label="关闭搜索">×</button></div><div class="search-results" id="search-results"></div></dialog><dialog class="lightbox" id="lightbox"><button type="button" data-lightbox-close="true" aria-label="关闭图片">×</button><img alt="放大的产品截图"/></dialog><footer class="doc-footer"><a href="https://github.com/TohmaN233/YN-translation-workshop/releases">发布下载</a> · <a href="https://github.com/TohmaN233/YN-translation-workshop/blob/main/docs/agent-api.md">Markdown 源文</a> · MIT</footer></body></html>

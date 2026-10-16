@@ -30,27 +30,47 @@ const pages=[
 const fileName=(page,en)=>page.file+(en?'.en':'')+'.html';
 const mdName=(page,en)=>page.md+(en?'.en':'')+'.md';
 const sourceMap=new Map(pages.flatMap(page=>[false,true].map(en=>[mdName(page,en),fileName(page,en)])));
+const assetMap=new Map([['docs/yn-guide/robots-root-template.txt','robots-root-template.txt']]);
 const slug=text=>text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-|-$/g,'');
 const textOf=node=>node.value??node.children?.map(textOf).join('')??'';
 const index=[];
-const descriptions=new Map(await Promise.all([false,true].map(async en=>{
-  const source=en?'README.en.md':'README.md';
-  const markdown=await readFile(path.join(root,source),'utf8');
-  const rendered=renderToStaticMarkup(h(Markdown,{skipHtml:true},markdown));
-  const description=load(rendered)('p > strong').first().text().trim();
-  if(!description)throw new Error('README introduction is missing: '+source);
-  return [en,description];
-})));
+const pageMetadata=(markdown,sourceFile)=>{
+  const prepared=markdown.replace(/<div align="left">[\s\S]*?<\/div>/,header=>{
+    const heading=load(header)('h1').first().text().trim();
+    if(!heading)throw new Error('README header is missing its H1: '+sourceFile);
+    return '# '+heading;
+  });
+  const lines=prepared.split('\n'),metadataLines=[];
+  for(let i=0,fenced=false;i<lines.length;){
+    if(lines[i].trim().startsWith(String.fromCharCode(96).repeat(3)))fenced=!fenced;
+    if(!fenced&&lines[i].trim().startsWith('|')&&/^\s*\|?[\s:|-]+\|\s*$/.test(lines[i+1]??'')&&lines[i+1].includes('---')){
+      i+=2;while(i<lines.length&&lines[i].trim().startsWith('|'))i++;
+    }else metadataLines.push(lines[i++]);
+  }
+  const $=load(renderToStaticMarkup(h(Markdown,{skipHtml:true},metadataLines.join('\n'))));
+  const title=$('h1').first().text().replace(/\s+/g,' ').trim();
+  if(!title)throw new Error('Markdown page is missing its H1: '+sourceFile);
+  const summary=$('p').toArray().map(node=>{
+    const paragraph=$(node),text=paragraph.text().replace(/\s+/g,' ').trim();
+    if(!text)return '';
+    const prose=paragraph.clone();prose.find('a, img').remove();
+    if(!prose.text().replace(/[\s·•|—–-]+/gu,'').trim())return '';
+    return text;
+  }).find(Boolean)??'';
+  if(!summary)throw new Error('Markdown page is missing descriptive prose: '+sourceFile);
+  return {markdown:prepared,title,summary};
+};
 
 for(const page of pages)for(const en of [false,true]){
   const sourceFile=mdName(page,en),file=fileName(page,en),lang=en?'en':'zh-CN';
   const markdown=await readFile(path.join(root,sourceFile),'utf8');
+  const metadata=pageMetadata(markdown,sourceFile);
   const headings=[],seen=new Map();
   const resolveLink=href=>{
     if(!href||/^(?:https?:|mailto:|#)/.test(href))return href;
     const [location,hash]=href.split('#');
     const resolved=path.posix.normalize(path.posix.join(path.posix.dirname(sourceFile),location));
-    const mapped=sourceMap.get(resolved);
+    const mapped=sourceMap.get(resolved)??assetMap.get(resolved);
     return (mapped??repo+'blob/main/'+resolved)+(hash?'#'+hash:'');
   };
   const resolveImage=src=>{
@@ -78,7 +98,7 @@ for(const page of pages)for(const en of [false,true]){
   const cell=text=>render(text.trim()).replace(/^<p>|<\/p>$/g,'');
   // Existing React Markdown handles prose; tables are rendered here without
   // installing another Markdown runtime. Fenced code is never table-parsed.
-  const lines=markdown.replace(/<div align="left">[\s\S]*?<\/div>/,'# YN Translation Workshop').split('\n');
+  const lines=metadata.markdown.split('\n');
   let body='',buffer=[],fenced=false;
   const flush=()=>{if(buffer.length){body+=render(buffer.join('\n'));buffer=[];}};
   for(let i=0;i<lines.length;i++){
@@ -92,17 +112,18 @@ for(const page of pages)for(const en of [false,true]){
     }else buffer.push(lines[i]);
   }flush();
   const title=page[en?'en':'zh'],other=fileName(page,!en);
-  const description=descriptions.get(en);
+  const seoTitle=page.id==='overview'?metadata.title+' · '+version:metadata.title+' · YN Translation Workshop '+version;
+  const descriptionMeta=metadata.summary?h('meta',{name:'description',content:metadata.summary}):null;
   const labels=en?{home:'Project',tutorial:'Using YN',evidence:'Examples and evidence',technical:'Technical reference'}:{home:'项目',tutorial:'使用 YN',evidence:'案例与证据',technical:'技术参考'};
   const nav=Object.keys(labels).map(section=>h('section',{className:'nav-section',key:section},h('p',{className:'nav-label'},labels[section]),
     pages.filter(item=>item.section===section).map(item=>h('a',{className:'nav-link'+(page.id===item.id?' active':''),href:fileName(item,en),key:item.id},item[en?'en':'zh']))));
   const html=h('html',{lang},h('head',null,
     h('meta',{charSet:'utf-8'}),h('meta',{name:'viewport',content:'width=device-width, initial-scale=1'}),
-    h('meta',{name:'description',content:description}),h('meta',{name:'robots',content:'index,follow'}),
+    descriptionMeta,h('meta',{name:'robots',content:'index,follow'}),
     h('meta',{httpEquiv:'Content-Security-Policy',content:"default-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://img.shields.io;"}),
     h('link',{rel:'canonical',href:site+file}),h('link',{rel:'alternate',hrefLang:'zh-CN',href:site+fileName(page,false)}),h('link',{rel:'alternate',hrefLang:'en',href:site+fileName(page,true)}),
     h('link',{rel:'icon',href:'assets/app-icon.png'}),h('link',{rel:'stylesheet',href:'styles.css'}),
-    h('script',{src:'content.js',defer:true}),h('script',{src:'app.js',defer:true}),h('title',null,title+' · YN Translation Workshop '+version)),
+    h('script',{src:'content.js',defer:true}),h('script',{src:'app.js',defer:true}),h('title',null,seoTitle)),
     h('body',{'data-page':page.id,'data-locale':en?'en':'zh','data-version':version},
       h('header',{className:'topbar'},h('a',{className:'brand',href:fileName(pages[0],en)},h('img',{src:'assets/app-icon.png',alt:'YN'}),h('strong',null,'YN Translation Workshop')),
         h('button',{className:'search-trigger',type:'button','data-search-open':true},en?'Search docs':'搜索文档'),

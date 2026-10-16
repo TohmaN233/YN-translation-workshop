@@ -1,11 +1,11 @@
 <div align="left">
 <img src="docs/yn-guide/assets/app-icon.png" alt="YN Translation Workshop 标志" width="72">
-<h1>YN Translation Workshop</h1>
+<h1>YN：开源 AI 小说翻译与游戏本地化工具</h1>
 </div>
 
 [![MIT Licensed](https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat-square)](LICENSE)
 
-**面向长篇小说与游戏本地化的开源翻译与校对工作台，可选全 AI、全人工或人与 AI 协作。**
+**YN 是面向长篇小说与游戏文本的开源 AI 翻译与校对工具，支持全 AI、全人工和人与 AI 协作。**
 
 YN 支持 TXT、EPUB 和文字层 PDF，将 AI 翻译、AI 校对、原译文对照编辑与项目资料管理放在同一工作区。你可以把整部作品的翻译与校对交给 AI，也可以完全自己翻译，或只在需要的环节调用 AI。
 

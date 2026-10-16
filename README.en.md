@@ -1,13 +1,13 @@
 <div align="left">
 <img src="docs/yn-guide/assets/app-icon.png" alt="YN Translation Workshop logo" width="72">
-<h1>YN Translation Workshop</h1>
+<h1>YN: Open-Source AI Novel Translator and Game Localization Tool</h1>
 </div>
 
 [![MIT Licensed](https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat-square)](LICENSE)
 
-**An open-source translation and proofreading workbench for long-form fiction and game localization, with all-AI, fully manual or mixed workflows.**
+**YN is an open-source AI novel translator and game localization tool for long-form fiction and game text, with AI translation and AI proofreading.**
 
-YN supports TXT, EPUB and text-layer PDF, bringing AI translation, AI proofreading, aligned editing and project references into one workspace. Let AI translate and proofread a whole work, translate entirely yourself, or use AI only for the parts you choose.
+Choose a fully AI workflow, a fully manual workflow, or a mixed workflow with AI for the parts you choose. YN supports TXT, EPUB and text-layer PDF, with aligned editing and project references in one workspace.
 
 Chunked parallel processing, reusable terminology and character references, automatic format preservation and resumable tasks support sustained translation across chapters and files.
 

@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+Sitemap: https://tohman233.github.io/YN-translation-workshop/sitemap.xml

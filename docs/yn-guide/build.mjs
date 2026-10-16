@@ -10,6 +10,7 @@ const directory=path.dirname(fileURLToPath(import.meta.url));
 const root=path.resolve(directory,'../..');
 const version=JSON.parse(await readFile(path.join(root,'package.json'),'utf8')).version;
 const site='https://tohman233.github.io/YN-translation-workshop/';
+const bingSiteVerification='471EF02BDC9FDE5D39FE103CFF45E127';
 const repo='https://github.com/TohmaN233/YN-translation-workshop/';
 const h=React.createElement;
 const pages=[
@@ -120,6 +121,7 @@ for(const page of pages)for(const en of [false,true]){
   const html=h('html',{lang},h('head',null,
     h('meta',{charSet:'utf-8'}),h('meta',{name:'viewport',content:'width=device-width, initial-scale=1'}),
     descriptionMeta,h('meta',{name:'robots',content:'index,follow'}),
+    page.id==='overview'?h('meta',{name:'msvalidate.01',content:bingSiteVerification}):null,
     h('meta',{httpEquiv:'Content-Security-Policy',content:"default-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://img.shields.io;"}),
     h('link',{rel:'canonical',href:site+file}),h('link',{rel:'alternate',hrefLang:'zh-CN',href:site+fileName(page,false)}),h('link',{rel:'alternate',hrefLang:'en',href:site+fileName(page,true)}),
     h('link',{rel:'icon',href:'assets/app-icon.png'}),h('link',{rel:'stylesheet',href:'styles.css'}),

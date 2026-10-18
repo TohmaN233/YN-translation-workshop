@@ -13,10 +13,31 @@ import { createTranslationChunkReviewAudit } from '../../src/main/agent/piNative
 import { runInNewContext } from 'node:vm';
 import { pathToFileURL } from 'node:url';
 import { decodeProjectPaths } from '../../src/main/projectPaths.ts';
+import {readProjectJsonObject} from '../../src/main/projectJson.ts';
 import { prepareTranslationReuseAudit, listCurrentTranslationReuseAudits } from '../../src/main/agent/piNative/translationReuseAudit.ts';
 import { appendSessionCustomEntry } from '../helpers/pi-session.mjs';
 
 function dataFrom(html, id = 'reviewData') { return JSON.parse(html.match(new RegExp(`<script id="${id}" type="application/json">([\\s\\S]*?)</script>`))[1]); }
+
+test('saving the project form first retains the origin needed by an unmigrated sidecar after a copy', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'yn-sidecar-upgrade-order-'));
+  const original = path.join(dir, 'original'), copied = path.join(dir, 'copied');
+  try {
+    const stateDir = path.join(original, '.translation-workshop', 'state');
+    await mkdir(stateDir, {recursive: true});
+    await writeFile(path.join(original, '.translation-workshop', 'project.json'), JSON.stringify({outputDir: original}));
+    await writeFile(path.join(stateDir, 'line-book.html.json'), JSON.stringify({
+      translationPath: path.join(original, 'AI_translation', 'book.txt'), referencePath: path.join(dir, 'external.txt')
+    }));
+    await saveProjectState(original, {style: 'Concise'});
+    const stored = JSON.parse(await readFile(path.join(original, '.translation-workshop', 'project.json'), 'utf8'));
+    assert.equal(stored.outputDir, '.'); assert.equal(stored.projectPathsVersion, 1);
+    await cp(original, copied, {recursive: true});
+    const loaded = await readProjectJsonObject(path.join(copied, '.translation-workshop', 'state', 'line-book.html.json'));
+    assert.equal(loaded.translationPath, path.join(copied, 'AI_translation', 'book.txt'));
+    assert.equal(loaded.referencePath, path.join(dir, 'external.txt'));
+  } finally { await rm(dir, {recursive: true, force: true}); }
+});
 
 test('legacy generated-directory relocation preserves explicit outer source and glossary references', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'yn-partial-move-'));

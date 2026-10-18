@@ -78,7 +78,7 @@ import {configurePdfStructurePreparation,withPdfPreparationContext,currentPdfPre
 import { collectSourceTreeFiles } from "./sourceFileTree.ts";
 import { prepareReviewHtmlOpen, prepareReviewHtmlChildOpen, readReviewHtmlSourceStamp, type ReviewHtmlOpenContext } from "./reviewHtmlUpgrade.ts";
 import { containedProjectRoot, portableReviewHtml, readReviewHtml, writeReviewHtml } from "./reviewHtmlPortability.ts";
-import { decodeProjectPaths, encodeProjectPaths } from "./projectPaths.ts";
+import { readProjectJsonObject as readJsonObject, stringifyProjectJson as projectJson } from "./projectJson.ts";
 import { commitLineReviewStateInWorker } from "./lineReviewStateWorkerService.ts";
 import {
   discoverProjectReviewTargets,
@@ -1328,28 +1328,6 @@ async function ensureWorkspace(outputDir: string): Promise<string> {
   return workspaceDir;
 }
 
-async function readJsonObject(filePath: string): Promise<Record<string, unknown> | undefined> {
-  try {
-    const parsed = JSON.parse(await readFile(filePath, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid project JSON object: ${filePath}`);
-    const root = containedProjectRoot(filePath);
-    let legacyRoot = parsed.projectPathsVersion === 1 ? undefined : parsed.outputDir;
-    if (root && !legacyRoot && parsed.projectPathsVersion !== 1) {
-      try { legacyRoot = JSON.parse(await readFile(path.join(root, ".translation-workshop", "project.json"), "utf8")).outputDir; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    }
-    return root ? decodeProjectPaths(parsed, root, legacyRoot) : parsed;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
-function projectJson(filePath: string, value: unknown): string {
-  const root = containedProjectRoot(filePath);
-  return JSON.stringify(root ? { ...encodeProjectPaths(value as Record<string, unknown>, root), projectPathsVersion: 1 } : value, null, 2);
-}
-
 function normalizeProjectFolder(targetPath: string): { outputDir: string; workspaceDir: string } {
   if (path.basename(targetPath).toLowerCase() === ".translation-workshop") {
     return { outputDir: path.dirname(targetPath), workspaceDir: targetPath };
@@ -1672,18 +1650,22 @@ function proposalLineRows(proposals: ReviewProposal[]): LanSyncLineRow[] {
 
 async function proposalLineReviewCandidates(outputDir: string, explicitPath?: string): Promise<string[]> {
   const { workspaceDir } = normalizeProjectFolder(outputDir);
+  const requestedPath = filePathFromPathLike(explicitPath);
+  if (requestedPath && (!path.isAbsolute(requestedPath) || !isSameOrInside(workspaceDir, requestedPath))) {
+    throw new Error("The linked line-review HTML must belong to the current project workspace.");
+  }
   const [state, project, discovered] = await Promise.all([
     readJsonObject(path.join(workspaceDir, "state.json")),
     readJsonObject(path.join(workspaceDir, "project.json")),
     discoverProjectReviewTargets(workspaceDir)
   ]);
   return [...new Set([
-    explicitPath,
+    requestedPath,
     typeof state?.lastHtml === "string" ? state.lastHtml : undefined,
     typeof project?.lineReviewPath === "string" ? project.lineReviewPath : undefined,
     typeof project?.lastLineReviewHtml === "string" ? project.lastLineReviewHtml : undefined,
     discovered.lineReviewHtml
-  ].filter((value): value is string => Boolean(value && path.isAbsolute(value))))];
+  ].filter((value): value is string => Boolean(value && path.isAbsolute(value) && isSameOrInside(workspaceDir, value))))];
 }
 
 function normalizedLineReviewRouting(paths: Record<string, unknown>): {
@@ -1695,8 +1677,8 @@ function normalizedLineReviewRouting(paths: Record<string, unknown>): {
     .filter((value): value is string => typeof value === "string" && path.isAbsolute(value))
     .map((value) => path.resolve(value)))];
   return {
-    sourcePaths: absolute(["sourcePath", "validationSourcePath", "sourcePromptPath"]),
-    translationPaths: absolute(["translationPath", "editableTranslationPath", "translationPromptPath"])
+    sourcePaths: absolute(["sourcePath", "validationSourcePath", "promptSourcePath", "sourcePromptPath"]),
+    translationPaths: absolute(["translationPath", "editableTranslationPath", "promptTranslationPath", "translationPromptPath"])
   };
 }
 
@@ -1713,7 +1695,7 @@ async function lineReviewRouting(lineReviewPath: string): Promise<{ sourcePaths:
     .map((value) => path.resolve(value));
   return {
     sourcePaths: routing.sourcePaths,
-    translationPaths: [...new Map([...routing.translationPaths, ...sidecarTranslationPaths].map((value) => [
+    translationPaths: [...new Map((sidecarTranslationPaths.length ? sidecarTranslationPaths : routing.translationPaths).map((value) => [
       process.platform === "win32" ? value.toLowerCase() : value,
       value
     ])).values()]
@@ -1738,24 +1720,6 @@ async function assertPdfLineReviewState(htmlPath: string, value: unknown, change
     .map(([line, text]) => ({line:Number(line), text:String(text)}));
   const workspace = workspaceDirFromKnownPath(htmlPath);
   for (const source of sources) await assertPdfProtectedWrite(source, workspace ? path.dirname(workspace) : path.dirname(htmlPath), entries);
-}
-
-async function openLineReviewRouting(lineReviewPath: string): Promise<{
-  sourcePaths: string[];
-  translationPaths: string[];
-} | undefined> {
-  const tab = [...htmlViewerTabs.values()].find((item) => (
-    sameFilePath(item.filePath, lineReviewPath) && !item.view.webContents.isDestroyed()
-  ));
-  if (!tab) return undefined;
-  if (tab.loadPromise) await tab.loadPromise;
-  const paths = await tab.view.webContents.executeJavaScript(`(() => {
-    if (typeof workflow !== "object" || !workflow || typeof workflow.paths !== "object" || !workflow.paths) return null;
-    return workflow.paths;
-  })()`);
-  return paths && typeof paths === "object" && !Array.isArray(paths)
-    ? normalizedLineReviewRouting(paths as Record<string, unknown>)
-    : undefined;
 }
 
 function assertLineReviewRoutingBinding(
@@ -1832,22 +1796,6 @@ function embeddedWorkflowPath(workflow: EmbeddedLineReviewWorkflow | undefined, 
 }
 
 async function readOptionalJsonObjectStrict(filePath: string): Promise<Record<string, unknown> | undefined> {
-  let text: string;
-  try {
-    text = await readFile(filePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    throw new Error(`Line-review state is invalid JSON: ${filePath}`, { cause: error });
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`Line-review state is not an object: ${filePath}`);
-  }
   return readJsonObject(filePath);
 }
 
@@ -1937,11 +1885,13 @@ async function migrateLegacySingleProposalLineReviews(
   if (matching.length === 0) return 0;
 
   const canonicalStatePath = await resolveLineReviewSidecarStatePath(canonicalPath);
+  return withHtmlStateWriteLocks([canonicalStatePath, ...matching.map(artifact => artifact.statePath)], async () => {
   let canonicalState = await readOptionalJsonObjectStrict(canonicalStatePath) ?? {};
   matching.sort((left, right) => left.modifiedMs - right.modifiedMs
     || left.htmlPath.localeCompare(right.htmlPath));
   for (const artifact of matching) {
-    if (artifact.state) canonicalState = mergeLegacyProposalLineReviewState(canonicalState, artifact.state);
+    const currentLegacyState = await readOptionalJsonObjectStrict(artifact.statePath);
+    if (currentLegacyState) canonicalState = mergeLegacyProposalLineReviewState(canonicalState, currentLegacyState);
   }
   canonicalState = {
     ...canonicalState,
@@ -1980,6 +1930,7 @@ async function migrateLegacySingleProposalLineReviews(
     removedArtifactCount: removed
   });
   return removed;
+  });
 }
 
 function proposalLineReviewArtifactPath(
@@ -2262,6 +2213,7 @@ async function existingProposalLineReview(
         // This line-review document belongs to another report item.
         continue;
       }
+      await prepareReviewHtmlOpen(candidate);
       await migrateLegacySingleProposalLineReviews(outputDir, candidate, routing);
       return candidate;
     }
@@ -2282,6 +2234,7 @@ async function existingProposalLineReview(
     if (match && await isLineReviewHtml(match.childPath)) {
       try {
         await assertLineReviewMatchesProposalRouting(match.childPath, routing);
+        await prepareReviewHtmlOpen(match.childPath);
         return match.childPath;
       } catch {
         if (!routing.translationPath) {
@@ -4068,8 +4021,7 @@ async function finishBuiltinWorkflow(context: YnTaskPreparationContext, settings
           lineReviewPath = child.childPath;
         }
         await assertLineReviewMatchesProposalRouting(lineReviewPath, routing);
-        const live = await openLineReviewRouting(lineReviewPath);
-        if (live) assertLineReviewRoutingBinding(live, routing);
+        await migrateLegacySingleProposalLineReviews(context.outputDir, lineReviewPath, routing);
         return { ...routing, lineReviewPath, statePath: await htmlSidecarStatePath(lineReviewPath, "line"),
           validationOptions: { languagePair: settings.languagePair, customPreserveRules: settings.customPreserveRules,
             pdfProtectedLines: await readPdfProtectedLines(routing.sourcePath, context.outputDir) } };
@@ -4344,35 +4296,14 @@ ipcMain.handle("html:resolveProposalLineReviewDocument", async (_event, args: Re
   const routing = await proposalRoutingFromReport(args);
   const locale = args.locale === "en-US" ? "en-US" : "zh-CN";
   const metadataOnly = args.includeRows === false;
-  const requestedLineReviewPath = typeof args.lineReviewPath === "string"
-    ? filePathFromPathLike(args.lineReviewPath)
-    : undefined;
-  const openRouting = metadataOnly && requestedLineReviewPath && isSameOrInside(workspaceDir, requestedLineReviewPath)
-    ? await openLineReviewRouting(requestedLineReviewPath)
-    : undefined;
-  let directLineReviewPath: string | undefined;
-  if (requestedLineReviewPath && openRouting) {
-    assertLineReviewRoutingBinding(openRouting, routing);
-    directLineReviewPath = path.resolve(requestedLineReviewPath);
-  } else if (
-    requestedLineReviewPath
-    && isSameOrInside(workspaceDir, requestedLineReviewPath)
-    && await isLineReviewHtml(requestedLineReviewPath)
-  ) {
-    try {
-      await assertLineReviewMatchesProposalRouting(requestedLineReviewPath, routing);
-      directLineReviewPath = path.resolve(requestedLineReviewPath);
-    } catch {
-      // Let the canonical candidate resolver select or synchronize the matching document.
-    }
-  }
-  const lineReviewPath = directLineReviewPath
-    ?? await existingProposalLineReview(outputDir, args.lineReviewPath, routing, locale)
+  // Navigation, manual apply and recovery resolve the same persisted binding.
+  // includeRows controls payload size only, never document selection/migration.
+  const lineReviewPath = await existingProposalLineReview(outputDir, args.lineReviewPath, routing, locale)
     ?? await generateProposalLineReview(outputDir, routing, locale);
   if (!isSameOrInside(workspaceDir, lineReviewPath)) {
     throw new Error("The resolved line-review document is outside the current project workspace.");
   }
-  const document = metadataOnly && openRouting && sameFilePath(lineReviewPath, requestedLineReviewPath)
+  const document = metadataOnly
     ? {
         title: path.basename(lineReviewPath),
         rows: [],

@@ -1,6 +1,7 @@
 import { readReviewHtml } from "./reviewHtmlPortability.ts";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { readProjectJsonObject } from "./projectJson.ts";
 
 import { splitTextLines } from "../shared/validation/translationValidator.ts";
 import { resolveTranslationCandidatePath } from "./agent/writeTranslationChunk.ts";
@@ -157,16 +158,7 @@ export async function resolveLineReviewSidecarStatePath(lineReviewPath: string):
 async function readLineReviewState(lineReviewPath: string, outputDir: string): Promise<LineReviewState> {
   const statePath = lineReviewSidecarStatePath(lineReviewPath, outputDir);
   if (!statePath) throw new Error(`Line-review HTML is outside a project workspace: ${lineReviewPath}`);
-  try {
-    const parsed = JSON.parse(await readFile(statePath, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error(`Line-review state is not an object: ${lineReviewPath}`);
-    }
-    return parsed as LineReviewState;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw error;
-  }
+  return await readProjectJsonObject(statePath) as LineReviewState ?? {};
 }
 
 export async function batchLineReviewOwnsChild(batchIndexPath: string, childPath: string): Promise<boolean> {
@@ -283,12 +275,12 @@ function explicitTargetPathsFor(
   state: LineReviewState
 ): string[] {
   const sourcePath = path.resolve(file.sourcePath);
-  const boundTargets = [
-    state.translationPath,
+  const sidecarTarget = absoluteTxtPath(state.translationPath);
+  const boundTargets = (sidecarTarget ? [sidecarTarget] : [
     review.workflow?.paths?.editableTranslationPath,
     review.workflow?.paths?.translationPath,
     file.translationPath
-  ]
+  ])
     .map(absoluteTxtPath)
     .filter((candidate): candidate is string => Boolean(candidate && !samePath(candidate, sourcePath)));
   const distinctTargets = [...new Map(boundTargets.map((candidate) => [

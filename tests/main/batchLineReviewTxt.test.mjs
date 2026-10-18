@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -13,6 +13,7 @@ import {
   resolveLineReviewSidecarStatePath
 } from "../../src/main/batchLineReviewTxt.ts";
 import { renderBatchLineReviewIndexHtml, renderLineReviewHtml } from "../../src/shared/core/html.ts";
+import { readProjectJsonObject, stringifyProjectJson } from "../../src/main/projectJson.ts";
 
 let passed = 0;
 let failed = 0;
@@ -199,17 +200,65 @@ await test("batch index binding updates make every canonical child point at its 
   assert.equal(payload.files[1].status, "matched");
 });
 
-await test("batch TXT planning rejects divergent HTML, index, and sidecar translation bindings", async () => {
+await test("a canonical imported sidecar overrides stale HTML and index translation bindings", async () => {
   const item = await fixture();
+  const imported = path.join(item.projectDir, "other.txt");
+  await writeFile(imported, "imported A1\nimported A2");
   await writeFile(
     path.join(item.projectDir, ".translation-workshop", "state", "line-a.html.json"),
-    JSON.stringify({ translationPath: path.join(item.projectDir, "other.txt"), edits: { 2: "manual A2" } }),
+    JSON.stringify({ translationPath: imported, edits: { 2: "manual A2" } }),
     "utf8"
   );
-  await assert.rejects(
-    () => prepareBatchLineReviewTxtWrites(item.indexPath),
-    /divergent translation bindings.*a\.txt/i
-  );
+  const plan = (await prepareBatchLineReviewTxtWrites(item.indexPath)).find(plan => plan.childPath === item.childA);
+  assert.equal(plan.targetPath, imported);
+  assert.equal(plan.text, "imported A1\nmanual A2");
+});
+
+await test("a copied batch project resolves relative sidecar bindings under its new root", async () => {
+  const item = await fixture();
+  const copied = await mkdtemp(path.join(os.tmpdir(), "yn-batch-moved-"));
+  try {
+    const imported = path.join(item.projectDir, "existing", "imported-b.txt");
+    await writeFile(imported, "imported B1\nimported B2");
+    const statePath = path.join(item.projectDir, ".translation-workshop", "state", "line-b.html.json");
+    await writeFile(statePath, stringifyProjectJson(statePath, {
+      translationPath: imported, translationPromptPath: imported, edits: { 1: "reviewed B1" }
+    }));
+    await cp(item.projectDir, copied, { recursive: true });
+    const index = path.join(copied, ".translation-workshop", "html", "batch.html");
+    const bindings = await readBatchLineReviewCurrentBindings(index);
+    assert.equal(bindings.find(binding => binding.documentId === "nested/b.txt").translationPath,
+      path.join(copied, "existing", "imported-b.txt"));
+    const writes = await prepareBatchLineReviewTxtWrites(index);
+    const plan = writes.find(write => write.childPath.endsWith("b.html"));
+    assert.equal(plan.targetPath, path.join(copied, "existing", "imported-b.txt"));
+    assert.equal(plan.text, "reviewed B1\nimported B2");
+    assert.equal(await readFile(imported, "utf8"), "imported B1\nimported B2", "the still-existing old project stays untouched");
+  } finally {
+    assert.ok(copied.startsWith(path.join(os.tmpdir(), "yn-batch-moved-")));
+    await rm(copied, { recursive: true, force: true });
+  }
+});
+
+await test("a moved legacy sidecar uses project.json ownership while preserving external references", async () => {
+  const item = await fixture();
+  const copied = await mkdtemp(path.join(os.tmpdir(), "yn-batch-legacy-moved-"));
+  try {
+    await writeFile(path.join(item.projectDir, ".translation-workshop", "project.json"), JSON.stringify({ outputDir: item.projectDir }));
+    const external = path.join(os.tmpdir(), "external-reference.txt");
+    await writeFile(path.join(item.projectDir, ".translation-workshop", "state", "line-a.html.json"),
+      JSON.stringify({ translationPath: item.translationA, referencePath: external, edits: { 2: "moved manual A2" } }));
+    await cp(item.projectDir, copied, { recursive: true });
+    const index = path.join(copied, ".translation-workshop", "html", "batch.html");
+    const plan = (await prepareBatchLineReviewTxtWrites(index)).find(write => write.childPath.endsWith("a.html"));
+    assert.equal(plan.targetPath, path.join(copied, "existing", "a.txt"));
+    assert.equal(plan.text, "disk A1\nmoved manual A2");
+    const sidecar = await readProjectJsonObject(path.join(copied, ".translation-workshop", "state", "line-a.html.json"));
+    assert.equal(sidecar.referencePath, external);
+  } finally {
+    assert.ok(copied.startsWith(path.join(os.tmpdir(), "yn-batch-legacy-moved-")));
+    await rm(copied, { recursive: true, force: true });
+  }
 });
 
 await test("batch TXT planning refuses to create a partial translation from an empty child", async () => {

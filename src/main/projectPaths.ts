@@ -1,5 +1,14 @@
 import path from "node:path";
 
+export function containedProjectRoot(file: string): string | undefined {
+  let current = path.dirname(path.resolve(file));
+  while (path.dirname(current) !== current) {
+    if (path.basename(current).toLowerCase() === ".translation-workshop") return path.dirname(current);
+    current = path.dirname(current);
+  }
+  return undefined;
+}
+
 // Only structured file bindings are transformed. Prompts, source text, reports,
 // hashes, document ids and regexes must remain byte-for-byte unchanged.
 export const PROJECT_PATH_FIELD_PATTERN = "(?:Path|Dir|Root)$";
@@ -29,14 +38,16 @@ export function encodeProjectPaths<T>(value: T, root: string): T {
 }
 
 /** Resolve runtime bindings without rewriting immutable Pi history or content hashes. */
-export function decodeProjectPaths<T>(value: T, root: string, legacyRoot?: string): T {
-  const partialMove = legacyRoot && projectRelativePath(legacyRoot, root) !== undefined && projectRelativePath(legacyRoot, root) !== ".";
+export function decodeProjectPaths<T>(value: T, root: string, legacyRoot?: string | string[]): T {
+  const origins = (Array.isArray(legacyRoot) ? [...legacyRoot] : legacyRoot ? [legacyRoot] : []).sort((a, b) => b.length - a.length);
   return transform(value, (file, key) => {
     if (!file || file.startsWith("[") || /^[a-z][a-z\d+.-]*:\/\//i.test(file)) return file;
     if (!absolute(file)) return path.resolve(root, file.replace(/[/\\]/g, path.sep));
-    if (!legacyRoot) return file;
-    const relative = projectRelativePath(legacyRoot, file);
+    const origin = origins.find(candidate => projectRelativePath(candidate, file) !== undefined);
+    if (!origin) return file;
+    const relative = projectRelativePath(origin, file);
     if (relative === undefined) return file;
+    const partialMove = projectRelativePath(origin, root) !== undefined && projectRelativePath(origin, root) !== ".";
     // Moving only the generated project into a child directory does not move
     // explicitly selected source/reference files still in the original parent.
     if (partialMove && key !== "outputDir" && relative !== "." && !/^(?:\.translation-workshop|AI_translation|report)(?:\/|$)/i.test(relative)) return file;

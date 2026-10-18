@@ -62,11 +62,11 @@ await test("folder proposal review filters by document and routes jump/apply thr
   assert.match(main, /ipcMain\.handle\("html:prepareProposalLineReviewBatch"/);
   assert.match(main, /ipcMain\.handle\("html:applyProposalLineReviewStates"/);
   assert.match(main, /writeTextFilesAtomically/);
-  assert.match(main, /await assertLineReviewMatchesProposalRouting\(requestedLineReviewPath, routing\);/);
+  assert.match(main, /const lineReviewPath = await existingProposalLineReview\(outputDir, args.lineReviewPath, routing, locale\)/);
   // Actual changed-file reload, state restoration and lazy child preparation
   // are exercised through production IPC by verify-electron-html-open.mjs.
-  assert.match(main, /const openRouting = metadataOnly[\s\S]*?await openLineReviewRouting\(requestedLineReviewPath\)/);
-  assert.match(main, /const document = metadataOnly && openRouting[\s\S]*?rows: \[\],[\s\S]*?state: \{\},/);
+  assert.doesNotMatch(main, /openLineReviewRouting/);
+  assert.match(main, /const document = metadataOnly[\s\S]*?rows: \[\],[\s\S]*?state: \{\},/);
   assert.doesNotMatch(main, /html\.includes\('id="reviewData"'\)/, "proposal scripts mention reviewData and must not be misclassified as line-review documents");
 });
 
@@ -356,6 +356,8 @@ await test("proposal review initializes conflict cards in a minimal DOM", async 
   const resolvedDocuments = [];
   const appliedDocuments = [];
   const openedPaths = [];
+  const canonicalStates = new Map();
+  let routeSuffix = "";
   const context = {
     document: {
       title: "proposal runtime test",
@@ -377,12 +379,13 @@ await test("proposal review initializes conflict cards in a minimal DOM", async 
             : chapterC
               ? [{ line: 1, source: "未处理原文", translation: "未处理旧译" }]
               : [{ line: 1, source: "岡部は言った。", translation: "旧译文" }],
-          state: {},
-          lineReviewPath: `C:\\work\\${args.documentId}.html`
+          state: JSON.parse(JSON.stringify(canonicalStates.get(args.documentId) || {})),
+          lineReviewPath: `C:\\work\\${args.documentId}${chapterB ? routeSuffix : ""}.html`
         };
       },
       applyProposalLineReviewStates: async ({ documents }) => {
         appliedDocuments.push(...documents.map((document) => JSON.parse(JSON.stringify(document))));
+        for (const document of documents) canonicalStates.set(document.documentId, JSON.parse(JSON.stringify(document.lineState)));
         return {
           ok: true,
           documents: documents.map((document) => ({
@@ -420,6 +423,7 @@ await test("proposal review initializes conflict cards in a minimal DOM", async 
     "jumping to one source line must request metadata without loading every linked row"
   );
   assert.deepEqual(openedPaths, ["C:\\work\\chapter-b.txt.html#line=2"]);
+  routeSuffix = "-resolved";
   resolvedDocuments.length = 0;
   await vm.runInContext("applyProposalChanges()", context);
   assert.deepEqual(
@@ -429,15 +433,18 @@ await test("proposal review initializes conflict cards in a minimal DOM", async 
   );
   assert.ok(resolvedDocuments.every((request) => request.includeRows), "proposal application must still request complete rows for safety checks");
   assert.equal(
-    await vm.runInContext(`(async () => (await linkedLineReviewDocumentPromises.get("chapter-b.txt:rows"))?.state?.edits?.[2])()`, context),
+    appliedDocuments.find(document => document.documentId === "chapter-b.txt")?.lineState.edits[2],
     "另一条新译文",
-    "a successful Host commit must replace the canonical cached line state"
+    "a successful Host commit must contain the applied line state"
   );
   assert.equal(
-    await vm.runInContext(`(async () => (await linkedLineReviewDocumentPromises.get("chapter-c.txt:rows"))?.state?.edits?.[1])()`, context),
+    appliedDocuments.find(document => document.documentId === "chapter-c.txt")?.lineState.edits[1],
     "自动应用译文",
     "one-click apply must commit an untouched folder document suggestion"
   );
+  await vm.runInContext("jumpToLineReviewLine(data.proposals.find(item => item.documentId === 'chapter-b.txt'))", context);
+  assert.equal(openedPaths.at(-1), "C:\\work\\chapter-b.txt-resolved.html#line=2",
+    "jump after apply must open the document actually committed, even when an earlier metadata lookup used another document");
   resolvedDocuments.length = 0;
   appliedDocuments.length = 0;
   vm.runInContext(`

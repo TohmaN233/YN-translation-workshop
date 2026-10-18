@@ -121,7 +121,15 @@ export async function readProjectState(outputDir: string): Promise<ProjectState>
   try {
     const stored = objectState(JSON.parse(source), filePath);
     const legacyRoot = stored.projectPathsVersion === 1 ? undefined : typeof stored.outputDir === "string" ? stored.outputDir : undefined;
-    return canonicalProjectState(decodeProjectPaths(stored, projectRoot(outputDir), legacyRoot));
+    const state = canonicalProjectState(decodeProjectPaths(stored, projectRoot(outputDir), legacyRoot));
+    if (legacyRoot && path.isAbsolute(legacyRoot)) {
+      // Keep provenance until every old sidecar has been upgraded, even if the
+      // project form is saved first and the complete folder is moved later.
+      state.projectMigrationOrigins = [...new Set([
+        ...(Array.isArray(stored.projectMigrationOrigins) ? stored.projectMigrationOrigins : []), legacyRoot
+      ])];
+    }
+    return state;
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new Error(`Invalid project state at ${filePath}: ${error.message}`);

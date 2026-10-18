@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { renderBatchLineReviewIndexHtml, renderLineReviewHtml } from "../src/shared/core/html.ts";
+import { resolveReviewHtmlPaths } from "../src/main/reviewHtmlPortability.ts";
 
 const root = process.cwd();
 const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-electron-proposal-review-"));
@@ -586,6 +587,23 @@ async function run(): Promise<void> {
     "stale synced-translation conflict reconciliation"
   );
 
+  // Resolve while the old body still has its earlier translation binding, then
+  // import/rebind before applying. Completed lookups must not pin the duplicate.
+  const beforeRebind = await readFile(lineReviewStatePath, "utf8");
+  const staleBinding = JSON.parse(beforeRebind);
+  staleBinding.translationPath = path.relative(outputDir, initialTranslationPath).replace(/\\/g, "/");
+  staleBinding.translationPromptPath = staleBinding.translationPath;
+  await writeFile(lineReviewStatePath, JSON.stringify(staleBinding), "utf8");
+  const earlierTarget = await proposalView.webContents.executeJavaScript("resolveProposalLineReviewDocument(data.proposals[0])");
+  assert(earlierTarget.lineReviewPath !== lineReviewPath, "The old binding must reproduce a distinct proposal body before rebind");
+  await writeFile(lineReviewStatePath, beforeRebind, "utf8");
+  const recoveredTargets = await proposalView.webContents.executeJavaScript(`Promise.all([
+    resolveProposalLineReviewDocument(data.proposals[0]),
+    resolveProposalLineReviewDocument(data.proposals[0], { includeRows: false })
+  ])`);
+  assert(recoveredTargets.every((document: { lineReviewPath: string }) => document.lineReviewPath === lineReviewPath),
+    "Concurrent apply/jump resolution must share canonical recovery");
+
   await proposalView.webContents.executeJavaScript(`(() => {
     state.decisions["H3-001"] = { status: "accepted", manualText: "" };
     state.decisions["M1-001"] = { status: "accepted", manualText: "" };
@@ -624,6 +642,13 @@ async function run(): Promise<void> {
     JSON.stringify(appliedRows) === JSON.stringify(["新译一", "新译二", "旧译三"]),
     `Proposal apply did not update the synced line-review translations: ${JSON.stringify({ appliedSnapshot, proposalApplySnapshot })}`
   );
+  const appliedRoute = await proposalView.webContents.executeJavaScript("resolveProposalLineReviewDocument(data.proposals[0])");
+  const jumpRoute = await proposalView.webContents.executeJavaScript("resolveProposalLineReviewDocument(data.proposals[0], { includeRows: false })");
+  assert(appliedRoute.lineReviewPath === lineReviewPath && jumpRoute.lineReviewPath === appliedRoute.lineReviewPath,
+    "Apply and jump must resolve the same original body after rebind");
+  assert(!(await readdir(path.dirname(earlierTarget.lineReviewPath)).catch(error => { if (error.code === "ENOENT") return []; throw error; })).includes(path.basename(earlierTarget.lineReviewPath)),
+    "Recovery must merge the duplicate rather than leave another editable body");
+  console.log("[proposal-review] rebound-apply-and-jump-share-original-body");
 
   await mainWindow.webContents.executeJavaScript(
     `window.workshop.openReviewHtml(${JSON.stringify({ htmlPath: proposalPath, outputDir })})`
@@ -695,7 +720,7 @@ async function run(): Promise<void> {
     aggregateResult.lineReviewPath && path.resolve(aggregateResult.lineReviewPath) === path.resolve(folderBatchIndex),
     `Folder aggregate did not retain its batch line-review index: ${JSON.stringify(aggregateResult)}`
   );
-  const generatedAggregateHtml = await readFile(aggregateResult.outputPath, "utf8");
+  const generatedAggregateHtml = resolveReviewHtmlPaths(await readFile(aggregateResult.outputPath, "utf8"), aggregateResult.outputPath);
   const encodedBatchIndex = JSON.stringify(folderBatchIndex).slice(1, -1);
   const encodedFirstChild = JSON.stringify(folderLineA).slice(1, -1);
   assert(generatedAggregateHtml.includes(encodedBatchIndex), "Folder aggregate did not embed its canonical batch index");
@@ -713,7 +738,7 @@ async function run(): Promise<void> {
     "the folder aggregate proposal review"
   );
   assert(aggregateView, "Folder aggregate proposal review did not open");
-  const repairedAggregateHtml = await readFile(aggregateResult.outputPath, "utf8");
+  const repairedAggregateHtml = resolveReviewHtmlPaths(await readFile(aggregateResult.outputPath, "utf8"), aggregateResult.outputPath);
   const repairedProposalData = JSON.parse(
     repairedAggregateHtml.match(/<script id="proposalData" type="application\/json">([\s\S]*?)<\/script>/i)?.[1] || "{}"
   );
@@ -802,9 +827,9 @@ async function run(): Promise<void> {
   );
   assert(visibleView(viewerWindow)?.webContents.id === aggregateView.webContents.id, "Cross-file apply opened every child instead of staying in the aggregate report");
   const resolvedFolderDocuments = await aggregateView.webContents.executeJavaScript(`Promise.all(
-    [...linkedLineReviewDocumentPromises.entries()].map(async ([key, pending]) => {
-      const document = await pending;
-      return { key, lineReviewPath: document?.lineReviewPath || "" };
+    groupProposalsByDocument().map(async group => {
+      const document = await resolveProposalLineReviewDocument(group.items[0], { includeRows: false });
+      return { key: group.key + ":rows", lineReviewPath: document?.lineReviewPath || "" };
     })
   )`) as Array<{ key: string; lineReviewPath: string }>;
   const resolvedLineAPath = resolvedFolderDocuments.find((item) => item.key === "chapter-a.txt:rows")?.lineReviewPath || "";

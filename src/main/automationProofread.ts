@@ -8,6 +8,7 @@ import { splitTextLines, validateTranslationCandidate, type ValidationOptions } 
 import { withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
 import { proofreadSuggestedFixPreservesControlPrefix } from "./agent/writeProofreadFindings.ts";
 import { writeTextFilesAtomically } from "./atomicFile.ts";
+import { readProjectJsonObject, stringifyProjectJson } from "./projectJson.ts";
 
 export interface AutomationProofreadDocument {
   documentId: string;
@@ -170,7 +171,7 @@ export async function applyAutomationProofread(args: {
         const info = await lstat(document.statePath);
         if (!info.isFile() || info.isSymbolicLink() || !within(rootReal, await realpath(document.statePath))) throw new Error("Line-review sidecar is not a project-owned regular file.");
       }
-      const state = stateBytes === undefined ? {} : object(JSON.parse(stateBytes.toString("utf8")), "Line-review state");
+      const state = await readProjectJsonObject(document.statePath) ?? {};
       state.edits = { ...dictionary(state.edits, "Line edits") };
       state.status = { ...dictionary(state.status, "Line status") };
       state.revisions = { ...dictionary(state.revisions, "Line revisions") };
@@ -220,7 +221,7 @@ export async function applyAutomationProofread(args: {
       if (!changed.length) continue;
       const validation = validateTranslationCandidate(sourceLines.join("\n"), lines.join("\n"), document.validationOptions);
       if (!validation.ok) throw new Error(`Applied proofreading fails translation validation for ${document.documentId}: ${validation.blocking.map((finding) => `${finding.line}:${finding.code}`).join(", ")}.`);
-      updates.push({ targetPath: document.statePath, text: `${JSON.stringify(state, null, 2)}\n` });
+      updates.push({ targetPath: document.statePath, text: `${stringifyProjectJson(document.statePath, state)}\n` });
       snapshots.push({ targetPath: document.statePath, previous: stateBytes });
       committed.push({ lineReviewPath: document.lineReviewPath, statePath: document.statePath, state, changedLines: changed });
       changedLines += changed.length;

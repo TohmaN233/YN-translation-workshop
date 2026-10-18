@@ -16,6 +16,42 @@ import { writeTextFileAtomically, writeTextFilesAtomically } from "./atomicFile.
 import { resolveBatchReviewChildForUpgrade } from "./batchReviewUpgradePaths.ts";
 import { formatFolderTranslationOrder } from "./agent/piNative/folderTranslationPlan.ts";
 import { portableReviewHtml, resolveReviewHtmlPaths,parseReviewHtml,resolvedReviewHtml,portableParsedReviewHtml,bindParsedPdfReviewHtml,type ParsedReviewHtml } from "./reviewHtmlPortability.ts";
+import { readProjectJsonObject } from "./projectJson.ts";
+import { lineReviewSidecarStatePath } from "./batchLineReviewTxt.ts";
+import { readEpubText } from "./epubReader.ts";
+import { splitTextLines } from "../shared/validation/translationValidator.ts";
+
+async function bindCanonicalTranslation(context: ParsedReviewHtml): Promise<void> {
+  if (context.kind !== 'reviewData') return;
+  const data = context.payload, paths = data.workflow?.paths;
+  if (!paths) return;
+  const statePath = lineReviewSidecarStatePath(context.filePath, paths.outputDir);
+  if (!statePath) return;
+  let stamp: string;
+  try { stamp = await readReviewHtmlSourceStamp(statePath); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  const state = await readProjectJsonObject(statePath);
+  const target = state?.translationPromptPath || state?.translationPath;
+  if (typeof target !== 'string' || !path.isAbsolute(target)) return;
+  const embedded = paths.promptTranslationPath || paths.editableTranslationPath || paths.translationPath;
+  if (typeof embedded === 'string' && path.resolve(embedded).toLowerCase() === path.resolve(target).toLowerCase()) return;
+  const text = /\.epub$/i.test(target)
+    ? await readEpubText(target, path.join(context.root!, '.translation-workshop'), `binding-${Date.now()}`)
+    : await readFile(target, 'utf8');
+  const lines = splitTextLines(text);
+  if (lines.length !== data.rows.length) throw new Error(`Canonical translation line count differs from its HTML document: ${target}`);
+  if (await readReviewHtmlSourceStamp(statePath) !== stamp) throw new Error('Canonical translation binding changed while preparing its HTML; reopen it.');
+  for (const row of data.rows) {
+    row.translation = lines[row.line - 1];
+    row.status = row.translation ? 'machine' : 'empty';
+  }
+  data.workflow.initialTranslationLines = lines;
+  data.workflow.hasInitialTranslation = lines.some(line => line.trim());
+  paths.translationPath = state!.translationPath || target;
+  paths.editableTranslationPath = target;
+  paths.promptTranslationPath = target;
+  context.boundChanged = true;
+}
 
 export interface ReviewHtmlOpenContext {
   filePath:string;html:string;kind?:ParsedReviewHtml['kind'];payload?:any;changed:boolean;sourceStamp:string;
@@ -143,6 +179,7 @@ async function prepareReviewHtmlSource(targetPath:string,source:{html:string;sou
   if(batchProtocolVersion===undefined) {
     const legacy=needsLegacyLineReviewUpgrade(rawHtml)||needsLegacyProposalReviewUpgrade(rawHtml);
     if(legacy)context=parseReviewHtml(prepareLegacyReviewHtmlFile(absoluteTargetPath,resolvedReviewHtml(context),workflowOverride)!,absoluteTargetPath);
+    await bindCanonicalTranslation(context);
     await bindParsedPdfReviewHtml(context);
     const stored=!legacy&&!context.boundChanged&&context.payload?.projectPaths?.version===1&&rawHtml.includes('<script id="yn-project-paths">')?rawHtml:portableParsedReviewHtml(context);
     const changed=stored!==rawHtml;
@@ -192,6 +229,7 @@ async function prepareReviewHtmlSource(targetPath:string,source:{html:string;sou
       childHtml[index],
       folderWorkflow ? folderPromptWorkflowOverride(folderWorkflow, childReferences, childHtml) : undefined
     ) ?? childHtml[index],childPath);
+    await bindCanonicalTranslation(parsed);
     await bindParsedPdfReviewHtml(parsed);return portableParsedReviewHtml(parsed);
   }));
   const updates = [

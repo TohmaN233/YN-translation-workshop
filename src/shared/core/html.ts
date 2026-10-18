@@ -1136,7 +1136,7 @@ applyFile(0);
 
 export const LINE_REVIEW_PROTOCOL_VERSION = 59;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
-export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 19;
+export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 20;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
 export const PROMPT_SETTINGS_VERSION = 46;
 
@@ -5074,9 +5074,10 @@ async function resolveProposalLineReviewDocument(item = data.proposals[0], { inc
   linkedLineReviewDocumentPromises.set(cacheKey, promise);
   try {
     return await promise;
-  } catch (error) {
-    linkedLineReviewDocumentPromises.delete(cacheKey);
-    throw error;
+  } finally {
+    // Deduplicate concurrent reads only. A completed lookup must never freeze
+    // an earlier document route or sidecar revision across user actions.
+    if (linkedLineReviewDocumentPromises.get(cacheKey) === promise) linkedLineReviewDocumentPromises.delete(cacheKey);
   }
 }
 async function readLinkedLineReviewDocument(item = data.proposals[0]) {

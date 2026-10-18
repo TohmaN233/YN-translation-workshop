@@ -1,6 +1,7 @@
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { decodeProjectPaths, encodeProjectPaths, PROJECT_PATH_FIELDS, PROJECT_PATH_FIELD_PATTERN } from "./projectPaths.ts";
+import { containedProjectRoot, decodeProjectPaths, encodeProjectPaths, PROJECT_PATH_FIELDS, PROJECT_PATH_FIELD_PATTERN } from "./projectPaths.ts";
+export { containedProjectRoot } from "./projectPaths.ts";
 import { writeTextFileAtomically } from "./atomicFile.ts";
 import { buildPrompt } from "../shared/core/prompts.ts";
 import { readPdfProtectedLines, readPdfLayout } from "./pdfDocuments.ts";
@@ -8,15 +9,6 @@ import {currentPdfPreparationContext} from './pdfStructurePreparation.ts';
 
 const payloadPattern = /(<script id="(reviewData|proposalData|batchData)" type="application\/json">)([\s\S]*?)(<\/script>)/i;
 const decoderPattern = /\n?<script id="yn-project-paths">[\s\S]*?<\/script>/i;
-
-export function containedProjectRoot(file: string): string | undefined {
-  let current = path.dirname(path.resolve(file));
-  while (path.dirname(current) !== current) {
-    if (path.basename(current).toLowerCase() === ".translation-workshop") return path.dirname(current);
-    current = path.dirname(current);
-  }
-  return undefined;
-}
 
 function payloadRoot(data: any): string | undefined {
   const root = data.workflow?.paths?.outputDir || data.folderAgentRoute?.outputDir || data.outputDir;

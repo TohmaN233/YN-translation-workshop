@@ -1880,6 +1880,7 @@ await test("a permanent priority-stage failure never opens later folder stages",
   await writeFile(path.join(sourceRoot, "script.txt"), "script a\nscript b\n", "utf8");
   await writeFile(path.join(sourceRoot, "epilogue.txt"), "end a\nend b\n", "utf8");
   const releasePriority = deferred();
+  const priorityStarted = deferred();
   const releaseParallel = deferred();
   const scriptStarted = deferred();
   const epilogueStarted = deferred();
@@ -1893,7 +1894,10 @@ await test("a permanent priority-stage failure never opens later folder stages",
         ? "script.txt"
         : serialized.includes("epilogue.txt") ? "epilogue.txt" : "unknown";
     seen.push(document);
-    if (document === "tips.txt") await releasePriority.promise;
+    if (document === "tips.txt") {
+      priorityStarted.resolve();
+      await releasePriority.promise;
+    }
     if (document === "script.txt") {
       scriptStarted.resolve();
       await releaseParallel.promise;
@@ -1934,7 +1938,17 @@ await test("a permanent priority-stage failure never opens later folder stages",
   assert.ok(run);
   try {
     await run.execute("folder_stage_barrier", {});
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    let startupTimer;
+    try {
+      await Promise.race([
+        priorityStarted.promise,
+        new Promise((_, reject) => {
+          startupTimer = setTimeout(() => reject(new Error("The priority worker did not start.")), 5_000);
+        })
+      ]);
+    } finally {
+      clearTimeout(startupTimer);
+    }
     assert.deepEqual(new Set(seen), new Set(["tips.txt"]), `later stage started early: ${seen.join(", ")}`);
     releasePriority.resolve();
     await subagents.waitForAll();

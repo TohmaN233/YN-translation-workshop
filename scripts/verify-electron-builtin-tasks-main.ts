@@ -18,6 +18,9 @@ import { resolveReviewHtmlPaths } from "../src/main/reviewHtmlPortability.ts";
 import { upgradeLegacyReviewHtmlTree } from "../src/main/reviewHtmlUpgrade.ts";
 import { LINE_REVIEW_PROTOCOL_VERSION } from "../src/shared/core/html.ts";
 import { resolvePiSourceManifest } from "../src/main/agent/piNative/sourceManifest.ts";
+import { createPiModelSelection } from "../src/main/agent/piNative/providerRegistry.ts";
+import { configurePdfStructurePreparation } from "../src/main/pdfStructurePreparation.ts";
+import { createPdfStructureHttpProvider } from "../tests/helpers/pdf-structure-http-provider.mjs";
 
 const root = process.cwd();
 const fixture = await mkdtemp(path.join(os.tmpdir(), "yn-electron-builtin-"));
@@ -30,6 +33,7 @@ await mkdir(screenshotDir, { recursive: true }); await writeFile(sourcePath, ori
 app.setAppPath(root); app.disableHardwareAcceleration();
 const provider = fauxProvider({ tokensPerSecond: 1_000_000, tokenSize: { min: 100_000, max: 100_000 } });
 const models = createModels(); models.setProvider(provider.provider);
+const pdfStructureProvider = await createPdfStructureHttpProvider();
 const requests: any[] = [];
 const rules = [{ label: "WAIT command", pattern: "^<WAIT>", flags: "u" }, { label: "Literal line breaks", pattern: String.raw`/n|\\n`, flags: "u" }];
 function referenceResponses(finalText: string) {
@@ -67,7 +71,9 @@ let pdfHandoffPacket:any;
 // Constructor dependency substitution exists only in this verifier. Product Host,
 // IPC, navigation, scanner, settings and application paths remain unchanged.
 const options = (piNativeSessionService as unknown as { options: PiNativeSessionServiceOptions }).options;
-options.createModelSelection = async () => ({ models, model: provider.getModel(), providerId: provider.provider.id, modelId: provider.getModel().id });
+options.createModelSelection = async selection => selection.providerId === pdfStructureProvider.config.id
+  ? createPiModelSelection(selection)
+  : ({ models, model: provider.getModel(), providerId: provider.provider.id, modelId: provider.getModel().id });
 options.createTools = context => {
   requests.push(context.request);
   if(!context.request.taskPreparation && context.request.sourcePath?.includes("-pdf-")) {
@@ -104,6 +110,9 @@ options.createTools = context => {
   } }];
 };
 await import("../src/main/main.ts");
+configurePdfStructurePreparation(request => piNativeSessionService.runPdfStructurePreparation({
+  ...request, providerId: pdfStructureProvider.config.id, modelId: pdfStructureProvider.config.model
+}));
 
 function assert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
 async function waitFor<T>(read: () => T | Promise<T>, accept: (value: T) => boolean, label: string, timeout = 15000): Promise<T> {
@@ -121,7 +130,10 @@ async function viewFor(file: string) {
   return waitFor(() => BrowserWindow.getAllWindows().flatMap(window => window.getBrowserViews()).find(view => view.webContents.getURL() === new URL(`file:///${file.replace(/\\/g, "/")}`).href), Boolean, `HTML ${file}`);
 }
 async function terminal(sessionId: string, projectDir = fixture) {
-  const state = await waitFor(() => piNativeSessionService.getRunState(projectDir, sessionId), state => !state.running, "native task completion");
+  const state = await waitFor(() => piNativeSessionService.getRunState(projectDir, sessionId), state => !state.running, "native task completion").catch(async error => {
+    console.error("[builtin-verifier] incomplete-native-turn", JSON.stringify((await piNativeSessionService.loadMessages(projectDir, sessionId)).slice(-12)));
+    throw error;
+  });
   if (state.error) {
     const errors = (await piNativeSessionService.loadMessages(projectDir, sessionId)).filter((message: any) => message.role === "toolResult" && message.isError);
     console.error("[builtin-verifier] native-tool-failures", JSON.stringify(errors.map((message: any) => ({ tool: message.toolName, content: message.content }))));
@@ -169,7 +181,10 @@ async function run() {
     await screenshot(main!.webContents, `builtin-settings-${locale === "zh-CN" ? "zh" : "en"}.png`);
     await main!.webContents.executeJavaScript("document.querySelector('.builtinTaskClose').click()");
   }
-  await writeProviderConfig(fixture, { activeProviderId: "custom-api", providers: { "custom-api": { id: "custom-api", type: "openai_compatible", name: "Verifier faux only", model: "fixture", models: ["fixture"], baseUrl: "http://127.0.0.1:1/v1", enabled: true } } });
+  await writeProviderConfig(fixture, { activeProviderId: "custom-api", providers: {
+    "custom-api": { id: "custom-api", type: "openai_compatible", name: "Verifier faux only", model: "fixture", models: ["fixture"], baseUrl: "http://127.0.0.1:1/v1", enabled: true },
+    [pdfStructureProvider.config.id]: pdfStructureProvider.config
+  } });
   // Reproduce the prior homepage's optional folder field reaching single-file IPC.
   const settings = { ...builtinTaskDefaults({ outputDir: fixture, sourcePath, languagePair: "en->zh-CN", glossaryCandidates: false, characterBible: false, customPreserveRules: rules }), folderSourceDocuments: [] };
   assert(settings.splitSize === 500 && settings.subagentCount === 3, "New task defaults must be 500/3");
@@ -470,6 +485,7 @@ void app.whenReady().then(async () => {
 }).catch(error => { console.error(error.stack || error.message); process.exitCode = 1; }).finally(async () => {
   clearInterval(packetTimer);
   await piNativeSessionService.disposeWorkspace(fixture);
+  await pdfStructureProvider.close();
   for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.destroy();
   if (!path.resolve(fixture).startsWith(`${path.resolve(os.tmpdir())}${path.sep}yn-electron-builtin-`)) throw new Error("Unsafe fixture cleanup");
   await rm(fixture, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); app.exit(process.exitCode ?? 0);

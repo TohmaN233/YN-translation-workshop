@@ -3,10 +3,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import electronPath from "electron";
 import { build } from "esbuild";
+import { createPdfStructureHttpProvider } from "../tests/helpers/pdf-structure-http-provider.mjs";
 
 const root = process.cwd();
 const tempDir = await mkdtemp(path.join(root, ".tmp-electron-builtin-tasks-"));
 const userDataDir = await mkdtemp(path.join(root, ".tmp-electron-builtin-user-"));
+let smokeProvider;
 try {
   const external = ["pdfjs-dist", "pdfjs-dist/*", "pdf-lib", "@pdf-lib/fontkit", "@napi-rs/canvas", "electron", "electron-updater", "electron-updater/*", "extract-zip", "@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "@earendil-works/pi-agent-core", "@earendil-works/pi-agent-core/*"];
   // Independent upstream baseline: no YN imports or product window lifecycle.
@@ -60,6 +62,13 @@ console.log(JSON.stringify({browserViewBaseline:true,electron:process.versions.e
   await build({ absWorkingDir: root, entryPoints: ["src/main/agent/piNative/proofreadPrescanWorker.ts"], bundle: true,
     platform: "node", format: "esm", outfile: path.join(tempDir, "proofreadPrescanWorker.js") });
   const smokeMarker = path.join(tempDir, "smoke-ready.json");
+  smokeProvider = await createPdfStructureHttpProvider();
+  const smokeAgentDir = path.join(tempDir, "user-data", "agent");
+  await mkdir(smokeAgentDir, { recursive: true });
+  await writeFile(path.join(smokeAgentDir, "provider-config.json"), JSON.stringify({
+    activeProviderId: smokeProvider.config.id,
+    providers: { [smokeProvider.config.id]: smokeProvider.config }
+  }, null, 2));
   const smokeCode = await new Promise((resolve, reject) => {
     const child = spawn(electronPath, ["--disable-gpu", "--disable-gpu-compositing", "--in-process-gpu", "--no-sandbox", `--user-data-dir=${userDataDir}`, path.join(tempDir, "smoke-main.mjs")], {
       cwd: root, windowsHide: true, env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "true", YN_PORTABLE_SMOKE_MARKER: smokeMarker }, stdio: ["ignore", "pipe", "pipe"]
@@ -72,6 +81,7 @@ console.log(JSON.stringify({browserViewBaseline:true,electron:process.versions.e
   if (!smoke.sourcePreparationWorkerVerified || !smoke.sourcePreparationHeartbeatTicks || !smoke.proofreadWorkerVerified || !smoke.translationValidationWorkerVerified || !smoke.translationValidationHeartbeatTicks || smoke.windowVisible) throw new Error("Hidden bundled worker smoke did not prove responsiveness and invisible startup.");
   console.log(JSON.stringify({ bundledWorkerSmoke: true, sourcePreparationWorkerVerified: true, sourcePreparationHeartbeatTicks: smoke.sourcePreparationHeartbeatTicks }));
 } finally {
+  await smokeProvider?.close();
   // Both resolved targets are explicit fixture directories allocated beneath root.
   for (const target of [tempDir, userDataDir]) {
     if (!path.resolve(target).startsWith(`${path.resolve(root)}${path.sep}.tmp-electron-`)) throw new Error("Unsafe fixture cleanup target.");

@@ -34,7 +34,7 @@ See the [feature guide](docs/features.en.md) for settings, translation reuse, pr
 
 ## Download and installation
 
-Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.0.
+Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.1.
 
 Installers support in-app updates; portable builds are replaced using the release page. Releases include `SHA256SUMS.txt`.
 
@@ -68,11 +68,9 @@ YN checks line alignment, placeholders, preserved content, write scope and recov
 
 [Quality checks](docs/quality.en.md) lists the checks, their test sources and reproduction commands.
 
-## 2.2.0 highlights
+## 2.2.1 highlights
 
-- Text-layer PDFs must pass a complete mechanical draft, incremental native Pi structure edits, Host checks and an independent audit before HTML generation. Accepted logical units use code/math/reference protection and on-demand images; export reflows current HTML translations without original prose-box length limits. Academic identifier prescanning and parent-confirmed untranslated false positives remain available.
-- Official background Agent API reusing project preparation, translation, proofreading and reference workflows.
-- Improved large-session and candidate responsiveness, cancellation, recovery and character-name matching.
+- Improved project path resolution keeps proofreading changes, navigation and exports bound to the same document, including after moving a project.
 
 See the [Changelog](CHANGELOG.en.md) for full history.
 

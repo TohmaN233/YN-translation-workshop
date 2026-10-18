@@ -34,7 +34,7 @@ YN 支持 TXT、EPUB 和文字层 PDF，将 AI 翻译、AI 校对、原译文对
 
 ## 下载与安装
 
-在 [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases) 下载安装版（Setup）或便携版（Portable）。本文介绍 2.2.0。
+在 [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases) 下载安装版（Setup）或便携版（Portable）。本文介绍 2.2.1。
 
 安装版支持应用内更新；便携版通过发布页下载替换。发布页同时提供 `SHA256SUMS.txt`。
 
@@ -68,11 +68,9 @@ YN 检查行对齐、占位符、保留内容、写入范围和恢复证据，�
 
 [质量检查](docs/quality.md) 列出检查项目、测试来源和运行方法。
 
-## 2.2.0 更新摘要
+## 2.2.1 更新摘要
 
-- 文字层 PDF 在生成 HTML 前必经完整机械草稿、原生 Pi 增量结构提案、Host 校验及独立审计；接受后翻译完整逻辑单元，保护代码、公式及参考文献，按需看图，并由当前 HTML 译文自动重排 PDF，无原正文文本框长度上限。学术标识预扫描与主 Agent 对具体未译误报的确认继续可用。
-- 新增官方后台 Agent API，复用现有准备、翻译、校对与资料流程。
-- 改善大历史会话和大候选响应，完善停止、断连恢复与角色名匹配。
+- 优化项目路径解析，保持校对应用、正文跳转和导出绑定一致，支持项目移动后继续使用。
 
 完整版本记录见 [Changelog](CHANGELOG.md)。
 

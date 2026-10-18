@@ -4,6 +4,10 @@
 
 Recorded version changes. Public availability and downloads follow [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases).
 
+## What's new in 2.2.1
+
+- Improved project path resolution keeps proofreading changes, navigation and exports bound to the same document, including after moving a project.
+
 ## What's new in 2.2.0
 
 - Add text-layer PDF translation: extract prose, formulas, code and figure assets, organize and audit the document structure, then generate review HTML and reflow translated prose with preserved assets into a new PDF. Support complete paragraphs, page continuations and paragraph-local formula reordering while preserving code, formulas and references. See the [PDF guide](docs/pdf.en.md).

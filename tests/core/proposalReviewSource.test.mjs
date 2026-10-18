@@ -62,7 +62,7 @@ await test("folder proposal review filters by document and routes jump/apply thr
   assert.match(main, /ipcMain\.handle\("html:prepareProposalLineReviewBatch"/);
   assert.match(main, /ipcMain\.handle\("html:applyProposalLineReviewStates"/);
   assert.match(main, /writeTextFilesAtomically/);
-  assert.match(main, /const lineReviewPath = await existingProposalLineReview\(outputDir, args.lineReviewPath, routing, locale\)/);
+  assert.match(main, /const lineReviewPath = await resolveProposalLineReviewPath\(outputDir, args.lineReviewPath, routing, locale\)/);
   // Actual changed-file reload, state restoration and lazy child preparation
   // are exercised through production IPC by verify-electron-html-open.mjs.
   assert.doesNotMatch(main, /openLineReviewRouting/);

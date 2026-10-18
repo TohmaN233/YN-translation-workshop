@@ -21,17 +21,32 @@ import { lineReviewSidecarStatePath } from "./batchLineReviewTxt.ts";
 import { readEpubText } from "./epubReader.ts";
 import { splitTextLines } from "../shared/validation/translationValidator.ts";
 
+async function optionalReviewStamp(file: string): Promise<string | undefined> {
+  try { return await readReviewHtmlSourceStamp(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
+}
+
 async function bindCanonicalTranslation(context: ParsedReviewHtml): Promise<void> {
   if (context.kind !== 'reviewData') return;
   const data = context.payload, paths = data.workflow?.paths;
   if (!paths) return;
   const statePath = lineReviewSidecarStatePath(context.filePath, paths.outputDir);
   if (!statePath) return;
-  let stamp: string;
-  try { stamp = await readReviewHtmlSourceStamp(statePath); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  const stamp = await optionalReviewStamp(statePath);
   const state = await readProjectJsonObject(statePath);
-  const target = state?.translationPromptPath || state?.translationPath;
+  let target = state?.translationPromptPath || state?.translationPath;
+  let project: Record<string, unknown> | undefined;
+  let projectPath: string | undefined, projectStamp: string | undefined;
+  if (!target && !paths.translationPath && context.root) {
+    projectPath = path.join(context.root, '.translation-workshop', 'project.json');
+    projectStamp = await optionalReviewStamp(projectPath);
+    project = await readProjectJsonObject(projectPath);
+    const key = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+    const sameSource = typeof project?.sourcePath === 'string' && project.sourceKind !== 'folder'
+      && [paths.sourcePath, paths.validationSourcePath, paths.promptSourcePath].some(value => typeof value === 'string' && key(value) === key(project!.sourcePath as string));
+    if (!sameSource) return;
+    target = project?.promptTranslationPath || project?.translationPath;
+  }
   if (typeof target !== 'string' || !path.isAbsolute(target)) return;
   const embedded = paths.promptTranslationPath || paths.editableTranslationPath || paths.translationPath;
   if (typeof embedded === 'string' && path.resolve(embedded).toLowerCase() === path.resolve(target).toLowerCase()) return;
@@ -40,14 +55,15 @@ async function bindCanonicalTranslation(context: ParsedReviewHtml): Promise<void
     : await readFile(target, 'utf8');
   const lines = splitTextLines(text);
   if (lines.length !== data.rows.length) throw new Error(`Canonical translation line count differs from its HTML document: ${target}`);
-  if (await readReviewHtmlSourceStamp(statePath) !== stamp) throw new Error('Canonical translation binding changed while preparing its HTML; reopen it.');
+  if (await optionalReviewStamp(statePath) !== stamp
+    || projectPath && await optionalReviewStamp(projectPath) !== projectStamp) throw new Error('Canonical translation binding changed while preparing its HTML; reopen it.');
   for (const row of data.rows) {
     row.translation = lines[row.line - 1];
     row.status = row.translation ? 'machine' : 'empty';
   }
   data.workflow.initialTranslationLines = lines;
   data.workflow.hasInitialTranslation = lines.some(line => line.trim());
-  paths.translationPath = state!.translationPath || target;
+  paths.translationPath = state?.translationPath || project?.translationPath || target;
   paths.editableTranslationPath = target;
   paths.promptTranslationPath = target;
   context.boundChanged = true;

@@ -143,6 +143,16 @@ try {
     });
   }
 
+  if (!verifyOnly || verifyOnly === "proposal-epub") {
+    const proposalEpubMain = await buildVerifier(
+      "scripts/verify-electron-proposal-epub-main.ts",
+      "proposal-epub-main.mjs"
+    );
+    await runVerifier(proposalEpubMain, '"proposalEpub":true', 60_000, {
+      YN_ELECTRON_VERIFY_OFFSCREEN: "1"
+    });
+  }
+
   if (!verifyOnly || verifyOnly === "folder") {
     const productFolderMain = await buildVerifier(
       "scripts/verify-electron-folder-tabs-main.ts",

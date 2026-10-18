@@ -587,16 +587,42 @@ async function run(): Promise<void> {
     "stale synced-translation conflict reconciliation"
   );
 
-  // Resolve while the old body still has its earlier translation binding, then
-  // import/rebind before applying. Completed lookups must not pin the duplicate.
+  // A conflicting explicit binding must be visible, without forking another
+  // editable body. A later successful import/rebind must permit a fresh lookup.
   const beforeRebind = await readFile(lineReviewStatePath, "utf8");
   const staleBinding = JSON.parse(beforeRebind);
   staleBinding.translationPath = path.relative(outputDir, initialTranslationPath).replace(/\\/g, "/");
   staleBinding.translationPromptPath = staleBinding.translationPath;
   await writeFile(lineReviewStatePath, JSON.stringify(staleBinding), "utf8");
-  const earlierTarget = await proposalView.webContents.executeJavaScript("resolveProposalLineReviewDocument(data.proposals[0])");
-  assert(earlierTarget.lineReviewPath !== lineReviewPath, "The old binding must reproduce a distinct proposal body before rebind");
+  const consoleError = console.error;
+  let expectedRejectionLogged = false;
+  let conflict: string;
+  console.error = (...args: unknown[]) => {
+    if (String(args[0]) === "Error occurred in handler for 'html:resolveProposalLineReviewDocument':"
+      && args[1] instanceof Error && args[1].message === "Line-review HTML translation is not bound to proofread document source.") {
+      expectedRejectionLogged = true;
+      console.log("[proposal-review] expected explicit translation binding rejection");
+    } else consoleError(...args);
+  };
+  try {
+    conflict = await proposalView.webContents.executeJavaScript(`resolveProposalLineReviewDocument(data.proposals[0])
+      .then(() => "", error => error.message)`);
+  } finally { console.error = consoleError; }
+  assert(/translation is not bound/.test(conflict), "A contradictory explicit binding must fail instead of generating another body");
+  assert(expectedRejectionLogged, "The rejected binding must remain observable in main-process diagnostics");
   await writeFile(lineReviewStatePath, beforeRebind, "utf8");
+  // Simulate a duplicate made by a previous app version, independently of the
+  // current resolver. Its pending edit must migrate into the original body.
+  const legacyDigest = createHash("sha256").update(`${sourcePath}\0${translationPath}`).digest("hex").slice(0, 16);
+  const legacySinglePath = path.join(htmlDir, "proposal-line-review", `${legacyDigest}-source.html`);
+  const legacySingleState = path.join(workspaceDir, "state", `line-${path.basename(legacySinglePath)}.json`);
+  await mkdir(path.dirname(legacySinglePath), { recursive: true });
+  await writeFile(legacySinglePath, renderLineReviewHtml({
+    title: "legacy duplicate", sourceText: await readFile(sourcePath, "utf8"),
+    translationText: await readFile(translationPath, "utf8"), lineReviewPath: legacySinglePath,
+    workflow: { sourcePath, translationPath, outputDir }
+  }), "utf8");
+  await writeFile(legacySingleState, JSON.stringify({ translationPath, edits: { 1: "新译一" } }), "utf8");
   const recoveredTargets = await proposalView.webContents.executeJavaScript(`Promise.all([
     resolveProposalLineReviewDocument(data.proposals[0]),
     resolveProposalLineReviewDocument(data.proposals[0], { includeRows: false })
@@ -646,7 +672,7 @@ async function run(): Promise<void> {
   const jumpRoute = await proposalView.webContents.executeJavaScript("resolveProposalLineReviewDocument(data.proposals[0], { includeRows: false })");
   assert(appliedRoute.lineReviewPath === lineReviewPath && jumpRoute.lineReviewPath === appliedRoute.lineReviewPath,
     "Apply and jump must resolve the same original body after rebind");
-  assert(!(await readdir(path.dirname(earlierTarget.lineReviewPath)).catch(error => { if (error.code === "ENOENT") return []; throw error; })).includes(path.basename(earlierTarget.lineReviewPath)),
+  assert(!(await readdir(path.dirname(legacySinglePath)).catch(error => { if (error.code === "ENOENT") return []; throw error; })).includes(path.basename(legacySinglePath)),
     "Recovery must merge the duplicate rather than leave another editable body");
   console.log("[proposal-review] rebound-apply-and-jump-share-original-body");
 

@@ -88,6 +88,7 @@ import {
 import { patchProjectState, readProjectState, saveProjectState, subscribeProjectState } from "./projectState.ts";
 import { workflowTranslationPaths } from "../shared/core/translationBinding.ts";
 import { extractedWorkshopTextPath } from "./agent/translationBindingResolve.ts";
+import { resolveProposalSourceIdentity } from "./proposalSourceIdentity.ts";
 import {
   lanSyncJson,
   lanSyncLabels,
@@ -1867,10 +1868,10 @@ async function migrateLegacySingleProposalLineReviews(
   outputDir: string,
   canonicalPath: string,
   routing: { documentId: string; sourcePath: string; translationPath?: string }
-): Promise<number> {
+): Promise<boolean> {
   const workspaceDir = normalizeProjectFolder(outputDir).workspaceDir;
   const legacyDir = path.join(workspaceDir, "html", "proposal-line-review");
-  if (isSameOrInside(legacyDir, canonicalPath)) return 0;
+  if (isSameOrInside(legacyDir, canonicalPath)) return false;
 
   const matching: LegacyProposalLineReviewArtifact[] = [];
   for (const artifact of await discoverLegacyProposalLineReviews(outputDir)) {
@@ -1882,7 +1883,7 @@ async function migrateLegacySingleProposalLineReviews(
       // This duplicate belongs to another source/translation pair.
     }
   }
-  if (matching.length === 0) return 0;
+  if (matching.length === 0) return false;
 
   const canonicalStatePath = await resolveLineReviewSidecarStatePath(canonicalPath);
   return withHtmlStateWriteLocks([canonicalStatePath, ...matching.map(artifact => artifact.statePath)], async () => {
@@ -1929,7 +1930,7 @@ async function migrateLegacySingleProposalLineReviews(
     duplicateCount: matching.length,
     removedArtifactCount: removed
   });
-  return removed;
+  return true;
   });
 }
 
@@ -2206,15 +2207,21 @@ async function existingProposalLineReview(
   locale: UiLocale
 ): Promise<string | undefined> {
   for (const candidate of await proposalLineReviewCandidates(outputDir, explicitPath)) {
+    if (!await existingFile(candidate)) {
+      console.info("[proposal-routing] Linked line review no longer exists", { lineReviewPath: candidate });
+      continue;
+    }
     if (await isLineReviewHtml(candidate)) {
-      try {
-        await assertLineReviewMatchesProposalRouting(candidate, routing);
-      } catch {
-        // This line-review document belongs to another report item.
-        continue;
-      }
+      const binding = await lineReviewRouting(candidate);
+      if (!binding.sourcePaths.some((source) => sameFilePath(source, routing.sourcePath))) continue;
+      // An initially empty body can acquire its translation through the project
+      // or sidecar. Reconcile that binding before deciding whether it is usable.
       await prepareReviewHtmlOpen(candidate);
-      await migrateLegacySingleProposalLineReviews(outputDir, candidate, routing);
+      await assertLineReviewMatchesProposalRouting(candidate, routing);
+      if (await migrateLegacySingleProposalLineReviews(outputDir, candidate, routing)) {
+        await prepareReviewHtmlOpen(candidate);
+      }
+      console.info("[proposal-routing] Reusing source-bound line review", { documentId: routing.documentId, lineReviewPath: candidate });
       return candidate;
     }
     let children: Awaited<ReturnType<typeof readBatchLineReviewChildren>>;
@@ -2232,14 +2239,11 @@ async function existingProposalLineReview(
       || sameFilePath(child.sourcePath, routing.sourcePath)
     ));
     if (match && await isLineReviewHtml(match.childPath)) {
-      try {
-        await assertLineReviewMatchesProposalRouting(match.childPath, routing);
-        await prepareReviewHtmlOpen(match.childPath);
+      await prepareReviewHtmlOpen(match.childPath);
+      const binding = await lineReviewRouting(match.childPath);
+      assertLineReviewRoutingBinding(binding, { ...routing, translationPath: undefined });
+      if (!routing.translationPath || binding.translationPaths.some((target) => sameFilePath(target, routing.translationPath))) {
         return match.childPath;
-      } catch {
-        if (!routing.translationPath) {
-          throw new Error(`Proofread document ${routing.documentId} is missing its translation route.`);
-        }
       }
       await synchronizeBatchProposalLineReviews({
         outputDir,
@@ -2264,6 +2268,7 @@ async function generateProposalLineReview(
   locale: UiLocale
 ): Promise<string> {
   const workspaceDir = await ensureWorkspace(outputDir);
+  const sourceIdentity = await resolveProposalSourceIdentity(outputDir, routing.sourcePath);
   const sourceDocument = await readLineDocumentForWorkflow(routing.sourcePath, "auto", workspaceDir, "source");
   const translationDocument = routing.translationPath
     ? await readTranslationDocumentForWorkflow(routing.translationPath, workspaceDir)
@@ -2281,19 +2286,40 @@ async function generateProposalLineReview(
     locale,
     lineReviewPath,
     workflow: {
-      sourcePath: routing.sourcePath,
-      validationSourcePath: sourceDocument.promptPath ?? routing.sourcePath,
+      sourcePath: sourceIdentity.sourcePath,
+      validationSourcePath: sourceDocument.promptPath ?? sourceIdentity.validationSourcePath,
       sourceKind: "file",
       translationPath: routing.translationPath,
       editableTranslationPath,
-      sourcePromptPath: sourceDocument.promptPath,
+      sourcePromptPath: sourceDocument.promptPath ?? sourceIdentity.validationSourcePath,
       translationPromptPath: translationDocument?.promptPath ?? editableTranslationPath,
       outputDir,
       inputMode: "separate",
-      epubExport: routing.sourcePath.toLowerCase().endsWith(".epub") ? { mode: "all" } : undefined
+      epubExport: sourceIdentity.epubExport
     }
   }));
+  console.info("[proposal-routing] Created missing line review", {
+    documentId: routing.documentId, lineReviewPath, sourcePath: sourceIdentity.sourcePath,
+    validationSourcePath: sourceIdentity.validationSourcePath, epubExport: sourceIdentity.epubExport?.mode
+  });
   return lineReviewPath;
+}
+
+const proposalLineReviewResolutions = new Map<string, Promise<string>>();
+function resolveProposalLineReviewPath(
+  outputDir: string,
+  explicitPath: string | undefined,
+  routing: { documentId: string; sourcePath: string; translationPath?: string },
+  locale: UiLocale
+): Promise<string> {
+  const key = JSON.stringify([outputDir, explicitPath, routing.documentId, routing.sourcePath, routing.translationPath]);
+  const pending = proposalLineReviewResolutions.get(key);
+  if (pending) return pending;
+  const task = (async () => await existingProposalLineReview(outputDir, explicitPath, routing, locale)
+    ?? await generateProposalLineReview(outputDir, routing, locale))()
+    .finally(() => proposalLineReviewResolutions.delete(key));
+  proposalLineReviewResolutions.set(key, task);
+  return task;
 }
 
 async function readProposalLineReviewDocument(
@@ -4298,8 +4324,7 @@ ipcMain.handle("html:resolveProposalLineReviewDocument", async (_event, args: Re
   const metadataOnly = args.includeRows === false;
   // Navigation, manual apply and recovery resolve the same persisted binding.
   // includeRows controls payload size only, never document selection/migration.
-  const lineReviewPath = await existingProposalLineReview(outputDir, args.lineReviewPath, routing, locale)
-    ?? await generateProposalLineReview(outputDir, routing, locale);
+  const lineReviewPath = await resolveProposalLineReviewPath(outputDir, args.lineReviewPath, routing, locale);
   if (!isSameOrInside(workspaceDir, lineReviewPath)) {
     throw new Error("The resolved line-review document is outside the current project workspace.");
   }

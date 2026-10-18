@@ -4,6 +4,10 @@
 
 以下保留已记录的版本变化；公开发行与下载以 [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases) 为准。
 
+## 2.2.2 更新
+
+- 修复校对跳转未复用已导入译文的 HTML，以及重建页面缺少 EPUB 导出的问题。
+
 ## 2.2.1 更新
 
 - 优化项目路径解析，保持校对应用、正文跳转和导出绑定一致，支持项目移动后继续使用。

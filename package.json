@@ -1,6 +1,6 @@
 {
   "name": "translation-workshop",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Local translation and proofreading workflow workbench.",
   "type": "module",
   "engines": {
@@ -99,7 +99,9 @@
       {
         "from": "node_modules/@pdf-lib/fontkit",
         "to": "node_modules/@pdf-lib/fontkit",
-        "filter": ["README.md"]
+        "filter": [
+          "README.md"
+        ]
       }
     ],
     "asarUnpack": [

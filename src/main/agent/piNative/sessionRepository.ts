@@ -1,4 +1,4 @@
-import { link, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
+import { link, mkdir, open, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { decodeProjectPaths } from "../../projectPaths.ts";
@@ -16,6 +16,8 @@ import {
   StorageBackedSession,
   NodeExecutionEnv,
   type AgentMessage,
+  type Context,
+  type FileInfo,
   type JsonlSessionMetadata,
   type Session
 } from "@earendil-works/pi-agent-core/node";
@@ -389,6 +391,27 @@ async function firstUserMessage(filePath: string): Promise<string> {
   }
 }
 
+// Pi 0.99.1 stats every directory entry before JsonlSessionRepo filters JSONL.
+// Filter unpublished files first so another session's atomic rename cannot
+// invalidate discovery. Errors on actual session files still propagate.
+class PiSessionExecutionEnv extends NodeExecutionEnv {
+  override async listDir(directory: string, context: Context): ReturnType<NodeExecutionEnv["listDir"]> {
+    context.abortSignal?.throwIfAborted();
+    const resolved = await this.absolutePath(directory, context);
+    if (!resolved.ok) return resolved;
+    const entries = await readdir(resolved.value, { withFileTypes: true });
+    const infos: FileInfo[] = [];
+    for (const entry of entries) {
+      context.abortSignal?.throwIfAborted();
+      if (!entry.isDirectory() && !entry.name.endsWith(".jsonl")) continue;
+      const info = await this.fileInfo(path.join(resolved.value, entry.name), context);
+      if (!info.ok) return info;
+      infos.push(info.value);
+    }
+    return { ok: true, value: infos };
+  }
+}
+
 export class PiSessionRepository {
   readonly workspaceDir: string;
   readonly env: NodeExecutionEnv;
@@ -401,7 +424,7 @@ export class PiSessionRepository {
   constructor(workspaceDir: string, storageOptions: PiSessionStorageOptions = {}) {
     this.storageOptions = storageOptions;
     this.workspaceDir = path.resolve(workspaceDir);
-    this.env = new NodeExecutionEnv({ cwd: this.workspaceDir });
+    this.env = new PiSessionExecutionEnv({ cwd: this.workspaceDir });
     this.repo = new JsonlSessionRepo({ fileSystem: this.env, sessionsRoot: sessionsRoot(this.workspaceDir) });
     this.childRepo = new JsonlSessionRepo({ fileSystem: this.env, sessionsRoot: childSessionsRoot(this.workspaceDir) });
   }

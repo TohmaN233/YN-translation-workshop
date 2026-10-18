@@ -1083,6 +1083,15 @@ export class YnSubagentSupervisor {
                 await this.stopForHostFailure(error);
               }
               if (!abortController.signal.aborted && !isNonRetryableAssignmentError(error) && item.attempts < 2) {
+                workerFailure = error;
+                console.warn(JSON.stringify({
+                  event: "yn.translation.review.assignment_retry",
+                  batchId,
+                  subagentId: id,
+                  auditId: prepared.task.auditId,
+                  attempt: item.attempts,
+                  error: error instanceof Error ? error.message : String(error)
+                }));
                 item.attempts += 1;
                 queue.unshift(item);
                 wakeWorkers();

@@ -149,8 +149,8 @@
     }
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.99.1",
-    "@earendil-works/pi-ai": "0.99.1",
+    "@earendil-works/pi-agent-core": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
     "@napi-rs/canvas": "1.0.11",
     "@pdf-lib/fontkit": "1.1.1",
     "cheerio": "^1.2.0",

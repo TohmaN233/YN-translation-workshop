@@ -4,6 +4,11 @@
 
 Recorded version changes. Public availability and downloads follow [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases).
 
+## What's new in 2.2.3
+
+- Keep folder review pages usable after applying proofreading, preserving manual edits and the selected file.
+- Show unresolved alignment failures and keep repair reads bound to the correct document.
+
 ## What's new in 2.2.2
 
 - Fix proofreading navigation to reuse imported translations in the original HTML and preserve EPUB export when rebuilding a missing page.

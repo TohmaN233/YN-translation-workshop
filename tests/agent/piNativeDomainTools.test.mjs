@@ -3221,6 +3221,305 @@ await test("bounded parent repair cannot validate shifted same-count lines witho
   }
 });
 
+await test("rejected bounded alignment remains visible until changed text is reviewed", async () => {
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    fullWorkflow: false,
+    subagentEnabled: false
+  });
+  const fx = await fixture({
+    domainRun,
+    requestPatch: { workflowIntent: "translation", languagePair: "en->zh-CN" }
+  }, "Synthetic source sentence.\n");
+  try {
+    await execute(fx.tool("writeTranslationChunk"), {
+      fromLine: 1,
+      toLine: 1,
+      lines: ["合成译文。"]
+    });
+    const firstAudit = await execute(fx.tool("inspectTranslationAlignment"));
+    assert.deepEqual(firstAudit.details.pendingLines, [1]);
+    await execute(fx.tool("readSourceLines"), { fromLine: 1, toLine: 1 });
+    await execute(fx.tool("readTranslationLines"), { fromLine: 1, toLine: 1 });
+    const rejected = await execute(fx.tool("recordTranslationAlignmentChecks"), {
+      auditId: firstAudit.details.auditId,
+      failures: [{ line: 1, code: "semantic_mistranslation", note: "Synthetic rejection requiring a changed candidate." }]
+    });
+    assert.equal(rejected.details.decision, "rejected");
+    await assert.rejects(
+      execute(fx.tool("validateTranslationArtifact")),
+      /bounded translation alignment failed.*1|misaligned lines/i
+    );
+
+    const rejectedAudit = await execute(fx.tool("inspectTranslationAlignment"));
+    assert.equal(rejectedAudit.details.pendingCount, 0);
+    assert.deepEqual(rejectedAudit.details.misalignedLines, [1]);
+    assert.equal(rejectedAudit.details.misalignedCount, 1);
+    assert.equal(rejectedAudit.details.misalignedChecks[0]?.verdict, "misaligned");
+    assert.equal(rejectedAudit.details.hasMoreMisaligned, false);
+    assert.equal(rejectedAudit.details.repairRequired, true);
+    assert.equal(rejectedAudit.details.nextAction, "repair_translation_then_inspect");
+
+    const unchangedWrite = await execute(fx.tool("writeTranslationChunk"), {
+      fromLine: 1,
+      toLine: 1,
+      lines: ["合成译文。"]
+    });
+    assert.deepEqual(unchangedWrite.details.alignment.misalignedLines, [1]);
+    assert.equal(unchangedWrite.details.alignment.repairRequired, true);
+    const stillRejected = await execute(fx.tool("inspectTranslationAlignment"));
+    assert.deepEqual(stillRejected.details.misalignedLines, [1]);
+
+    await execute(fx.tool("writeTranslationChunk"), {
+      fromLine: 1,
+      toLine: 1,
+      lines: ["Changed synthetic translation."]
+    });
+    const repairedAudit = await execute(fx.tool("inspectTranslationAlignment"));
+    assert.deepEqual(repairedAudit.details.pendingLines, [1]);
+    assert.equal(repairedAudit.details.misalignedCount, 0);
+    assert.equal(repairedAudit.details.repairRequired, false);
+    assert.equal(repairedAudit.details.nextAction, "read_and_record_pending_alignment");
+    await execute(fx.tool("readSourceLines"), { fromLine: 1, toLine: 1 });
+    await execute(fx.tool("readTranslationLines"), { fromLine: 1, toLine: 1 });
+    const accepted = await execute(fx.tool("recordTranslationAlignmentChecks"), {
+      auditId: repairedAudit.details.auditId,
+      failures: []
+    });
+    assert.equal(accepted.details.decision, "accepted");
+    assert.deepEqual(accepted.details.misalignedLines, []);
+    const alignedAudit = await execute(fx.tool("inspectTranslationAlignment"));
+    assert.equal(alignedAudit.details.pendingCount, 0, JSON.stringify(alignedAudit.details));
+    assert.equal(alignedAudit.details.misalignedCount, 0, JSON.stringify(alignedAudit.details));
+    assert.deepEqual(alignedAudit.details.misalignedLines, []);
+    assert.equal(alignedAudit.details.repairRequired, false);
+    assert.equal(alignedAudit.details.nextAction, "validate_translation");
+
+    const validated = await execute(fx.tool("validateTranslationArtifact"));
+    assert.equal(validated.details.validation.accepted, true);
+  } finally {
+    await fx.close();
+  }
+});
+
+await test("folder alignment inspection selects a rejected document ahead of an aligned one", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-folder-rejected-alignment-"));
+  const sourceRoot = path.join(outputDir, "source");
+  const candidateRoot = path.join(outputDir, "AI_translation");
+  await mkdir(sourceRoot, { recursive: true });
+  await mkdir(candidateRoot, { recursive: true });
+  await writeFile(path.join(sourceRoot, "a.txt"), "Synthetic source A.\n", "utf8");
+  const rejectedSourceLines = Array.from({ length: 25 }, (_, index) => `Synthetic source B ${index + 1}.`);
+  const rejectedCandidateLines = Array.from({ length: 25 }, (_, index) => `Synthetic target B ${index + 1}.`);
+  await writeFile(path.join(sourceRoot, "b.txt"), `${rejectedSourceLines.join("\n")}\n`, "utf8");
+  const alignedCandidate = path.join(candidateRoot, "a_translated.txt");
+  const rejectedCandidate = path.join(candidateRoot, "b_translated.txt");
+  await writeFile(alignedCandidate, "Synthetic target A.\n", "utf8");
+  await writeFile(rejectedCandidate, `${rejectedCandidateLines.join("\n")}\n`, "utf8");
+  const translationAlignmentState = createTranslationAlignmentHostState();
+  const alignedScope = createTranslationAlignmentRangeAudit({
+    documentId: "a.txt",
+    sourceText: "Synthetic source A.",
+    candidateText: "Synthetic target A.",
+    candidatePath: alignedCandidate,
+    languagePair: "en->zh-CN",
+    fromLine: 1,
+    toLine: 1,
+    sourceLineCount: 1
+  });
+  alignedScope.checks.forEach((check) => { check.verdict = "aligned"; });
+  const rejectedScope = createTranslationAlignmentRangeAudit({
+    documentId: "b.txt",
+    sourceText: rejectedSourceLines.join("\n"),
+    candidateText: rejectedCandidateLines.join("\n"),
+    candidatePath: rejectedCandidate,
+    languagePair: "en->zh-CN",
+    fromLine: 1,
+    toLine: rejectedSourceLines.length,
+    sourceLineCount: rejectedSourceLines.length
+  });
+  rejectedScope.checks.forEach((check) => {
+    check.verdict = "misaligned";
+    check.reason = "semantic_mistranslation: replace the synthetic candidate with its own source meaning";
+  });
+  translationAlignmentState.ranges["a.txt"] = [alignedScope];
+  translationAlignmentState.ranges["b.txt"] = [rejectedScope];
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    folderSource: true,
+    fullWorkflow: false,
+    subagentEnabled: false
+  });
+  const request = {
+    outputDir,
+    sourcePath: sourceRoot,
+    sourceSelection: { kind: "folder", path: sourceRoot },
+    sessionId: "pi_folder_rejected_alignment",
+    prompt: "Inspect synthetic bounded alignment state.",
+    workflowIntent: "translation",
+    providerId: "test",
+    modelId: "test",
+    languagePair: "en->zh-CN",
+    subagentEnabled: false
+  };
+  const tools = createYnDomainTools({
+    request,
+    publishCustomMessage: async () => {},
+    subagents: new YnSubagentSupervisor({ publishCustomMessage: async () => {} }),
+    domainRun,
+    translationAlignmentState
+  });
+  const tool = (name) => {
+    const value = tools.find((entry) => entry.name === name);
+    assert.ok(value, `missing tool ${name}`);
+    return value;
+  };
+  try {
+    await execute(tool("inspectTranslationContext"));
+    await execute(tool("selectSourceDocument"), { documentId: "a.txt" });
+    const alignment = await execute(tool("inspectTranslationAlignment"));
+    assert.equal(alignment.details.documentId, "b.txt");
+    assert.equal(alignment.details.pendingCount, 0);
+    assert.equal(alignment.details.misalignedCount, rejectedSourceLines.length);
+    assert.equal(alignment.details.misalignedLines.length, alignment.details.misalignedChecks.length);
+    assert.ok(alignment.details.misalignedLines.length < alignment.details.misalignedCount);
+    assert.equal(alignment.details.hasMoreMisaligned, true);
+    assert.equal(alignment.details.repairRequired, true);
+    assert.equal(alignment.details.nextAction, "repair_translation_then_inspect");
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+await test("full folder repair inspection keeps the rejected document bound for reading and cannot accept stale verdicts", async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-pi-full-folder-repair-read-"));
+  const sourceRoot = path.join(outputDir, "source");
+  const candidateRoot = path.join(outputDir, "AI_translation");
+  await mkdir(sourceRoot, { recursive: true });
+  await mkdir(candidateRoot, { recursive: true });
+  const sourceA = "Synthetic source A.";
+  const candidateA = "Synthetic target A.";
+  const sourceBLines = ["Synthetic source B one.", "Synthetic source B two."];
+  const candidateBLines = ["Synthetic target B one.", "Synthetic target B two."];
+  const sourcePaths = [path.join(sourceRoot, "a.txt"), path.join(sourceRoot, "b.txt")];
+  await writeFile(sourcePaths[0], `${sourceA}\n`, "utf8");
+  await writeFile(sourcePaths[1], `${sourceBLines.join("\n")}\n`, "utf8");
+  const candidateAPath = resolveTranslationCandidatePath({ outputDir, sourcePaths, documentId: "a.txt" });
+  const candidateBPath = resolveTranslationCandidatePath({ outputDir, sourcePaths, documentId: "b.txt" });
+  await mkdir(path.dirname(candidateAPath), { recursive: true });
+  await writeFile(candidateAPath, `${candidateA}\n`, "utf8");
+  await writeFile(candidateBPath, `${candidateBLines.join("\n")}\n`, "utf8");
+
+  const translationAlignmentState = createTranslationAlignmentHostState();
+  const alignedA = createTranslationAlignmentRangeAudit({
+    documentId: "a.txt",
+    sourceText: sourceA,
+    candidateText: candidateA,
+    candidatePath: candidateAPath,
+    languagePair: "en->zh-CN",
+    fromLine: 1,
+    toLine: 1,
+    sourceLineCount: 1
+  });
+  alignedA.checks.forEach((check) => { check.verdict = "aligned"; });
+  const rejectedB = createTranslationChunkReviewAudit({
+    documentId: "b.txt",
+    sourceLines: sourceBLines,
+    candidateLines: candidateBLines,
+    candidatePath: candidateBPath,
+    languagePair: "en->zh-CN",
+    fromLine: 1,
+    toLine: sourceBLines.length,
+    sourceLineCount: sourceBLines.length
+  });
+  assert.ok(rejectedB.checks.length > 0, "synthetic B range must produce review checks");
+  rejectedB.checks.forEach((check) => {
+    check.verdict = "misaligned";
+    check.reason = "semantic_mistranslation: replace the synthetic candidate with its own source meaning";
+  });
+  translationAlignmentState.ranges["a.txt"] = [alignedA];
+  translationAlignmentState.ranges["b.txt"] = [rejectedB];
+
+  const request = {
+    outputDir,
+    sourcePath: sourceRoot,
+    sourceSelection: { kind: "folder", path: sourceRoot },
+    sessionId: "pi_full_folder_repair_read",
+    prompt: "Inspect synthetic folder alignment state.",
+    workflowIntent: "translation",
+    providerId: "test",
+    modelId: "test",
+    languagePair: "en->zh-CN",
+    subagentEnabled: false
+  };
+  const domainRun = createYnDomainRunContract({
+    workflowIntent: "translation",
+    folderSource: true,
+    fullWorkflow: true,
+    subagentEnabled: false
+  });
+  const publishCustomMessage = async () => {};
+  const subagents = new YnSubagentSupervisor({ publishCustomMessage });
+  const tools = createYnDomainTools({ request, publishCustomMessage, subagents, domainRun, translationAlignmentState });
+  const tool = (name) => {
+    const value = tools.find((entry) => entry.name === name);
+    assert.ok(value, `missing tool ${name}`);
+    return value;
+  };
+  try {
+    await execute(tool("inspectTranslationContext"));
+    await execute(tool("selectSourceDocument"), { documentId: "a.txt" });
+    const alignment = await execute(tool("inspectTranslationAlignment"));
+    assert.equal(alignment.details.documentId, "b.txt");
+    assert.equal(alignment.details.pendingCount, 0);
+    assert.equal(alignment.details.repairRequired, true);
+
+    const source = await execute(tool("readSourceLines"), { fromLine: 1, toLine: 1 });
+    const translation = await execute(tool("readTranslationLines"), { fromLine: 1, toLine: 1 });
+    assert.deepEqual(source.details.lines, sourceBLines.slice(0, 1));
+    assert.deepEqual(translation.details.lines, candidateBLines.slice(0, 1));
+
+    const repairRows = await execute(tool("readTranslationAlignmentRows"));
+    assert.equal(repairRows.details.readMode, "repair");
+    assert.equal(repairRows.details.documentId, "b.txt");
+    assert.equal(repairRows.details.selectedLineCount, rejectedB.checks.length);
+    assert.ok(repairRows.details.windows.flatMap((window) => window.rows)
+      .some((row) => row.selected && row.verdict === "misaligned" && row.reason.includes("synthetic candidate")));
+    await assert.rejects(
+      execute(tool("recordTranslationAlignmentChecks"), { auditId: alignment.details.auditId, failures: [] }),
+      /repair-only.*change the rejected candidate text.*inspectTranslationAlignment/i
+    );
+    assert.ok(rejectedB.checks.every((check) => check.verdict === "misaligned"), "repair-only reads must not accept prior negative verdicts");
+
+    await execute(tool("writeTranslationChunk"), {
+      documentId: "b.txt",
+      fromLine: 1,
+      toLine: 2,
+      lines: ["新的合成译文一。", "新的合成译文二。"]
+    });
+    const freshAlignment = await execute(tool("inspectTranslationAlignment"));
+    assert.equal(freshAlignment.details.documentId, "b.txt");
+    assert.deepEqual(freshAlignment.details.pendingLines, [1, 2]);
+    assert.equal(freshAlignment.details.repairRequired, false);
+    const freshRows = await execute(tool("readTranslationAlignmentRows"));
+    assert.equal(freshRows.details.readMode, "review");
+    assert.deepEqual(freshRows.details.selectedLines, [1, 2]);
+    const freshRowValues = freshRows.details.windows.flatMap((window) => window.rows);
+    assert.equal(freshRowValues.find((row) => row.line === 1)?.translation, "新的合成译文一。");
+    assert.equal(freshRowValues.find((row) => row.line === 2)?.translation, "新的合成译文二。");
+    const accepted = await execute(tool("recordTranslationAlignmentChecks"), {
+      auditId: freshAlignment.details.auditId,
+      failures: []
+    });
+    assert.equal(accepted.details.decision, "accepted");
+    assert.deepEqual(accepted.details.misalignedLines, []);
+    assert.ok(freshAlignment.details.auditId !== alignment.details.auditId, "changed candidate must receive a fresh review audit");
+  } finally {
+    if (typeof subagents.dispose === "function") await subagents.dispose();
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
 await test("parent alignment review submits failures only and Host records silent passes", async () => {
   const domainRun = createYnDomainRunContract({
     workflowIntent: "translation",

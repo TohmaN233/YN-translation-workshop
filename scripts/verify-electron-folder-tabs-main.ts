@@ -1,8 +1,8 @@
-import { app, BrowserWindow, nativeImage, type BrowserView, type WebContents } from "electron";
+import { app, BrowserWindow, type BrowserView, type WebContents } from "electron";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   BATCH_LINE_REVIEW_PROTOCOL_MARKER,
@@ -76,22 +76,9 @@ function visibleView(viewerWindow: BrowserWindow): BrowserView | undefined {
 }
 
 async function captureRenderedPage(contents: WebContents, label: string): Promise<Buffer> {
-  const attachedHere = !contents.debugger.isAttached();
-  if (attachedHere) contents.debugger.attach("1.3");
-  try {
-    await contents.debugger.sendCommand("Page.enable");
-    const result = await contents.debugger.sendCommand("Page.captureScreenshot", {
-      format: "png",
-      fromSurface: false,
-      captureBeyondViewport: false
-    }) as { data?: string };
-    const png = Buffer.from(result.data ?? "", "base64");
-    const image = nativeImage.createFromBuffer(png);
-    assert(!image.isEmpty(), `${label} renderer screenshot was empty`);
-    return png;
-  } finally {
-    if (attachedHere && contents.debugger.isAttached()) contents.debugger.detach();
-  }
+  const image = await contents.capturePage();
+  assert(!image.isEmpty(), `${label} renderer screenshot was empty`);
+  return image.toPNG();
 }
 
 await mkdir(sourceDir, { recursive: true });
@@ -120,7 +107,7 @@ const legacyChild = (title: string, sourcePath: string, translationPath: string,
     lineReviewPath,
     workflow: {
       outputDir: workspace,
-      sourcePath: sourceDir,
+      sourcePath,
       sourceKind: "file",
       translationPath
     }
@@ -246,7 +233,12 @@ async function run(): Promise<void> {
     "the active folder BrowserView"
   );
   assert(folderView, "Folder BrowserView was not attached");
-  await waitForView(folderView, 'document.querySelector("#fileFrame")?.contentDocument?.readyState === "complete"', "the first folder child");
+  await waitForView(folderView, `(() => {
+    const child = document.querySelector("#fileFrame")?.contentWindow;
+    return child?.location.href === ${JSON.stringify(pathToFileURL(childAPath).href)}
+      && Boolean(child.translationWorkshopLineReviewReady);
+  })()`, "the first actual folder child");
+  await folderView.webContents.executeJavaScript('document.querySelector("#fileFrame").contentWindow.translationWorkshopLineReviewReady');
   mark("folder-child-ready");
 
   const migratedFolder = await readFile(folderPath, "utf8");
@@ -268,13 +260,15 @@ async function run(): Promise<void> {
     const prompt = String(reviewData.workflow?.prompts?.translate || "");
     return {
       prompt,
+      promptSourcePath: reviewData.workflow?.paths?.promptSourcePath || "",
       hasBatchPromptPanel: Boolean(document.querySelector("#folderTranslatePrompt")),
       childSourceKind: reviewData.workflow?.paths?.sourceKind || "",
       childPromptSourceKind: reviewData.workflow?.paths?.promptSourceKind || ""
     };
   })()`);
   assert(!folderPromptState.hasBatchPromptPanel, "Folder index retained the removed side prompt panel");
-  assert(folderPromptState.prompt.includes(`Source folder: ${sourceDir}`), "Folder prompt lost the selected folder path");
+  assert(samePath(folderPromptState.promptSourcePath, sourceDir), "Folder prompt binding lost the selected folder path");
+  assert(folderPromptState.prompt.includes("Source folder:"), "Portable folder prompt lost its folder scope");
   assert(folderPromptState.prompt.includes("File order"), "Folder prompt lost the typed file-order setting");
   assert(folderPromptState.prompt.includes("removed names are skipped"), "Folder prompt lost the typed skip semantics");
   assert(folderPromptState.prompt.includes("Subagents: enabled; maximum=3"), "Folder prompt did not materialize the default worker count");
@@ -594,6 +588,7 @@ async function run(): Promise<void> {
     'window.__ynFolderLifecycle?.projectWritesCompleted > 0'
   ), "Folder prompt was generated before its project settings write completed");
   const appliedPrompt = appliedState.prompt;
+  assert(appliedPrompt.includes(`Source folder: ${sourceDir}`), "Generated folder prompt lost its resolved folder path");
   assert(appliedPrompt.includes("Existing translation: discard and retranslate"),
     "Default folder prompt did not declare direct retranslation");
   assert(!appliedPrompt.includes("runTranslationSubagents"), "Generated prompt leaked host-owned runtime instructions");
@@ -614,7 +609,7 @@ async function run(): Promise<void> {
   );
   mark("translation-prompt-ready");
   const workflowMetadata = capturedPromptRequest;
-  assert(workflowMetadata.translationSplitSize === 1000,
+  assert(workflowMetadata.translationSplitSize === 500,
     `Folder prompt request lost translationSplitSize: ${JSON.stringify(workflowMetadata)}`);
   assert(workflowMetadata.subagentCount === 5,
     `Folder prompt request lost the selected worker count: ${JSON.stringify(workflowMetadata)}`);
@@ -1013,9 +1008,22 @@ async function run(): Promise<void> {
     'document.querySelector("#agentChatReactRoot textarea")?.value.includes("Subagents: enabled; maximum=5") && document.querySelector("#agentChatReactRoot textarea")?.value.includes("File order (removed names are skipped; braces remove relative ordering only):") && document.querySelector("#agentChatReactRoot textarea")?.value.includes("Existing translation: audit and reuse")',
     "the prompt-only current-protocol composer insertion"
   );
+  await waitForView(promptOnlyView, `(() => {
+    const root = document.querySelector("#agentChatReactRoot");
+    const empty = root?.querySelector(".ynAgentEmpty");
+    return root && !root.querySelector("fieldset:disabled")
+      && (!empty || Boolean(empty.querySelector(".ynAgentEmptyBrand")));
+  })()`, "the final Agent session to finish loading before normal close");
   mark("prompt-upgrade-ready");
 
   const lifecycle = await folderView.webContents.executeJavaScript("window.__ynFolderLifecycle");
+  const closingContents = viewerWindow.getBrowserViews().map((view) => view.webContents);
+  viewerWindow.close();
+  await waitFor(
+    () => viewerWindow.isDestroyed() && closingContents.every((contents) => contents.isDestroyed()),
+    Boolean,
+    "the folder viewer and Agent sessions to close normally"
+  );
   console.log(JSON.stringify({
     ok: true,
     productFolderTabs: true,

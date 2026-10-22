@@ -158,7 +158,9 @@ try {
       "scripts/verify-electron-folder-tabs-main.ts",
       "product-folder-tabs-main.mjs"
     );
-    await runVerifier(productFolderMain, '"productFolderTabs":true', 90_000);
+    await runVerifier(productFolderMain, '"productFolderTabs":true', 90_000, {
+      YN_ELECTRON_VERIFY_OFFSCREEN: "1"
+    });
   }
 
   if (!verifyOnly || verifyOnly === "agent") {

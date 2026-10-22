@@ -920,12 +920,28 @@ const PARENT_LINE_READ_PAGE_SIZE = 512;
 function translationAlignmentProgress(audit: TranslationAlignmentDocumentState) {
   const pending = audit.checks.filter((check) => !check.verdict);
   const page = pending.slice(0, TRANSLATION_ALIGNMENT_PAGE_SIZE);
+  const misaligned = audit.checks.filter((check) => check.verdict === "misaligned");
+  const misalignedPage = misaligned.slice(0, TRANSLATION_ALIGNMENT_PAGE_SIZE);
   return {
     pendingCount: pending.length,
     pendingLines: page.map((check) => check.line),
     pendingChecks: page,
-    hasMorePending: pending.length > page.length
+    hasMorePending: pending.length > page.length,
+    misalignedCount: misaligned.length,
+    misalignedLines: misalignedPage.map((check) => check.line),
+    misalignedChecks: misalignedPage,
+    hasMoreMisaligned: misaligned.length > misalignedPage.length,
+    repairRequired: misaligned.length > 0,
+    nextAction: misaligned.length > 0
+      ? "repair_translation_then_inspect"
+      : pending.length > 0
+        ? "read_and_record_pending_alignment"
+        : "validate_translation"
   };
+}
+
+function hasPendingOrMisalignedTranslationAlignment(audit: TranslationAlignmentDocumentState): boolean {
+  return audit.checks.some((check) => !check.verdict || check.verdict === "misaligned");
 }
 
 function mutationAlignmentAssignments(scopes: TranslationAlignmentRangeState[]) {
@@ -1402,8 +1418,34 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     documentId: string;
     bound: PiBoundSourceRequest;
     reviewLines: number[];
+    repairLines?: number[];
     reviewAssignments?: Array<{ auditId: string; line: number }>;
   } | undefined;
+  const setActiveTranslationAlignmentContext = (input: {
+    auditId: string;
+    documentId: string;
+    bound: PiBoundSourceRequest;
+    progress: ReturnType<typeof translationAlignmentProgress>;
+  }): void => {
+    if (input.progress.pendingCount > 0) {
+      activeTranslationChunkReview = {
+        auditId: input.auditId,
+        documentId: input.documentId,
+        bound: input.bound,
+        reviewLines: input.progress.pendingLines
+      };
+    } else if (input.progress.repairRequired) {
+      activeTranslationChunkReview = {
+        auditId: input.auditId,
+        documentId: input.documentId,
+        bound: input.bound,
+        reviewLines: [],
+        repairLines: input.progress.misalignedLines
+      };
+    } else {
+      activeTranslationChunkReview = undefined;
+    }
+  };
   let activeTranslationWarningReview: {
     auditId: string;
     documentId: string;
@@ -1421,9 +1463,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     )));
   };
   const openMutationAlignmentPage = (bound: PiBoundSourceRequest, currentDocumentId: string) => {
-    const assignments = mutationAlignmentAssignments(translationAlignmentState.ranges[currentDocumentId] ?? []);
+    const scopes = translationAlignmentState.ranges[currentDocumentId] ?? [];
+    const assignments = mutationAlignmentAssignments(scopes);
     if (assignments.length === 0) return undefined;
     const page = assignments.slice(0, TRANSLATION_ALIGNMENT_PAGE_SIZE);
+    const misaligned = scopes.flatMap((scope) => scope.checks
+      .filter((check) => check.verdict === "misaligned")
+      .map((check) => ({ scope, check })))
+      .sort((left, right) => left.check.line - right.check.line || left.scope.auditId.localeCompare(right.scope.auditId));
+    const misalignedPage = misaligned.slice(0, TRANSLATION_ALIGNMENT_PAGE_SIZE);
     const scopeIds = [...new Set(page.map((entry) => entry.scope.auditId))];
     const primary = page[0]!.scope;
     const auditId = scopeIds.length === 1
@@ -1459,6 +1507,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       pendingLines: page.map((entry) => entry.check.line),
       pendingChecks: page.map((entry) => entry.check),
       hasMorePending: remainingAssignments.length > 0,
+      misalignedCount: misaligned.length,
+      misalignedLines: misalignedPage.map((entry) => entry.check.line),
+      misalignedChecks: misalignedPage.map((entry) => entry.check),
+      hasMoreMisaligned: misaligned.length > misalignedPage.length,
+      repairRequired: misaligned.length > 0,
+      nextAction: misaligned.length > 0
+        ? "repair_translation_then_inspect"
+        : "read_and_record_pending_alignment",
       ...(scopeIds.length > 1 ? { pagedAcrossRanges: true, rangeCount: scopeIds.length } : {})
     };
   };
@@ -5987,13 +6043,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       requiresSourceManifest: true,
       name: "readTranslationAlignmentRows",
       label: "Read translation alignment rows",
-      description: "Required reader for parent alignment and takeover. Returns the current Host-selected rejected or audit rows with at most two neighboring source/translation lines from the hash-current candidate. Call inspectTranslationAlignment first. Never browse translation-staging with readProjectFile or searchProjectText.",
+      description: "Required reader after inspectTranslationAlignment. In review mode it reads only pending checks; in repair mode it exposes the exact hash-current misaligned rows and their reasons without creating review-read receipts. It includes at most two neighboring source/translation lines. Never browse translation-staging with readProjectFile or searchProjectText.",
       parameters: Type.Object({}, { additionalProperties: false }),
       async execute() {
         const active = activeTranslationChunkReview;
         if (!active) {
           throw new Error("No active parent translation alignment review. Call inspectTranslationAlignment first.");
         }
+        const repairMode = active.repairLines !== undefined;
         const scopes = translationAlignmentState.ranges[active.documentId] ?? [];
         const sourceLines = splitTextLines(await readRequiredWorkflowText(sourcePath(active.bound)));
         const resolveScope = async (auditId: string) => {
@@ -6023,7 +6080,15 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         let candidate = "";
         let candidateLines: string[] = [];
         const selectedChecks: TranslationAlignmentRangeState["checks"] = [];
-        if (active.reviewAssignments?.length) {
+        if (repairMode) {
+          const resolved = await resolveScope(active.auditId);
+          audit = resolved.scope;
+          candidate = resolved.candidatePathValue;
+          candidateLines = resolved.candidateLines;
+          selectedChecks.push(...audit.checks.filter((check) => (
+            check.verdict === "misaligned" && active.repairLines!.includes(check.line)
+          )));
+        } else if (active.reviewAssignments?.length) {
           for (const assignment of active.reviewAssignments) {
             const resolved = await resolveScope(assignment.auditId);
             audit ??= resolved.scope;
@@ -6042,18 +6107,23 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           )));
         }
         if (!audit || selectedChecks.length === 0) {
-          activeTranslationChunkReview = undefined;
-          throw new Error("The active alignment page has already been reviewed. Call inspectTranslationAlignment for the next page.");
+          if (!repairMode) activeTranslationChunkReview = undefined;
+          throw new Error(repairMode
+            ? "The active rejected translation rows are stale. Call inspectTranslationAlignment again before repairing them."
+            : "The active alignment page has already been reviewed. Call inspectTranslationAlignment for the next page.");
         }
         const selected = new Map(selectedChecks.map((check) => [check.line, check.signals]));
-        for (const check of selectedChecks) {
-          sourceLinesRead.add(alignmentReadKey(active.documentId, check.line));
-          translationLinesRead.add(alignmentReadKey(active.documentId, check.line));
+        if (!repairMode) {
+          for (const check of selectedChecks) {
+            sourceLinesRead.add(alignmentReadKey(active.documentId, check.line));
+            translationLinesRead.add(alignmentReadKey(active.documentId, check.line));
+          }
         }
         if (!context.domainRun?.suspended) {
           context.domainRun?.recordSourceRead();
           context.domainRun?.recordTranslationRead();
         }
+        const checksByLine = new Map(selectedChecks.map((check) => [check.line, check]));
         const windows = focusedTranslationReviewWindows(
           selectedChecks.map((check) => check.line),
           sourceLines.length,
@@ -6068,7 +6138,9 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
               source: sourceLines[line - 1] ?? "",
               translation: candidateLines[line - 1] ?? "",
               selected: selected.has(line),
-              signals: [...(selected.get(line) ?? [])]
+              signals: [...(selected.get(line) ?? [])],
+              ...(checksByLine.get(line)?.verdict ? { verdict: checksByLine.get(line)!.verdict } : {}),
+              ...(checksByLine.get(line)?.reason ? { reason: checksByLine.get(line)!.reason } : {})
             };
           })
         }));
@@ -6076,6 +6148,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           auditId: active.auditId,
           documentId: active.documentId,
           candidatePath: candidate,
+          readMode: repairMode ? "repair" : "review",
           selectedLineCount: selectedChecks.length,
           selectedLines: selectedChecks.map((check) => check.line),
           windows
@@ -6772,7 +6845,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       requiresSourceManifest: true,
       name: "inspectTranslationAlignment",
       label: "Inspect translation alignment",
-      description: "Open a Host-owned parent takeover or mutation alignment page. Do not use this to poll live workers or to open a whole-document audit while children still write. After a listed parentTakeover, call this, then readTranslationAlignmentRows. Ordinary chunk review stays in the read-only review pool.",
+      description: "Open a Host-owned parent takeover or mutation alignment page. The response reports pending and misaligned rows separately; pendingCount 0 does not mean accepted. When misalignedCount is nonzero, repair the listed text and inspect again. Do not submit a retained misaligned verdict as accepted review. Do not use this to poll live workers or open a whole-document audit while children still write. After a listed parentTakeover, call this, then readTranslationAlignmentRows. Ordinary chunk review stays in the read-only review pool.",
       parameters: Type.Object({
         auditId: Type.Optional(Type.String({ minLength: 1 }))
       }, { additionalProperties: false }),
@@ -6789,7 +6862,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             ];
             const pendingDocumentId = pendingDocumentIds.find((id, index) => (
               pendingDocumentIds.indexOf(id) === index
-              && (translationAlignmentState.ranges[id]?.some((scope) => scope.checks.some((check) => !check.verdict)) ?? false)
+              && (translationAlignmentState.ranges[id]?.some(hasPendingOrMisalignedTranslationAlignment) ?? false)
             ));
             if (pendingDocumentId && pendingDocumentId !== documentId(request)) {
               selectDocument(pendingDocumentId);
@@ -6807,14 +6880,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           }
           const mutationPage = openMutationAlignmentPage(request, currentDocumentId);
           if (mutationPage) return textResult(mutationPage);
-          const audit = scopes.find((scope) => scope.checks.some((check) => !check.verdict)) ?? scopes[0];
+          const audit = scopes.find(hasPendingOrMisalignedTranslationAlignment) ?? scopes[0];
           const progress = translationAlignmentProgress(audit);
-          activeTranslationChunkReview = {
+          setActiveTranslationAlignmentContext({
             auditId: audit.auditId,
             documentId: currentDocumentId,
             bound: request,
-            reviewLines: progress.pendingLines
-          };
+            progress
+          });
           return textResult({
             auditId: audit.auditId,
             documentId: currentDocumentId,
@@ -6859,6 +6932,11 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           : rangeEntries().find(({ scope }) => scope.checks.some((check) => !check.verdict));
         if (requestedAuditId && !selected) {
           throw new Error(`Translation chunk review ${requestedAuditId} is missing or stale.`);
+        }
+        if (!selected && !requestedAuditId) {
+          selected = rangeEntries().find(({ scope }) => (
+            scope.checks.some((check) => check.verdict === "misaligned")
+          ));
         }
         if (!selected) {
           for (const document of resolvedManifest.documents) {
@@ -6912,12 +6990,13 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const mutationPage = openMutationAlignmentPage(selectedBound, selected.ownerDocumentId);
         if (mutationPage) return textResult(mutationPage);
         const audit = selected.scope;
-        activeTranslationChunkReview = {
+        const progress = translationAlignmentProgress(audit);
+        setActiveTranslationAlignmentContext({
           auditId: audit.auditId,
           documentId: selected.ownerDocumentId,
           bound: selectedBound,
-          reviewLines: translationAlignmentProgress(audit).pendingLines
-        };
+          progress
+        });
         return textResult({
           auditId: audit.auditId,
           documentId: selected.ownerDocumentId,
@@ -6928,7 +7007,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           riskLineCount: audit.riskLineCount,
           sampledLineCount: audit.sampledLineCount,
           reviewPolicy: "all_mechanical_risks_plus_deterministic_unflagged_sample",
-          ...translationAlignmentProgress(audit)
+          ...progress
         });
       }
     },
@@ -6961,6 +7040,14 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           failures: Array<{ line: number; code: string; note: string }>;
         };
         await ensureManifest();
+        if (
+          activeTranslationChunkReview?.auditId === input.auditId
+          && activeTranslationChunkReview.repairLines !== undefined
+        ) {
+          throw new Error(
+            "The active alignment context is repair-only. Change the rejected candidate text, then call inspectTranslationAlignment before recording a fresh review."
+          );
+        }
         if (
           activeTranslationChunkReview?.auditId === input.auditId
           && activeTranslationChunkReview.reviewAssignments?.length
@@ -7132,7 +7219,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
       requiresSourceManifest: true,
       name: "writeTranslationChunk",
       label: "Write translation chunk",
-      description: "Strictly validate and atomically write one exact line range into the named translation candidate without changing the active workflow document. PDF tasks submit only translatableLines as entries; the Host merges immutable code/math/references. Legacy full-line arrays remain supported with exact protection checks.",
+      description: "Strictly validate and atomically write one exact line range into the named translation candidate without changing the active workflow document. Bounded writes also return the current alignment status, including any hash-current misaligned verdicts that still require changed text and a fresh inspection. PDF tasks submit only translatableLines as entries; the Host merges immutable code/math/references. Legacy full-line arrays remain supported with exact protection checks.",
       parameters: Type.Object({
         documentId: Type.Optional(Type.String({ minLength: 1 })),
         fromLine: Type.Integer({ minimum: 1 }),
@@ -7212,6 +7299,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         const rollbackReuseBaseline = await captureTranslationReuseBaselineRollback({ outputDir: bound.outputDir, documentId: documentId(bound), candidatePath: targetCandidatePath })
           .catch((error) => { throw new NonRetryableAssignmentError("Cannot capture the Host canonical reuse baseline before writing.", error); });
         let result: Awaited<ReturnType<typeof writeTranslationChunk>>;
+        let alignmentStatus: ReturnType<typeof translationAlignmentProgress> | undefined;
         let rollbackDomainMutation: (() => void) | undefined;
         try {
         result = await writeTranslationChunk({
@@ -7227,7 +7315,8 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
             if (context.domainRun?.kind === "proofread") {
               await refreshProofreadPrescanAfterBoundedMutation(bound, range);
             }
-            await registerBoundedTranslationAlignment(bound, range, { parentOwnedMutation: true });
+            const alignment = await registerBoundedTranslationAlignment(bound, range, { parentOwnedMutation: true });
+            alignmentStatus = translationAlignmentProgress(alignment);
             await context.persistHostState?.();
           } else {
             rollbackDomainMutation = context.domainRun?.recordTranslationWrite("translation");
@@ -7257,6 +7346,18 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
         }
         return textResult({
           result,
+          ...(alignmentStatus ? {
+            alignment: {
+              pendingCount: alignmentStatus.pendingCount,
+              pendingLines: alignmentStatus.pendingLines,
+              hasMorePending: alignmentStatus.hasMorePending,
+              misalignedCount: alignmentStatus.misalignedCount,
+              misalignedLines: alignmentStatus.misalignedLines,
+              hasMoreMisaligned: alignmentStatus.hasMoreMisaligned,
+              repairRequired: alignmentStatus.repairRequired,
+              nextAction: alignmentStatus.nextAction
+            }
+          } : {}),
           validation: compactYnTranslationValidation(
             validation,
             boundedArtifactRepair ? "chunk" : "artifact"

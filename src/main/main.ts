@@ -2121,6 +2121,14 @@ async function synchronizeBatchProposalLineReviews(args: {
   if (!isSameOrInside(workspaceDir, args.batchIndexPath)) {
     throw new Error("The batch line-review index is outside the current project workspace.");
   }
+  const tab = [...htmlViewerTabs.values()].find((item) => sameFilePath(item.filePath, args.batchIndexPath));
+  let selectedOutputPath: string | undefined;
+  if (tab && !tab.view.webContents.isDestroyed()) {
+    await flushHtmlViewerTabState(tab);
+    selectedOutputPath = await tab.view.webContents.executeJavaScript(
+      'data.files[Number(document.getElementById("fileSelect")?.value || 0)]?.outputPath'
+    );
+  }
   const children = await readBatchLineReviewCurrentBindings(args.batchIndexPath);
   const requestedKey = normalizedProposalDocumentId(args.onlyDocumentId);
   const selected = requestedKey
@@ -2181,20 +2189,13 @@ async function synchronizeBatchProposalLineReviews(args: {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const tab = [...htmlViewerTabs.values()].find((item) => sameFilePath(item.filePath, args.batchIndexPath));
   if (tab && !tab.view.webContents.isDestroyed()) {
-    await new Promise<void>((resolve, reject) => {
-      const done = () => {
-        tab.view.webContents.removeListener("did-fail-load", failed);
-        resolve();
-      };
-      const failed = (_event: Electron.Event, errorCode: number, errorDescription: string) => {
-        tab.view.webContents.removeListener("did-finish-load", done);
-        reject(new Error(`Failed to reload synchronized batch review: ${errorCode} ${errorDescription}`));
-      };
-      tab.view.webContents.once("did-finish-load", done);
-      tab.view.webContents.once("did-fail-load", failed);
-      tab.view.webContents.reloadIgnoringCache();
+    const opening = await prepareReviewHtmlOpen(args.batchIndexPath);
+    await loadPreparedHtmlViewerTab(tab, opening, tab.hash);
+    const selectedIndex = opening.payload.files.findIndex((file: { outputPath: string }) => file.outputPath === selectedOutputPath);
+    if (selectedIndex > 0) await tab.view.webContents.executeJavaScript(`applyFile(${selectedIndex})`);
+    console.info("[html-batch-refresh] Synchronized open folder review", {
+      filePath: args.batchIndexPath, selectedOutputPath, synchronized: plans.length
     });
   }
   return { synchronized: plans.length, migrated };
@@ -3130,6 +3131,36 @@ async function finishClosingHtmlViewerTab(key: string): Promise<boolean> {
   return true;
 }
 
+async function loadPreparedHtmlViewerTab(
+  tab: HtmlViewerTab,
+  opening: ReviewHtmlOpenContext,
+  hash: string,
+  timed: (name: string, run: () => Promise<void>) => Promise<void> = (_name, run) => run()
+): Promise<void> {
+  if (tab.loadPromise) await tab.loadPromise;
+  const filePath = opening.filePath;
+  tab.workspaceDir = extractLineReviewWorkspaceDir(opening);
+  tab.batchOpenContext = opening.kind === 'batchData' ? opening : undefined;
+  tab.lineOpenContext = opening.kind === 'reviewData' ? opening : undefined;
+  tab.preparedChildren = new Map();
+  tab.sourceStamp = undefined;
+  const pendingLoad = (async () => {
+    if (opening.sourceStamp !== await readReviewHtmlSourceStamp(filePath)) throw new Error(`HTML changed before its prepared view was loaded: ${filePath}`);
+    await timed('loadFile', () => tab.view.webContents.loadFile(filePath, { hash }));
+    tab.filePath = filePath;
+    await timed('hydrateSidecar', () => injectHtmlSidecarState(opening, tab.view.webContents));
+    if (opening.sourceStamp !== await readReviewHtmlSourceStamp(filePath)) throw new Error(`HTML changed while its prepared view was loaded: ${filePath}`);
+    tab.sourceStamp = opening.sourceStamp;
+  })();
+  tab.loadPromise = pendingLoad;
+  htmlViewerOpenOperations.add(pendingLoad);
+  try { await pendingLoad; }
+  finally {
+    if (tab.loadPromise === pendingLoad) tab.loadPromise = undefined;
+    htmlViewerOpenOperations.delete(pendingLoad);
+  }
+}
+
 async function loadHtmlViewerTab(targetPath: string, outputDir?: string): Promise<{ key: string; tab: HtmlViewerTab }> {
   if (desktopQuitPending) throw new Error("YN is shutting down; wait for pending storage and HTML writes.");
   const operation = finishLoadingHtmlViewerTab(targetPath, outputDir);
@@ -3208,25 +3239,9 @@ async function finishLoadingHtmlViewerTab(targetPath: string, outputDir?: string
   if (needsLoad) {
     if (!tab.loadPromise) {
       if(currentFilePath)await timed('settleBeforeReload',()=>settleHtmlViewerTab(tab));
-      tab.workspaceDir=workspaceDir;
-      tab.batchOpenContext=opening.kind==='batchData'?opening:undefined;
-      tab.lineOpenContext=opening.kind==='reviewData'?opening:undefined;
-      tab.preparedChildren=new Map();
-      const pendingLoad = (async () => {
-        if(opening.sourceStamp!==await readReviewHtmlSourceStamp(filePath))throw new Error(`HTML changed before its prepared view was loaded: ${filePath}`);
-        await timed('loadFile',()=>tab.view.webContents.loadFile(filePath, { hash }));
-        tab.filePath = filePath;
-        await timed('hydrateSidecar',()=>injectHtmlSidecarState(opening, tab.view.webContents));
-        if(opening.sourceStamp!==await readReviewHtmlSourceStamp(filePath))throw new Error(`HTML changed while its prepared view was loaded: ${filePath}`);
-        tab.sourceStamp=opening.sourceStamp;
-      })();
-      tab.loadPromise = pendingLoad;
-      const clearPendingLoad = () => {
-        if (tab.loadPromise === pendingLoad) tab.loadPromise = undefined;
-      };
-      void pendingLoad.then(clearPendingLoad, clearPendingLoad);
+      await loadPreparedHtmlViewerTab(tab, opening, hash, timed);
     }
-    await tab.loadPromise;
+    else await tab.loadPromise;
   } else if (hash) {
     await tab.view.webContents.executeJavaScript(`if (location.hash !== "#${hash.replace(/"/g, "")}") location.hash = "#${hash.replace(/"/g, "")}";`);
   }

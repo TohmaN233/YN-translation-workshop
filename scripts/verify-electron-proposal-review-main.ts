@@ -731,6 +731,28 @@ async function run(): Promise<void> {
     `Concurrent proposal updates lost a committed line: ${JSON.stringify(concurrentState)}`
   );
 
+  // Keep the folder homepage live while proofreading synchronizes its index
+  // and child HTML. Reopening the homepage here would hide stale Host epochs.
+  await mainWindow.webContents.executeJavaScript(
+    `window.workshop.openReviewHtml(${JSON.stringify({ htmlPath: folderBatchIndex, outputDir })})`
+  );
+  const liveFolderView = await waitFor(
+    () => visibleView(viewerWindow),
+    (view) => Boolean(view && !view.webContents.isDestroyed() && view.webContents.getURL().includes(path.basename(folderBatchIndex))),
+    "the folder homepage before proofreading"
+  ) as BrowserView;
+  await waitFor(
+    () => liveFolderView.webContents.executeJavaScript('Boolean(document.querySelector("#fileFrame")?.contentDocument?.querySelector(".target"))').catch(() => false),
+    Boolean,
+    "the initial folder child before proofreading"
+  );
+  await liveFolderView.webContents.executeJavaScript('applyFile(1)');
+  await waitFor(
+    () => liveFolderView.webContents.executeJavaScript('document.querySelector("#fileFrame")?.getAttribute("src") || ""').catch(() => ""),
+    (value) => value === "folder-batch/chapter-b.html",
+    "the selected folder child before proofreading"
+  );
+
   await writeFile(folderReportPath, JSON.stringify(folderReportDocument, null, 2), "utf8");
   const aggregateResult = await mainWindow.webContents.executeJavaScript(
     `window.workshop.generateProposalReview(${JSON.stringify({
@@ -843,6 +865,13 @@ async function run(): Promise<void> {
     (view) => Boolean(view && !view.webContents.isDestroyed() && view.webContents.getURL().includes(path.basename(aggregateResult.outputPath!))),
     "the aggregate proposal review after line jump"
   );
+  await liveFolderView.webContents.executeJavaScript(`(async () => {
+    const child = document.querySelector("#fileFrame").contentWindow;
+    await child.translationWorkshopLineReviewReady;
+    const editor = child.document.querySelector(".target");
+    editor.textContent = "人工保留乙一";
+    editor.dispatchEvent(new child.InputEvent("input", { bubbles: true, inputType: "insertText" }));
+  })()`);
   await aggregateView.webContents.executeJavaScript(`(() => {
     document.querySelector("#applyProposalChanges").click();
   })()`);
@@ -852,6 +881,16 @@ async function run(): Promise<void> {
     "one-click application of every unreviewed folder suggestion"
   );
   assert(visibleView(viewerWindow)?.webContents.id === aggregateView.webContents.id, "Cross-file apply opened every child instead of staying in the aggregate report");
+  assert(await liveFolderView.webContents.executeJavaScript('document.querySelector("#fileSelect").value') === "1",
+    "Synchronizing proofreading must retain the selected document in the open folder homepage");
+  await liveFolderView.webContents.executeJavaScript('applyFile(1)');
+  const liveFolderStatus = await liveFolderView.webContents.executeJavaScript('document.querySelector("#batchWriteStatus")?.textContent || ""');
+  assert(!/changed|reopen|error/i.test(liveFolderStatus), `Applying proofreading invalidated the already-open folder homepage: ${liveFolderStatus}`);
+  await waitFor(
+    () => liveFolderView.webContents.executeJavaScript('document.querySelector("#fileFrame")?.contentDocument?.querySelectorAll(".target")?.[1]?.textContent || ""').catch(() => ""),
+    (value) => value === "新译乙二",
+    "the applied translation in the still-open folder homepage"
+  );
   const resolvedFolderDocuments = await aggregateView.webContents.executeJavaScript(`Promise.all(
     groupProposalsByDocument().map(async group => {
       const document = await resolveProposalLineReviewDocument(group.items[0], { includeRows: false });
@@ -1001,7 +1040,7 @@ async function run(): Promise<void> {
     [folderTranslationA, folderTranslationB, folderTranslationC, folderTranslationD].map((filePath) => readFile(filePath, "utf8"))
   );
   assert(writtenFolderTranslations[0] === "新译甲一\n旧译甲二", `Chapter A TXT missed its accepted edit: ${JSON.stringify(writtenFolderTranslations)}`);
-  assert(writtenFolderTranslations[1] === "旧译乙一\n新译乙二", `Chapter B TXT missed its accepted edit: ${JSON.stringify(writtenFolderTranslations)}`);
+  assert(writtenFolderTranslations[1] === "人工保留乙一\n新译乙二", `Chapter B TXT lost its pending manual edit or accepted proofreading edit: ${JSON.stringify(writtenFolderTranslations)}`);
   assert(writtenFolderTranslations[2] === "新译丙一\n旧译丙二", `Chapter C TXT missed its accepted edit: ${JSON.stringify(writtenFolderTranslations)}`);
   assert(writtenFolderTranslations[3] === "旧译丁一\n旧译丁二", `No-finding chapter D did not retain its synchronized translation: ${JSON.stringify(writtenFolderTranslations)}`);
   const aggregatePng = (await aggregateView.webContents.capturePage()).toPNG();

@@ -23,6 +23,8 @@ import type {
   PiSessionInputKind,
   PiSessionPromptAcceptance,
   PiSessionPromptRequest,
+  PiSessionWarningReviewDecisionRequest,
+  PiSessionWarningReviewDecisionResult,
   PiSessionRunState,
   PiSessionStateEnvelope,
   PiSessionStorageProgress,
@@ -32,7 +34,7 @@ import type {
 import { resolveWorkflowSubagentCount } from "../../../shared/agent/piSessionContract.ts";
 import { resolveThinkingLevelForModel } from "../../../shared/agent/thinkingLevels.ts";
 import { createPiModelSelection } from "./providerRegistry.ts";
-import { isHostUserWaitGateToolResult, sessionHasOpenHostUserGate } from "./userGate.ts";
+import { isHostUserWaitGateToolResult, isTranslationWarningReviewGateToolResult, sessionHasOpenHostUserGate } from "./userGate.ts";
 import {
   createYnDomainRunContract,
   type YnDomainRunContract,
@@ -72,6 +74,7 @@ import {
 } from "../translationBindingResolve.ts";
 import { isExtractedWorkshopTranslationPath } from "../../../shared/core/translationBinding.ts";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { normalizeCustomPreserveRules } from "../../../shared/validation/customPreserveRules.ts";
 import {
   buildTaskPreparationPrompt, createTaskPreparationState, createTaskPreparationTools,
@@ -79,6 +82,28 @@ import {
 } from "./taskPreparation.ts";
 
 type EventListener = (envelope: PiSessionEventEnvelope) => void;
+
+function pendingTranslationWarningSnapshot(state: Pick<YnSessionHostState, "domainRun" | "parkedDomainRuns">): YnDomainRunSnapshot | undefined {
+  return [state.domainRun, state.parkedDomainRuns?.translation].find(snapshot => (
+    snapshot?.fullWorkflowActive === true && snapshot.activeKind === "translation"
+      && snapshot.translationWarningReviewDecision === "pending"
+  ));
+}
+
+function warningReviewFromHostState(state: YnSessionHostState): PiSessionRunState["warningReview"] {
+  const snapshot = pendingTranslationWarningSnapshot(state);
+  if (!snapshot) return undefined;
+  return state.warningReview ? { ...state.warningReview } : {
+    id: `${state.ownerSessionId}:translation-warning-review:${snapshot.progressRevision}`,
+    warningCount: snapshot.documents.reduce((count, document) => count + (document.bestTranslationValidationDebt ?? 0), 0)
+  };
+}
+
+function translationWorkflowBindings(request: PiSessionPromptRequest): NonNullable<PiSessionWarningReviewDecisionRequest["request"]> {
+  const { outputDir: _outputDir, sessionId: _sessionId, prompt: _prompt, images: _images,
+    taskPreparation: _taskPreparation, workflowIntent: _workflowIntent, ...bindings } = request;
+  return bindings;
+}
 type StateListener = (
   workspaceDir: string,
   state: PiSessionRunState,
@@ -229,6 +254,8 @@ interface ActiveSession {
   compactionTask?: Promise<PiSessionCompactionResult>;
   domainRun?: YnDomainRunContract;
   hostState: {
+    translationWorkflowRequest?: PiSessionWarningReviewDecisionRequest["request"];
+    warningReview?: PiSessionRunState["warningReview"];
     taskPreparation?: YnTaskPreparationState;
     domainRun?: YnDomainRunContract;
     parkedDomainRuns: Partial<Record<YnWorkflowKind, YnDomainRunSnapshot>>;
@@ -272,6 +299,8 @@ interface PromptOperation {
   generation: number;
   cancelled: boolean;
   abortController: AbortController;
+  /** Transaction undo retained only until this operation enters native input. */
+  undoUnstartedWarningReview?: () => void;
 }
 
 interface PdfStructurePreparationOperation {
@@ -445,6 +474,9 @@ function orderedQueuedMessages(active: ActiveSession): OrderedQueuedMessage[] {
 }
 
 export class PiNativeSessionService {
+  private readonly coldWarningReviewStates = new Map<string, {
+    path: string; stamp: string; warningReview: PiSessionRunState["warningReview"];
+  }>();
   private readonly active = new Map<string, ActiveSession>();
   private readonly sessionOperationReservations = new Map<string, SessionOperationReservation>();
   private readonly transitionTails = new Map<string, Promise<void>>();
@@ -651,9 +683,132 @@ export class PiNativeSessionService {
   async getRunState(workspaceDir: string, sessionId: string): Promise<PiSessionRunState> {
     const key = sessionKey(workspaceDir, sessionId);
     const current = this.active.get(key);
-    return current
-      ? this.stateFromActive(current)
-      : { ...this.idleState(sessionId), sequence: this.coldStorageSequences.get(key) ?? 0 };
+    if (current) return this.stateFromActive(current);
+    if (!sessionId) return this.idleState(sessionId);
+    const controller = this.registerColdStorageController(key);
+    try { return await this.withSessionTransition(workspaceDir, sessionId, async () => {
+      controller.signal.throwIfAborted();
+      const owner = this.active.get(key);
+      if (owner) return this.stateFromActive(owner);
+      const idle = { ...this.idleState(sessionId), sequence: this.coldStorageSequences.get(key) ?? 0 };
+      const cached = this.coldWarningReviewStates.get(key);
+      const stamp = async (filePath: string) => {
+        const info = await stat(filePath);
+        return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+      };
+      if (cached && existsSync(cached.path) && cached.stamp === await stamp(cached.path)) {
+        return { ...idle, warningReview: cached.warningReview ? { ...cached.warningReview } : undefined };
+      }
+      const repository = new PiSessionRepository(workspaceDir);
+      const metadata = await repository.findMetadata(sessionId);
+      if (!metadata) { this.coldWarningReviewStates.delete(key); return idle; }
+      const beforeStamp = await stamp(metadata.path);
+      const session = await repository.open(sessionId, { signal: controller.signal });
+      let warningReview: PiSessionRunState["warningReview"];
+      try {
+        const state = await loadYnSessionHostState(session, sessionId, { projectRoot: workspaceDir,
+          throwIfCancelled: () => controller.signal.throwIfAborted() });
+        warningReview = state ? warningReviewFromHostState(state) : undefined;
+      } finally { await session.close(BACKGROUND_CONTEXT); }
+      const afterStamp = await stamp(metadata.path);
+      if (beforeStamp === afterStamp) this.coldWarningReviewStates.set(key, { path: metadata.path, stamp: afterStamp,
+        warningReview: warningReview ? { ...warningReview } : undefined });
+      else this.coldWarningReviewStates.delete(key);
+      return { ...idle, warningReview };
+    }); } finally { this.releaseColdStorageController(key, controller); }
+  }
+
+  private hostSnapshot(active: ActiveSession): YnSessionHostState {
+    return { schemaVersion: 1, ownerSessionId: active.sessionId,
+      ...active.hostState, domainRun: active.hostState.domainRun?.snapshot() };
+  }
+
+  private async withWarningReviewHost<T>(request: Pick<PiSessionWarningReviewDecisionRequest, "outputDir" | "sessionId">,
+    action: (state: YnSessionHostState, session: Session, active?: ActiveSession) => Promise<T>): Promise<T> {
+    const active = this.active.get(sessionKey(request.outputDir, request.sessionId));
+    if (active) return action(this.hostSnapshot(active), active.session, active);
+    const signal = this.sessionOperationReservations.get(sessionKey(request.outputDir, request.sessionId))?.preparationController?.signal;
+    const session = await new PiSessionRepository(request.outputDir).open(request.sessionId, { signal });
+    try {
+      const state = await loadYnSessionHostState(session, request.sessionId, { projectRoot: request.outputDir,
+        throwIfCancelled: () => signal?.throwIfAborted() });
+      if (!state) throw new Error("No pending translation warning review exists in this Pi session.");
+      return await action(state, session);
+    } finally { await session.close(BACKGROUND_CONTEXT); }
+  }
+
+  async decideTranslationWarningReview(request: PiSessionWarningReviewDecisionRequest): Promise<PiSessionWarningReviewDecisionResult> {
+    this.assertAcceptingOperations();
+    if (!request.outputDir?.trim() || !request.sessionId?.trim() || !request.reviewId?.trim()) {
+      throw new Error("outputDir, sessionId and reviewId are required for a translation warning-review decision.");
+    }
+    if (request.decision !== "review" && request.decision !== "skip") throw new Error("decision must be review or skip.");
+    const key = sessionKey(request.outputDir, request.sessionId);
+    const reservation: SessionOperationReservation | undefined = request.decision === "review"
+      ? { cancelled: false, preparationController: new AbortController() } : undefined;
+    if (reservation) {
+      if (this.sessionOperationReservations.has(key)) throw new Error("Pi session is already running.");
+      // Reserve before the first cold read so Stop also cancels binding replay.
+      this.sessionOperationReservations.set(key, reservation);
+    }
+    try {
+      const prompt = await this.withWorkspaceSessionTransition(request.outputDir, request.sessionId, async () => {
+        if (reservation?.cancelled) throw new DOMException("Pi warning-review choice was stopped.", "AbortError");
+        if ((this.sessionOperationReservations.has(key) && this.sessionOperationReservations.get(key) !== reservation)
+          || this.closingSessions.has(key)) throw new Error("Pi session is already running or closing.");
+        return this.withWarningReviewHost(request, async (state, session, active) => {
+          if (active && (active.running || active.compacting || active.subagents.hasRunning())) throw new Error("Pi session is already running.");
+          const gate = warningReviewFromHostState(state);
+          if (!gate || gate.id !== request.reviewId) throw new Error("The pending translation warning review is stale or belongs to a different Pi session.");
+          if (request.decision === "review") {
+            const bindings = state.translationWorkflowRequest ?? request.request;
+            if (!bindings?.sourcePath && !bindings?.sourceSelection) throw new Error("The pending translation warning review requires explicit original workflow source bindings.");
+            if (!state.translationWorkflowRequest) {
+              const manifest = await resolvePiSourceManifest({ ...bindings, outputDir: request.outputDir, sessionId: request.sessionId, prompt: "Host warning-review binding check" });
+              const expected = pendingTranslationWarningSnapshot(state)!.documents.map(document => document.id).sort();
+              const actual = manifest.documents.map(document => document.id).sort();
+              if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("The supplied source bindings do not match the pending full translation workflow documents.");
+            }
+            return { ...bindings,
+              ...(request.request ? { providerId: request.request.providerId, modelId: request.request.modelId, thinkingLevel: request.request.thinkingLevel } : {}),
+              outputDir: request.outputDir, sessionId: request.sessionId, workflowIntent: "translation" as const,
+              prompt: "Workflow: yn-translation-v1.\nThe Host recorded the user's choice to review the remaining translation warnings. Continue the existing full translation workflow: call inspectTranslationWarnings, judge its warnings, repair true positives, and complete whole-artifact validation." };
+          }
+          const snapshot = pendingTranslationWarningSnapshot(state)!;
+          const run = active?.hostState.domainRun?.translationWarningReviewDecision === "pending"
+            ? active.hostState.domainRun : createYnDomainRunContract({ fullWorkflow: true, workflowIntent: "translation", restoreSnapshot: snapshot });
+          const wasSuspended = run.suspended;
+          run.resume();
+          const undo = run.recordTranslationWarningReviewDecision("skip");
+          const priorParked = active?.hostState.parkedDomainRuns.translation;
+          const priorSuspended = active?.hostState.workflowSuspended;
+          try {
+            if (active) {
+              if (run === active.hostState.domainRun) active.hostState.workflowSuspended = false;
+              else active.hostState.parkedDomainRuns.translation = run.snapshot();
+              await active.persistHostState();
+            } else {
+              if (snapshot === state.domainRun) { state.domainRun = run.snapshot(); state.workflowSuspended = false; }
+              else state.parkedDomainRuns!.translation = run.snapshot();
+              await (this.options.appendHostState ?? appendYnSessionHostState)(session, state, { projectRoot: request.outputDir });
+            }
+          } catch (error) {
+            undo();
+            if (wasSuspended) run.suspend();
+            if (active) { active.hostState.workflowSuspended = priorSuspended!; active.hostState.parkedDomainRuns.translation = priorParked; }
+            throw new NonRetryableAssignmentError("Failed to persist the translation warning-review skip decision.", error);
+          }
+          if (active) this.emitActiveState(active);
+          else this.emitState(request.outputDir, this.idleState(request.sessionId), false);
+          return undefined;
+        });
+      });
+      if (!prompt) return { decision: "skip", continuing: false };
+      await this.acceptPrompt(prompt, undefined, () => reservation?.cancelled === true, request.reviewId, reservation);
+      return { decision: "review", continuing: true };
+    } finally {
+      if (reservation && this.sessionOperationReservations.get(key) === reservation) this.sessionOperationReservations.delete(key);
+    }
   }
 
   async prompt(request: PiSessionPromptRequest): Promise<PiSessionPromptAcceptance> {
@@ -871,14 +1026,16 @@ export class PiNativeSessionService {
         && (active.running || active.compacting || active.subagents.hasRunning() || active.reviewBindingRecovery?.pending || active.pdfStructurePreparation&&active.error));
   }
 
-  private async acceptPrompt(request: PiSessionPromptRequest, preparationHandoff?: YnTaskPreparationState, handoffCancelled?: () => boolean): Promise<PiSessionPromptAcceptance> {
+  private async acceptPrompt(request: PiSessionPromptRequest, preparationHandoff?: YnTaskPreparationState, handoffCancelled?: () => boolean, warningReviewId?: string, warningReviewReservation?: SessionOperationReservation): Promise<PiSessionPromptAcceptance> {
     this.assertAcceptingOperations();
     if([...this.active.values()].some(owner=>workspaceKey(owner.workspaceDir)===workspaceKey(request.outputDir)&&owner.pdfStructurePreparation&&owner.error))throw new Error('PDF preparation storage/cleanup must finish before starting another model request.');
     if ([...this.sessionOperationReservations.entries()].some(([key, reservation]) => key.startsWith(`${workspaceKey(request.outputDir)}::`) && reservation.pdfStructurePreparation)) {
       throw new Error("PDF structure preparation is still running; await its gate before starting project Agent work.");
     }
     const preparationStarted = performance.now();
-    request = await resolveCurrentProjectPromptRequest(request);
+    // A Host choice owns the saved full-workflow scope even when another HTML
+    // document is currently selected in the project.
+    if (!warningReviewId) request = await resolveCurrentProjectPromptRequest(request);
     assertWorkflowPromptMetadata(request);
     if (request.workflowIntent) await ensureYnWorkflowWorkspace(request.outputDir);
     if (handoffCancelled?.()) throw new DOMException("Task preparation handoff was stopped.", "AbortError");
@@ -889,10 +1046,10 @@ export class PiNativeSessionService {
     if ([...this.sessionOperationReservations.entries()].some(([entry, reservation]) => entry.startsWith(`${workspaceKey(request.outputDir)}::`) && reservation.pdfStructurePreparation)) {
       throw new Error("PDF structure preparation is still running; await its gate before starting project Agent work.");
     }
-    if (this.sessionOperationReservations.has(key)) {
+    if (this.sessionOperationReservations.has(key) && this.sessionOperationReservations.get(key) !== warningReviewReservation) {
       throw new Error("Pi session is already running. Use Steer or Follow-up.");
     }
-    const reservation: SessionOperationReservation = { cancelled: false, preparationController: new AbortController() };
+    const reservation: SessionOperationReservation = warningReviewReservation ?? { cancelled: false, preparationController: new AbortController() };
     this.sessionOperationReservations.set(key, reservation);
     let preparationFailureActive: ActiveSession | undefined;
     try {
@@ -904,6 +1061,11 @@ export class PiNativeSessionService {
         if (this.closingSessions.has(key)) throw new Error(`Pi session ${request.sessionId} is closing.`);
         if (this.active.get(key)?.running || this.active.get(key)?.compacting) {
           throw new Error("Pi session is already running. Use Steer or Follow-up.");
+        }
+        if (warningReviewId) {
+          await this.withWarningReviewHost(request, async (state) => {
+            if (warningReviewFromHostState(state)?.id !== warningReviewId) throw new Error("The pending translation warning review is stale.");
+          });
         }
         const prepared = await this.prepareRuntime(request, "prompt", preparationHandoff);
         if (reservation.cancelled || handoffCancelled?.()) {
@@ -922,14 +1084,33 @@ export class PiNativeSessionService {
         active.error = undefined;
         try {
           const persistenceStarted = performance.now();
-          await active.persistHostState();
-          await active.runtime.appendCustomEntry("yn_prompt_preparation", {
+          const appendPreparationDiagnostics = (hostPersistenceMs?: number) => active.runtime.appendCustomEntry("yn_prompt_preparation", {
             timestamp: Date.now(),
             hostStateSource: prepared.previous ? "owned" : "replayed",
             elapsedMs: performance.now() - preparationStarted,
-            stages: { ...prepared.preparationTimings, hostPersistenceMs: performance.now() - persistenceStarted },
+            stages: { ...prepared.preparationTimings, ...(hostPersistenceMs === undefined ? {} : { hostPersistenceMs }) },
             ...(!prepared.previous ? { hostReplay: getYnHostStateLoadDiagnostics(active.session) } : {})
           });
+          // A native append failure latches the owner against later writes.
+          // Complete that fallible append while pending is still authoritative.
+          if (warningReviewId) await appendPreparationDiagnostics();
+          this.assertPromptOperation(active, operation);
+          // commitPreparedRuntime intentionally transfers preparation ownership.
+          // Its old-owner handoff predicate is valid only before that commit;
+          // the new operation and its reservation own cancellation from here.
+          if (reservation.cancelled) throw new DOMException("Pi prompt was cancelled before native input.", "AbortError");
+          if (warningReviewId) {
+            if (active.domainRun?.kind !== "translation" || !active.domainRun.fullWorkflow
+              || active.domainRun.translationWarningReviewDecision !== "pending") throw new Error("The pending translation warning review could not restore its full workflow.");
+            operation.undoUnstartedWarningReview = active.domainRun.recordTranslationWarningReviewDecision("review");
+          }
+          await active.persistHostState();
+          if (!warningReviewId) await appendPreparationDiagnostics(performance.now() - persistenceStarted);
+          this.assertPromptOperation(active, operation);
+          if (reservation.cancelled) throw new DOMException("Pi prompt was cancelled before native input.", "AbortError");
+          this.emitActiveState(active);
+          this.assertPromptOperation(active, operation);
+          this.launchNativeInput(active, request.prompt, operation, request.images);
         } catch (error) {
           preparationFailureActive = active;
           operation.cancelled = true;
@@ -939,13 +1120,18 @@ export class PiNativeSessionService {
           this.suspendDomainRun(active);
           active.running = false;
           active.phase = "idle";
-          active.error = error instanceof Error ? error.message : String(error);
+          let failure = error;
+          try { await this.restoreUnstartedWarningReview(active, operation); }
+          catch (rollbackError) {
+            failure = new NonRetryableAssignmentError(
+              `Pi prompt preparation failed: ${String(error)}; restoring the unstarted warning-review choice also failed: ${String(rollbackError)}`,
+              new AggregateError([error, rollbackError])
+            );
+          }
+          active.error = failure instanceof Error ? failure.message : String(failure);
           this.emitActiveState(active);
-          throw error;
+          throw failure;
         }
-        this.emitActiveState(active);
-
-        this.launchNativeInput(active, request.prompt, operation, request.images);
 
         return { accepted: true, sessionId: active.sessionId };
       });
@@ -1225,6 +1411,7 @@ export class PiNativeSessionService {
     if (promptOperation) {
       promptOperation.cancelled = true;
       promptOperation.abortController.abort(new DOMException("Pi operation was stopped.", "AbortError"));
+      await this.restoreUnstartedWarningReview(active, promptOperation);
     }
     const acceptedOrder = [...active.queuedUserOrder]
       .sort((left, right) => left.sequence - right.sequence)
@@ -1320,6 +1507,9 @@ export class PiNativeSessionService {
           this.coldStorageSequences.delete(key);
           this.events.delete(key);
         }
+      }
+      for (const key of this.coldWarningReviewStates.keys()) {
+        if (key.startsWith(prefix)) this.coldWarningReviewStates.delete(key);
       }
     });
     if (errors.length) throw new AggregateError(errors, `Pi workspace disposal failed: ${errors.map(error => error instanceof Error ? error.message : String(error)).join("; ")}`);
@@ -1577,6 +1767,10 @@ export class PiNativeSessionService {
     const retainedPreparation = workflowIntent && inheritedPreparation?.intent !== workflowIntent
       ? undefined : inheritedPreparation;
     const hostState = {
+      translationWorkflowRequest: fullWorkflow && workflowIntent === "translation"
+        ? translationWorkflowBindings(runtimeRequest)
+        : previous?.hostState.translationWorkflowRequest ?? persistedHostState?.translationWorkflowRequest,
+      warningReview: previous?.hostState.warningReview ?? persistedHostState?.warningReview,
       taskPreparation: preparationHandoff ?? (request.taskPreparation
         ? createTaskPreparationState(request.taskPreparation)
         : retainedPreparation),
@@ -1723,6 +1917,8 @@ export class PiNativeSessionService {
           : {}),
         ...(hostState.workflowSuspended ? { workflowSuspended: true } : {}),
         ...(hostState.taskPreparation ? { taskPreparation: hostState.taskPreparation } : {}),
+        ...(hostState.translationWorkflowRequest ? { translationWorkflowRequest: hostState.translationWorkflowRequest } : {}),
+        ...(hostState.warningReview ? { warningReview: hostState.warningReview } : {}),
         proofread: hostState.proofread,
         translationAlignment: hostState.translationAlignment
       };
@@ -1927,10 +2123,17 @@ export class PiNativeSessionService {
       return {
         ...tool,
         execute: (async (...args: Parameters<typeof execute>) => {
+          const wasPendingWarningReview = domainRun?.translationWarningReviewDecision === "pending";
           try {
             return await execute(...args);
           } finally {
             try {
+              if (domainRun?.fullWorkflow && domainRun.kind === "translation"
+                && domainRun.translationWarningReviewDecision === "pending" && !wasPendingWarningReview) {
+                hostState.warningReview = undefined;
+                hostState.warningReview = warningReviewFromHostState({ schemaVersion: 1, ownerSessionId: request.sessionId,
+                  domainRun: domainRun.snapshot(), proofread: hostState.proofread, translationAlignment: hostState.translationAlignment });
+              }
               await persistHostState();
             } catch (error) {
               throw new NonRetryableAssignmentError(
@@ -1966,9 +2169,11 @@ export class PiNativeSessionService {
       systemPrompt,
       onFatalToolError: (error) => subagents.stopForHostFailure(error),
       tools,
-      beforeToolCall: async () => hostState.taskPreparation?.pendingRequest && !hostState.taskPreparation.stopped
-        ? { block: true, reason: "Preparation is complete; Host is handing off to the full workflow.", terminate: true }
-        : undefined,
+      beforeToolCall: async () => domainRun?.fullWorkflow && domainRun.translationWarningReviewDecision === "pending"
+        ? { block: true, reason: "Host is waiting for the fixed translation warning-review choice.", terminate: true }
+        : hostState.taskPreparation?.pendingRequest && !hostState.taskPreparation.stopped
+          ? { block: true, reason: "Preparation is complete; Host is handing off to the full workflow.", terminate: true }
+          : undefined,
       deferThresholdCompaction: () => subagents.hasRunning(),
       refreshExpiredProviderAuth: async (model) => {
         const refreshed = await (this.options.createModelSelection ?? createPiModelSelection)({
@@ -1994,7 +2199,7 @@ export class PiNativeSessionService {
           userGateAssistantKey = assistantKey;
           terminateUserGateBatch = false;
         }
-        if (isHostUserWaitGateToolResult({
+        if (isTranslationWarningReviewGateToolResult({ content: context.result.content, details: context.result.details }) || isHostUserWaitGateToolResult({
           isError: context.isError,
           content: context.result.content,
           details: context.result.details
@@ -2002,7 +2207,18 @@ export class PiNativeSessionService {
           terminateUserGateBatch = true;
           return { terminate: true };
         }
-        return terminateUserGateBatch ? { terminate: true } : undefined;
+        if (terminateUserGateBatch) return { terminate: true };
+        // Pi ends a tool batch only when every result votes to terminate. An
+        // artifact validation is the batch's decision boundary: earlier calls
+        // vote yes, while the final validation votes yes only for a typed gate.
+        // With no gate that final result keeps ordinary execution running.
+        const calls = context.assistantMessage.content.filter(block => block.type === "toolCall");
+        let finalValidation = -1;
+        for (let index = 0; index < calls.length; index += 1) {
+          if (calls[index].name === "validateTranslationArtifact") finalValidation = index;
+        }
+        const currentCall = calls.findIndex(call => call.id === context.toolCall.id);
+        return currentCall < finalValidation ? { terminate: true } : undefined;
       }
     });
     if (resetPdfPreparationContext) runtime.resetContext();
@@ -2386,6 +2602,21 @@ export class PiNativeSessionService {
     );
   }
 
+  private async restoreUnstartedWarningReview(active: ActiveSession, operation: PromptOperation): Promise<void> {
+    const undo = operation.undoUnstartedWarningReview;
+    if (!undo) return;
+    operation.undoUnstartedWarningReview = undefined;
+    undo();
+    this.suspendDomainRun(active);
+    try { await active.persistHostState({ force: true }); }
+    catch (error) {
+      throw new NonRetryableAssignmentError(
+        `Failed to persist the restored unstarted warning-review choice: ${error instanceof Error ? error.message : String(error)}`,
+        error
+      );
+    }
+  }
+
   private async runNativeInput(
     active: ActiveSession,
     input: string | AgentMessage,
@@ -2400,6 +2631,9 @@ export class PiNativeSessionService {
       this.emitActiveState(active);
       this.assertPromptOperation(active, operation);
       const reportOnly = typeof input !== "string" && isWorkflowFailureReport(input);
+      // From this call onward native input may have executed real work. A later
+      // Stop/error retains review authorization and must never recreate a click.
+      operation.undoUnstartedWarningReview = undefined;
       await active.runtime.prompt(input, { images, reportOnly });
       this.assertPromptOperation(active, operation);
       const incomplete = active.hostState.workflowSuspended || active.subagents.hasRunning()
@@ -2414,6 +2648,11 @@ export class PiNativeSessionService {
         active.error = `YN workflow completion contract failed: ${incomplete.join("; ")}`;
       }
     } catch (error) {
+      try { await this.restoreUnstartedWarningReview(active, operation); }
+      catch (rollbackError) {
+        active.error = `Native input preparation failed: ${String(error)}; restoring the unstarted warning-review choice also failed: ${String(rollbackError)}`;
+        throw new NonRetryableAssignmentError(active.error, new AggregateError([error, rollbackError]));
+      }
       if (this.isCurrentPromptOperation(active, operation) && !operation.cancelled) {
         active.error = error instanceof Error ? error.message : String(error);
         if (error instanceof Error && isWorkflowStoppingAssignmentError(error)) {
@@ -2549,6 +2788,8 @@ export class PiNativeSessionService {
 
   private stateFromActive(active: ActiveSession): PiSessionRunState {
     const model = active.runtime.getModel();
+    const pendingWarningReview = active.hostState.domainRun?.translationWarningReviewDecision === "pending"
+      || active.hostState.parkedDomainRuns.translation?.translationWarningReviewDecision === "pending";
     return {
       sessionId: active.sessionId,
       sequence: active.sequence,
@@ -2566,7 +2807,10 @@ export class PiNativeSessionService {
       contextUsage: active.contextUsage,
       lastCompaction: active.lastCompaction,
       compactionError: active.compactionError,
-      error: active.error
+      error: active.error,
+      warningReview: pendingWarningReview
+        ? active.hostState.warningReview ? { ...active.hostState.warningReview } : warningReviewFromHostState(this.hostSnapshot(active))
+        : undefined
     };
   }
 

@@ -68,7 +68,7 @@ try{
   assert.equal(result.details.validation.accepted,true);
   assert.equal(result.details.validation.warningByCode.terminology_inconsistency,1,'actual Host final conflict scan excludes the prefix-only source occurrence');
   assert.equal(result.details.validation.warningByCode.glossary_missing,1,'the body still requires its glossary target');
-  await execute('decideTranslationWarningReview',{decision:'review'});
+  domainRun.recordTranslationWarningReviewDecision('review');
   const warnings=await execute('inspectTranslationWarnings');
   assert.deepEqual([...new Set(warnings.details.windows.flatMap(w=>w.rows.filter(r=>r.selected).map(r=>r.line)))],[2]);
   console.log('PASS actual Host terminology conflict warnings exclude only regex-preserved spans');

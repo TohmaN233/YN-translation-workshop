@@ -3,12 +3,13 @@ import { ipcMain } from "electron";
 import type {
   PiSessionCompactRequest,
   PiSessionInputRequest,
-  PiSessionPromptRequest
+  PiSessionPromptRequest,
+  PiSessionWarningReviewDecisionRequest
 } from "../../shared/agent/piSessionContract.ts";
 import { broadcastPiSession } from "../agent/piNative/broadcast.ts";
 import { PiNativeSessionService, piNativeSessionService } from "../agent/piNative/sessionService.ts";
 import { ynInterfaceContextStore } from "../agent/piNative/interfaceContextStore.ts";
-import { parsePiSessionInputRequest, parsePiSessionPromptRequest } from "./agentSessionRequest.ts";
+import { parsePiSessionInputRequest, parsePiSessionPromptRequest, parsePiSessionWarningReviewDecisionRequest } from "./agentSessionRequest.ts";
 
 function requiredText(value: unknown, name: string): string {
   const text = typeof value === "string" ? value.trim() : "";
@@ -100,6 +101,10 @@ export function registerAgentSessionIpc(options: {
 
   ipcMain.handle("agent-session:send", async (_event, raw: Partial<PiSessionPromptRequest>) => {
     return service.prompt(parsePiSessionPromptRequest(raw));
+  });
+
+  ipcMain.handle("agent-session:decideTranslationWarningReview", async (_event, raw: Partial<PiSessionWarningReviewDecisionRequest>) => {
+    return service.decideTranslationWarningReview(parsePiSessionWarningReviewDecisionRequest(raw));
   });
 
   ipcMain.handle("agent-session:compact", async (_event, raw: Partial<PiSessionCompactRequest>) => {

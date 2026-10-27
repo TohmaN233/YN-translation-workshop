@@ -1,5 +1,5 @@
 import { app, BrowserWindow, type BrowserView } from "electron";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
@@ -9,7 +9,8 @@ import { renderLineReviewHtml } from "../src/shared/core/html.ts";
 import { saveAgentProviderConfig } from "../src/main/ipc/agentProviderHandlers.ts";
 
 const root = process.cwd();
-const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-electron-lan-agent-"));
+const outputDir = process.env.YN_ELECTRON_LAN_WORKSPACE
+  ?? await mkdtemp(path.join(os.tmpdir(), "yn-electron-lan-agent-"));
 const htmlDir = path.join(outputDir, ".translation-workshop", "html");
 const sourcePath = path.join(outputDir, "source.txt");
 const translationPath = path.join(outputDir, "translation.txt");
@@ -72,6 +73,25 @@ async function captureFreshPage(window: BrowserWindow, outputPath: string): Prom
   const png = image.toPNG();
   await writeFile(outputPath, png);
   return png;
+}
+
+async function sendRemoteMessage(window: BrowserWindow, text: string): Promise<void> {
+  await waitFor(
+    () => window.webContents.executeJavaScript(`Boolean(document.querySelector('#remoteAgentRoot [data-agent-model-button]:not(:disabled)')) && !document.querySelector('#remoteAgentRoot .ynAgentTopbarRunning')`),
+    Boolean,
+    "the loaded remote session and configured model"
+  );
+  await window.webContents.executeJavaScript(`(() => {
+    const textarea = document.querySelector('#remoteAgentRoot .ynAgent textarea');
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(textarea, ${JSON.stringify(text)});
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await waitFor(
+    () => window.webContents.executeJavaScript(`Boolean(document.querySelector('#remoteAgentRoot .ynAgentInputActionSend:not(:disabled)')) && !document.querySelector('#remoteAgentRoot .ynAgentTopbarRunning')`),
+    Boolean,
+    "React to accept the remote input before Send"
+  );
+  await window.webContents.executeJavaScript("document.querySelector('#remoteAgentRoot .ynAgentInputActionSend').click()");
 }
 
 await mkdir(htmlDir, { recursive: true });
@@ -253,13 +273,7 @@ async function run(): Promise<void> {
       && desktopLayout.main.left >= desktopLayout.sidebar.right - 2,
     `Desktop LAN Agent must keep its sidebar and chat side by side: ${JSON.stringify(desktopLayout)}`
   );
-  await remoteWindow.webContents.executeJavaScript(`(() => {
-    const textarea = document.querySelector("#remoteAgentRoot .ynAgent textarea");
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
-    setter.call(textarea, "你好，验证远程交互");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
-  })()`);
+  await sendRemoteMessage(remoteWindow, "你好，验证远程交互");
   reportStage("waiting for streamed remote reply");
   const remoteState = await waitFor(
     () => remoteWindow.webContents.executeJavaScript(`({
@@ -305,13 +319,7 @@ async function run(): Promise<void> {
     (value) => value?.sessions === 2 && value?.composer === true && !value?.text.includes("远程 Agent 回复正常 1"),
     "a fresh remote Pi session for the dropped-stream turn"
   );
-  await remoteWindow.webContents.executeJavaScript(`(() => {
-    const textarea = document.querySelector("#remoteAgentRoot .ynAgent textarea");
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
-    setter.call(textarea, "事件流断开后的远程消息");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
-  })()`);
+  await sendRemoteMessage(remoteWindow, "事件流断开后的远程消息");
   await waitFor(
     () => providerRequests,
     (value) => value >= 2,
@@ -466,10 +474,8 @@ void app.whenReady().then(run).catch((error) => {
   console.error(error instanceof Error ? error.stack || error.message : String(error));
   process.exitCode = 1;
 }).finally(async () => {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.destroy();
-  }
-  await rm(outputDir, { recursive: true, force: true }).catch(() => {});
-  await new Promise<void>((resolve) => providerServer.close(() => resolve())).catch(() => {});
-  app.exit(process.exitCode ?? 0);
+  await new Promise<void>((resolve) => providerServer.close(() => resolve()));
+  // Keep the project intact until the production shutdown barrier has saved
+  // every native session and HTML sidecar. The wrapper removes it after exit.
+  app.quit();
 });

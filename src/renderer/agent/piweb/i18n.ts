@@ -59,6 +59,10 @@ export interface AgentUiStrings {
   preparingSession: string;
   storageProgress: string;
   stopStoragePreparation: string;
+  warningReviewTitle: string;
+  warningReviewDescription: string;
+  warningReviewYes: string;
+  warningReviewNo: string;
   storageStages: Record<"scan" | "verify" | "backup" | "publish" | "index" | "replay" | "complete", string>;
   subagentsRunning: string;
   commands: string;
@@ -249,6 +253,10 @@ export const agentUiStrings: Record<AgentUiLocale, AgentUiStrings> = {
     preparingSession: "正在准备会话存储…",
     storageProgress: "{stage} · {percent}%",
     stopStoragePreparation: "停止加载",
+    warningReviewTitle: "基础检查已通过",
+    warningReviewDescription: "发现 {count} 条警告。是否继续审查，并修正其中真正的问题？",
+    warningReviewYes: "是，继续审查",
+    warningReviewNo: "否，跳过",
     storageStages: { scan: "扫描会话文件", verify: "校验数据", backup: "准备备份", publish: "写入压缩文件", index: "建立会话索引", replay: "恢复并核验任务状态", complete: "会话存储就绪" },
     subagentsRunning: "{count} 个子 Agent 运行中 · 主 Agent 可交互",
     commands: "命令",
@@ -368,6 +376,10 @@ export const agentUiStrings: Record<AgentUiLocale, AgentUiStrings> = {
     preparingSession: "Preparing session storage…",
     storageProgress: "{stage} · {percent}%",
     stopStoragePreparation: "Stop loading",
+    warningReviewTitle: "Basic checks passed.",
+    warningReviewDescription: "There are {count} warnings. Would you like to review them and fix any real issues?",
+    warningReviewYes: "Yes, review",
+    warningReviewNo: "No, skip",
     storageStages: { scan: "Scanning session files", verify: "Verifying data", backup: "Preparing backup", publish: "Publishing compacted data", index: "Building session index", replay: "Restoring and verifying task state", complete: "Session storage ready" },
     subagentsRunning: "{count} subagent(s) running · Main Agent available",
     commands: "Commands",

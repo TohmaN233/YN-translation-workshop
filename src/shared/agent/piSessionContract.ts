@@ -125,6 +125,20 @@ export interface PiSessionRunState {
   lastCompaction?: PiSessionCompactionResult;
   compactionError?: string;
   error?: string;
+  warningReview?: { id: string; warningCount: number };
+}
+
+export interface PiSessionWarningReviewDecisionRequest {
+  outputDir: string;
+  sessionId: string;
+  reviewId: string;
+  decision: "review" | "skip";
+  request?: Omit<PiSessionPromptRequest, "outputDir" | "sessionId" | "prompt" | "images" | "taskPreparation" | "workflowIntent">;
+}
+
+export interface PiSessionWarningReviewDecisionResult {
+  decision: "review" | "skip";
+  continuing: boolean;
 }
 
 export interface PiSessionStateEnvelope {

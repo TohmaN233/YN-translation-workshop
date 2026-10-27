@@ -8,6 +8,8 @@ import type {
   PiSessionRunState,
   PiSessionStateEnvelope,
   PiSessionSummary,
+  PiSessionWarningReviewDecisionRequest,
+  PiSessionWarningReviewDecisionResult,
   PiWorkflowPromptMetadata
 } from "../../../shared/agent/piSessionContract.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -65,6 +67,10 @@ export const electronPiSessionClient = {
 
   sendPrompt(request: PiSessionPromptRequest) {
     return api().sendPrompt(request);
+  },
+
+  decideTranslationWarningReview(request: PiSessionWarningReviewDecisionRequest): Promise<PiSessionWarningReviewDecisionResult> {
+    return api().decideTranslationWarningReview(request);
   },
 
   compact(request: PiSessionCompactRequest): Promise<PiSessionCompactionResult> {

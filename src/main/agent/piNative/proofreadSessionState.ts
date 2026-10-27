@@ -20,6 +20,7 @@ import {
 import { advanceHostRestorePoint, type HostRestorePoint } from "./hostRestorePoint.ts";
 
 import type { ProofreadPrescanSummary } from "./proofreadPrescan.ts";
+import type { PiSessionWarningReviewDecisionRequest, PiSessionRunState } from "../../../shared/agent/piSessionContract.ts";
 import { normalizeTaskPreparationState, type YnTaskPreparationState } from "./taskPreparation.ts";
 import {
   type YnDomainRunSnapshot,
@@ -134,6 +135,9 @@ export interface ProofreadLocalScopeState {
 }
 
 export interface YnSessionHostState {
+  /** Full-workflow bindings only; never retain prompt text or image payloads. */
+  translationWorkflowRequest?: PiSessionWarningReviewDecisionRequest["request"];
+  warningReview?: PiSessionRunState["warningReview"];
   taskPreparation?: YnTaskPreparationState;
   schemaVersion: 1;
   ownerSessionId: string;
@@ -281,6 +285,10 @@ function normalizeYnSessionHostState(value: unknown, ownerSessionId: string): Yn
     ...(Object.keys(parkedDomainRuns).length > 0 ? { parkedDomainRuns } : {}),
     ...(value.workflowSuspended === true ? { workflowSuspended: true } : {}),
     ...(value.taskPreparation !== undefined ? { taskPreparation: normalizeTaskPreparationState(value.taskPreparation) } : {}),
+    ...(isRecord(value.translationWorkflowRequest) ? { translationWorkflowRequest: value.translationWorkflowRequest as YnSessionHostState["translationWorkflowRequest"] } : {}),
+    ...(isRecord(value.warningReview) && typeof value.warningReview.id === "string"
+      && Number.isInteger(value.warningReview.warningCount) && Number(value.warningReview.warningCount) > 0
+      ? { warningReview: value.warningReview as YnSessionHostState["warningReview"] } : {}),
     proofread: normalizeProofreadState(value.proofread),
     translationAlignment: normalizeTranslationAlignmentState(value.translationAlignment)
   });

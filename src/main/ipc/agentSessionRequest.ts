@@ -1,5 +1,6 @@
 import type {
   PiSessionPromptRequest,
+  PiSessionWarningReviewDecisionRequest,
   PiSessionImageAttachment,
   PiSessionInputRequest,
   PiFolderSourceDocument,
@@ -227,6 +228,22 @@ export function parsePiSessionPromptRequest(
     proofreadMontecarloRoundMin: optionalPositiveInteger(raw?.proofreadMontecarloRoundMin, "proofreadMontecarloRoundMin"),
     proofreadMontecarloRoundMax: optionalPositiveInteger(raw?.proofreadMontecarloRoundMax, "proofreadMontecarloRoundMax")
   };
+}
+
+export function parsePiSessionWarningReviewDecisionRequest(raw: Partial<PiSessionWarningReviewDecisionRequest> | undefined): PiSessionWarningReviewDecisionRequest {
+  if (raw?.decision !== "review" && raw?.decision !== "skip") throw new Error("decision must be review or skip.");
+  const outputDir = requiredText(raw.outputDir, "outputDir");
+  const sessionId = requiredText(raw.sessionId, "sessionId");
+  let request: PiSessionWarningReviewDecisionRequest["request"];
+  if (raw.request !== undefined) {
+    const parsed = parsePiSessionPromptRequest({ ...raw.request, outputDir, sessionId,
+      prompt: "Host translation warning-review choice", images: undefined, taskPreparation: undefined, workflowIntent: undefined });
+    const { outputDir: _outputDir, sessionId: _sessionId, prompt: _prompt, images: _images,
+      taskPreparation: _taskPreparation, workflowIntent: _workflowIntent, ...bindings } = parsed;
+    request = bindings;
+  }
+  return { outputDir, sessionId, reviewId: requiredText(raw.reviewId, "reviewId"), decision: raw.decision,
+    ...(request ? { request } : {}) };
 }
 
 export function parsePiSessionInputRequest(raw: Partial<PiSessionInputRequest> | undefined): PiSessionInputRequest {

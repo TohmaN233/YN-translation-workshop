@@ -110,6 +110,7 @@ async function runVerifier(mainPath, successMarker, timeoutMs, envOverrides = {}
     || !result.stdout.includes(successMarker)
     || /Error occurred in handler|No handler registered/.test(result.stderr)
     || /MaxListenersExceededWarning/.test(result.stderr)
+    || /\[shutdown\].*(?:failed|cancelled)/i.test(result.stderr)
     || /Uncaught (?:ReferenceError|TypeError|SyntaxError)/.test(`${result.stdout}\n${result.stderr}`)
   ) {
     if (result.code === 0 && !result.stdout.includes(successMarker)) {
@@ -125,12 +126,24 @@ async function runVerifier(mainPath, successMarker, timeoutMs, envOverrides = {}
 }
 
 try {
+  if (!verifyOnly || verifyOnly === "warning-choice") {
+    const warningChoiceMain = await buildVerifier(
+      "scripts/verify-electron-warning-choice-main.ts",
+      "warning-choice-main.mjs"
+    );
+    await runVerifier(warningChoiceMain, '"hostWarningChoice":true', 60_000, {
+      YN_ELECTRON_VERIFY_OFFSCREEN: "1",
+      YN_ELECTRON_WARNING_CHOICE_WORKSPACE: path.join(tempDir, "warning-choice-workspace")
+    });
+  }
   if (!verifyOnly || verifyOnly === "lan") {
     const lanAgentMain = await buildVerifier(
       "scripts/verify-electron-lan-agent-main.ts",
       "lan-agent-main.mjs"
     );
-    await runVerifier(lanAgentMain, '"lanRemoteAgentOpen":true', 30_000);
+    await runVerifier(lanAgentMain, '"lanRemoteAgentOpen":true', 30_000, {
+      YN_ELECTRON_LAN_WORKSPACE: path.join(tempDir, "lan-workspace")
+    });
   }
 
   if (!verifyOnly || verifyOnly === "proposal") {

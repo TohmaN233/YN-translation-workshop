@@ -4916,6 +4916,7 @@ app.whenReady().then(async () => {
       model: builtinModelSelection, start: startBuiltinTask,
       sessions: outputDir => piNativeSessionService.listSessions(outputDir),
       state: (outputDir, sessionId) => piNativeSessionService.getRunState(outputDir, sessionId),
+      decideTranslationWarningReview: request => piNativeSessionService.decideTranslationWarningReview(request),
       lastReply: (outputDir, sessionId) => {
         const events = piNativeSessionService.listRecentEvents(outputDir, sessionId);
         for (let index = events.length - 1; index >= 0; index -= 1) {

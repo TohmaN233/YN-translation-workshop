@@ -72,7 +72,7 @@ YN supports all-AI translation and proofreading, fully manual translation and ed
 - Failures return to the same translation Worker for bounded exact repair instead of restarting a whole chunk.
 - No progress or exhausted repair hands hash-current staging and exact failed rows to the Parent while preserving accepted rows and evidence.
 - Terminology conflicts become a priority repair wave inside the same batch. Normal claims cannot pass an active priority wave.
-- One full-artifact mechanical validation runs after all assignments. Remaining warnings receive paired Parent semantic checks.
+- After all assignments, full-artifact mechanical validation runs. If warnings remain, YN offers “Yes, review” and “No, skip.” Choosing review automatically completes the remaining paired checks and necessary repairs; choosing skip finishes the translation run.
 - Only true-positive warnings become exact repair debt. False positives persist as hash-bound evidence.
 - Stop, crash, and restart recover from durable staging, ownership, evidence, and Pi sessions.
 

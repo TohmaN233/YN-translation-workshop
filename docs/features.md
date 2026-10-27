@@ -72,7 +72,7 @@ YN 支持全 AI 翻译与校对、全人工翻译与编辑，或按项目混合�
 - 失败回到写出该块的同一翻译 Worker 做有界精确修复，不重启整块翻译。
 - 无进展或修复耗尽时，把 hash-current staging 和精确失败行交给 Parent 接管，保留其他有效行和既有证据。
 - 术语冲突进入同一批次的 priority repair wave；修复清零前不会越过优先队列继续普通任务。
-- 全部 assignment 结束后运行一次全文机械校验；未被既有证据覆盖的 warning 再由 Parent 做配对语义检查。
+- 全部 assignment 结束后运行一次全文机械校验；如果仍有警告，YN 显示“是，继续审查／否，跳过”。选择继续后，自动完成剩余配对审查和必要修正；选择跳过则结束本轮翻译。
 - 只有真阳性 warning 会成为精确修复债务；假阳性保存为 hash-bound evidence，避免重复花费 token。
 - Stop、崩溃或重启后可从持久 staging、ownership、evidence 和 Pi session 继续。
 

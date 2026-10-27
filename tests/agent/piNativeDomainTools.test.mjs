@@ -4104,9 +4104,10 @@ await test("final terminology consistency does not treat ベス inside エリザ
     assert.equal(validated.details.validation.warningByCode.terminology_inconsistency, 1);
     assert.equal(domainRun.pendingTranslationTerminologyDebt().length, 0,
       "final validation must not keep terminology correspondence as Host repair debt");
-    assert.match(String(validated.details.nextAction || ""), /Ask the user whether to judge/i);
+    assert.equal(validated.details.warningReviewDecision, "pending");
+    assert.match(String(validated.details.nextAction || ""), /Host is waiting for its fixed warning-review choice/i);
 
-    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
+    domainRun.recordTranslationWarningReviewDecision("review");
     const warningAudit = await execute(fx.tool("inspectTranslationWarnings"));
     const selectedLines = warningAudit.details.windows.flatMap((window) => (
       window.rows.filter((row) => row.selected).map((row) => row.line)
@@ -4171,6 +4172,7 @@ await test("final warning review is non-blocking validation work and covers char
     for (const check of acceptedWithoutWarningSignal.checks) check.verdict = "aligned";
     alignmentState.ranges["source.txt"] = [acceptedWithoutWarningSignal];
 
+    assert.equal(fx.tools.some(tool => tool.name === "decideTranslationWarningReview"), false, "models cannot choose on behalf of the user");
     const firstValidation = await execute(fx.tool("validateTranslationArtifact"));
     assert.equal(firstValidation.details.validation.accepted, true,
       "warnings must not turn structural artifact acceptance into a failure");
@@ -4178,15 +4180,16 @@ await test("final warning review is non-blocking validation work and covers char
     assert.equal(firstValidation.details.validation.warningReviewComplete, false);
     assert.equal(firstValidation.details.validation.warningReviewDebtCount, 1);
     assert.match(domainRun.incompleteReasons().join("\n"), /final warning review/i);
-    assert.match(String(firstValidation.details.nextAction || ""), /Ask the user whether to judge/i);
+    assert.equal(firstValidation.details.warningReviewDecision, "pending");
+    assert.match(String(firstValidation.details.nextAction || ""), /Host is waiting for its fixed warning-review choice/i);
     assert.equal(domainRun.awaitingUserInput, true);
     assert.equal(domainRun.nextRepairPrompt(), undefined);
     await assert.rejects(
       execute(fx.tool("inspectTranslationWarnings")),
-      /Ask the user whether to judge/i
+      /Host warning-review choice must authorize review/i
     );
 
-    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
+    domainRun.recordTranslationWarningReviewDecision("review");
     const warningAudit = await execute(fx.tool("inspectTranslationWarnings"));
     assert.equal(warningAudit.details.candidatePath, candidatePath);
     assert.equal(warningAudit.details.selectedWarningCount, 1);
@@ -4246,7 +4249,7 @@ await test("final warning verdicts roll back when Host persistence fails", async
     alignmentState.ranges["source.txt"] = [coverage];
 
     await execute(fx.tool("validateTranslationArtifact"));
-    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
+    domainRun.recordTranslationWarningReviewDecision("review");
     const warningAudit = await execute(fx.tool("inspectTranslationWarnings"));
     const before = structuredClone(alignmentState);
     rejectPersistence = true;
@@ -4376,7 +4379,7 @@ await test("a true-positive final warning becomes exact repair debt instead of r
     alignmentState.ranges["source.txt"] = [acceptedCoverage];
 
     await execute(fx.tool("validateTranslationArtifact"));
-    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
+    domainRun.recordTranslationWarningReviewDecision("review");
     const warningAudit = await execute(fx.tool("inspectTranslationWarnings"));
     const recorded = await execute(fx.tool("recordTranslationWarningChecks"), {
       auditId: warningAudit.details.auditId,
@@ -8527,7 +8530,7 @@ await test("final warning review preserves unrelated verdicts and exposes the ca
     alignmentState.ranges["source.txt"] = [coverage];
 
     await execute(fx.tool("validateTranslationArtifact"));
-    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
+    domainRun.recordTranslationWarningReviewDecision("review");
     const firstPage = await execute(fx.tool("inspectTranslationWarnings"));
     const firstRow = firstPage.details.windows.flatMap((window) => window.rows)
       .find((row) => row.line === 1 && row.selected);
@@ -8701,7 +8704,7 @@ await test("final warning review cannot rewrite a canonical character target out
     for (const check of coverage.checks) check.verdict = "aligned";
     alignmentState.ranges["source.txt"] = [coverage];
     await execute(fx.tool("validateTranslationArtifact"));
-    await execute(fx.tool("decideTranslationWarningReview"), { decision: "review" });
+    domainRun.recordTranslationWarningReviewDecision("review");
     await execute(fx.tool("inspectTranslationWarnings"));
     await assert.rejects(
       execute(fx.tool("writeProjectFile"), {

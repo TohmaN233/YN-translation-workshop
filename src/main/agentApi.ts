@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { PiSessionRunState, PiSessionSummary } from "../shared/agent/piSessionContract.ts";
+import type { PiSessionRunState, PiSessionSummary, PiSessionWarningReviewDecisionRequest, PiSessionWarningReviewDecisionResult } from "../shared/agent/piSessionContract.ts";
 import { builtinTaskDefaults, restoreTaskInputTranslationPath, type BuiltinTaskSettings, type StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
 import { validateBuiltinTaskSettings } from "./builtinTaskPreparationHost.ts";
 
@@ -25,6 +25,7 @@ export interface AgentApiDependencies {
   }): Promise<AgentApiTaskResult>;
   sessions(outputDir: string): Promise<PiSessionSummary[]>;
   state(outputDir: string, sessionId: string): Promise<PiSessionRunState>;
+  decideTranslationWarningReview(request: PiSessionWarningReviewDecisionRequest): Promise<PiSessionWarningReviewDecisionResult>;
   lastReply(outputDir: string, sessionId: string): string | undefined;
   stop(outputDir: string, sessionId: string): Promise<void>;
   resume(outputDir: string, sessionId: string, model: AgentApiModel, signal: AbortSignal, message?: string): Promise<unknown>;
@@ -137,7 +138,7 @@ export function createAgentApi(deps: AgentApiDependencies) {
     const reply = deps.lastReply(outputDir, sessionId);
     return { outputDir, sessionId, running: state.running, phase: state.phase, sequence: state.sequence,
       model: state.model, thinkingLevel: state.thinkingLevel, compacting: state.compacting,
-      contextUsage: state.contextUsage, error: state.error, compactionError: state.compactionError,
+      contextUsage: state.contextUsage, error: state.error, compactionError: state.compactionError, warningReview: state.warningReview,
       lastReply: reply?.slice(0, 16000), lastReplyTruncated: (reply?.length ?? 0) > 16000 };
   };
   const close = (): Promise<void> => {
@@ -163,7 +164,7 @@ export function createAgentApi(deps: AgentApiDependencies) {
     if (method === "describe") {
       keys(params, []);
       return { protocol: "yn-agent-api", protocolVersion: AGENT_API_VERSION, version: deps.version,
-        methods: ["describe", "plan", "start", "sessions", "status", "stop", "resume", "reply", "shutdown"],
+        methods: ["describe", "plan", "start", "sessions", "status", "stop", "resume", "reply", "decideTranslationWarningReview", "shutdown"],
         settings: settingKeys, instructions: "Call plan first. Show the location, parameters, model and proofreading application choice to the user. Ask for confirmation and wait for their answer before start. Changed parameters require a new plan. Keep stdin open while tasks run. YN uses its configured provider, not the caller's model. TXT export remains manual." };
     }
     if (method === "plan") {
@@ -243,6 +244,14 @@ export function createAgentApi(deps: AgentApiDependencies) {
       await settleStop(() => plan.sessionId ? deps.stop(plan.request.settings.outputDir, plan.sessionId) : Promise.resolve(),
         plan.started ? [plan.started] : []);
       return { stopped: true };
+    }
+    if (method === "decideTranslationWarningReview") {
+      keys(params, ["outputDir", "sessionId", "reviewId", "decision"]);
+      const { outputDir, sessionId } = await session({ outputDir: params.outputDir, sessionId: params.sessionId });
+      if (closing) throw new AgentApiError("closing", "Agent API is shutting down.");
+      if (params.decision !== "review" && params.decision !== "skip") throw new AgentApiError("invalid_params", "decision must be review or skip.");
+      workspaces.add(outputDir);
+      return deps.decideTranslationWarningReview({ outputDir, sessionId, reviewId: text(params.reviewId, "reviewId"), decision: params.decision });
     }
     if (method === "status" || method === "stop" || method === "resume" || method === "reply") {
       keys(params, method === "reply" ? ["outputDir", "sessionId", "message"] : ["outputDir", "sessionId"]);

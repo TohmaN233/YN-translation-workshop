@@ -3,7 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Type } from "typebox";
-import { createModels, fauxProvider, fauxAssistantMessage, fauxToolCall, fauxText } from "@earendil-works/pi-ai";
+import { createModels, fauxProvider, fauxAssistantMessage, fauxToolCall, fauxText, getCurrentTools,
+  type TranscriptContext, type FauxResponseStep, type FauxResponseFactory } from "@earendil-works/pi-ai";
 import { piNativeSessionService, type PiNativeSessionServiceOptions } from "../src/main/agent/piNative/sessionService.ts";
 import { configureGlobalAgentDataDir } from "../src/main/agent/agentDataDir.ts";
 import { writeProviderConfig } from "../src/main/agent/providerConfigStore.ts";
@@ -62,6 +63,66 @@ function assets() {
     (context: any) => call("checkTaskAssetDraft", { expectedRevision: last(context).revision, reviewSummary: "Checked Alice against the supplied reference." }),
     (context: any) => call("commitTaskAssets", { expectedRevision: last(context).revision }), done("Assets committed.")];
 }
+
+/** The PDF in verify-electron-agent-api.mjs is exactly one plain paragraph.
+ * Read actual native tool evidence in each fresh proposal/audit context; never
+ * invent source IDs, revisions or Host audit receipts. */
+function pdfStructureResponse(context: TranscriptContext) {
+  const tools = new Set(getCurrentTools(context.messages).map(tool => tool.name));
+  const audit = tools.has("submitPdfStructureAudit");
+  if (!audit && !tools.has("readPdfStructureDraft")) return undefined;
+  const checks = { readingOrder: true, paragraphs: true, tables: true, figures: true, protectedContent: true };
+  const calls = new Map(context.messages.flatMap(message => message.role === "assistant"
+    ? message.content.filter(block => block.type === "toolCall").map(block => [block.id, block] as const) : []));
+  const results = (name: string) => context.messages.flatMap(message => {
+    if (message.role !== "toolResult" || message.toolName !== name) return [];
+    if (message.isError) throw new Error(`PDF fixture ${name} failed: ${JSON.stringify(message.content)}`);
+    const toolCall = calls.get(message.toolCallId);
+    if (!toolCall) throw new Error(`PDF fixture result has no native tool call: ${message.toolCallId}`);
+    const text = message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    return [{ args: toolCall.arguments, value: JSON.parse(text) }];
+  });
+  const request = (name: string, args: Parameters<typeof fauxToolCall>[1]) => fauxAssistantMessage(
+    fauxToolCall(name, args, { id: `${name}-${context.messages.length}` }), { stopReason: "toolUse" });
+  const nextRead = (name: string, fromKey: string, toKey: string) => {
+    const seen = results(name), total = seen.at(-1)?.value.total;
+    if (total === undefined) return request(name, { [fromKey]: 1, [toKey]: 1 });
+    if (!Number.isInteger(total) || total < 1) throw new Error(`PDF fixture ${name} returned invalid total.`);
+    const read = new Set(seen.flatMap(result => Array.from({ length: Number(result.args[toKey]) - Number(result.args[fromKey]) + 1 }, (_, offset) => Number(result.args[fromKey]) + offset)));
+    for (let start = 1; start <= total; start += 1) if (!read.has(start)) return request(name, { [fromKey]: start, [toKey]: Math.min(total, start + 499) });
+    return undefined;
+  };
+  if (audit) {
+    const unread = nextRead("readPdfStructureAuditScope", "fromRecord", "toRecord");
+    if (unread) return unread;
+    const packets = results("readPdfStructureAuditScope"), rows = packets.flatMap(result => result.value.rows);
+    const sources = rows.filter(row => row.record === "source"), prepared = rows.filter(row => row.record === "prepared");
+    const metadata = packets.at(-1)!.value, source = sources[0], owner = prepared[0];
+    if (metadata.kind !== "local" || sources.length !== 1 || prepared.length !== 1
+      || source.text !== "Hello {name}" || owner.text !== source.text || owner.kind !== "paragraph"
+      || owner.ownerAnchor !== source.physicalLine || JSON.stringify(owner.physicalLines) !== JSON.stringify([source.physicalLine])
+      || metadata.startOwnerPhysicalLine !== source.physicalLine
+      || JSON.stringify(metadata.outgoingEdges) !== JSON.stringify([{ beforePhysicalLine: source.physicalLine, afterPhysicalLine: "END" }])
+      || metadata.tables?.length || metadata.tableFrames?.length || metadata.figureIndex?.references?.length || metadata.figureIndex?.groups?.length
+      || source.protection || owner.protection) throw new Error("PDF API fixture evidence no longer describes its one unchanged plain paragraph.");
+    if (!results("submitPdfStructureAudit").length) return request("submitPdfStructureAudit", { version: 1, checks, issues: [] });
+    return done("Independent synthetic PDF packet audit submitted through the Host tool.");
+  }
+  const unreadSource = nextRead("readPdfStructureSource", "fromLine", "toLine");
+  if (unreadSource) return unreadSource;
+  const unreadDraft = nextRead("readPdfStructureDraft", "fromParagraph", "toParagraph");
+  if (unreadDraft) return unreadDraft;
+  const sources = results("readPdfStructureSource").flatMap(result => result.value.rows);
+  const drafts = results("readPdfStructureDraft"), paragraphs = drafts.flatMap(result => result.value.paragraphs);
+  if (sources.length !== 1 || sources[0].text !== "Hello {name}" || paragraphs.length !== 1 || paragraphs[0].kind !== "paragraph"
+    || JSON.stringify(paragraphs[0].physicalLines) !== JSON.stringify([sources[0].physicalLine])
+    || drafts.some(result => result.value.tables.length)) throw new Error("PDF API fixture source/draft evidence changed unexpectedly.");
+  const checked = results("checkPdfStructureDraft").at(-1)?.value;
+  if (!checked) return request("checkPdfStructureDraft", {});
+  if (!checked.valid || checked.revision !== drafts.at(-1)!.value.revision || checked.needsSemanticRepair) throw new Error(`PDF API fixture draft did not pass its current Host check: ${JSON.stringify(checked)}`);
+  return done(JSON.stringify({ version: 1, useDraft: true, revision: checked.revision, audit: { ...checks, issues: [] } }));
+}
+
 const options = (piNativeSessionService as unknown as { options: PiNativeSessionServiceOptions }).options;
 options.createModelSelection = async ({ workspaceDir }) => {
   modelSelections += 1;
@@ -70,11 +131,23 @@ options.createModelSelection = async ({ workspaceDir }) => {
   if (!provider) {
     provider = fauxProvider({ tokensPerSecond: 1_000_000, tokenSize: { min: 100_000, max: 100_000 } });
     const mode = path.basename(workspaceDir);
-    provider.setResponses(mode === "assets" || mode === "eof" && existsSync(path.join(workspaceDir, "waiting.txt")) ? assets() : mode === "hold" || mode === "eof"
+    const normalResponses: FauxResponseStep[] = mode === "assets" || mode === "eof" && existsSync(path.join(workspaceDir, "waiting.txt")) ? assets() : mode === "hold" || mode === "eof"
       ? [call("importTaskAssets", { glossary: [{ source: "Draft", target: "草稿" }], characters: [] }), call("fixtureWaitForStop"), ...assets()]
       : mode === "proofread" ? [call("startPreparedWorkflow"), call("completeFixtureWorkflow"), done("Proofreading completed.")]
         : [call("inspectTaskSettings"), call("inspectTaskSources"), call("inspectTaskSources", { rules: [] }),
-          call("startPreparedWorkflow", { customPreserveRules: [] }), call("completeFixtureWorkflow"), done("Translation completed.")]);
+          call("startPreparedWorkflow", { customPreserveRules: [] }), call("completeFixtureWorkflow"), done("Translation completed.")];
+    if (mode === "pdf") {
+      const currentProvider = provider;
+      const respond: FauxResponseFactory = async (context, streamOptions, state, model) => {
+        currentProvider.appendResponses([respond]);
+        const structure = pdfStructureResponse(context);
+        if (structure) return structure;
+        const step = normalResponses.shift();
+        if (!step) throw new Error("PDF API fixture exhausted its normal task responses.");
+        return typeof step === "function" ? step(context, streamOptions, state, model) : step;
+      };
+      provider.setResponses([respond]);
+    } else provider.setResponses(normalResponses);
     providers.set(workspaceDir, provider);
   }
   const models = createModels(); models.setProvider(provider.provider);

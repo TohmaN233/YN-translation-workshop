@@ -136,7 +136,7 @@ export interface YnDomainRunContract {
   recordTranslationReuseAuditReady(auditIds: string[]): void;
   recordTranslationReuseDecision(auditId: string, documentId: string, fullyReused: boolean): void;
   notePendingTranslationWarningReview(): void;
-  recordTranslationWarningReviewDecision(decision: "review" | "skip"): void;
+  recordTranslationWarningReviewDecision(decision: "review" | "skip"): () => void;
   restoreAppliedTranslationReuseDecision(documentId: string, fullyReused: boolean): void;
   recordWorkflowWrite(relativePath: string): (() => void) | undefined;
   recordTranslationWrite(kind: "translation"): () => void;
@@ -1874,12 +1874,21 @@ export function createYnDomainRunContract({
       if (decision !== "review" && decision !== "skip") {
         throw new Error(`Invalid translation warning-review decision: ${decision}.`);
       }
+      const previousDecision = translationWarningReviewDecision;
+      const previousDocuments = structuredClone([...documents]);
+      const previousProgressRevision = progressRevision;
       translationWarningReviewDecision = decision;
       if (decision === "skip") {
         for (const document of documents.values()) {
           if (document.artifactRevision > 0) recordTranslationValidation("translation", 0, document.id);
         }
       }
+      return () => {
+        translationWarningReviewDecision = previousDecision;
+        documents.clear();
+        for (const [id, document] of previousDocuments) documents.set(id, document);
+        progressRevision = previousProgressRevision;
+      };
     },
     recordFinalValidation(kind, documentId?: string) {
       recordTranslationValidation(kind, 0, documentId);

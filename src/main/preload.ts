@@ -68,6 +68,7 @@ const agentSessionApi = {
   selectSession: (args: { outputDir: string; sessionId: string }) => ipcRenderer.invoke("agent-session:select", args),
   deleteSession: (args: { outputDir: string; sessionId: string }) => ipcRenderer.invoke("agent-session:delete", args),
   sendPrompt: (args: unknown) => ipcRenderer.invoke("agent-session:send", args),
+  decideTranslationWarningReview: (args: import("../shared/agent/piSessionContract.ts").PiSessionWarningReviewDecisionRequest) => ipcRenderer.invoke("agent-session:decideTranslationWarningReview", args),
   compact: (args: unknown) => ipcRenderer.invoke("agent-session:compact", args),
   abort: (args: { outputDir: string; sessionId: string }) => ipcRenderer.invoke("agent-session:abort", args),
   sendInput: (args: unknown) => ipcRenderer.invoke("agent-session:input", args),

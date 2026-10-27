@@ -7,15 +7,18 @@ import type {
   PiSessionEventEnvelope,
   PiSessionPromptAcceptance,
   PiSessionPromptRequest,
+  PiSessionWarningReviewDecisionRequest,
+  PiSessionWarningReviewDecisionResult,
   PiSessionRunState,
   PiSessionSummary
 } from "../shared/agent/piSessionContract.ts";
 import type { SaveProviderConfigArgs } from "./ipc/agentProviderHandlers.ts";
 import { lanSyncJson } from "./lanSyncHttp.ts";
+import { parsePiSessionWarningReviewDecisionRequest } from "./ipc/agentSessionRequest.ts";
 
 const LAN_AGENT_METHODS = new Set([
   "loadBootstrap", "loadMessages", "loadSubagentMessages", "loadRunState", "loadRecentEvents",
-  "createSession", "selectSession", "deleteSession", "sendPrompt", "compact", "abort", "sendInput",
+  "createSession", "selectSession", "deleteSession", "sendPrompt", "compact", "abort", "sendInput", "decideTranslationWarningReview",
   "getProviderConfig", "listConfiguredModels", "saveProviderConfig"
 ]);
 
@@ -46,6 +49,7 @@ interface LanAgentSessionService {
   selectSession(workspaceDir: string, sessionId: string): Promise<void>;
   deleteSession(workspaceDir: string, sessionId: string): Promise<boolean>;
   prompt(request: PiSessionPromptRequest): Promise<PiSessionPromptAcceptance>;
+  decideTranslationWarningReview(request: PiSessionWarningReviewDecisionRequest): Promise<PiSessionWarningReviewDecisionResult>;
   compact(request: PiSessionCompactRequest): Promise<PiSessionCompactionResult>;
   abort(workspaceDir: string, sessionId: string): Promise<void>;
   sendInput(workspaceDir: string, sessionId: string, kind: "steer" | "followUp", text: string): Promise<void>;
@@ -86,6 +90,7 @@ export function createLanAgentGateway(deps: {
         case "selectSession": await deps.sessionService.selectSession(outputDir, sessionId()); return { ok: true };
         case "deleteSession": return { removed: await deps.sessionService.deleteSession(outputDir, sessionId()) };
         case "sendPrompt": return deps.sessionService.prompt({ ...args, outputDir } as unknown as PiSessionPromptRequest);
+        case "decideTranslationWarningReview": return deps.sessionService.decideTranslationWarningReview(parsePiSessionWarningReviewDecisionRequest({ ...args, outputDir }));
         case "compact": return deps.sessionService.compact({ ...args, outputDir } as unknown as PiSessionCompactRequest);
         case "abort": await deps.sessionService.abort(outputDir, sessionId()); return { ok: true };
         case "sendInput": {
@@ -179,6 +184,11 @@ export function lanAgentBridgeScript(token: string, route: { outputDir: string; 
     startInputConvergence(args?.sessionId);
     return accepted;
   }
+  async function decideTranslationWarningReview(args) {
+    const result = await call("decideTranslationWarningReview", args);
+    if (result?.continuing) startInputConvergence(args?.sessionId);
+    return result;
+  }
   const agentSession = {
     loadBootstrap: (args) => call("loadBootstrap", args),
     loadMessages: (args) => call("loadMessages", args),
@@ -191,6 +201,7 @@ export function lanAgentBridgeScript(token: string, route: { outputDir: string; 
     sendPrompt,
     compact: (args) => call("compact", args),
     abort: (args) => call("abort", args),
+    decideTranslationWarningReview,
     sendInput,
     onEvent: (listener) => subscribe("event", listener),
     onSessionUpdate: (listener) => subscribe("state", listener)

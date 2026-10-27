@@ -160,6 +160,8 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
     compactResult,
     compactError,
     contextUsage,
+    warningReview,
+    warningReviewSubmitting,
     modelNames,
     modelList,
     thinkingLevel,
@@ -178,6 +180,7 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
     scrollContainerRef,
     lastUserMsgRef,
     handleSend,
+    handleWarningReviewDecision,
     handleAbort,
     handleCompact,
     handleSteer,
@@ -678,6 +681,42 @@ export function ChatWindow({ route, title, onAgentEnd, onEmbeddedReady }: Props)
             modelName={currentModelName}
             subagentProgress={subagentProgress}
           />
+        )}
+        {warningReview && (
+          <section
+            className="ynAgentWarningReview"
+            role="alertdialog"
+            aria-modal="false"
+            aria-labelledby="ynAgentWarningReviewTitle"
+            aria-describedby="ynAgentWarningReviewDescription"
+            aria-busy={warningReviewSubmitting || sessionBusy}
+            data-agent-warning-review="true"
+          >
+            <div className="ynAgentWarningReviewCopy">
+              <strong id="ynAgentWarningReviewTitle">{ui.warningReviewTitle}</strong>
+              <span id="ynAgentWarningReviewDescription">
+                {ui.warningReviewDescription.replace("{count}", String(warningReview.warningCount))}
+              </span>
+            </div>
+            <div className="ynAgentWarningReviewActions">
+              <button
+                type="button"
+                data-agent-warning-review-decision="review"
+                disabled={warningReviewSubmitting || sessionBusy}
+                onClick={() => void handleWarningReviewDecision("review")}
+              >
+                {ui.warningReviewYes}
+              </button>
+              <button
+                type="button"
+                data-agent-warning-review-decision="skip"
+                disabled={warningReviewSubmitting || sessionBusy}
+                onClick={() => void handleWarningReviewDecision("skip")}
+              >
+                {ui.warningReviewNo}
+              </button>
+            </div>
+          </section>
         )}
         {providerSettingsOpen && route.outputDir ? (
           <ProviderSettingsPanel

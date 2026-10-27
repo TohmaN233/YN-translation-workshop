@@ -132,6 +132,7 @@ type WorkshopAgentSessionApi = {
   selectSession: (args: { outputDir: string; sessionId: string }) => Promise<{ ok: true }>;
   deleteSession: (args: { outputDir: string; sessionId: string }) => Promise<{ removed: boolean }>;
   sendPrompt: (args: import("../shared/agent/piSessionContract.ts").PiSessionPromptRequest) => Promise<import("../shared/agent/piSessionContract.ts").PiSessionPromptAcceptance>;
+  decideTranslationWarningReview: (args: import("../shared/agent/piSessionContract.ts").PiSessionWarningReviewDecisionRequest) => Promise<import("../shared/agent/piSessionContract.ts").PiSessionWarningReviewDecisionResult>;
   compact: (args: import("../shared/agent/piSessionContract.ts").PiSessionCompactRequest) => Promise<import("../shared/agent/piSessionContract.ts").PiSessionCompactionResult>;
   abort: (args: { outputDir: string; sessionId: string }) => Promise<{ ok: true }>;
   sendInput: (args: import("../shared/agent/piSessionContract.ts").PiSessionInputRequest) => Promise<{ ok: true }>;

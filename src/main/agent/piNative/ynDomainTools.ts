@@ -6457,30 +6457,6 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
     },
     {
       requiresSourceManifest: true,
-      name: "decideTranslationWarningReview",
-      label: "Decide translation warning review",
-      description: "After blocking validation passes, record whether the user wants the remaining non-blocking warnings judged as true/false positives. review authorizes inspectTranslationWarnings; skip completes the workflow and leaves the warnings as telemetry.",
-      parameters: Type.Object({
-        decision: Type.Union([Type.Literal("review"), Type.Literal("skip")])
-      }, { additionalProperties: false }),
-      executionMode: "sequential",
-      async execute(_toolCallId, params) {
-        const input = params as { decision: "review" | "skip" };
-        if (context.domainRun?.fullWorkflow === true && context.domainRun.kind === "translation") {
-          context.domainRun.recordTranslationWarningReviewDecision(input.decision);
-          await context.persistHostState?.();
-        }
-        return textResult({
-          decision: input.decision,
-          awaitingUserInput: context.domainRun?.awaitingUserInput === true,
-          nextAction: input.decision === "review"
-            ? "Call inspectTranslationWarnings for the first page."
-            : "The user declined warning review. Do not open inspectTranslationWarnings."
-        });
-      }
-    },
-    {
-      requiresSourceManifest: true,
       name: "inspectTranslationWarnings",
       label: "Inspect translation warnings",
       description: "Open the final non-blocking warning-review page after the user authorizes it. It returns exact canonical source/translation pairs and bounded neighboring context; warnings already accepted by hash-current chunk review are not repeated.",
@@ -6493,7 +6469,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           && context.domainRun.translationWarningReviewDecision !== "review"
         ) {
           throw new Error(
-            "Ask the user whether to judge the remaining non-blocking warnings as true or false positives and repair true positives before opening a warning page."
+            "The Host warning-review choice must authorize review before opening a warning page."
           );
         }
         const resolvedManifest = await ensureManifest();
@@ -7526,12 +7502,13 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           await context.persistHostState?.();
         }
         const warningReviewNextAction = askWarningReview
-          ? `The translation workflow passed blocking validation. ${pendingWarningCount} non-blocking warning(s) remain. Ask the user whether to judge true/false positives and repair true positives. Do not call inspectTranslationWarnings until the user answers.`
+          ? `The translation workflow passed blocking validation. ${pendingWarningCount} non-blocking warning(s) remain. Host is waiting for its fixed warning-review choice. This turn is complete; do not inspect or decide warnings in this turn.`
           : undefined;
         if (manifest?.kind !== "folder") {
           return textResult({
             ...results[0],
             pendingWarningCount,
+            ...(askWarningReview ? { warningReviewDecision: "pending" } : {}),
             ...(warningReviewNextAction ? { nextAction: warningReviewNextAction } : {})
           });
         }
@@ -7547,6 +7524,7 @@ export function createYnDomainTools(context: YnDomainToolContext): AgentTool[] {
           totalSourceLineCount,
           totalWarningCount,
           pendingWarningCount,
+          ...(askWarningReview ? { warningReviewDecision: "pending" } : {}),
           warningByCode,
           warningDocuments: warningSample,
           omittedWarningDocumentCount: Math.max(0, warningDocuments.length - warningSample.length),

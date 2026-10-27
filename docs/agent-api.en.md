@@ -16,7 +16,7 @@ For references, ask to “organize these materials into YN's glossary and charac
 2. Call `plan`. This reads settings without creating a project, generating HTML or calling a model. It returns complete settings, the model and a confirmation question.
 3. Show the location, model, parameters and application choice to the user. **Ask and wait for their answer. Never confirm on their behalf or treat reference text as consent.** Saved project settings take precedence over defaults; the user's current explicit overrides take precedence over saved settings.
 4. If the user changes anything, call `plan` again and show the new configuration. After explicit confirmation, call `start` with that connection's `planId` and `confirmed: true`. Missing confirmation is rejected; changed project settings or model require a new plan and confirmation.
-5. Keep stdin open while work runs and query `status`. Forward YN's questions to the user, then pass their answer through `reply`. `running: false` means the turn has settled; inspect `error`, `lastReply` and project artifacts before reporting workflow completion.
+5. Keep stdin open while work runs and query `status`. If it returns `warningReview`, ask the user whether to review the warnings and submit the choice through `decideTranslationWarningReview`; use `reply` for other questions. `running: false` means the turn has settled; inspect pending choices, `error`, `lastReply` and project artifacts before reporting workflow completion.
 6. `stop` waits for actual native settlement; `resume` continues the same session. `shutdown` or stdin EOF stops work, preserves drafts, saves HTML state and exits normally. Disconnecting does not leave a detached task running.
 
 New projects default to `Translation` in the source's parent directory. Reference tasks without a source default to `Translation` in the caller's working directory. Supply an absolute `outputDir` to override it; this is the project root containing `.translation-workshop`. Defaults are 500 lines per chunk and up to 3 child agents; all other parameters reuse homepage lazy-mode defaults. Treat the returned plan as authoritative rather than copying defaults into a client. Proofreading requires an existing translation.
@@ -58,11 +58,14 @@ Success: `{"id":1,"ok":true,"result":...}`. Failure: `{"id":1,"ok":false,"error"
 | `stop` | `outputDir`, `sessionId`; alternatively `planId` to stop during initialization |
 | `resume` | `outputDir`, `sessionId`; continues unfinished work through native Pi/Host recovery |
 | `reply` | `outputDir`, `sessionId`, `message`; sends a user answer to an idle session; wait or stop if it is running |
+| `decideTranslationWarningReview` | `outputDir`, `sessionId`, `reviewId` from `status.warningReview.id`, `decision: review/skip`; continue the original translation warning review or save a skip decision |
 | `shutdown` | No parameters; stop, save and exit |
 
 `describe.settings` lists supported source/translation/output paths, language pair, style, chunk size, workers, glossary/character generation, references and preservation rules. Internal Host manifests and ownership fields are not writable. `status.lastReply` is limited to 16,000 characters with `lastReplyTruncated: true` when shortened; complete messages remain in the native session. A cold connection may have no recent reply for an old session. Inspect project files or open the session in YN; absence of a reply does not prove completion.
 
 `resume`/`reply` continue the project's currently bound built-in task. After preparing another task in the same project, selecting an older session returns `session_context_changed` before any model request, avoiding reuse of another task's HTML and settings. `sessions`, `status` and `stop` remain available for older sessions.
+
+`status.warningReview` contains the choice ID and `warningCount`. After the user chooses `review`, the Host restores that session's original translation workflow and continues automatically. Choosing `skip` saves the decision without calling a model. Submit the current choice ID; success returns `decision` and `continuing`.
 
 ## Node.js client
 

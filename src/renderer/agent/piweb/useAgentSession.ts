@@ -7,9 +7,11 @@ import type {
   PiSessionContextUsage,
   PiSessionEventEnvelope,
   PiSessionImageAttachment,
+  PiSessionPromptRequest,
   PiSessionRunState,
   PiSessionSummary,
   PiSessionStorageProgress,
+  PiSessionWarningReviewDecisionRequest,
   PiWorkflowPromptMetadata
 } from "../../../shared/agent/piSessionContract.ts";
 import { electronPiSessionClient, type YnAgentRoute } from "./electronPiSessionClient";
@@ -58,6 +60,88 @@ export function resolveConfiguredModelSelection(
   return { provider, modelId };
 }
 
+type PiPromptBuilderState = Pick<SessionState, "providerId" | "modelId" | "thinkingLevel">;
+
+export function buildPiSessionPromptRequest(
+  route: YnAgentRoute,
+  current: PiPromptBuilderState,
+  sessionId: string,
+  prompt: string,
+  images?: PiSessionImageAttachment[],
+  workflowMetadata?: PiWorkflowPromptMetadata
+): PiSessionPromptRequest {
+  return {
+    outputDir: route.outputDir,
+    sessionId,
+    prompt,
+    images,
+    providerId: current.providerId,
+    modelId: current.modelId,
+    thinkingLevel: current.thinkingLevel,
+    workflowIntent: workflowMetadata?.workflowIntent,
+    languagePair: workflowMetadata?.languagePair ?? route.languagePair,
+    style: workflowMetadata?.style,
+    workDescription: workflowMetadata?.workDescription,
+    glossaryPath: workflowMetadata?.glossaryPath,
+    glossaryCandidates: workflowMetadata?.glossaryCandidates,
+    characterBible: workflowMetadata?.characterBible,
+    reuseExistingTranslation: workflowMetadata?.reuseExistingTranslation,
+    auditWhitelistLines: workflowMetadata?.auditWhitelistLines,
+    customPreserveRules: workflowMetadata?.customPreserveRules,
+    subagentEnabled: workflowMetadata?.subagentEnabled,
+    subagentCount: workflowMetadata?.subagentCount,
+    reviewSubagentCount: workflowMetadata?.reviewSubagentCount,
+    subagentProviderId: workflowMetadata?.subagentProviderId,
+    subagentModelId: workflowMetadata?.subagentModelId,
+    translationSplitSize: workflowMetadata?.translationSplitSize,
+    folderTranslationOrder: workflowMetadata?.folderTranslationOrder,
+    folderSourceDocuments: workflowMetadata?.folderSourceDocuments,
+    folderSourceSelection: workflowMetadata?.folderSourceSelection,
+    proofreadMode: workflowMetadata?.proofreadMode,
+    proofreadSplitSize: workflowMetadata?.proofreadSplitSize,
+    proofreadMontecarloSize: workflowMetadata?.proofreadMontecarloSize,
+    proofreadMontecarloRoundMin: workflowMetadata?.proofreadMontecarloRoundMin,
+    proofreadMontecarloRoundMax: workflowMetadata?.proofreadMontecarloRoundMax,
+    sourcePath: route.sourcePath,
+    sourceSelection: route.sourcePath ? { kind: route.sourceKind ?? "file", path: route.sourcePath } : undefined,
+    translationPath: route.translationPath,
+    lineReviewPath: route.lineReviewPath
+  };
+}
+
+export function buildWarningReviewDecisionRequest(
+  route: YnAgentRoute,
+  current: PiPromptBuilderState,
+  sessionId: string,
+  reviewId: string,
+  decision: "review" | "skip",
+  workflowMetadata?: PiWorkflowPromptMetadata
+): PiSessionWarningReviewDecisionRequest {
+  const decisionRequest: PiSessionWarningReviewDecisionRequest = {
+    outputDir: route.outputDir,
+    sessionId,
+    reviewId,
+    decision
+  };
+  if (!current.providerId || !current.modelId) return decisionRequest;
+
+  const promptRequest = buildPiSessionPromptRequest(route, current, sessionId, "", undefined, workflowMetadata);
+  const {
+    outputDir: _outputDir,
+    sessionId: _sessionId,
+    prompt: _prompt,
+    images: _images,
+    taskPreparation: _taskPreparation,
+    workflowIntent: _workflowIntent,
+    ...request
+  } = promptRequest;
+  return { ...decisionRequest, request };
+}
+
+export function warningReviewChoiceKey(outputDir: string, sessionId: string, reviewId: string): string {
+  return JSON.stringify([outputDir, sessionId, reviewId]);
+}
+
 export interface SessionState {
   sessionId: string;
   sessions: PiSessionSummary[];
@@ -81,6 +165,8 @@ export interface SessionState {
   compactResult: PiSessionCompactionResult | null;
   compactError: string | null;
   contextUsage: PiSessionContextUsage | null;
+  warningReview?: PiSessionRunState["warningReview"];
+  warningReviewSequence: number;
   lastSequence: number;
 }
 
@@ -107,6 +193,7 @@ const INITIAL_STATE: SessionState = {
   compactResult: null,
   compactError: null,
   contextUsage: null,
+  warningReviewSequence: 0,
   lastSequence: 0
 };
 
@@ -201,6 +288,7 @@ export function mergePiRunState(
   runState: PiSessionRunState,
   preserveOptimisticRun = false
 ): SessionState {
+  const warningReviewSnapshotIsCurrent = runState.sequence >= (current.warningReviewSequence ?? 0);
   const preserve = preserveOptimisticRun
     && !runState.running
     && !runState.compacting
@@ -230,6 +318,10 @@ export function mergePiRunState(
     compactResult: runState.lastCompaction ?? current.compactResult,
     compactError: runState.compactionError ?? null,
     contextUsage: runState.contextUsage ?? current.contextUsage,
+    warningReview: warningReviewSnapshotIsCurrent ? runState.warningReview : current.warningReview,
+    warningReviewSequence: warningReviewSnapshotIsCurrent
+      ? runState.sequence
+      : current.warningReviewSequence ?? 0,
     lastSequence: Math.max(current.lastSequence, runState.sequence),
     thinkingLevel: current.thinkingLevel === "auto" && runState.thinkingLevel !== "off"
       ? runState.thinkingLevel
@@ -393,6 +485,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
   const [state, setRenderedState] = useState<SessionState>(INITIAL_STATE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warningReviewOperation, setWarningReviewOperation] = useState<string | null>(null);
   const [providerConfig, setProviderConfig] = useState<ProviderConfigDoc | null>(null);
   const stateStoreRef = useRef<ReturnType<typeof createSynchronizedSessionState> | null>(null);
   if (!stateStoreRef.current) stateStoreRef.current = createSynchronizedSessionState(INITIAL_STATE);
@@ -403,6 +496,12 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     return next;
   }, [stateRef]);
   const loadEpochRef = useRef(0);
+  const routeOutputDirRef = useRef(route.outputDir);
+  routeOutputDirRef.current = route.outputDir;
+  const sessionWorkspaceRef = useRef(route.outputDir);
+  const warningReviewInFlightRef = useRef<string | null>(null);
+  const warningReviewGenerationRef = useRef(0);
+  const warningReviewRequestSequenceRef = useRef(0);
   const ensureSessionRef = useRef<Promise<string> | null>(null);
   const promptSequenceRef = useRef(0);
   const pendingPromptRef = useRef<{
@@ -497,6 +596,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
           (merged, message) => appendPiSessionMessage(merged, message),
           messages
         );
+        const warningReviewSnapshotIsCurrent = runState.sequence >= (current.warningReviewSequence ?? 0);
         let next: SessionState = {
           ...current,
           messages: liveAdvanced
@@ -519,6 +619,10 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
           compactResult: runState.lastCompaction ?? current.compactResult,
           compactError: runState.compactionError ?? null,
           contextUsage: runState.contextUsage ?? current.contextUsage,
+          warningReview: warningReviewSnapshotIsCurrent ? runState.warningReview : current.warningReview,
+          warningReviewSequence: warningReviewSnapshotIsCurrent
+            ? runState.sequence
+            : current.warningReviewSequence ?? 0,
           lastSequence: Math.max(current.lastSequence, runState.sequence)
         };
         for (const envelope of recentEvents) next = reduceNativePiEvent(next, envelope);
@@ -578,8 +682,12 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
 
   useEffect(() => {
     const epoch = ++loadEpochRef.current;
+    warningReviewGenerationRef.current += 1;
+    sessionWorkspaceRef.current = route.outputDir;
     ensureSessionRef.current = null;
     terminalConvergenceRef.current = "";
+    warningReviewInFlightRef.current = null;
+    setWarningReviewOperation(null);
     setState(INITIAL_STATE);
     setError(null);
     if (!route.outputDir) return undefined;
@@ -611,6 +719,9 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       if (payload.state.sessionId !== stateRef.current.sessionId) {
         const sessionId = payload.state.sessionId;
         const selectionEpoch = ++loadEpochRef.current;
+        warningReviewGenerationRef.current += 1;
+        warningReviewInFlightRef.current = null;
+        setWarningReviewOperation(null);
         const pending = pendingPromptRef.current;
         const pendingMatchesSession = Boolean(
           pending
@@ -632,6 +743,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
           messages: carriedMessages,
           storagePreparing: false,
           storageProgress: null,
+          warningReviewSequence: 0,
           lastSequence: payload.state.sequence
         }, payload.state, preserveOptimisticRun));
         void electronPiSessionClient.loadBootstrap(route.outputDir)
@@ -768,43 +880,14 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
         current = stateRef.current;
       }
       if (!current.providerId || !current.modelId) throw new Error("Configure and select a provider model first.");
-      await electronPiSessionClient.sendPrompt({
-        outputDir: route.outputDir,
+      await electronPiSessionClient.sendPrompt(buildPiSessionPromptRequest(
+        route,
+        current,
         sessionId,
-        prompt: text,
-        images: images.length > 0 ? images : undefined,
-        providerId: current.providerId,
-        modelId: current.modelId,
-        thinkingLevel: current.thinkingLevel,
-        workflowIntent: workflowMetadata?.workflowIntent,
-        languagePair: workflowMetadata?.languagePair ?? route.languagePair,
-        style: workflowMetadata?.style,
-        workDescription: workflowMetadata?.workDescription,
-        glossaryPath: workflowMetadata?.glossaryPath,
-        glossaryCandidates: workflowMetadata?.glossaryCandidates,
-        characterBible: workflowMetadata?.characterBible,
-        reuseExistingTranslation: workflowMetadata?.reuseExistingTranslation,
-        auditWhitelistLines: workflowMetadata?.auditWhitelistLines,
-        customPreserveRules: workflowMetadata?.customPreserveRules,
-        subagentEnabled: workflowMetadata?.subagentEnabled,
-        subagentCount: workflowMetadata?.subagentCount,
-        reviewSubagentCount: workflowMetadata?.reviewSubagentCount,
-        subagentProviderId: workflowMetadata?.subagentProviderId,
-        subagentModelId: workflowMetadata?.subagentModelId,
-        translationSplitSize: workflowMetadata?.translationSplitSize,
-        folderTranslationOrder: workflowMetadata?.folderTranslationOrder,
-        folderSourceDocuments: workflowMetadata?.folderSourceDocuments,
-        folderSourceSelection: workflowMetadata?.folderSourceSelection,
-        proofreadMode: workflowMetadata?.proofreadMode,
-        proofreadSplitSize: workflowMetadata?.proofreadSplitSize,
-        proofreadMontecarloSize: workflowMetadata?.proofreadMontecarloSize,
-        proofreadMontecarloRoundMin: workflowMetadata?.proofreadMontecarloRoundMin,
-        proofreadMontecarloRoundMax: workflowMetadata?.proofreadMontecarloRoundMax,
-        sourcePath: route.sourcePath,
-        sourceSelection: route.sourcePath ? { kind: route.sourceKind ?? "file", path: route.sourcePath } : undefined,
-        translationPath: route.translationPath,
-        lineReviewPath: route.lineReviewPath
-      });
+        text,
+        images.length > 0 ? images : undefined,
+        workflowMetadata
+      ));
       if (pending.cancelled) await electronPiSessionClient.abort(route.outputDir, sessionId);
     } catch (sendError) {
       if (pendingPromptRef.current?.id === pending.id) pendingPromptRef.current = null;
@@ -826,6 +909,78 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       setState((current) => ({ ...current, storagePreparing: false, storageProgress: null, agentRunning: false, phase: null, phaseText: "error" }));
     }
   }, [ensureSession, loading, reloadProviderSettings, route.languagePair, route.lineReviewPath, route.outputDir, route.sourceKind, route.sourcePath, route.translationPath]);
+
+  const handleWarningReviewDecision = useCallback(async (decision: "review" | "skip") => {
+    const current = stateRef.current;
+    const warningReview = current.warningReview;
+    const outputDir = route.outputDir;
+    const sessionId = current.sessionId;
+    const runningSubagent = current.messages.some((message) => (
+      message.role === "custom"
+      && message.details
+      && typeof message.details === "object"
+      && (message.details as Record<string, unknown>).status === "running"
+    ));
+    if (
+      !outputDir
+      || !sessionId
+      || !warningReview
+      || loading
+      || current.storagePreparing
+      || Boolean(current.storageProgress)
+      || current.agentRunning
+      || current.isCompacting
+      || runningSubagent
+    ) return;
+    const reviewId = warningReview.id;
+    const operationKey = warningReviewChoiceKey(outputDir, sessionId, reviewId);
+    if (warningReviewInFlightRef.current) return;
+    const generation = warningReviewGenerationRef.current;
+    const operationToken = `${operationKey}:${++warningReviewRequestSequenceRef.current}`;
+
+    const isCurrentChoice = () => (
+      routeOutputDirRef.current === outputDir
+      && sessionWorkspaceRef.current === outputDir
+      && warningReviewGenerationRef.current === generation
+      && stateRef.current.sessionId === sessionId
+      && stateRef.current.warningReview?.id === reviewId
+    );
+    warningReviewInFlightRef.current = operationToken;
+    setWarningReviewOperation(operationToken);
+    setError(null);
+    try {
+      const request = buildWarningReviewDecisionRequest(
+        route,
+        current,
+        sessionId,
+        reviewId,
+        decision,
+        route.initialWorkflowMetadata
+      );
+      const result = await electronPiSessionClient.decideTranslationWarningReview(request);
+      if (result.decision !== decision) {
+        throw new Error("The warning review decision response did not match the selected action.");
+      }
+      if (!isCurrentChoice()) return;
+      setState((latest) => {
+        if (latest.sessionId !== sessionId || latest.warningReview?.id !== reviewId) return latest;
+        return {
+          ...latest,
+          warningReview: undefined,
+          agentRunning: result.continuing || latest.agentRunning,
+          phase: result.continuing ? { kind: "waiting_model" } : latest.phase,
+          phaseText: result.continuing ? "thinking" : latest.phaseText
+        };
+      });
+    } catch (decisionError) {
+      if (isCurrentChoice()) setError(decisionError instanceof Error ? decisionError.message : String(decisionError));
+    } finally {
+      if (warningReviewInFlightRef.current === operationToken) {
+        warningReviewInFlightRef.current = null;
+        setWarningReviewOperation(null);
+      }
+    }
+  }, [loading, route.initialWorkflowMetadata, route.languagePair, route.lineReviewPath, route.outputDir, route.sourceKind, route.sourcePath, route.translationPath]);
 
   const handleCompact = useCallback(async (customInstructions?: string) => {
     const current = stateRef.current;
@@ -980,8 +1135,11 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
   const handleNewConversation = useCallback(async () => {
     if (!route.outputDir || stateRef.current.agentRunning || stateRef.current.isCompacting) return;
     const epoch = ++loadEpochRef.current;
+    warningReviewGenerationRef.current += 1;
+    warningReviewInFlightRef.current = null;
+    setWarningReviewOperation(null);
     setError(null);
-    setState((current) => ({ ...current, sessionId: "", messages: [], streamingMessage: null, storagePreparing: false, storageProgress: null, queuedSteer: [], queuedFollowUp: [], queuedNextTurn: [], lastSequence: 0 }));
+    setState((current) => ({ ...current, sessionId: "", messages: [], streamingMessage: null, storagePreparing: false, storageProgress: null, warningReview: undefined, warningReviewSequence: 0, queuedSteer: [], queuedFollowUp: [], queuedNextTurn: [], lastSequence: 0 }));
     try {
       const session = await electronPiSessionClient.createSession(route.outputDir);
       if (loadEpochRef.current !== epoch) return;
@@ -998,8 +1156,11 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
   const handleSelectConversation = useCallback(async (sessionId: string) => {
     if (!route.outputDir || stateRef.current.agentRunning || stateRef.current.isCompacting || sessionId === stateRef.current.sessionId) return;
     const epoch = ++loadEpochRef.current;
+    warningReviewGenerationRef.current += 1;
+    warningReviewInFlightRef.current = null;
+    setWarningReviewOperation(null);
     setError(null);
-    setState((current) => ({ ...current, sessionId, messages: [], streamingMessage: null, storagePreparing: false, storageProgress: null, queuedSteer: [], queuedFollowUp: [], queuedNextTurn: [], lastSequence: 0 }));
+    setState((current) => ({ ...current, sessionId, messages: [], streamingMessage: null, storagePreparing: false, storageProgress: null, warningReview: undefined, warningReviewSequence: 0, queuedSteer: [], queuedFollowUp: [], queuedNextTurn: [], lastSequence: 0 }));
     try {
       await electronPiSessionClient.selectSession(route.outputDir, sessionId);
       await loadSelectedSession(sessionId, epoch);
@@ -1018,6 +1179,9 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       return;
     }
     const epoch = ++loadEpochRef.current;
+    warningReviewGenerationRef.current += 1;
+    warningReviewInFlightRef.current = null;
+    setWarningReviewOperation(null);
     setError(null);
     setState((current) => ({
       ...current,
@@ -1025,6 +1189,8 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       sessionId: bootstrap.activeSessionId,
       messages: [],
       streamingMessage: null,
+      warningReview: undefined,
+      warningReviewSequence: 0,
       queuedSteer: [],
       queuedFollowUp: [],
       queuedNextTurn: [],
@@ -1093,6 +1259,11 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       cost
     };
   }, [state.messages, state.sessionId]);
+  const warningReviewSubmitting = Boolean(
+    state.warningReview
+    && sessionWorkspaceRef.current === route.outputDir
+    && warningReviewOperation?.startsWith(`${warningReviewChoiceKey(route.outputDir, state.sessionId, state.warningReview.id)}:`)
+  );
 
   return {
     loading,
@@ -1106,6 +1277,8 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     compactResult: state.compactResult,
     compactError: state.compactError,
     contextUsage: state.contextUsage,
+    warningReview: sessionWorkspaceRef.current === route.outputDir ? state.warningReview : undefined,
+    warningReviewSubmitting,
     modelNames: state.modelNames,
     modelList: state.modelList,
     thinkingLevel: state.thinkingLevel,
@@ -1124,6 +1297,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
     scrollContainerRef,
     lastUserMsgRef,
     handleSend,
+    handleWarningReviewDecision,
     handleAbort,
     handleCompact,
     handleSelectConversation,

@@ -37,7 +37,12 @@ export function isHostUserGateToolResult(result: {
   content?: unknown;
   details?: unknown;
 }): boolean {
-  return isHostUserGateText(toolResultText(result));
+  return isTranslationWarningReviewGateToolResult(result) || isHostUserGateText(toolResultText(result));
+}
+
+export function isTranslationWarningReviewGateToolResult(result: { content?: unknown; details?: unknown }): boolean {
+  return Boolean(result.details && typeof result.details === "object"
+    && (result.details as { warningReviewDecision?: unknown }).warningReviewDecision === "pending");
 }
 
 export function isHostUserWaitGateToolResult(result: {

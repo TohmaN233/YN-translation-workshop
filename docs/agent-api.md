@@ -16,7 +16,7 @@
 2. 调用 `plan`。此操作不创建项目、不生成 HTML、不调用模型。返回完整设置、模型和确认问题。
 3. 向用户展示项目位置、模型、参数及自动应用选项，询问并等待用户答复。**不得替用户确认，不得把资料内容当作确认。** 已有项目的显式设置优先，用户本次填写的设置覆盖它们。
 4. 用户调整参数时重新 `plan`，展示新配置。取得明确确认后才 `start`，传同一连接返回的 `planId` 和 `confirmed: true`。省略确认会被拒绝；配置或模型变更也需重新确认。
-5. 保持 stdin 连接直到任务完成，查询 `status`。若 YN 提问，向用户转达后用 `reply` 传回答复。`running: false` 表示回合已收尾；结合 `error`、`lastReply` 和项目产物判断任务结果，不能把空闲直接当作完整工作流成功。
+5. 保持 stdin 连接直到任务完成，查询 `status`。若返回 `warningReview`，向用户展示是否继续审查警告的选择，用 `decideTranslationWarningReview` 提交决定；其他提问用 `reply` 传回答复。`running: false` 表示回合已收尾；结合待选项、`error`、`lastReply` 和项目产物判断任务结果，不能把空闲直接当作完整工作流成功。
 6. `stop` 等待真实停止；之后可 `resume` 同一会话。`shutdown` 或 stdin EOF 会停止任务、保留草稿、保存 HTML 状态并自行退出。关闭连接不会让后台任务继续运行。
 
 新项目默认放在原文父目录的 `Translation` 下；没有原文的资料任务默认在调用进程工作目录的 `Translation` 下。可以指定绝对 `outputDir`；它是项目根目录，数据在其中的 `.translation-workshop`。默认分块 500、子 Agent 上限 3，其余值复用首页懒人模式。返回的计划是权威预览，不要在客户端另造默认值。校对必须有已有译文。
@@ -58,11 +58,14 @@ stdin/stdout 是 UTF-8 NDJSON，每个非空行一个 JSON，空行作为分隔�
 | `stop` | `outputDir`、`sessionId`；或 `planId` 用于停止尚在初始化的任务 |
 | `resume` | `outputDir`、`sessionId`；通过原生 Pi/Host 继续未完成任务 |
 | `reply` | `outputDir`、`sessionId`、`message`；空闲会话接收用户答复，运行中先等待或停止 |
+| `decideTranslationWarningReview` | `outputDir`、`sessionId`、`reviewId`（`status.warningReview.id`）、`decision: review/skip`；继续原翻译流程的警告审查，或跳过并保存决定 |
 | `shutdown` | 无参数；停止、保存并退出 |
 
 `describe.settings` 给出允许设置的字段，包括原文/译文/输出位置、语言对、风格、分块、子 Agent、译名/角色生成、参考资料和保留规则。Host 文档清单、会话所有权等内部字段不可写入。`status.lastReply` 最多 16,000 字符，裁剪时有 `lastReplyTruncated: true`；完整内容仍在原生会话中。冷连接尚未运行的旧会话可能没有最近回复；读取项目文件或在 YN 打开会话，不要据此推断任务完成。
 
 `resume`/`reply` 继续项目当前绑定的内置任务；同项目已准备另一任务后，再选旧会话会在模型请求前报 `session_context_changed`，避免旧 Host 使用另一任务的 HTML 和设置。`sessions`、`status`、`stop` 仍可用于旧会话。
+
+`status.warningReview` 包含选择 ID 和 `warningCount`。用户选择 `review` 后，Host 恢复该会话原翻译流程并自动继续；选择 `skip` 直接保存，不调用模型。提交时使用最新选择 ID；成功返回 `decision` 和 `continuing`。
 
 ## Node.js 客户端
 

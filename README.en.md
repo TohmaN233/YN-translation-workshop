@@ -70,8 +70,8 @@ YN checks line alignment, placeholders, preserved content, write scope and recov
 
 ## 2.2.4 highlights
 
-- Load the complete translation before applying proofreading, preserving manual edits and preventing blank lines in EPUB and other single-file exports.
-- Offer an explicit review/skip choice for optional translation warnings and continue automatically after review is selected.
+- Final translation review now offers a Continue/Skip prompt, so you can choose directly instead of describing the next step in natural language.
+- Applying review suggestions in single-file mode automatically imports the complete translation into the review page and applies the changes, matching multi-file mode.
 
 See the [Changelog](CHANGELOG.en.md) for full history.
 

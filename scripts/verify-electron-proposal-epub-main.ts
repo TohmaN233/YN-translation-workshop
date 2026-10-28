@@ -20,6 +20,14 @@ const projectJsonPath = path.join(workspaceDir, "project.json");
 const sourceLines = ["Fixture source alpha", "Fixture source beta", "Fixture source gamma"];
 const translationLines = ["Fixture draft alpha", "Fixture draft beta", "Fixture draft gamma"];
 const suggestions = ["Fixture revised alpha", "Fixture revised beta"];
+const skipManualImport = process.env.YN_EPUB_SKIP_MANUAL_IMPORT === "1";
+let unimportedView: BrowserView | undefined;
+const manualTranslation = "Fixture manual gamma";
+if (skipManualImport) {
+  sourceLines.push("Fixture source delta");
+  translationLines.push("Fixture draft delta");
+}
+const expectedAppliedLines = [suggestions[0], suggestions[1], skipManualImport ? manualTranslation : translationLines[2], ...translationLines.slice(3)];
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -120,6 +128,28 @@ async function run(): Promise<void> {
   assert(JSON.stringify(splitTextLines(await readEpubText(sourcePath, workspaceDir, "synthetic-source"))) === JSON.stringify(sourceLines), "Synthetic EPUB text did not match its expected source lines");
   console.log("[proposal-epub] stage=empty-epub-html-generated");
 
+  if (skipManualImport) {
+    await mainWindow.webContents.executeJavaScript(`window.workshop.openReviewHtml(${JSON.stringify({ htmlPath: originalLineReviewPath, outputDir })})`);
+    const initialViewer = BrowserWindow.getAllWindows().find(candidate => candidate !== mainWindow && candidate.webContents.getURL().startsWith("data:text/html"));
+    assert(initialViewer, "The unimported original EPUB page was not opened");
+    const initialView = await activeView(initialViewer);
+    unimportedView = initialView;
+    await waitFor(() => initialView.webContents.executeJavaScript('typeof setBoundTranslationPath === "function" && !lineReviewInitializing').catch(() => false), Boolean, "the existing unimported EPUB editor");
+    await initialView.webContents.executeJavaScript(`(async () => {
+      setBoundTranslationPath(${JSON.stringify(translationPath)}, ${JSON.stringify(translationPath)}, { userSelected: true });
+      await flushQueuedLineReviewStateWrite(); await lastHostStateWrite;
+      if (data.rows.some(row => rowValue(row))) throw new Error('Binding a path must not masquerade as importing its text');
+      state.syncedFile = ${JSON.stringify(translationPath)};
+      state.syncedAt = 'synthetic-previous-import';
+      await writeSyncedText(data.rows.map(() => '').join('\\n'));
+      await save([], ['syncedFile', 'syncedAt']);
+      const target = document.querySelector('.row[data-line="3"] .target');
+      target.textContent = ${JSON.stringify(manualTranslation)};
+      target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(manualTranslation)} }));
+      await flushQueuedLineReviewStateWrite(); await lastHostStateWrite;
+    })()`);
+  }
+
   const projectPatchResult = await mainWindow.webContents.executeJavaScript(`window.workshopHtml.updateProjectState(${JSON.stringify({
     outputDir,
     patch: {
@@ -136,7 +166,7 @@ async function run(): Promise<void> {
   console.log("[proposal-epub] stage=selected-txt-project-binding-persisted");
 
   const lineReviewStatePath = path.join(workspaceDir, "state", `line-${path.basename(originalLineReviewPath)}.json`);
-  await assertMissing(lineReviewStatePath, "The empty-translation line review unexpectedly has a sidecar before its first proposal resolution");
+  if (!skipManualImport) await assertMissing(lineReviewStatePath, "The empty-translation line review unexpectedly has a sidecar before its first proposal resolution");
   const unprepared = await readReviewPayload(originalLineReviewPath);
   assert(unprepared.workflow?.paths?.sourcePath === sourcePath, "Generated empty-translation HTML lost its physical EPUB source before proposal resolution");
   assert(unprepared.workflow?.paths?.validationSourcePath === projectionPath, "Generated empty-translation HTML lost its source projection before proposal resolution");
@@ -212,8 +242,8 @@ async function run(): Promise<void> {
   assert(prepared.workflow?.epubExport?.mode === "all", "Resolver preparation did not preserve EPUB export options");
   console.log("[proposal-epub] stage=concurrent-resolver-reused-and-prepared-original-html");
 
-  await mainWindow.webContents.executeJavaScript(`window.workshop.openReviewHtml(${JSON.stringify({ htmlPath: originalLineReviewPath, outputDir })})`);
-  const lineView = await waitFor(
+  if (!skipManualImport) await mainWindow.webContents.executeJavaScript(`window.workshop.openReviewHtml(${JSON.stringify({ htmlPath: originalLineReviewPath, outputDir })})`);
+  const lineView = skipManualImport ? unimportedView! : await waitFor(
     () => visibleView(viewerWindow),
     (view) => Boolean(view && !view.webContents.isDestroyed() && decodeURIComponent(new URL(view.webContents.getURL()).pathname).toLowerCase().endsWith(path.basename(originalLineReviewPath).toLowerCase())),
     "the resolver-prepared original line review"
@@ -228,9 +258,10 @@ async function run(): Promise<void> {
   assert(originalLineUi.hasEpubButton, "Resolver-prepared original line review did not expose the EPUB export button");
   assert(originalLineUi.sourcePath === sourcePath && originalLineUi.validationSourcePath === projectionPath, "Opened original line-review UI did not retain physical EPUB and projection paths");
   assert(originalLineUi.translationPath === translationPath, "Opened original line-review UI did not retain the selected TXT binding");
-  assert(JSON.stringify(originalLineUi.rowTranslations) === JSON.stringify(translationLines), "Opened original line-review UI did not display the selected TXT rows");
+  if (!skipManualImport) assert(JSON.stringify(originalLineUi.rowTranslations) === JSON.stringify(translationLines), "Opened original line-review UI did not display the selected TXT rows");
   console.log("[proposal-epub] stage=original-line-review-opened");
 
+  if (!skipManualImport) {
   await lineView.webContents.executeJavaScript(`(async () => {
     await syncLines(${JSON.stringify(translationLines)}, ${JSON.stringify(translationPath)}, { bindPath: true, userSelected: true });
     return true;
@@ -248,6 +279,7 @@ async function run(): Promise<void> {
   assert(JSON.stringify(imported.translations) === JSON.stringify(translationLines), "syncLines did not import every selected TXT row");
   assert(imported.syncedFile === translationPath && imported.path === translationPath, "syncLines did not preserve the selected TXT binding in HTML state");
   console.log("[proposal-epub] stage=syncLines-import-persisted");
+  }
 
   await proposalView.webContents.executeJavaScript(`(() => {
     for (const item of data.proposals) state.decisions[item.id] = { status: "accepted", manualText: "" };
@@ -267,6 +299,12 @@ async function run(): Promise<void> {
   );
   assert(appliedState.translationPath === translationPath, "Applying suggestions changed the selected TXT binding");
   console.log("[proposal-epub] stage=proposal-suggestions-applied");
+
+  if (skipManualImport) {
+    const actual = await waitFor(() => lineView.webContents.executeJavaScript('currentTargetLines()') as Promise<string[]>,
+      lines => JSON.stringify(lines) === JSON.stringify(expectedAppliedLines), "full imported baseline plus preserved manual edit on the existing page");
+    assert(JSON.stringify(actual) === JSON.stringify(expectedAppliedLines), `Applying to an already-open unimported page lost untouched translations: ${JSON.stringify(actual)}`);
+  }
 
   const jumpButtonCount = await proposalView.webContents.executeJavaScript('document.querySelectorAll("button[data-jump-line]").length');
   assert(jumpButtonCount === findings.length, `Proposal review did not expose one jump action per synthetic finding: ${jumpButtonCount}`);
@@ -291,7 +329,7 @@ async function run(): Promise<void> {
     "the real EPUB export from the resolver-prepared HTML"
   );
   const exportedLines = splitTextLines(await readEpubText(String(exportedPath), workspaceDir, "synthetic-export"));
-  assert(JSON.stringify(exportedLines) === JSON.stringify([suggestions[0], suggestions[1], translationLines[2]]), `EPUB export did not use the imported and applied target lines: ${JSON.stringify(exportedLines)}`);
+  assert(JSON.stringify(exportedLines) === JSON.stringify(expectedAppliedLines), `EPUB export did not use the imported and applied target lines: ${JSON.stringify(exportedLines)}`);
   console.log("[proposal-epub] stage=epub-export-verified");
 
   await rm(originalLineReviewPath);
@@ -335,7 +373,8 @@ async function run(): Promise<void> {
     simultaneousApplyAndJumpResolution: true,
     resolverPreparedSelectedTxt: true,
     physicalEpubTemplatePreserved: true,
-    syncLinesImport: true,
+    syncLinesImport: !skipManualImport,
+    noManualImport: skipManualImport,
     proposalApplyAndJump: true,
     epubExport: true,
     missingHtmlFallbackExport: true,

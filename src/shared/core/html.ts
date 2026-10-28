@@ -1134,7 +1134,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 59;
+export const LINE_REVIEW_PROTOCOL_VERSION = 60;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 20;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
@@ -2553,6 +2553,10 @@ function writeSyncedText(text) {
 }
 async function restoreSyncedText(renderAfterRestore = true) {
   if (!state.syncedFile) return;
+  // A Host-prepared baseline supersedes the cache for that same import. A later
+  // explicit import has a different syncedAt and keeps its own persistent copy.
+  if (Object.prototype.hasOwnProperty.call(workflow, "initialTranslationSyncedAt")
+    && workflow.initialTranslationSyncedAt === (state.syncedAt ?? null)) return;
   try {
     const text = await readSyncedText();
     if (typeof text !== "string") return;

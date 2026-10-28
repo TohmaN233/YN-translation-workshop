@@ -1745,6 +1745,35 @@ async function assertLineReviewMatchesProposalRouting(
   assertLineReviewRoutingBinding(binding, routing);
 }
 
+async function prepareProposalLineReviewForApplication(
+  lineReviewPath: string,
+  routing: { documentId: string; sourcePath: string; translationPath?: string }
+): Promise<void> {
+  // HTML preparation has its own key in the existing queue. The sidecar key
+  // must remain free so flushing a live editor can commit its pending writes.
+  return withHtmlStateWriteLocks([lineReviewPath], async () => {
+    await assertLineReviewMatchesProposalRouting(lineReviewPath, routing);
+    const tab = [...htmlViewerTabs.values()].find(item => sameFilePath(item.filePath, lineReviewPath));
+    if (tab) await flushHtmlViewerTabState(tab);
+    const wasInert = tab ? await tab.view.webContents.executeJavaScript("(() => { const rows = document.getElementById('rows'); const previous = rows.inert; rows.inert = true; return previous; })()") : false;
+    try {
+      if (tab) await flushHtmlViewerTabState(tab);
+      const opening = await prepareReviewHtmlOpen(lineReviewPath, undefined, { refreshTranslation: true });
+      if (tab && (opening.changed || tab.sourceStamp !== opening.sourceStamp)) {
+        // This is the same document; general navigation would Stop an automatic
+        // apply that is still finishing its own native session.
+        await tab.view.webContents.executeJavaScript("document.getElementById('rows').inert = true");
+        await flushHtmlViewerTabState(tab);
+        await loadPreparedHtmlViewerTab(tab, opening, tab.hash);
+      }
+    } finally {
+      if (tab && !tab.view.webContents.isDestroyed()) await tab.view.webContents.executeJavaScript(`{ const rows = document.getElementById('rows'); if (rows) rows.inert = ${JSON.stringify(wasInert)} || artifactImportBusy; }`);
+    }
+    await assertLineReviewMatchesProposalRouting(lineReviewPath, routing);
+    console.info("[proposal-apply] Complete translation baseline prepared", { documentId: routing.documentId, openTab: Boolean(tab) });
+  });
+}
+
 interface EmbeddedLineReviewWorkflow {
   inputMode?: unknown;
   promptInputMode?: unknown;
@@ -4063,6 +4092,7 @@ async function finishBuiltinWorkflow(context: YnTaskPreparationContext, settings
         }
         await assertLineReviewMatchesProposalRouting(lineReviewPath, routing);
         await migrateLegacySingleProposalLineReviews(context.outputDir, lineReviewPath, routing);
+        await prepareProposalLineReviewForApplication(lineReviewPath, routing);
         return { ...routing, lineReviewPath, statePath: await htmlSidecarStatePath(lineReviewPath, "line"),
           validationOptions: { languagePair: settings.languagePair, customPreserveRules: settings.customPreserveRules,
             pdfProtectedLines: await readPdfProtectedLines(routing.sourcePath, context.outputDir) } };
@@ -4409,7 +4439,7 @@ ipcMain.handle("html:applyProposalLineReviewStates", async (event, args: ApplyPr
         sourcePath: item.sourcePath,
         translationPath: item.translationPath
       });
-      await assertLineReviewMatchesProposalRouting(lineReviewPath, routing);
+      await prepareProposalLineReviewForApplication(lineReviewPath, routing);
     } catch (error) {
       return {
         ok: false,

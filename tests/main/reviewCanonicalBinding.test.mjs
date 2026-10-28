@@ -24,6 +24,39 @@ try {
   assert.deepEqual(prepared.payload.workflow.initialTranslationLines, ['Current first.', 'Current second.']);
   assert.equal(JSON.parse(await readFile(sidecar, 'utf8')).edits[1], 'Manual first.', 'rebinding the baseline preserves pending manual edits');
   assert.equal((await prepareReviewHtmlOpen(html)).changed, false, 'a reconciled body is reused without rebuilding it');
+
+  const boundEmpty = path.join(workspace, 'html', 'bound-empty.html');
+  const boundState = path.join(workspace, 'state', 'line-bound-empty.html.json');
+  await writeFile(boundEmpty, renderLineReviewHtml({title:'Bound but not imported',sourceText:'Source one.\nSource two.',lineReviewPath:boundEmpty,
+    workflow:{outputDir:root,sourcePath:path.join(root,'source.txt'),translationPath:current,editableTranslationPath:current,translationPromptPath:current}}));
+  const manualState = stringifyProjectJson(boundState, {translationPath:current,translationPromptPath:current,documentRevision:2,edits:{1:'Kept manual sentence.'},status:{1:'manual'},revisions:{1:2}});
+  await writeFile(boundState, manualState);
+  const imported = await prepareReviewHtmlOpen(boundEmpty);
+  assert.deepEqual(imported.payload.rows.map(row=>row.translation), ['Current first.','Current second.'], 'an unchanged path alone does not mean the complete translation was imported');
+  assert.deepEqual(imported.payload.workflow.initialTranslationLines, ['Current first.','Current second.']);
+  assert.equal(await readFile(boundState,'utf8'), manualState, 'loading the baseline must retain manual sidecar revisions and edits');
+  assert.equal((await prepareReviewHtmlOpen(boundEmpty)).changed, false, 'the loaded baseline should be reused');
+  await writeFile(current, 'Updated first.\nUpdated second.');
+  const refreshed = await prepareReviewHtmlOpen(boundEmpty, undefined, {refreshTranslation:true});
+  assert.deepEqual(refreshed.payload.workflow.initialTranslationLines, ['Updated first.','Updated second.'], 'proposal application refreshes even an already-loaded file at the same path');
+  assert.equal(await readFile(boundState,'utf8'), manualState);
+  await writeFile(current, 'Current first.\nCurrent second.');
+  const bilingualPath = path.join(root, 'paired.txt');
+  const bilingualHtml = path.join(workspace, 'html', 'paired.html');
+  await writeFile(bilingualPath, 'Target first.\nSource one.\nTarget second.\nSource two.');
+  await writeFile(bilingualHtml, renderLineReviewHtml({title:'Bilingual baseline',sourceText:'Source one.\nSource two.',translationText:'Prior first.\nPrior second.',lineReviewPath:bilingualHtml,
+    workflow:{outputDir:root,sourcePath:bilingualPath,translationPath:bilingualPath,editableTranslationPath:bilingualPath,inputMode:'bilingual',bilingualPair:{sourcePosition:2,translationPosition:1}}}));
+  const paired = await prepareReviewHtmlOpen(bilingualHtml, undefined, {refreshTranslation:true});
+  assert.deepEqual(paired.payload.workflow.initialTranslationLines, ['Target first.','Target second.'], 'refresh preserves the logical translation rows of bilingual TXT');
+  const plannedHtml = path.join(workspace, 'html', 'planned-output.html');
+  await writeFile(plannedHtml, renderLineReviewHtml({title:'Not translated yet',sourceText:'A source sentence.',lineReviewPath:plannedHtml,
+    workflow:{outputDir:root,sourcePath:path.join(root,'new-source.txt'),translationPath:path.join(root,'unwritten-output.txt')}}));
+  assert.equal((await prepareReviewHtmlOpen(plannedHtml)).payload.workflow.hasInitialTranslation, false, 'translation preparation can open an output that has not been written yet');
+  await assert.rejects(prepareReviewHtmlOpen(plannedHtml, undefined, {refreshTranslation:true}), {code:'ENOENT'}, 'proofreading application still requires the actual complete translation');
+  const folderChild = path.join(workspace, 'html', 'folder-child.html');
+  await writeFile(folderChild, renderLineReviewHtml({title:'Folder bilingual child',sourceText:'Source one.\nSource two.',translationText:'Prior first.\nPrior second.',lineReviewPath:folderChild,
+    workflow:{outputDir:root,sourcePath:bilingualPath,translationPath:bilingualPath,editableTranslationPath:bilingualPath,translationPromptPath:root,promptSourceKind:'folder',inputMode:'bilingual',bilingualPair:{sourcePosition:2,translationPosition:1}}}));
+  assert.deepEqual((await prepareReviewHtmlOpen(folderChild, undefined, {refreshTranslation:true})).payload.workflow.initialTranslationLines, ['Target first.','Target second.'], 'a folder prompt must not be read as the child translation file');
   const epub = path.join(root, 'book.epub');
   const importedBody = path.join(workspace, 'html', 'imported-epub.html');
   const projection = path.join(workspace, 'source.txt');

@@ -34,7 +34,7 @@ See the [feature guide](docs/features.en.md) for settings, translation reuse, pr
 
 ## Download and installation
 
-Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.3.
+Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.4.
 
 Installers support in-app updates; portable builds are replaced using the release page. Releases include `SHA256SUMS.txt`.
 
@@ -68,10 +68,10 @@ YN checks line alignment, placeholders, preserved content, write scope and recov
 
 [Quality checks](docs/quality.en.md) lists the checks, their test sources and reproduction commands.
 
-## 2.2.3 highlights
+## 2.2.4 highlights
 
-- Keep folder review pages usable after applying proofreading, preserving manual edits and the selected file.
-- Show unresolved alignment failures and keep repair reads bound to the correct document.
+- Load the complete translation before applying proofreading, preserving manual edits and preventing blank lines in EPUB and other single-file exports.
+- Offer an explicit review/skip choice for optional translation warnings and continue automatically after review is selected.
 
 See the [Changelog](CHANGELOG.en.md) for full history.
 

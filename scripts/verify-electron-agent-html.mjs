@@ -161,9 +161,12 @@ try {
       "scripts/verify-electron-proposal-epub-main.ts",
       "proposal-epub-main.mjs"
     );
-    await runVerifier(proposalEpubMain, '"proposalEpub":true', 60_000, {
-      YN_ELECTRON_VERIFY_OFFSCREEN: "1"
-    });
+    for (const skipManualImport of ["0", "1"]) {
+      await runVerifier(proposalEpubMain, '"proposalEpub":true', 60_000, {
+        YN_ELECTRON_VERIFY_OFFSCREEN: "1",
+        YN_EPUB_SKIP_MANUAL_IMPORT: skipManualImport
+      });
+    }
   }
 
   if (!verifyOnly || verifyOnly === "folder") {

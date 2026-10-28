@@ -4,6 +4,11 @@
 
 Recorded version changes. Public availability and downloads follow [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases).
 
+## What's new in 2.2.4
+
+- Load the complete translation before applying proofreading, preserving manual edits and preventing blank lines in EPUB and other single-file exports.
+- Offer an explicit review/skip choice for optional translation warnings and continue automatically after review is selected.
+
 ## What's new in 2.2.3
 
 - Keep folder review pages usable after applying proofreading, preserving manual edits and the selected file.

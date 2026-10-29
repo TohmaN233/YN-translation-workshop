@@ -37,6 +37,7 @@
     "package:linux": "npm run build && cross-env ELECTRON_BUILDER_CACHE=.cache/electron-builder electron-builder --linux",
     "verify:release": "node scripts/verify-release-artifacts.mjs",
     "verify:packaged-launch": "node scripts/verify-packaged-launch.mjs",
+    "verify:packaged-folder-epub": "node --experimental-strip-types scripts/verify-packaged-folder-epub.mjs",
     "start": "electron ."
   },
   "keywords": [

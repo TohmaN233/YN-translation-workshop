@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createZipBuffer } from "../../src/main/zipWriter.ts";
 
 import {
   resolvePiReadablePath,
@@ -115,6 +116,42 @@ try {
   });
   assert.deepEqual(explicitFolderManifest.documents.map((document) => document.id), ["book.epub", "chapter/a.txt", "z.txt"]);
   assert.deepEqual(explicitFolderManifest.documents.map((document) => document.lineCount), [2, 2, 1]);
+
+  for (const outputSubdir of ["", "project-output"]) {
+    const selectedFolder = path.join(root, outputSubdir ? "nested-output" : "same-folder");
+    const projectFolder = path.join(selectedFolder, outputSubdir);
+    const mappedDocuments = [];
+    await mkdir(projectFolder, { recursive: true });
+    for (const name of ["alpha", "beta"]) {
+      const original = path.join(selectedFolder, `${name}.epub`);
+      await writeFile(original, createZipBuffer([
+        { path: "mimetype", data: Buffer.from("application/epub+zip"), store: true },
+        { path: "META-INF/container.xml", data: Buffer.from('<container><rootfiles><rootfile full-path="EPUB/package.opf"/></rootfiles></container>') },
+        { path: "EPUB/package.opf", data: Buffer.from('<package><manifest><item id="body" href="body.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="body"/></spine></package>') },
+        { path: "EPUB/body.xhtml", data: Buffer.from(`<html><body><p>Independent synthetic ${name} source.</p></body></html>`) }
+      ]));
+      const projected = path.join(projectFolder, ".translation-workshop", "extracted-text", name, "source", `${name}.txt`);
+      await mkdir(path.dirname(projected), { recursive: true });
+      await writeFile(projected, `Independent synthetic ${name} source.`, "utf8");
+      mappedDocuments.push({ id: `${name}.epub`, path: projected });
+    }
+    const folderRequest = {
+      outputDir: projectFolder, sourcePath: selectedFolder,
+      sourceSelection: { kind: "folder", path: selectedFolder },
+      folderSourceDocuments: mappedDocuments,
+      sessionId: "synthetic-nested-projections", providerId: "test", modelId: "test", prompt: "translate the selected books"
+    };
+    const projectedManifest = await resolvePiSourceManifest(folderRequest);
+    assert.deepEqual(projectedManifest.documents.map(document => document.id), ["alpha.epub", "beta.epub"],
+      "explicit EPUB projections remain selected when the project lives inside the source folder");
+    assert.deepEqual(projectedManifest.documents.map(document => document.path), mappedDocuments.map(document => document.path));
+    await writeFile(path.join(selectedFolder, "plain.txt"), "Independent direct source.", "utf8");
+    await mkdir(path.join(projectFolder, "AI_translation"), { recursive: true });
+    await writeFile(path.join(projectFolder, "AI_translation", "ignored.txt"), "Independent generated candidate.", "utf8");
+    const mixedManifest = await resolvePiSourceManifest(folderRequest);
+    assert.deepEqual(mixedManifest.documents.map(document => document.id), ["alpha.epub", "beta.epub", "plain.txt"],
+      "direct TXT and explicit EPUB projections coexist without rediscovering generated files");
+  }
 
   await writeFile(path.join(sourceRoot, "new.txt"), "new current source\n", "utf8");
   const refreshedManifest = await resolvePiSourceManifest({

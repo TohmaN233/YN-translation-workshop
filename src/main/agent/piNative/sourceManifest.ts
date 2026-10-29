@@ -231,8 +231,9 @@ async function explicitFolderDocuments(
     if (seen.has(comparableId)) throw new Error(`Duplicate folder source document id: ${id}.`);
     seen.add(comparableId);
     const filePath = path.resolve(entry.path);
-    if (isInsidePath(rootPath, filePath) && !preparedSelection) {
-      // Current files are rediscovered from the authoritative project folder below.
+    if (isInsidePath(rootPath, filePath) && !preparedSelection && !isInsidePath(extractedTextRoot, filePath)) {
+      // Rediscover ordinary source files below. The generated extraction root
+      // is excluded from discovery, so its explicit projections stay authoritative.
       continue;
     }
     if (!isInsidePath(extractedTextRoot, filePath) && !isInsidePath(rootPath, filePath)) {
@@ -320,7 +321,7 @@ export async function resolvePiSourceManifest(request: PiSessionPromptRequest): 
   for (const document of extractedDocuments) documentsById.set(document.id, document);
   const documents = [...documentsById.values()].sort((left, right) => left.id.localeCompare(right.id));
   const files = documents.map((document) => ({ id: document.id, path: document.path }));
-  if (files.length === 0) throw new Error(`No supported source files were found in ${rootPath}.`);
+  if (files.length === 0) throw new Error(`No supported source files were found in ${rootPath}. Host source discovery: ${discoveredFiles.length} direct files; ${extractedDocuments.length}/${request.folderSourceDocuments?.length ?? 0} mapped documents.`);
   const candidateOwners = new Map<string, string>();
   for (const file of files) {
     const parsed = path.posix.parse(file.id);

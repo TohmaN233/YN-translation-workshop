@@ -8,6 +8,7 @@ import type { EpubReplacementOptions } from "../shared/core/epubExport.ts";
 import { splitTextLines } from "../shared/validation/translationValidator.ts";
 import { extractedWorkshopTextPath, workshopDirFromOutput } from "./agent/translationBindingResolve.ts";
 import { readEpubText } from "./epubReader.ts";
+import { matchesEpubProjectionPath } from "./epubProjection.ts";
 import { readProjectJsonObject } from "./projectJson.ts";
 
 export interface ProposalSourceIdentity {
@@ -107,13 +108,21 @@ export async function resolveProposalSourceIdentity(
   if (!project || typeof originalPath !== "string" || !isEpubPath(originalPath)) {
     return { sourcePath, validationSourcePath: sourcePath };
   }
-  if (extractedWorkshopTextPath(workspace, originalPath, "source") !== sourcePath) {
+  const projectionText = await readFile(sourcePath, "utf8");
+  const projectionMode = project.inputMode === "bilingual" ? `bilingual:${projectPairPosition(project, "sourcePosition", 2)}:${projectPairPosition(project, "translationPosition", 1)}` : "separate";
+  if (!matchesEpubProjectionPath(sourcePath, extractedWorkshopTextPath(workspace, originalPath, "source"), projectionText, projectionMode)) {
     return { sourcePath, validationSourcePath: sourcePath };
   }
 
-  const originalText = await readEpubText(originalPath, workspace, `proposal-source-${randomUUID()}`);
+  let originalText = await readEpubText(originalPath, workspace, `proposal-source-${randomUUID()}`);
+  const projectionLines = splitTextLines(projectionText);
+  const sourceOf = (text: string) => project.inputMode === "bilingual" ? parseBilingualPairs(text, {
+    sourcePosition: projectPairPosition(project, "sourcePosition", 2), translationPosition: projectPairPosition(project, "translationPosition", 1)
+  }).sourceText : text;
+  if (JSON.stringify(splitTextLines(sourceOf(originalText))) !== JSON.stringify(projectionLines)) {
+    originalText = await readEpubText(originalPath, workspace, `proposal-source-legacy-${randomUUID()}`, "legacy-verification");
+  }
   const originalLines = splitTextLines(originalText);
-  const projectionLines = splitTextLines(await readFile(sourcePath, "utf8"));
 
   if (project.inputMode === "bilingual") {
     const sourcePosition = projectPairPosition(project, "sourcePosition", 2);

@@ -1,161 +1,79 @@
-import { epubDocumentPathsFromArchive, normalizeArchivePath, xhtmlToLines, type ArchiveFiles } from "./epubText.ts";
+import { epubDocumentPathsFromArchive, normalizeArchivePath, type ArchiveFiles } from "./epubText.ts";
+import { parseEpubDocument, replaceEpubUnits } from "./epubDocument.ts";
+import { legacyEpubLines, legacyEpubUnitIndexes } from "./epubLegacyProjection.ts";
+import { normalizeTranslatedEpubPresentation } from "./epubPresentation.ts";
 
 export interface TranslatedEpubTextFiles {
   files: ArchiveFiles;
   changedDocuments: number;
+  ignoredLegacyLines: number;
 }
 
 export interface EpubReplacementOptions {
   mode?: "all" | "pair-position";
   replacePosition?: number;
   pairSize?: number;
+  targetLanguage?: string;
 }
 
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function replaceVisibleTextPreservingMarkup(inner: string, replacement: string): string {
-  const tokens = inner.split(/(<[^>]+>)/g);
-  const visibleTokenIndexes: number[] = [];
-  const linkedVisibleTokenIndexes: number[] = [];
-  let anchorDepth = 0;
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (/^<a\b/i.test(token)) {
-      anchorDepth += 1;
-      continue;
-    }
-    if (/^<\/a\b/i.test(token)) {
-      anchorDepth = Math.max(0, anchorDepth - 1);
-      continue;
-    }
-    if (token.startsWith("<") || xhtmlToLines(token).length === 0) continue;
-    visibleTokenIndexes.push(index);
-    if (anchorDepth > 0) linkedVisibleTokenIndexes.push(index);
-  }
-
-  const replacementIndex = linkedVisibleTokenIndexes[0] ?? visibleTokenIndexes[0];
-  if (replacementIndex === undefined) return escapeXml(replacement);
-  for (const index of visibleTokenIndexes) {
-    tokens[index] = index === replacementIndex ? escapeXml(replacement) : "";
-  }
-  return tokens.join("");
-}
-
-function shouldReplaceLine(lineIndex: number, options: Required<EpubReplacementOptions>): boolean {
-  if (options.mode === "all") {
-    return true;
-  }
-  return (lineIndex % options.pairSize) + 1 === options.replacePosition;
-}
-
-function replacementForCurrentLine(
-  originalText: string,
-  translatedLines: string[],
-  options: Required<EpubReplacementOptions>,
-  counters: { lineIndex: number; replacementIndex: number }
-): string | undefined {
-  const currentLineIndex = counters.lineIndex;
-  counters.lineIndex += 1;
-  if (!shouldReplaceLine(currentLineIndex, options)) {
-    return undefined;
-  }
-  if (counters.replacementIndex >= translatedLines.length) {
-    return undefined;
-  }
-  const replacement = translatedLines[counters.replacementIndex] ?? "";
-  counters.replacementIndex += 1;
-  return replacement === originalText ? undefined : replacement;
-}
-
-function replaceInlineSpanLines(
-  inner: string,
-  translatedLines: string[],
-  options: Required<EpubReplacementOptions>,
-  counters: { lineIndex: number; replacementIndex: number }
-): { inner: string; changed: boolean; handledLines: number } {
-  let changed = false;
-  let handledLines = 0;
-  const nextInner = inner.replace(/<span\b([^>]*)>([\s\S]*?)<\/span>/gi, (match, attrs: string, spanInner: string) => {
-    const visibleLines = xhtmlToLines(spanInner);
-    handledLines += visibleLines.length;
-    if (visibleLines.length !== 1) {
-      counters.lineIndex += visibleLines.length;
-      return match;
-    }
-    const replacement = replacementForCurrentLine(visibleLines[0], translatedLines, options, counters);
-    if (replacement === undefined) {
-      return match;
-    }
-    changed = true;
-    return `<span${attrs}>${replaceVisibleTextPreservingMarkup(spanInner, replacement)}</span>`;
+export function buildTranslatedEpubTextFiles(files: ArchiveFiles, translatedLines: string[], replacementOptions: EpubReplacementOptions = {}, sourceLines?: string[]): TranslatedEpubTextFiles {
+  const normalizedFiles = Object.fromEntries(Object.entries(files).map(([filePath, content]) => [normalizeArchivePath(filePath), content]));
+  const documents = epubDocumentPathsFromArchive(normalizedFiles).map(documentPath => {
+    const xhtml = normalizedFiles[documentPath];
+    if (xhtml === undefined) throw new Error(`EPUB export failed: spine document missing (${documentPath}).`);
+    return { documentPath, xhtml, parsed: parseEpubDocument(xhtml) };
   });
-  return { inner: nextInner, changed, handledLines };
-}
-
-function replaceXhtmlLinesInPlace(
-  xhtml: string,
-  translatedLines: string[],
-  options: Required<EpubReplacementOptions>,
-  counters: { lineIndex: number; replacementIndex: number }
-): { xhtml: string; changed: boolean } {
-  let changed = false;
-  const nextXhtml = xhtml.replace(/<(h[1-6]|p|li|dt|dd|figcaption|blockquote)\b([^>]*)>([\s\S]*?)<\/\1>/gi, (match, tag: string, attrs: string, inner: string) => {
-    const visibleLines = xhtmlToLines(inner);
-    if (visibleLines.length !== 1) {
-      const inlineResult = replaceInlineSpanLines(inner, translatedLines, options, counters);
-      if (inlineResult.handledLines > 0) {
-        changed = changed || inlineResult.changed;
-        return `<${tag}${attrs}>${inlineResult.inner}</${tag}>`;
-      }
-      counters.lineIndex += visibleLines.length;
-      return match;
-    }
-
-    const replacement = replacementForCurrentLine(visibleLines[0], translatedLines, options, counters);
-    if (replacement === undefined) {
-      return match;
-    }
-    changed = true;
-    return `<${tag}${attrs}>${replaceVisibleTextPreservingMarkup(inner, replacement)}</${tag}>`;
-  });
-  return { xhtml: nextXhtml, changed };
-}
-
-export function buildTranslatedEpubTextFiles(files: ArchiveFiles, translatedLines: string[], replacementOptions: EpubReplacementOptions = {}): TranslatedEpubTextFiles {
-  const normalizedFiles = Object.fromEntries(
-    Object.entries(files).map(([filePath, content]) => [normalizeArchivePath(filePath), content])
-  );
-  const documentPaths = epubDocumentPathsFromArchive(normalizedFiles);
-  if (documentPaths.length === 0) {
-    throw new Error("EPUB export failed: no writable XHTML/HTML spine documents were found.");
+  const mode = replacementOptions.mode ?? "all";
+  const position = replacementOptions.replacePosition ?? 1, pairSize = replacementOptions.pairSize ?? 2;
+  if (mode !== "all" && mode !== "pair-position" || !Number.isInteger(position) || !Number.isInteger(pairSize) || pairSize < 1 || position < 1 || position > pairSize) {
+    throw new Error("EPUB export has invalid replacement positions.");
   }
-
-  const options: Required<EpubReplacementOptions> = {
-    mode: replacementOptions.mode ?? "all",
-    replacePosition: Math.max(1, Math.floor(replacementOptions.replacePosition ?? 1)),
-    pairSize: Math.max(1, Math.floor(replacementOptions.pairSize ?? 2))
-  };
+  if (!translatedLines.every(line => typeof line === "string" && !/[\r\n]/.test(line))) throw new Error("EPUB export requires one physical line per translation unit.");
+  const allUnits = documents.flatMap(document => document.parsed.units);
+  if (mode === "pair-position" && allUnits.length % pairSize !== 0) throw new Error("EPUB export requires complete source/translation pairs; no output was written.");
+  if (mode === "pair-position" && sourceLines) {
+    const expectedSource = allUnits.filter((_, index) => index % pairSize !== position - 1).map(unit => unit.text);
+    if (sourceLines.length !== expectedSource.length || sourceLines.some((line, index) => line !== expectedSource[index])) {
+      throw new Error("EPUB export source projection differs from the non-replaced paired source; no output was written.");
+    }
+  }
+  const selected = allUnits.filter((_, index) => mode === "all" || index % pairSize === position - 1);
+  const currentSource = mode === "all" ? allUnits.map(unit => unit.text) : undefined;
+  let targets = translatedLines;
+  let ignoredLegacyLines = 0;
+  if (sourceLines && mode === "all" && (sourceLines.length !== currentSource!.length || sourceLines.some((line, index) => line !== currentSource![index]))) {
+    const legacy = documents.map(document => legacyEpubLines(document.xhtml));
+    const legacySource = legacy.flat().map(line => line.text);
+    if (sourceLines.length !== legacySource.length || sourceLines.some((line, index) => line !== legacySource[index]) || translatedLines.length !== sourceLines.length) {
+      throw new Error("EPUB export source projection differs from both the current and verified legacy template; no output was written.");
+    }
+    let offset = 0;
+    targets = documents.flatMap((document, index) => {
+      const indexes = legacyEpubUnitIndexes(document.parsed, legacy[index]);
+      const mapped = indexes.map(group => group.map(at => translatedLines[offset + at]).join(" "));
+      ignoredLegacyLines += legacy[index].length - new Set(indexes.flat()).size;
+      offset += legacy[index].length;
+      return mapped;
+    });
+  }
+  if (targets.length !== selected.length || !selected.length) {
+    throw new Error(`EPUB export line count mismatch: expected ${selected.length} visible units, received ${targets.length}; no output was written.`);
+  }
   const nextFiles: ArchiveFiles = { ...normalizedFiles };
-  const counters = { lineIndex: 0, replacementIndex: 0 };
-  let changedDocuments = 0;
-
-  for (const documentPath of documentPaths) {
-    const result = replaceXhtmlLinesInPlace(normalizedFiles[documentPath] ?? "", translatedLines, options, counters);
-    nextFiles[documentPath] = result.xhtml;
-    if (result.changed) {
-      changedDocuments += 1;
-    }
+  let line = 0, target = 0, changedDocuments = 0;
+  for (const document of documents) {
+    const replacements = new Map<number, string>();
+    document.parsed.units.forEach((unit, index) => {
+      if (mode === "all" || line % pairSize === position - 1) {
+        const replacement = targets[target++];
+        if (replacement !== unit.text) replacements.set(index, replacement);
+      }
+      line++;
+    });
+    replaceEpubUnits(document.parsed, replacements);
+    nextFiles[document.documentPath] = replacements.size ? document.parsed.$.xml() : document.xhtml;
+    if (replacements.size) changedDocuments++;
   }
-
-  return {
-    files: nextFiles,
-    changedDocuments
-  };
+  const resultFiles = mode === "all" ? normalizeTranslatedEpubPresentation(nextFiles, replacementOptions.targetLanguage ?? "") : nextFiles;
+  return { files: resultFiles, changedDocuments, ignoredLegacyLines };
 }

@@ -373,7 +373,7 @@ declare global {
         written: Array<{ path: string; backupPath?: string; lineCount: number }>;
       }>;
       writeAuditWhitelistFile: (args: { outputDir?: string; documentId?: string; sourcePath?: string; lines?: number[]; lineReviewPath?: string; lineState?: unknown; changedLines?: number[] }) => Promise<{ ok: boolean; path: string; backupPath?: string; lineCount: number; lineReviewPath?: string; state?: Record<string, unknown>; changedLines?: number[] }>;
-      writeEpubFile: (args: { templatePath: string; lines: string[]; outputDir?: string; mode?: "all" | "pair-position"; replacePosition?: number; pairSize?: number }) => Promise<{ ok: boolean; path: string; changedDocuments: number }>;
+      writeEpubFile: (args: { templatePath: string; lines: string[]; sourceLines?: string[]; targetLanguage?: string; outputDir?: string; mode?: "all" | "pair-position"; replacePosition?: number; pairSize?: number }) => Promise<{ ok: boolean; path: string; changedDocuments: number }>;
       writePdfFile: (args: { templatePath: string; sourcePath: string; lines: string[]; outputDir: string }) => Promise<{ ok: boolean; path: string; pages: number;htmlPath:string }>;
       generateProposalReview: (args: unknown) => Promise<WorkshopProposalReviewResult>;
       buildPrompt: (args: WorkshopPromptBuildArgs) => Promise<string>;

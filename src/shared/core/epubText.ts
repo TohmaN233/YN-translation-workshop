@@ -1,4 +1,5 @@
 import path from "node:path";
+import { parseEpubDocument } from "./epubDocument.ts";
 
 export type ArchiveFiles = Record<string, string>;
 
@@ -25,43 +26,8 @@ function parseAttributes(tag: string): Record<string, string> {
   return attrs;
 }
 
-function decodeEntity(entity: string): string {
-  if (entity.startsWith("#x")) {
-    return String.fromCodePoint(Number.parseInt(entity.slice(2), 16));
-  }
-  if (entity.startsWith("#")) {
-    return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
-  }
-  const named: Record<string, string> = {
-    amp: "&",
-    lt: "<",
-    gt: ">",
-    quot: "\"",
-    apos: "'",
-    nbsp: " "
-  };
-  return named[entity] ?? `&${entity};`;
-}
-
-function decodeHtmlEntities(value: string): string {
-  return value.replace(/&([a-zA-Z]+|#x[\da-fA-F]+|#\d+);/g, (_match, entity: string) => decodeEntity(entity));
-}
-
 export function xhtmlToLines(xhtml: string): string[] {
-  return decodeHtmlEntities(
-    xhtml
-      .replace(/<script\b[\s\S]*?<\/script>/gi, "")
-      .replace(/<style\b[\s\S]*?<\/style>/gi, "")
-      .replace(/<head\b[\s\S]*?<\/head>/gi, "")
-      .replace(/<(rt|rp)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/(h[1-6]|p|div|li|tr|section|article|blockquote)>/gi, "\n")
-      .replace(/<[^>]+>/g, "")
-  )
-    .replace(/\u00a0/g, " ")
-    .split("\n")
-    .map((line) => line.trim().replace(/\s+/g, " "))
-    .filter(Boolean);
+  return parseEpubDocument(xhtml).units.map(unit => unit.text);
 }
 
 function opfRootPath(containerXml: string): string {
@@ -135,7 +101,8 @@ export function extractEpubTextFromArchive(files: ArchiveFiles): string {
   const documentPaths = epubDocumentPathsFromArchive(files);
   const lines = documentPaths.flatMap((documentPath) => {
     const xhtml = findArchiveFile(files, documentPath);
-    return xhtml ? xhtmlToLines(xhtml) : [];
+    if (xhtml === undefined) throw new Error(`EPUB parsing failed: spine document was not found (${documentPath}).`);
+    return xhtmlToLines(xhtml);
   });
   if (lines.length === 0) {
     throw new Error("EPUB parsing failed: no readable XHTML/HTML text was found.");

@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { load } from "cheerio";
 
 import { buildTranslatedEpubTextFiles } from "../../src/shared/core/epubExport.ts";
 
@@ -32,7 +33,7 @@ await test("EPUB translation preserves title-page jump anchors and fragment targ
   assert.match(translated, /id="start-link"/);
   assert.match(translated, /class="title-jump"/);
   assert.match(translated, /href="chapter-01\.xhtml#chapter-start"/);
-  assert.match(translated, /<a[^>]*><span>第一章（译）<\/span><\/a>/);
+  assert.equal(load(translated, { xml: true })("a.title-jump span").text(), "第一章（译）");
   assert.doesNotMatch(translated, /<p id="start-link">第一章（译）<\/p>/);
 });
 

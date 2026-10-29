@@ -7,7 +7,8 @@ YN supports all-AI translation and proofreading, fully manual translation and ed
 - Create, load, save, and switch isolated projects. Settings, workflow state, assets, and sessions live under each project's `.translation-workshop/` directory.
 - The recent-project pointer follows the project actually opened or saved.
 - Supports TXT files, folders, EPUB, text-layer PDF, and adjacent-line bilingual TXT / EPUB.
-- EPUB becomes UTF-8 working text; ruby extraction keeps base text only, while the original EPUB remains export and repack metadata.
+- EPUB extraction follows body paragraphs and explicit line breaks, excluding comments, scripts, styles and ruby readings. Export uses the same mapping to write translations back into the book structure, preserving images and navigation links.
+- Monolingual EPUB exports use horizontal layout, language metadata and reading direction for the target language. Export removes Japanese ruby, vertical-only markup and Kobo reader scripts, and adds Chinese paragraph indentation. Repeated exports create new copies, preserving manual changes in existing files.
 - Separate-file mode binds source and translation independently. Bilingual mode assigns the first or second adjacent position to each language.
 - Folder mode matches source and translation documents and maintains one authoritative batch index.
 - Ordered folder stages support barriers. `A, {B, C}, D` completes A, runs B/C in parallel, then starts D.

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { extractEpubTextFromArchive } from "../shared/core/epubText.ts";
+import { extractLegacyEpubTextForVerification } from "../shared/core/epubLegacyProjection.ts";
 
 async function collectExtractedTextFiles(folderPath: string, rootPath = folderPath): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
@@ -22,7 +23,7 @@ async function collectExtractedTextFiles(folderPath: string, rootPath = folderPa
   return files;
 }
 
-export async function readEpubText(epubPath: string, workspaceDir: string, cacheId: string): Promise<string> {
+export async function readEpubText(epubPath: string, workspaceDir: string, cacheId: string, projection: "current" | "legacy-verification" = "current"): Promise<string> {
   const cacheRoot = path.resolve(workspaceDir, "cache", "epub");
   await mkdir(cacheRoot, { recursive: true });
   const cacheDir = await mkdtemp(path.join(cacheRoot, `${cacheId.replace(/[^a-z0-9._-]+/gi, "_")}-`));
@@ -31,7 +32,7 @@ export async function readEpubText(epubPath: string, workspaceDir: string, cache
   try {
     await extractZip(epubPath, { dir: cacheDir });
     const files = await collectExtractedTextFiles(cacheDir);
-    return extractEpubTextFromArchive(files);
+    return projection === "legacy-verification" ? extractLegacyEpubTextForVerification(files) : extractEpubTextFromArchive(files);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     readFailure = new Error(`EPUB parsing failed for ${path.basename(epubPath)}: ${message}`, { cause: error });

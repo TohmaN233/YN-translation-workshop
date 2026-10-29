@@ -1,5 +1,5 @@
 import extractZip from "extract-zip";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { buildTranslatedEpubTextFiles, type EpubReplacementOptions } from "../shared/core/epubExport.ts";
@@ -13,6 +13,7 @@ interface ArchiveBufferFile {
 export interface CreateTranslatedEpubOptions {
   templatePath: string;
   translatedLines: string[];
+  sourceLines?: string[];
   workspaceDir: string;
   outputDir?: string;
   replacement?: EpubReplacementOptions;
@@ -48,7 +49,7 @@ async function collectExtractedFiles(folderPath: string, rootPath = folderPath):
 function textArchiveFiles(files: ArchiveBufferFile[]): Record<string, string> {
   return Object.fromEntries(
     files
-      .filter((file) => /\.(xml|opf|xhtml|html?)$/i.test(file.path))
+      .filter((file) => /\.(xml|opf|ncx|xhtml|html?|css|js)$/i.test(file.path))
       .map((file) => [file.path, file.data.toString("utf8")])
   );
 }
@@ -65,20 +66,30 @@ export async function createTranslatedEpub(options: CreateTranslatedEpubOptions)
   if (!options.templatePath.toLowerCase().endsWith(".epub")) {
     throw new Error("EPUB export requires an .epub template path.");
   }
-  const cacheDir = path.join(options.workspaceDir, "cache", "epub-export", safeCacheName(`${Date.now()}-${path.basename(options.templatePath)}`));
-  await mkdir(cacheDir, { recursive: true });
+  const cacheRoot = path.resolve(options.workspaceDir, "cache", "epub-export");
+  await mkdir(cacheRoot, { recursive: true });
+  const cacheDir = await mkdtemp(path.join(cacheRoot, safeCacheName(path.basename(options.templatePath)) + "-"));
   try {
     await extractZip(options.templatePath, { dir: cacheDir });
     const files = await collectExtractedFiles(cacheDir);
-    const translatedTextFiles = buildTranslatedEpubTextFiles(textArchiveFiles(files), options.translatedLines, options.replacement);
+    const translatedTextFiles = buildTranslatedEpubTextFiles(textArchiveFiles(files), options.translatedLines, options.replacement, options.sourceLines);
     const nextFiles = orderForEpub(files.map((file) => ({
       ...file,
       data: translatedTextFiles.files[file.path] === undefined ? file.data : Buffer.from(translatedTextFiles.files[file.path], "utf8")
     })));
     const zip = createZipBuffer(nextFiles.map((file) => ({ path: file.path, data: file.data, store: file.path === "mimetype" })));
-    const outputPath = translatedEpubPath(options.templatePath, options.outputDir || path.dirname(options.templatePath));
-    await mkdir(path.dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, zip);
+    const basePath = translatedEpubPath(options.templatePath, options.outputDir || path.dirname(options.templatePath));
+    await mkdir(path.dirname(basePath), { recursive: true });
+    let outputPath = basePath;
+    for (let copy = 2; ; copy++) {
+      try { await writeFile(outputPath, zip, { flag: "wx" }); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        outputPath = basePath.replace(/\.epub$/i, `.${copy}.epub`);
+      }
+    }
+    console.info("[epub-export]", JSON.stringify({ template: path.basename(options.templatePath), translatedLines: options.translatedLines.length,
+      changedDocuments: translatedTextFiles.changedDocuments, ignoredLegacyLines: translatedTextFiles.ignoredLegacyLines, output: path.basename(outputPath) }));
     return { outputPath, changedDocuments: translatedTextFiles.changedDocuments };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

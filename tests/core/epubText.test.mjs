@@ -9,3 +9,7 @@ assert.deepEqual(
 );
 
 console.log("ok EPUB extraction removes ruby readings while retaining base text");
+assert.deepEqual(xhtmlToLines('<p>A&nbsp;B &amp; C &amp;nbsp; &#x4e2d;</p>'), ['A B & C &nbsp; 中']);
+console.log('ok XHTML named and escaped entities decode once');
+assert.deepEqual(xhtmlToLines('<body><header>Heading</header><main>Body</main><footer>Footer</footer></body>'), ['Heading','Body','Footer']);
+console.log('ok semantic block containers delimit separate text units');

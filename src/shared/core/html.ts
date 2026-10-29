@@ -1140,7 +1140,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 62;
+export const LINE_REVIEW_PROTOCOL_VERSION = 63;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 20;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
@@ -3660,7 +3660,9 @@ async function writeCurrentEpubCopy() {
     return;
   }
   try {
-    const result = await bridge.writeEpubFile({ templatePath, lines: currentTargetLines(), outputDir: workflow.paths?.outputDir, ...(workflow.epubExport || {}) });
+    const targetLanguage = (promptSettingsValue().languagePair || "").split(/\s*(?:->|→|=>|>|—)\s*/)[1]?.trim() || "";
+    const result = await bridge.writeEpubFile({ templatePath, lines: currentTargetLines(), sourceLines: data.rows.map(row => row.source),
+      outputDir: workflow.paths?.outputDir, ...(workflow.epubExport || {}), targetLanguage });
     state.savedEpubFile = result?.path || "";
     state.savedEpubAt = new Date().toISOString();
     save([], ["savedEpubFile", "savedEpubAt"]);

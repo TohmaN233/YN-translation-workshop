@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import extractZip from "extract-zip";
+import { load } from "cheerio";
 
 import { extractedWorkshopTextPath, workshopDirFromOutput } from "../src/main/agent/translationBindingResolve.ts";
 import { resolveTranslationCandidatePath } from "../src/main/agent/writeTranslationChunk.ts";
@@ -100,15 +102,17 @@ async function readPayload(filePath: string, scriptId: "reviewData" | "batchData
 }
 
 async function writeSyntheticEpub(document: typeof documents[number]): Promise<Buffer> {
-  const chapter = '<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Synthetic chapter</title></head><body>'
-    + document.sourceLines.map((line) => "<p>" + line + "</p>").join("")
-    + "</body></html>";
+  const chapter = '<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" class="vrtl" xml:lang="ja"><head><title>Synthetic chapter</title><style>body { writing-mode: vertical-rl; } p { text-indent: 0; } .tcy { text-combine-upright: all; }</style></head><body>'
+    + '<!--\n<p>Synthetic invisible notice</p>\nComment separator\n-->\n'
+    + document.sourceLines.map((line) => '<p><span class="koboSpan"><span class="tcy"><ruby>' + line + '<rt>synthetic reading</rt></ruby></span></span><span class="koboSpan"></span></p>').join("")
+    + '<script src="kobo0001.js"></script></body></html>';
   const opf = '<?xml version="1.0" encoding="UTF-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="fixture-id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="fixture-id">synthetic-folder-fixture</dc:identifier><dc:title>Synthetic folder fixture</dc:title><dc:language>en</dc:language></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>';
   const archive = createZipBuffer([
     { path: "mimetype", data: Buffer.from("application/epub+zip", "utf8"), store: true },
     { path: "META-INF/container.xml", data: Buffer.from('<?xml version="1.0" encoding="UTF-8"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>', "utf8") },
     { path: "EPUB/package.opf", data: Buffer.from(opf, "utf8") },
-    { path: "EPUB/chapter.xhtml", data: Buffer.from(chapter, "utf8") }
+    { path: "EPUB/chapter.xhtml", data: Buffer.from(chapter, "utf8") },
+    { path: "EPUB/kobo0001.js", data: Buffer.from('document.querySelector("#book-columns").remove();', "utf8") }
   ]);
   await mkdir(path.dirname(document.sourcePath), { recursive: true });
   await writeFile(document.sourcePath, archive);
@@ -117,6 +121,13 @@ async function writeSyntheticEpub(document: typeof documents[number]): Promise<B
 
 for (const document of documents) {
   (document as typeof document & { originalBytes?: Buffer }).originalBytes = await writeSyntheticEpub(document);
+  if (artifactImportFixture) {
+    const legacyText = await readEpubText(document.sourcePath, workspaceDir, "legacy-projection", "legacy-verification");
+    const oldProjection = extractedWorkshopTextPath(workspaceDir, document.sourcePath, "source");
+    await mkdir(path.dirname(oldProjection), { recursive: true });
+    await writeFile(oldProjection, legacyText);
+    (document as typeof document & { legacyProjectionText?: string }).legacyProjectionText = legacyText;
+  }
 }
 
 app.setAppPath(root);
@@ -172,6 +183,14 @@ async function run(): Promise<void> {
     "Folder EPUBs did not retain distinct document IDs");
 
   for (const routed of routedDocuments) {
+    if (artifactImportFixture) {
+      const payload = await readPayload(routed.childPath, "reviewData");
+      const oldProjection = routed.projectionPath;
+      routed.projectionPath = path.resolve(payload.workflow.paths.validationSourcePath);
+      assert(routed.projectionPath !== oldProjection, "Changed EPUB extraction overwrote the old projection binding");
+      assert(await readFile(oldProjection, "utf8") === (routed.document as typeof routed.document & { legacyProjectionText?: string }).legacyProjectionText,
+        "New HTML generation changed an older EPUB source projection");
+    }
     const projectionLines = splitTextLines(await readFile(routed.projectionPath, "utf8"));
     if (JSON.stringify(projectionLines) !== JSON.stringify(routed.document.sourceLines)) {
       const evidence = {
@@ -435,13 +454,20 @@ async function run(): Promise<void> {
       await readChild<boolean>('document.querySelector("#exportEpub").click(); true');
       const exportPath = await waitFor(
         () => readChild<string>("state.savedEpubFile || \"\"").catch(() => ""),
-        (value) => value.toLowerCase().endsWith(".translated.epub"),
+        (value) => /\.translated(?:\.\d+)?\.epub$/i.test(value),
         "actual EPUB export after candidate import for " + routed.documentId
       );
       const exportedLines = splitTextLines(await readEpubText(exportPath, workspaceDir,
         "synthetic-artifact-import-" + routed.documentId.replace(/[^a-z0-9]+/gi, "-")));
       assert(JSON.stringify(exportedLines) === JSON.stringify(routed.document.translationLines),
         "EPUB export did not use the matching imported candidate lines: " + routed.documentId);
+      const extractedExport = await mkdtemp(path.join(workspaceDir, "export-check-"));
+      await extractZip(exportPath, { dir: extractedExport });
+      const exportedXhtml = load(await readFile(path.join(extractedExport, "EPUB/chapter.xhtml"), "utf8"), { xml: true });
+      assert(exportedXhtml("ruby,rt,rp,.koboSpan,.tcy,script[src*=kobo]").length === 0,
+        "Actual EPUB export retained Japanese/Kobo layout wrappers");
+      assert(exportedXhtml("html").attr("class") === "hltr" && exportedXhtml("html").attr("xml:lang") === "zh-CN",
+        "Actual EPUB export did not synchronize horizontal layout and configured target language");
       assert(JSON.stringify(await readFile(routed.sourcePath)) === JSON.stringify((routed.document as typeof routed.document & { originalBytes?: Buffer }).originalBytes),
         "Artifact import/export modified the matching original EPUB: " + routed.documentId);
       console.log("[proposal-epub-folder-artifact-import] stage=imported-and-exported-" + documentIndex);

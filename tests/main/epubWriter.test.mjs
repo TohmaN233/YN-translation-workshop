@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import extractZip from "extract-zip";
+import { load } from "cheerio";
 
 import { createTranslatedEpub } from "../../src/main/epubWriter.ts";
 import { createZipBuffer } from "../../src/main/zipWriter.ts";
@@ -35,7 +36,8 @@ await test("exported EPUB keeps title navigation links clickable", async () => {
       { path: "META-INF/container.xml", data: Buffer.from('<?xml version="1.0"?><container><rootfiles><rootfile full-path="EPUB/package.opf"/></rootfiles></container>') },
       { path: "EPUB/package.opf", data: Buffer.from('<?xml version="1.0"?><package><manifest><item id="toc" href="toc.xhtml" media-type="application/xhtml+xml"/><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="toc"/><itemref idref="chapter"/></spine></package>') },
       { path: "EPUB/toc.xhtml", data: Buffer.from('<html xmlns="http://www.w3.org/1999/xhtml"><body><p>　　　　<a href="chapter.xhtml#chapter-start">第一章</a></p></body></html>') },
-      { path: "EPUB/chapter.xhtml", data: Buffer.from('<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="chapter-start">第一章</h1></body></html>') }
+      { path: "EPUB/chapter.xhtml", data: Buffer.from('<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="chapter-start"><span class="koboSpan" id="ncx-target">第一章</span></h1></body></html>') },
+      { path: "EPUB/toc.ncx", data: Buffer.from('<ncx><navMap><navPoint id="point"><navLabel><text>Independent navigation label</text></navLabel><content src="chapter.xhtml#ncx-target"/></navPoint></navMap></ncx>') }
     ]);
     await writeFile(templatePath, zip);
 
@@ -50,9 +52,16 @@ await test("exported EPUB keeps title navigation links clickable", async () => {
     const chapter = await readFile(path.join(extractedDir, "EPUB", "chapter.xhtml"), "utf8");
 
     assert.match(toc, /href="chapter\.xhtml#chapter-start"/);
-    assert.match(toc, /<a[^>]*>第一章（译）<\/a>/);
+    assert.equal(load(toc, { xml: true })("a").text(), "第一章（译）");
     assert.match(chapter, /id="chapter-start"/);
-    assert.match(chapter, />第一章（正文）<\/h1>/);
+    assert.equal(load(chapter, { xml: true })("h1#chapter-start").text(), "第一章（正文）");
+    assert.equal(load(chapter, { xml: true })("#ncx-target").length, 1, "NCX-only referenced location survives export");
+    const manuallyEdited = Buffer.from('Manually customized export must survive the next export.');
+    await writeFile(result.outputPath, manuallyEdited);
+    const next = await createTranslatedEpub({ templatePath, translatedLines: ["更新目录", "更新正文"], workspaceDir: path.join(root, "workspace"), outputDir });
+    assert.notEqual(next.outputPath, result.outputPath);
+    assert.deepEqual(await readFile(result.outputPath), manuallyEdited);
+    await assert.rejects(createTranslatedEpub({ templatePath, translatedLines: ["missing paragraph"], workspaceDir: path.join(root, "workspace"), outputDir }), /line count mismatch/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

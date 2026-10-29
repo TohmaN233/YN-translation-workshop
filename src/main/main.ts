@@ -73,6 +73,7 @@ import { writeTextFileAtomically, writeTextFilesAtomically } from "./atomicFile.
 import { withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
 import { readEpubText } from "./epubReader.ts";
 import { createTranslatedEpub } from "./epubWriter.ts";
+import { writeEpubProjection } from "./epubProjection.ts";
 import { preparePdfDocument, createTranslatedPdf, configurePdfResourceDirectory, readPdfReferenceImage, assertPdfProtectedWrite, readPdfProtectedLines, isPdfSourceProjection } from "./pdfDocuments.ts";
 import {configurePdfStructurePreparation,withPdfPreparationContext,currentPdfPreparationContext} from './pdfStructurePreparation.ts';
 import { collectSourceTreeFiles } from "./sourceFileTree.ts";
@@ -208,6 +209,8 @@ interface WriteAuditWhitelistFileArgs {
 interface WriteEpubFileArgs {
   templatePath?: string;
   lines?: string[];
+  sourceLines?: string[];
+  targetLanguage?: string;
   outputDir?: string;
   mode?: "all" | "pair-position";
   replacePosition?: number;
@@ -2594,9 +2597,11 @@ async function writeExtractedPromptText(
   workspaceDir: string,
   filePath: string,
   role: "source" | "translation",
-  text: string
+  text: string,
+  mode = "separate"
 ): Promise<string> {
   const extractedPath = extractedWorkshopTextPath(workspaceDir, filePath, role);
+  if (/\.epub$/i.test(filePath)) return writeEpubProjection(extractedPath, text, mode);
   await mkdir(path.dirname(extractedPath), { recursive: true });
   await writeFile(extractedPath, text, "utf8");
   return extractedPath;
@@ -2697,8 +2702,8 @@ async function parseBilingualDocument(
     return { ...parsed, kind };
   }
   const [sourcePromptPath, translationPromptPath] = await Promise.all([
-    writeExtractedPromptText(workspaceDir, filePath, "source", parsed.sourceText),
-    writeExtractedPromptText(workspaceDir, filePath, "translation", parsed.translationText)
+    writeExtractedPromptText(workspaceDir, filePath, "source", parsed.sourceText, `bilingual:${sourcePosition}:${translationPosition}`),
+    writeExtractedPromptText(workspaceDir, filePath, "translation", parsed.translationText, `bilingual:${sourcePosition}:${translationPosition}`)
   ]);
   return { ...parsed, kind, sourcePromptPath, translationPromptPath };
 }
@@ -3844,6 +3849,10 @@ async function generateLineReview(args: GenerateLineHtmlArgs, onPdfProgress?: (s
   const translationDocument = args.translationPath
     ? await readTranslationDocumentForWorkflow(args.translationPath, workspaceDir)
     : undefined;
+  if (sourceDocument.kind === "epub" && translationDocument
+    && splitLines(sourceDocument.text).length !== splitLines(translationDocument.text).length) {
+    throw new Error("EPUB source and translation projections have different line counts. Open the existing review for an older translation; no project text was overwritten.");
+  }
   const editableSnapshotPath = !args.translationPath && sourceDocument.kind !== "txt"
     ? await writeExtractedPromptText(
       workspaceDir,
@@ -4881,12 +4890,14 @@ ipcMain.handle("files:writeEpubFile", async (_event, args: WriteEpubFileArgs) =>
   const result = await createTranslatedEpub({
     templatePath,
     translatedLines: args.lines ?? [],
+    sourceLines: args.sourceLines,
     workspaceDir,
     outputDir: outputRoot,
     replacement: {
       mode: args.mode,
       replacePosition: args.replacePosition,
-      pairSize: args.pairSize
+      pairSize: args.pairSize,
+      targetLanguage: args.targetLanguage
     }
   });
   return { ok: true, path: result.outputPath, changedDocuments: result.changedDocuments };

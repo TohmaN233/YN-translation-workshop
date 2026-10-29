@@ -16,6 +16,7 @@ import { extractedWorkshopTextPath, resolveUserFolderTranslationPath, workshopDi
 import { resolveTranslationCandidatePath, withTranslationCandidateLock } from "./agent/writeTranslationChunk.ts";
 import { writeTextFileAtomically } from "./atomicFile.ts";
 import { readEpubText } from "./epubReader.ts";
+import { writeEpubProjection } from "./epubProjection.ts";
 import { preparePdfDocument, readPdfLayout } from "./pdfDocuments.ts";
 import { RequiredWorkflowFileError } from "./agent/requiredWorkflowFile.ts";
 import { NonRetryableAssignmentError } from "./agent/piNative/assignmentFailure.ts";
@@ -30,6 +31,7 @@ export interface BuiltinTaskDocument {
   initialTranslationText?: string;
   inputTranslationPath?: string;
   projection?: PiFolderSourceDocument["projection"];
+  previousEpubSourceChanged?: boolean;
 }
 export interface BuiltinTaskDocuments {
   documents: BuiltinTaskDocument[];
@@ -135,8 +137,9 @@ export async function prepareBuiltinTaskDocuments(settings: BuiltinTaskSettings,
     const pdfDocument = /\.pdf$/i.test(input.path) ? await preparePdfDocument(input.path, workspace, { signal }) : undefined;
     if (pdfDocument && pdfDocument.originalHash !== hash(originalBytes)) throw new Error(`PDF changed while preparing ${input.id}.`);
     const text = pdfDocument?.text ?? await documentText(input.path, workspace, originalBytes);
-    const bilingual = settings.inputMode === "bilingual" ? parseBilingualPairs(text, settings) : undefined;
-    const sourceText = bilingual?.sourceText ?? text;
+    let bilingual = settings.inputMode === "bilingual" ? parseBilingualPairs(text, settings) : undefined;
+    let sourceText = bilingual?.sourceText ?? text;
+    let previousEpubSourceChanged = false;
     if (!splitTextLines(sourceText).length) throw new Error(`Source document is empty: ${input.id}.`);
     let sourcePath = input.path;
     let projection: PiFolderSourceDocument["projection"];
@@ -152,12 +155,25 @@ export async function prepareBuiltinTaskDocuments(settings: BuiltinTaskSettings,
       if (previous) {
         // The existing review is the authoritative binding for a legacy preparation.
         // Check both source content and the copied projection before reusing it.
+        if (/\.epub$/i.test(input.path) && JSON.stringify(previous.rows) !== JSON.stringify(splitTextLines(sourceText))) {
+          const legacy = await readEpubText(input.path, workspace, hash(originalBytes), "legacy-verification");
+          const legacyBilingual = settings.inputMode === "bilingual" ? parseBilingualPairs(legacy, settings) : undefined;
+          const legacySource = legacyBilingual?.sourceText ?? legacy;
+          if (JSON.stringify(previous.rows) === JSON.stringify(splitTextLines(legacySource))) { sourceText = legacySource; bilingual = legacyBilingual; }
+        }
         if (JSON.stringify(previous.rows) !== JSON.stringify(splitTextLines(sourceText)) || hash(await readFile(previous.path)) !== hash(sourceText)) throw new Error(`Built-in source projection changed: ${input.id}. Start a new task before reusing this preparation.`);
         sourcePath = previous.path;
       } else {
         sourcePath = path.join(path.dirname(extractedWorkshopTextPath(workspace, input.path, "source")), `${path.parse(input.path).name}.txt`);
-        await mkdir(path.dirname(sourcePath), { recursive: true });
-        await writeTextFileAtomically(sourcePath, sourceText);
+        const previousSource = await optionalText(sourcePath);
+        const legacySource = /\.epub$/i.test(input.path) ? await optionalText(extractedWorkshopTextPath(workspace, input.path, "source")) : undefined;
+        previousEpubSourceChanged = /\.epub$/i.test(input.path) && [previousSource, legacySource].some(value => value !== undefined && value !== sourceText);
+        if (/\.epub$/i.test(input.path)) {
+          sourcePath = await writeEpubProjection(sourcePath, sourceText, settings.inputMode === "bilingual" ? `bilingual:${settings.sourcePosition}:${settings.translationPosition}` : "separate");
+        } else {
+          await mkdir(path.dirname(sourcePath), { recursive: true });
+          await writeTextFileAtomically(sourcePath, sourceText);
+        }
       }
       projection = { kind: bilingual ? "bilingual-pairs" : "epub-text", originalHash: hash(originalBytes), projectionHash: hash(sourceText) };
     } else if (settings.sourceKind === "folder") {
@@ -175,7 +191,7 @@ export async function prepareBuiltinTaskDocuments(settings: BuiltinTaskSettings,
       }
     }
     const translationPath = resolveTranslationCandidatePath({ outputDir: settings.outputDir, sourcePaths: [sourcePath], documentId: input.id });
-    documents.push({ id: input.id, originalPath: input.path, sourcePath, sourceText, translationPath, initialTranslationText: translationText, inputTranslationPath, projection });
+    documents.push({ id: input.id, originalPath: input.path, sourcePath, sourceText, translationPath, initialTranslationText: translationText, inputTranslationPath, projection, previousEpubSourceChanged });
   }
   const candidateOwners = new Set<string>();
   for (const document of documents) {
@@ -210,16 +226,25 @@ export async function generateBuiltinTaskReview(settings: BuiltinTaskSettings, i
     const translationText = await withTranslationCandidateLock(document.translationPath, async () => {
       const existing = await optionalText(document.translationPath);
       const initial = document.initialTranslationText ?? "";
+      const isEpubDocument = /\.epub$/i.test(document.originalPath);
       const receiptDir = path.join(workspace, "agent", "builtin-targets");
       const receiptPath = path.join(receiptDir, `${hash(projectRelativePath(settings.outputDir, document.translationPath) ?? document.translationPath)}.json`);
-      const receipt = initial ? JSON.stringify({ ...encodeProjectPaths({ schemaVersion: 1, sourcePath: path.resolve(document.originalPath),
-        inputTranslationPath: path.resolve(document.inputTranslationPath!), inputTranslationHash: hash(initial) }, settings.outputDir), projectPathsVersion: 1 }) : undefined;
+      const savedReceipt = isEpubDocument || initial ? await optionalText(receiptPath) : undefined;
+      const priorReceipt = savedReceipt ? decodeProjectPaths(JSON.parse(savedReceipt), settings.outputDir) : {};
+      const sourceBindingMatches = priorReceipt.sourceProjectionHash === hash(document.sourceText)
+        && typeof priorReceipt.sourcePath === "string" && path.relative(path.resolve(priorReceipt.sourcePath), path.resolve(document.originalPath)) === "";
+      const knownSourceMismatch = typeof priorReceipt.sourceProjectionHash === "string" && !sourceBindingMatches;
+      const receipt = JSON.stringify({ ...encodeProjectPaths({ ...priorReceipt, schemaVersion: 1, sourcePath: path.resolve(document.originalPath),
+        sourceProjectionHash: hash(document.sourceText), ...(initial ? { inputTranslationPath: path.resolve(document.inputTranslationPath!), inputTranslationHash: hash(initial) } : {}) }, settings.outputDir), projectPathsVersion: 1 });
       if (existing !== undefined) {
+        if (isEpubDocument && existing.trim() && ((!initial && (knownSourceMismatch || document.previousEpubSourceChanged && !sourceBindingMatches)) || splitTextLines(existing).length !== splitTextLines(document.sourceText).length)) {
+          throw new Error(`Existing EPUB translation belongs to a different source projection: ${document.id}. Open its existing review or use a separate project; no translation was overwritten.`);
+        }
         if (initial && initial !== existing && await optionalText(receiptPath) !== receipt
           && !await matchesInitialReceipt(settings.outputDir, receiptDir, document, receipt!)) {
           throw new Error(`Selected translation conflicts with the existing canonical target for ${document.id}: ${document.translationPath}. Select that canonical TXT or use another project before proofreading.`);
         }
-        if (receipt) { await mkdir(path.dirname(receiptPath), { recursive: true }); await writeTextFileAtomically(receiptPath, receipt); }
+        if (initial || isEpubDocument) { await mkdir(path.dirname(receiptPath), { recursive: true }); await writeTextFileAtomically(receiptPath, receipt); }
         return existing;
       }
       if (intent === "proofread" && !initial.trim()) throw new Error(`Proofreading requires an existing translation for ${document.id}.`);
@@ -230,6 +255,7 @@ export async function generateBuiltinTaskReview(settings: BuiltinTaskSettings, i
         await mkdir(path.dirname(receiptPath), { recursive: true });
         await writeTextFileAtomically(receiptPath, receipt!);
       }
+      if (!initial && isEpubDocument) { await mkdir(receiptDir, { recursive: true }); await writeTextFileAtomically(receiptPath, receipt); }
       return initial;
     });
     if (intent === "proofread" && (!translationText.trim() || splitTextLines(translationText).length !== splitTextLines(document.sourceText).length)) {

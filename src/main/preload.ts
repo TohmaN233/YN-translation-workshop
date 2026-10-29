@@ -1,6 +1,7 @@
 import type { CustomPreserveRule } from "../shared/validation/customPreserveRules.ts";
 import { contextBridge, ipcRenderer } from "electron";
 import type { HtmlPreparationProgress, StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
+import type { PiFolderSourceDocument } from "../shared/agent/piSessionContract.ts";
 
 const agentArtifactApi = {
   cancelAgentArtifact: (requestId?: string) => ipcRenderer.invoke("agent-artifacts:cancel", { requestId }),
@@ -9,7 +10,7 @@ const agentArtifactApi = {
     ipcRenderer.on("agent-artifacts:progress", listener);
     return () => ipcRenderer.removeListener("agent-artifacts:progress", listener);
   },
-  discoverAgentArtifacts: (args: { projectDir: string; sourcePaths?: string[] }) =>
+  discoverAgentArtifacts: (args: { projectDir: string; sourcePaths?: string[]; sourceDocuments?: PiFolderSourceDocument[] }) =>
     ipcRenderer.invoke("agent-artifacts:discover", args),
   validateAgentArtifact: (args: { projectDir: string; sourcePath: string; candidatePath: string; locale?: "zh-CN" | "en-US"; languagePair?: string; glossaryPath?: string; customPreserveRules?: CustomPreserveRule[]; requestId?: string; compact?: boolean }) =>
     ipcRenderer.invoke("agent-artifacts:validate", args),

@@ -1140,7 +1140,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 61;
+export const LINE_REVIEW_PROTOCOL_VERSION = 62;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 20;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
@@ -2988,10 +2988,9 @@ invokeBridge()?.onLanSyncPatch?.(applyRemoteLanSyncPatch);
 invokeBridge()?.onLanSyncCommand?.(applyRemoteLanSyncCommand);
 
 // --- Agent translation artifacts: discovery + line-aligned import draft ----
-// Per RFC 5.4: agent initial-translation writes a candidate TXT under
-// AI_translation/. The host discovers it, runs the deterministic validator,
-// and lets the user import it as a DRAFT (line-review localStorage edits only).
-// Import never overwrites the bound translation TXT. On blocking errors the
+// The Host matches AI_translation candidates by document identity, validates
+// their UTF-8 source projections, and atomically imports the review draft.
+// Import never overwrites the candidate TXT. On blocking errors the
 // import button is replaced by a repair entry point.
 const agentArtifactsPanel = document.getElementById("agentArtifactsPanel");
 const agentArtifactsList = document.getElementById("agentArtifactsList");
@@ -3096,7 +3095,13 @@ async function discoverAgentArtifacts() {
   artifactValidations.clear();
   try {
     const sourcePath = workflow.paths?.validationSourcePath || workflow.paths?.sourcePath || "";
-    const artifacts = await bridge.discoverAgentArtifacts({ projectDir, sourcePaths: sourcePath ? [sourcePath] : [] });
+    const documents = workflow.advanced?.folderSourceDocuments;
+    const physicalSource = workflow.paths?.sourcePath || sourcePath;
+    const sourceDocuments = Array.isArray(documents) && documents.length
+      ? documents.map(item => ({ id: item.id, path: item.path }))
+      : sourcePath ? [{ id: physicalSource.replace(/\\/g, "/").split("/").pop(), path: sourcePath }] : [];
+    const discovered = await bridge.discoverAgentArtifacts({ projectDir, sourcePaths: sourcePath ? [sourcePath] : [], sourceDocuments });
+    const artifacts = discovered.filter(artifact => !artifact.sourcePath || sameArtifactSourcePath(artifact.sourcePath, sourcePath));
     if (generation !== artifactGeneration) return;
     agentArtifactsList.innerHTML = "";
     const cards = new Map();
@@ -3123,6 +3128,9 @@ async function discoverAgentArtifacts() {
     }
     if (generation === artifactGeneration) setArtifactStatus(String(data.labels.artifactsRescanned).replace("{count}", String(artifacts.length)));
   } catch (error) { if (generation === artifactGeneration) setArtifactStatus(data.labels.artifactScanFailed + ": " + (error?.message || String(error))); }
+}
+function sameArtifactSourcePath(left, right) {
+  return String(left || "").replace(/\\/g, "/").toLowerCase() === String(right || "").replace(/\\/g, "/").toLowerCase();
 }
 async function importArtifactAsDraft(candidatePath, sourcePath) {
   if (artifactImportBusy || artifactClosing) return;
@@ -3200,6 +3208,7 @@ async function importCandidateDraft(candidatePath, sourcePath) {
     await flushQueuedLineReviewStateWrite(); await lastHostStateWrite;
     priorWritesSettled = true;
     const binding = workflow.paths?.validationSourcePath || workflow.paths?.sourcePath || "";
+    if (!sameArtifactSourcePath(sourcePath, binding)) throw new Error("Candidate source does not match the current review document.");
     requestId = artifactOperationStarted();
     setAiStatus(data.labels.importingDraft);
     const plan = await bridge.buildAgentImportPlan({ ...artifactArguments(candidatePath, sourcePath, requestId), compact: true });

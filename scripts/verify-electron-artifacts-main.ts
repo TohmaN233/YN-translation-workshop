@@ -71,8 +71,8 @@ void app.whenReady().then(async () => {
       await win.webContents.executeJavaScript(`(async()=>{delete state.edits[1];delete state.status[1];save([1]);state.edits[2]='manual two newer';await save([2]);})()`);
       const restored=JSON.parse(await readFile(lineReviewSidecarStatePath(htmlPath),"utf8"));
       assert.equal(restored.edits[1],undefined);assert.equal(restored.edits[2],"manual two newer");
-      await copyFile(candidatePath,path.join(project,"AI_translation","chapter_alt1_translated.txt"));
-      await copyFile(candidatePath,path.join(project,"AI_translation","chapter_alt2_translated.txt"));
+      await copyFile(candidatePath,path.join(project,"AI_translation","chapter.translated.txt"));
+      await copyFile(candidatePath,path.join(project,"AI_translation","chapter.txt"));
       await win.webContents.executeJavaScript("void (window.__refreshTask=discoverAgentArtifacts())");
       const deadline=Date.now()+5000;
       while(!(await win.webContents.executeJavaScript("Boolean(document.querySelector('.artifact-import') && artifactRequestId)"))) {

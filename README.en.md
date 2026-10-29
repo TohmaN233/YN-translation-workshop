@@ -34,7 +34,7 @@ See the [feature guide](docs/features.en.md) for settings, translation reuse, pr
 
 ## Download and installation
 
-Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.6.
+Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.7.
 
 Installers support in-app updates; portable builds are replaced using the release page. Releases include `SHA256SUMS.txt`.
 
@@ -68,11 +68,9 @@ YN checks line alignment, placeholders, preserved content, write scope and recov
 
 [Quality checks](docs/quality.en.md) lists the checks, their test sources and reproduction commands.
 
-## 2.2.6 highlights
+## 2.2.7 highlights
 
-- Edit AI glossary candidate translations before importing them into the formal glossary.
-- Keep the chosen warning-review action throughout a multi-file translation workflow, avoiding repeated prompts.
-- Apply proofreading reports and jump to existing review pages in EPUB folder projects.
+- Fix TXT translation matching and importing in EPUB folder projects, including nested books with the same name and older review pages.
 
 See the [Changelog](CHANGELOG.en.md) for full history.
 

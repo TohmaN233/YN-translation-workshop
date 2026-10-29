@@ -4,6 +4,10 @@
 
 Recorded version changes. Public availability and downloads follow [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases).
 
+## What's new in 2.2.7
+
+- Fix TXT translation matching and importing in EPUB folder projects, including nested books with the same name and older review pages.
+
 ## What's new in 2.2.6
 
 - Edit AI glossary candidate translations before importing them into the formal glossary.

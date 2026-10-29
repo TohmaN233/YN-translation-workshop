@@ -1,13 +1,11 @@
 // Pure candidate-translation artifact discovery.
 //
-// Initial-translation jobs (Codex / Claude / API) conventionally write their
-// output to <project>/AI_translation/<basename>_translated.txt. This module
-// scans a project output directory for those candidate artifacts so the host
-// can surface them as import cards in the workbench, run the line-aligned
-// validator, and let the user import a candidate as a draft without
-// overwriting the final translation TXT.
+// Agent translations use <project>/AI_translation/<relative document stem>_translated.txt.
+// Match those document identities while validation reads their UTF-8 source
+// projections. Import updates the review draft and leaves candidate TXT intact.
 //
 // Pure (no fs) so it can be unit-tested; the IPC layer supplies readdir/stat.
+import { matchTranslationSource } from "../../shared/core/folderMatch.ts";
 
 export interface CandidateArtifact {
   /** Absolute path to the candidate translation TXT. */
@@ -20,6 +18,8 @@ export interface CandidateArtifact {
   modifiedAt: string;
   /** Directory the candidate lives in (typically <project>/AI_translation). */
   directory: string;
+  /** Path relative to AI_translation, including any source subdirectory. */
+  relativePath?: string;
 }
 
 export interface DiscoveredArtifact extends CandidateArtifact {
@@ -71,29 +71,24 @@ export interface DirEntry {
 export interface SourceEntry {
   path: string;
   basename: string;
+  /** Original document identity; path may be its extracted UTF-8 projection. */
+  documentId?: string;
 }
 
 /**
- * Match a candidate artifact to a source file by basename. A candidate named
- * `chapter03_translated.txt` matches a source named `chapter03.txt` (or any
- * extension). When no source matches, the candidate is still returned without
- * a sourcePath — the UI will ask the user to bind one before importing.
+ * Use the same relative document identity as initial folder matching. Reading
+ * and validation follow the source's UTF-8 projection, not its display name.
  */
 export function matchCandidateToSource(
   candidate: CandidateArtifact,
   sources: SourceEntry[]
 ): DiscoveredArtifact {
-  const candidateBase = candidate.basename.toLowerCase();
-  const exact = sources.find((s) => s.basename.toLowerCase() === candidateBase);
-  if (exact) {
-    return { ...candidate, sourcePath: exact.path, sourceBasename: exact.basename };
-  }
-  // Fall back to a starts-with match: `chapter03` -> `chapter03_intro.txt`.
-  const prefix = sources.find(
-    (s) => s.basename.toLowerCase().startsWith(candidateBase) || candidateBase.startsWith(s.basename.toLowerCase())
-  );
-  if (prefix) {
-    return { ...candidate, sourcePath: prefix.path, sourceBasename: prefix.basename };
+  const matched = matchTranslationSource(candidate.relativePath ?? candidate.path.replace(/\\/g, "/").split("/").at(-1)!, sources.map((source) => ({
+    ...source,
+    name: source.documentId ?? source.path.replace(/\\/g, "/").split("/").at(-1)!
+  })));
+  if (matched) {
+    return { ...candidate, sourcePath: matched.path, sourceBasename: matched.basename };
   }
   return candidate;
 }
@@ -108,15 +103,17 @@ export function discoverCandidateArtifacts(
   listing: { directory: string; entries: DirEntry[] }[],
   sources: SourceEntry[] = []
 ): DiscoveredArtifact[] {
-  const directories = [pathJoin(projectDir, "AI_translation")];
+  const outputRoot = pathJoin(projectDir, "AI_translation");
+  const normalizedRoot = normalizePath(outputRoot);
   const seen = new Set<string>();
   const artifacts: CandidateArtifact[] = [];
 
-  for (const dir of directories) {
-    const bucket = listing.find((entry) => normalizePath(entry.directory) === normalizePath(dir));
-    if (!bucket) {
-      continue;
-    }
+  for (const bucket of listing) {
+    const normalizedDir = normalizePath(bucket.directory);
+    if (normalizedDir !== normalizedRoot && !normalizedDir.startsWith(normalizedRoot + "/")) continue;
+    const relativeDir = bucket.directory.replace(/\\/g, "/").replace(/\/+$/, "").slice(outputRoot.replace(/\\/g, "/").replace(/\/+$/, "").length).replace(/^\/+/, "");
+    if (relativeDir.split("/").some((segment) => segment.toLowerCase() === "_workspace")) continue;
+    const dir = bucket.directory;
     for (const entry of bucket.entries) {
       if (!entry.isFile || !isCandidateTranslationTxt(entry.name)) {
         continue;
@@ -132,7 +129,8 @@ export function discoverCandidateArtifacts(
         basename: candidateBasename(entry.name),
         size: entry.size,
         modifiedAt: entry.modifiedAt,
-        directory: dir
+        directory: dir,
+        relativePath: [relativeDir, entry.name].filter(Boolean).join("/")
       });
     }
   }

@@ -4,6 +4,10 @@
 
 以下保留已记录的版本变化；公开发行与下载以 [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases) 为准。
 
+## 2.2.7 更新
+
+- 修复 EPUB 文件夹中 TXT 译文的匹配与导入，支持子目录同名文件并恢复旧页面的原文绑定。
+
 ## 2.2.6 更新
 
 - 支持在导入正式译名表前，直接编辑 AI 候选译名。

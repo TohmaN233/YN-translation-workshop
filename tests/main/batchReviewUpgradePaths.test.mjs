@@ -51,6 +51,17 @@ async function fixture() {
   return { root, reviewDir, indexPath, childPath, outsideDir, outsidePath };
 }
 
+function reviewDataHtml(html, update) {
+  const expression = /(<script id="reviewData" type="application\/json">)([\s\S]*?)(<\/script>)/i;
+  const match = html.match(expression);
+  assert.ok(match, "review HTML must include reviewData");
+  return html.replace(expression, (_script, open, payload, close) => {
+    const data = JSON.parse(payload);
+    update(data);
+    return open + JSON.stringify(data).replace(/</g, "\\u003c") + close;
+  });
+}
+
 await test("batch child upgrade resolves an existing nested HTML inside the batch directory", async () => {
   const item = await fixture();
   try {
@@ -292,6 +303,111 @@ await test("legacy EPUB folder upgrade replaces an already persisted binary mani
       id: "book.epub",
       path: extractedPath
     }]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await test("current folder index restores a missing legacy EPUB validation path by full relative document id", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "yn-folder-epub-missing-validation-"));
+  const outputDir = path.join(root, "output");
+  const sourceDir = path.join(root, "source");
+  const htmlDir = path.join(outputDir, ".translation-workshop", "html");
+  const indexPath = path.join(htmlDir, "index.html");
+  const childOnePath = path.join(htmlDir, "batch", "one.html");
+  const childTwoPath = path.join(htmlDir, "batch", "two.html");
+  const sourceOnePath = path.join(sourceDir, "vol1", "book.epub");
+  const sourceTwoPath = path.join(sourceDir, "vol2", "book.epub");
+  const projectionOnePath = path.join(outputDir, ".translation-workshop", "extracted-text", "vol1-book", "source.txt");
+  const projectionTwoPath = path.join(outputDir, ".translation-workshop", "extracted-text", "vol2-book", "source.txt");
+  const documents = [
+    { id: "vol1/book.epub", path: projectionOnePath },
+    { id: "vol2/book.epub", path: projectionTwoPath }
+  ];
+  try {
+    await mkdir(path.dirname(childOnePath), { recursive: true });
+    const legacyChildOne = reviewDataHtml(renderLineReviewHtml({
+      title: "Book one",
+      sourceText: "synthetic source one",
+      translationText: "",
+      lineReviewPath: childOnePath,
+      workflow: {
+        sourcePath: sourceOnePath,
+        sourceKind: "file",
+        sourcePromptPath: sourceDir,
+        promptSourceKind: "folder",
+        outputDir,
+        epubExport: { mode: "all" }
+      }
+    }).replaceAll(agentChatFlowVersion, "pi-web-react-embedded-v7"), (data) => {
+      delete data.workflow.paths.validationSourcePath;
+    });
+    const legacyChildTwo = renderLineReviewHtml({
+      title: "Book two",
+      sourceText: "synthetic source two",
+      translationText: "",
+      lineReviewPath: childTwoPath,
+      workflow: {
+        sourcePath: sourceTwoPath,
+        validationSourcePath: projectionTwoPath,
+        sourceKind: "file",
+        sourcePromptPath: sourceDir,
+        promptSourceKind: "folder",
+        outputDir,
+        epubExport: { mode: "all" }
+      }
+    }).replaceAll(agentChatFlowVersion, "pi-web-react-embedded-v7");
+    const currentIndex = renderBatchLineReviewIndexHtml({
+      title: "Folder",
+      files: [
+        {
+          sourceName: "vol1/book.epub",
+          sourcePath: sourceOnePath,
+          outputPath: "batch/one.html",
+          status: "missing-translation",
+          sourceLineCount: 1
+        },
+        {
+          sourceName: "vol2/book.epub",
+          sourcePath: sourceTwoPath,
+          outputPath: "batch/two.html",
+          status: "missing-translation",
+          sourceLineCount: 1
+        }
+      ],
+      workflow: {
+        sourcePath: sourceDir,
+        sourceKind: "folder",
+        outputDir,
+        inputMode: "separate",
+        advanced: { folderSourceDocuments: documents }
+      }
+    });
+    await Promise.all([
+      writeFile(indexPath, currentIndex, "utf8"),
+      writeFile(childOnePath, legacyChildOne, "utf8"),
+      writeFile(childTwoPath, legacyChildTwo, "utf8")
+    ]);
+
+    const parent = await prepareReviewHtmlOpen(indexPath);
+    await prepareReviewHtmlChildOpen(parent, "batch/one.html");
+    await prepareReviewHtmlChildOpen(parent, "batch/two.html");
+
+    const upgradedOne = resolveReviewHtmlPaths(await readFile(childOnePath, "utf8"), childOnePath);
+    const upgradedTwo = resolveReviewHtmlPaths(await readFile(childTwoPath, "utf8"), childTwoPath);
+    const payloadOne = upgradedOne.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+    const payloadTwo = upgradedTwo.match(/<script id="reviewData" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(payloadOne, "upgraded EPUB child one lost reviewData");
+    assert.ok(payloadTwo, "upgraded EPUB child two lost reviewData");
+    const reviewOne = JSON.parse(payloadOne);
+    const reviewTwo = JSON.parse(payloadTwo);
+
+    assert.equal(reviewOne.workflow.paths.sourcePath, sourceOnePath, "EPUB export retains the physical source");
+    assert.equal(reviewOne.workflow.paths.validationSourcePath, projectionOnePath);
+    assert.equal(reviewTwo.workflow.paths.sourcePath, sourceTwoPath, "EPUB export retains the physical source");
+    assert.equal(reviewTwo.workflow.paths.validationSourcePath, projectionTwoPath, "an explicit projection binding is preserved");
+    assert.deepEqual(reviewOne.workflow.advanced.folderSourceDocuments, documents);
+    assert.deepEqual(reviewTwo.workflow.advanced.folderSourceDocuments, documents);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

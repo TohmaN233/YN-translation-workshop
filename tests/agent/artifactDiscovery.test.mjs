@@ -66,11 +66,36 @@ await test("EPUB-safe extracted basename matches its translated artifact", () =>
   assert.equal(result.sourcePath, "/p/.translation-workshop/extracted-text/hash/source/_.txt");
 });
 
-await test("matchCandidateToSource falls back to prefix match", () => {
+await test("matchCandidateToSource does not guess a source from a filename prefix", () => {
   const candidate = { path: "/p/AI_translation/ch03_translated.txt", basename: "ch03", size: 100, modifiedAt: "t", directory: "/p/AI_translation" };
   const sources = [{ path: "/p/source/ch03_intro.txt", basename: "ch03_intro" }];
   const result = matchCandidateToSource(candidate, sources);
-  assert.equal(result.sourcePath, "/p/source/ch03_intro.txt");
+  assert.equal(result.sourcePath, undefined);
+});
+
+await test("original EPUB identity maps a Unicode candidate to its extracted TXT", () => {
+  const candidate = { path: "/p/AI_translation/Synthetic「甲」_translated.txt", basename: "Synthetic「甲」", size: 1, modifiedAt: "t", directory: "/p/AI_translation" };
+  const sources = [
+    { documentId: "Synthetic「甲」.epub", path: "/p/.translation-workshop/extracted-text/a/source/Synthetic_.txt", basename: "Synthetic「甲」" },
+    { documentId: "Synthetic「乙」.epub", path: "/p/.translation-workshop/extracted-text/b/source/Synthetic_.txt", basename: "Synthetic「乙」" }
+  ];
+  assert.equal(matchCandidateToSource(candidate, sources).sourcePath, sources[0].path);
+});
+
+await test("nested same-name EPUB candidates keep their complete document identity", () => {
+  const sources = [
+    { documentId: "north/book.epub", path: "/p/.translation-workshop/extracted-text/a/source/book.txt", basename: "book" },
+    { documentId: "south/book.epub", path: "/p/.translation-workshop/extracted-text/b/source/book.txt", basename: "book" }
+  ];
+  const listing = ["north", "south", "_workspace"].map(directory => ({
+    directory: "/p/AI_translation/" + directory,
+    entries: [{ name: "book_translated.txt", isFile: true, size: 1, modifiedAt: "t" }]
+  }));
+  const discovered = discoverCandidateArtifacts("/p", listing, sources);
+  assert.equal(discovered.length, 2);
+  assert.equal(discovered.find(item => item.relativePath === "north/book_translated.txt").sourcePath, sources[0].path);
+  assert.equal(discovered.find(item => item.relativePath === "south/book_translated.txt").sourcePath, sources[1].path);
+  assert.equal(matchCandidateToSource({ path: "/p/AI_translation/book_translated.txt", basename: "book", size: 1, modifiedAt: "t", directory: "/p/AI_translation" }, sources).sourcePath, undefined);
 });
 
 await test("matchCandidateToSource returns candidate without source when no match", () => {

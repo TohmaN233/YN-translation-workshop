@@ -17,9 +17,29 @@ const workspaceDir = workshopDirFromOutput(outputDir);
 const reportPath = path.join(outputDir, "report", "folder.proofread.json");
 const folderRootAliasReportPath = path.join(outputDir, "report", "folder-root-source.proofread.json");
 const sameBasenameFixture = process.env.YN_EPUB_FOLDER_SAME_BASENAME === "1";
+const artifactImportFixture = process.env.YN_EPUB_FOLDER_ARTIFACT_IMPORT === "1";
+const nestedArtifactImportFixture = process.env.YN_EPUB_FOLDER_ARTIFACT_NESTED === "1";
+const legacy61ArtifactImportFixture = process.env.YN_EPUB_FOLDER_ARTIFACT_LEGACY61 === "1";
 const alphaEpubName = sameBasenameFixture ? "synthetic-book.epub" : "synthetic-alpha.epub";
 const betaEpubName = sameBasenameFixture ? "synthetic-book.epub" : "synthetic-beta.epub";
-const documents = [
+const documents = artifactImportFixture ? [
+  {
+    sourcePath: nestedArtifactImportFixture
+      ? path.join(outputDir, "alpha", "Synthetic「甲」.epub")
+      : path.join(outputDir, "Synthetic「甲」.epub"),
+    sourceLines: ["Synthetic source「甲」 — first line.", "Synthetic source「甲」 — second line.", "Synthetic source「甲」 — untouched third line."],
+    translationLines: ["合成译文「甲」——第一行。", "合成译文「甲」——第二行。", "合成译文「甲」——未改动第三行。"],
+    suggestion: "合成译文「甲」——已导入第一行。"
+  },
+  {
+    sourcePath: nestedArtifactImportFixture
+      ? path.join(outputDir, "beta", "Synthetic「甲」.epub")
+      : path.join(outputDir, "Synthetic「乙」.epub"),
+    sourceLines: ["Synthetic source「乙」 — first line.", "Synthetic source「乙」 — second line.", "Synthetic source「乙」 — untouched third line."],
+    translationLines: ["合成译文「乙」——第一行。", "合成译文「乙」——第二行。", "合成译文「乙」——未改动第三行。"],
+    suggestion: "合成译文「乙」——已导入第一行。"
+  }
+] : [
   {
     sourcePath: path.join(outputDir, "alpha", alphaEpubName),
     sourceLines: ["Synthetic alpha source one.", "Synthetic alpha source two.", "Synthetic alpha untouched three."],
@@ -66,6 +86,10 @@ function viewPath(view: BrowserView | undefined): string {
   const url = view.webContents.getURL();
   if (!url.startsWith("file:")) return "";
   return path.resolve(fileURLToPath(new URL(url)));
+}
+
+function resolveFixturePath(projectDir: string, value: string): string {
+  return path.resolve(path.isAbsolute(value) ? value : path.join(projectDir, value));
 }
 
 async function readPayload(filePath: string, scriptId: "reviewData" | "batchData"): Promise<any> {
@@ -178,6 +202,262 @@ async function run(): Promise<void> {
   }
   assert(new Set(routedDocuments.map((item) => path.resolve(item.translationPath).toLowerCase())).size === documents.length,
     "Folder EPUBs collided on their canonical translation targets");
+
+  if (artifactImportFixture) {
+    assert(new Set(routedDocuments.map((item) => path.basename(item.projectionPath).toLowerCase())).size === 1,
+      "Synthetic Unicode EPUB names must collide on the sanitized projection basename to exercise artifact identity matching");
+    if (nestedArtifactImportFixture) {
+      assert(new Set(routedDocuments.map((item) => path.basename(item.sourcePath).toLowerCase())).size === 1
+        && new Set(routedDocuments.map((item) => path.dirname(item.translationPath).toLowerCase())).size === documents.length,
+      "Nested same-basename EPUBs must retain separate canonical candidate directories");
+    } else {
+      assert(new Set(routedDocuments.map((item) => path.basename(item.translationPath).toLowerCase())).size === documents.length,
+        "Synthetic Unicode EPUB names did not retain distinct canonical candidate basenames");
+    }
+    assert(!legacy61ArtifactImportFixture || nestedArtifactImportFixture,
+      "The legacy v61 artifact fixture requires nested same-basename EPUBs");
+
+    const pairedReviewGenerated = await mainWindow.webContents.executeJavaScript(
+      "window.workshop.generateLineReview(" + JSON.stringify({
+        sourcePath: outputDir,
+        translationPath: path.join(outputDir, "AI_translation"),
+        outputDir,
+        fileType: "epub",
+        pageSize: 1000,
+        locale: "en-US",
+        inputMode: "separate"
+      }) + ")"
+    ) as { outputPath?: string; fileCount?: number; matchedCount?: number; warningCount?: number };
+    const pairedIndexPath = pairedReviewGenerated.outputPath || "";
+    assert(path.isAbsolute(pairedIndexPath)
+      && pairedReviewGenerated.fileCount === documents.length
+      && pairedReviewGenerated.matchedCount === documents.length
+      && pairedReviewGenerated.warningCount === 0,
+    "Actual folder generation did not match both paired canonical TXT candidates: " + JSON.stringify(pairedReviewGenerated));
+    const pairedBatchData = await readPayload(pairedIndexPath, "batchData") as {
+      files?: Array<{ sourceName: string; sourcePath: string; outputPath: string; status: string; translationPath?: string }>
+    };
+    assert(Array.isArray(pairedBatchData.files) && pairedBatchData.files.length === documents.length,
+      "Actual paired-TXT folder review did not contain both synthetic EPUBs");
+    for (const routed of routedDocuments) {
+      const pairedFile = pairedBatchData.files.find((file) => path.resolve(file.sourcePath).toLowerCase() === path.resolve(routed.sourcePath).toLowerCase());
+      assert(pairedFile?.status === "matched" && pairedFile.translationPath
+        && path.resolve(pairedFile.translationPath).toLowerCase() === path.resolve(routed.translationPath).toLowerCase(),
+      "Actual folder matching selected the wrong paired TXT for " + routed.documentId + ": " + JSON.stringify(pairedFile));
+      const pairedChildPath = path.resolve(path.dirname(pairedIndexPath), pairedFile.outputPath);
+      const pairedChild = await readPayload(pairedChildPath, "reviewData");
+      assert(JSON.stringify(pairedChild.rows.map((row: { translation?: string }) => row.translation))
+        === JSON.stringify(routed.document.translationLines),
+      "Actual paired-TXT folder child loaded another book's translation lines: " + routed.documentId);
+    }
+    console.log("[proposal-epub-folder-artifact-import] stage=paired-folder-txt-matched");
+
+    const blankIndexMetadata = await readPayload(batchIndexPath, "batchData") as {
+      folderAgentRoute?: { advanced?: { folderSourceDocuments?: Array<{ id: string; path: string }> } };
+    };
+    const folderSourceDocuments = blankIndexMetadata.folderAgentRoute?.advanced?.folderSourceDocuments;
+    assert(Array.isArray(folderSourceDocuments) && folderSourceDocuments.length === documents.length,
+      "Actual blank folder index is missing its source projection metadata for legacy-child preparation");
+    for (const routed of routedDocuments) {
+      const indexedSource = folderSourceDocuments.find((entry) => entry.id === routed.documentId);
+      assert(indexedSource && resolveFixturePath(outputDir, indexedSource.path).toLowerCase() === path.resolve(routed.projectionPath).toLowerCase(),
+        "Actual blank folder index does not contain this child's exact projection binding: " + routed.documentId + ": " + JSON.stringify(indexedSource));
+    }
+
+    if (legacy61ArtifactImportFixture) {
+      for (const routed of routedDocuments) {
+        const childHtml = await readFile(routed.childPath, "utf8");
+        const payloadMatch = childHtml.match(/(<script id="reviewData" type="application\/json">)([\s\S]*?)(<\/script>)/i);
+        assert(payloadMatch, "Generated child is missing reviewData before legacy v61 fixture downgrade: " + routed.documentId);
+        const childPayload = JSON.parse(payloadMatch[2]);
+        assert(childPayload.workflow?.paths?.validationSourcePath
+          && resolveFixturePath(outputDir, childPayload.workflow.paths.validationSourcePath).toLowerCase() === path.resolve(routed.projectionPath).toLowerCase(),
+        "Generated child did not begin with its independent source projection binding: " + JSON.stringify({
+          documentId: routed.documentId,
+          sourcePath: routed.sourcePath,
+          expectedProjection: routed.projectionPath,
+          actualValidationSourcePath: childPayload.workflow?.paths?.validationSourcePath
+        }));
+        delete childPayload.workflow.paths.validationSourcePath;
+        if (childPayload.workflow.advanced) delete childPayload.workflow.advanced.folderSourceDocuments;
+        const downgradedPayload = JSON.stringify(childPayload).replace(/</g, "\\u003c");
+        const downgradedHtml = childHtml.replace(payloadMatch[0], payloadMatch[1] + downgradedPayload + payloadMatch[3])
+          .replace(/(<meta name="translation-workshop-line-review" content=")translation-workshop-line-review-v\d+("\s*>)/i,
+            "$1translation-workshop-line-review-v61$2");
+        assert(downgradedHtml !== childHtml
+          && /<meta name="translation-workshop-line-review" content="translation-workshop-line-review-v61"/i.test(downgradedHtml),
+        "Could not create the synthetic legacy v61 child payload: " + routed.documentId);
+        await writeFile(routed.childPath, downgradedHtml, "utf8");
+      }
+      console.log("[proposal-epub-folder-artifact-import] stage=children-downgraded-to-v61");
+    }
+
+    await mainWindow.webContents.executeJavaScript(
+      "window.workshop.openReviewHtml(" + JSON.stringify({ htmlPath: batchIndexPath, outputDir }) + ")"
+    );
+    const viewerWindow = await waitFor(
+      () => BrowserWindow.getAllWindows().find((candidate) => candidate !== mainWindow && candidate.webContents.getURL().startsWith("data:text/html")),
+      Boolean,
+      "the HTML tab viewer for artifact import"
+    ) as BrowserWindow;
+    const batchView = await waitFor(
+      () => visibleView(viewerWindow),
+      (view) => viewPath(view) === path.resolve(batchIndexPath),
+      "the generated folder index for artifact import"
+    ) as BrowserView;
+    await waitFor(
+      () => batchView.webContents.executeJavaScript('Boolean(document.querySelector("#fileFrame")?.contentDocument?.querySelector(".row"))').catch(() => false),
+      Boolean,
+      "the first actual EPUB child for artifact import"
+    );
+
+    const readChild = async <T>(expression: string): Promise<T> => batchView.webContents.executeJavaScript(
+      'document.querySelector("#fileFrame").contentWindow.eval(' + JSON.stringify(expression) + ')'
+    ) as Promise<T>;
+    const readCards = async () => readChild<Array<{
+      path: string;
+      sourcePath: string;
+      unmatched: boolean;
+      canImport: boolean;
+      validation: string;
+    }>>('Array.from(document.querySelectorAll(".artifact-card")).map(card => ({'
+      + 'path: card.querySelector(".artifact-actions button[data-path]")?.getAttribute("data-path") || card.querySelector(".artifact-meta")?.textContent?.trim() || "",'
+      + 'sourcePath: card.querySelector(".artifact-import")?.getAttribute("data-source") || "",'
+      + 'unmatched: Boolean(card.querySelector(".artifact-meta.warn")), '
+      + 'canImport: Boolean(card.querySelector(".artifact-import")), '
+      + 'validation: card.textContent || "" }))');
+
+    for (const [documentIndex, routed] of routedDocuments.entries()) {
+      if (documentIndex > 0) {
+        await batchView.webContents.executeJavaScript(
+          '(() => { const select = document.querySelector("#fileSelect"); select.value = '
+            + JSON.stringify(String(documentIndex))
+            + '; select.dispatchEvent(new Event("change", { bubbles: true })); })()'
+        );
+      }
+      await waitFor(
+        () => readChild<string>("workflow.paths.sourcePath").catch(() => ""),
+        (sourcePath) => resolveFixturePath(outputDir, sourcePath).toLowerCase() === path.resolve(routed.sourcePath).toLowerCase(),
+        "the selected synthetic EPUB child " + routed.documentId
+      );
+      const childInitial = await readChild<{
+        sourcePath: string;
+        validationSourcePath: string;
+        outputDir: string;
+        promptSourceKind: string;
+        folderSourceDocuments: Array<{ id: string; path: string }>;
+        exportAvailable: boolean;
+        targetLines: string[];
+      }>('({ sourcePath: workflow.paths.sourcePath, validationSourcePath: workflow.paths.validationSourcePath, '
+        + 'outputDir: workflow.paths.outputDir, promptSourceKind: workflow.paths.promptSourceKind, '
+        + 'folderSourceDocuments: workflow.advanced?.folderSourceDocuments || [], '
+        + 'exportAvailable: Boolean(document.querySelector("#exportEpub")), targetLines: currentTargetLines() })');
+      assert(resolveFixturePath(outputDir, childInitial.sourcePath).toLowerCase() === path.resolve(routed.sourcePath).toLowerCase(),
+        "Selected folder child lost its original EPUB binding: " + routed.documentId);
+      assert(resolveFixturePath(outputDir, childInitial.outputDir).toLowerCase() === path.resolve(outputDir).toLowerCase(),
+        "Selected folder child lost its artifact project directory: " + JSON.stringify({ documentId: routed.documentId, outputDir: childInitial.outputDir }));
+      if (legacy61ArtifactImportFixture) {
+        const upgradedSource = childInitial.folderSourceDocuments.find((entry) => entry.id === routed.documentId);
+        assert(upgradedSource && resolveFixturePath(outputDir, upgradedSource.path).toLowerCase() === path.resolve(routed.projectionPath).toLowerCase(),
+          "Legacy v61 upgrade did not recover this child's projection from the actual folder index metadata: " + routed.documentId + ": " + JSON.stringify(upgradedSource));
+        const upgradedHtml = await readFile(routed.childPath, "utf8");
+        assert(!/content="translation-workshop-line-review-v61"/i.test(upgradedHtml),
+          "Legacy child protocol was not upgraded to the current line-review version: " + routed.documentId);
+        console.log("[proposal-epub-folder-artifact-import] stage=legacy-v61-upgraded-from-index-" + documentIndex);
+      } else {
+        assert(resolveFixturePath(outputDir, childInitial.validationSourcePath).toLowerCase() === path.resolve(routed.projectionPath).toLowerCase(),
+          "Selected folder child lost its extracted source projection binding: " + routed.documentId);
+      }
+      assert(childInitial.exportAvailable && childInitial.targetLines.every((line) => !line),
+        "Artifact-import child must be a blank EPUB review with export available: " + routed.documentId);
+
+      await readChild<boolean>('(() => { document.querySelector("#refreshAgentArtifacts").click(); return true; })()');
+      const cardsAfterScan = await waitFor(
+        async () => {
+          const status = await readChild<string>('document.querySelector("#agentArtifactsStatus")?.textContent || ""').catch(() => "");
+          return { status, cards: await readCards().catch(() => []) };
+        },
+        (result) => /Rescanned 1 artifact\(s\) from disk\./.test(result.status),
+        "actual artifact scan for " + routed.documentId,
+        30_000
+      );
+      const expectedCandidatePath = path.resolve(routed.translationPath).toLowerCase();
+      const artifact = cardsAfterScan.cards.find((card) => path.resolve(card.path).toLowerCase() === expectedCandidatePath);
+      assert(artifact, "Artifact scan did not surface the canonical candidate for " + routed.documentId + ": " + JSON.stringify(cardsAfterScan));
+      const expectedProjectionPath = path.resolve(routed.projectionPath).toLowerCase();
+      assert(!artifact.unmatched && resolveFixturePath(outputDir, artifact.sourcePath).toLowerCase() === expectedProjectionPath,
+        "Folder EPUB candidate is source-unmatched instead of binding its extracted projection: " + JSON.stringify({
+          documentId: routed.documentId, candidatePath: routed.translationPath, projectionPath: routed.projectionPath,
+          sourcePath: artifact.sourcePath, unmatched: artifact.unmatched, status: cardsAfterScan.status
+        }));
+      assert(artifact.canImport,
+        "Matched candidate did not finish deterministic validation and expose its real Import as draft button: " + JSON.stringify(artifact));
+      assert(!/source not matched|未匹配到原文/i.test(artifact.validation),
+        "Current child candidate still displays Source not matched: " + JSON.stringify(artifact));
+
+      const candidateBeforeImport = await readFile(routed.translationPath, "utf8");
+      await readChild<boolean>(
+        '(() => { const card = Array.from(document.querySelectorAll(".artifact-card")).find(item => '
+          + '(item.querySelector(".artifact-import")?.getAttribute("data-path") || "").toLowerCase() === '
+          + JSON.stringify(expectedCandidatePath)
+          + '); const button = card?.querySelector(".artifact-import"); if (!button) throw new Error("Missing actual candidate Import as draft button"); button.click(); return true; })()'
+      );
+      const importStatus = await waitFor(
+        () => readChild<string>('document.querySelector("#aiStatus")?.textContent || ""').catch(() => ""),
+        (value) => /Imported as draft|Import blocked|Import failed/.test(value),
+        "actual candidate draft import for " + routed.documentId,
+        30_000
+      );
+      assert(/Imported as draft/.test(importStatus),
+        "Actual artifact Import as draft failed for " + routed.documentId + ": " + importStatus);
+
+      const importedChild = await readChild<{
+        sourcePath: string;
+        validationSourcePath: string;
+        translationPath: string;
+        targetLines: string[];
+      }>('({ sourcePath: workflow.paths.sourcePath, validationSourcePath: workflow.paths.validationSourcePath, '
+        + 'translationPath: workflow.paths.translationPath, targetLines: currentTargetLines() })');
+      assert(resolveFixturePath(outputDir, importedChild.sourcePath).toLowerCase() === path.resolve(routed.sourcePath).toLowerCase()
+        && resolveFixturePath(outputDir, importedChild.validationSourcePath).toLowerCase() === path.resolve(routed.projectionPath).toLowerCase()
+        && resolveFixturePath(outputDir, importedChild.translationPath).toLowerCase() === expectedCandidatePath,
+      "Artifact import changed the child's EPUB, projection, or canonical candidate binding: " + routed.documentId);
+      assert(JSON.stringify(importedChild.targetLines) === JSON.stringify(routed.document.translationLines),
+        "Artifact import did not install the complete matching TXT baseline: " + routed.documentId);
+      const sidecarPath = path.join(workspaceDir, "state", "line-" + path.basename(routed.childPath) + ".json");
+      const sidecar = JSON.parse(await readFile(sidecarPath, "utf8"));
+      assert(JSON.stringify(Object.keys(sidecar.edits || {}).sort((a, b) => Number(a) - Number(b))) === JSON.stringify(["1", "2", "3"])
+        && JSON.stringify([sidecar.edits?.["1"], sidecar.edits?.["2"], sidecar.edits?.["3"]]) === JSON.stringify(routed.document.translationLines),
+      "Artifact import did not persist every candidate line in the matching child sidecar: " + routed.documentId);
+      assert(await readFile(routed.translationPath, "utf8") === candidateBeforeImport,
+        "Draft import overwrote the source candidate TXT instead of importing into line-review state: " + routed.documentId);
+
+      await readChild<boolean>('document.querySelector("#exportEpub").click(); true');
+      const exportPath = await waitFor(
+        () => readChild<string>("state.savedEpubFile || \"\"").catch(() => ""),
+        (value) => value.toLowerCase().endsWith(".translated.epub"),
+        "actual EPUB export after candidate import for " + routed.documentId
+      );
+      const exportedLines = splitTextLines(await readEpubText(exportPath, workspaceDir,
+        "synthetic-artifact-import-" + routed.documentId.replace(/[^a-z0-9]+/gi, "-")));
+      assert(JSON.stringify(exportedLines) === JSON.stringify(routed.document.translationLines),
+        "EPUB export did not use the matching imported candidate lines: " + routed.documentId);
+      assert(JSON.stringify(await readFile(routed.sourcePath)) === JSON.stringify((routed.document as typeof routed.document & { originalBytes?: Buffer }).originalBytes),
+        "Artifact import/export modified the matching original EPUB: " + routed.documentId);
+      console.log("[proposal-epub-folder-artifact-import] stage=imported-and-exported-" + documentIndex);
+    }
+
+    console.log(JSON.stringify({
+      ok: true,
+      proposalEpubFolderArtifactImport: true,
+      actualFolderIndex: true,
+      actualArtifactDiscoveryAndImportUi: true,
+      syntheticUnicodeBasenameCollision: true,
+      twoCandidateSidecarsAndEpubExports: true,
+      originalEpubBytesUnchanged: true
+    }));
+    return;
+  }
 
   const findings = routedDocuments.map((routed, index) => ({
     documentId: routed.documentId,

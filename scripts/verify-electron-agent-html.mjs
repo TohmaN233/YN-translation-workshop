@@ -188,6 +188,21 @@ try {
     }
   }
 
+  if (!verifyOnly || verifyOnly === "epub-folder-artifact-import") {
+    const proposalEpubFolderArtifactMain = await buildVerifier(
+      "scripts/verify-electron-proposal-epub-folder-main.ts",
+      "proposal-epub-folder-artifact-import-main.mjs"
+    );
+    for (const nestedSameBasenameFixture of ["0", "1"]) {
+      await runVerifier(proposalEpubFolderArtifactMain, '"proposalEpubFolderArtifactImport":true', 120_000, {
+        YN_ELECTRON_VERIFY_OFFSCREEN: "1",
+        YN_EPUB_FOLDER_ARTIFACT_IMPORT: "1",
+        YN_EPUB_FOLDER_ARTIFACT_NESTED: nestedSameBasenameFixture,
+        YN_EPUB_FOLDER_ARTIFACT_LEGACY61: nestedSameBasenameFixture
+      });
+    }
+  }
+
   if (!verifyOnly || verifyOnly === "folder") {
     const productFolderMain = await buildVerifier(
       "scripts/verify-electron-folder-tabs-main.ts",

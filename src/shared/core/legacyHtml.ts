@@ -206,6 +206,80 @@ function workflowOptions(data: EmbeddedReviewData): HtmlWorkflowOptions {
   };
 }
 
+function normalizedPath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function pathsAreCaseInsensitive(...paths: string[]): boolean {
+  return paths.some((value) => {
+    const normalized = normalizedPath(value);
+    return /^[A-Za-z]:\//.test(normalized) || normalized.includes("//");
+  });
+}
+
+function pathComparisonKey(value: string, caseInsensitive: boolean): string {
+  const normalized = normalizedPath(value);
+  return caseInsensitive ? normalized.toLowerCase() : normalized;
+}
+
+function pathSegments(value: string): string[] {
+  const segments = normalizedPath(value).split("/");
+  if (segments.length > 1 && segments[segments.length - 1] === "") segments.pop();
+  return segments;
+}
+
+function relativePathWithinRoot(sourceRoot: string, sourcePath: string): string | undefined {
+  const root = normalizedPath(sourceRoot);
+  const source = normalizedPath(sourcePath);
+  const caseInsensitive = pathsAreCaseInsensitive(root, source);
+  const comparableRoot = pathComparisonKey(root, caseInsensitive);
+  const comparableSource = pathComparisonKey(source, caseInsensitive);
+  const rootPrefix = comparableRoot.endsWith("/") ? comparableRoot : `${comparableRoot}/`;
+  if (!comparableSource.startsWith(rootPrefix)) return undefined;
+
+  const rootSegments = pathSegments(root);
+  const sourceSegments = pathSegments(source);
+  if (sourceSegments.length <= rootSegments.length) return undefined;
+
+  const relativeSegments = sourceSegments.slice(rootSegments.length);
+  if (relativeSegments.some((segment) => !segment || segment === "." || segment === "..")) return undefined;
+  return relativeSegments.join("/");
+}
+
+function restoreFolderProjectionValidationPath(workflow: HtmlWorkflowOptions): HtmlWorkflowOptions {
+  const sourcePath = workflow.sourcePath?.trim();
+  if (workflow.promptSourceKind !== "folder" || !sourcePath || !/\.(?:epub|pdf)$/i.test(sourcePath)) return workflow;
+
+  const currentValidationPath = workflow.validationSourcePath?.trim();
+  if (currentValidationPath) {
+    const caseInsensitive = pathsAreCaseInsensitive(sourcePath, currentValidationPath);
+    if (pathComparisonKey(currentValidationPath, caseInsensitive) !== pathComparisonKey(sourcePath, caseInsensitive)) {
+      return workflow;
+    }
+  }
+
+  const sourceRoot = workflow.sourcePromptPath?.trim();
+  if (!sourceRoot) return workflow;
+  const documentId = relativePathWithinRoot(sourceRoot, sourcePath);
+  if (!documentId) return workflow;
+
+  const caseInsensitive = pathsAreCaseInsensitive(sourceRoot, sourcePath);
+  const documentIdKey = pathComparisonKey(documentId, caseInsensitive);
+  const documents = workflow.advanced?.folderSourceDocuments;
+  if (!Array.isArray(documents)) return workflow;
+  const matches = documents.filter((document) => (
+    document && typeof document.id === "string"
+      && pathComparisonKey(document.id, caseInsensitive) === documentIdKey
+  ));
+  if (matches.length > 1) {
+    throw new Error(`Ambiguous folder source mapping for ${documentId}.`);
+  }
+  const projectionPath = matches[0]?.path;
+  return typeof projectionPath === "string" && projectionPath.trim()
+    ? { ...workflow, validationSourcePath: projectionPath }
+    : workflow;
+}
+
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : value == null ? "" : String(value);
 }
@@ -444,7 +518,7 @@ export function upgradeLegacyLineReviewHtmlContent(
     startPage: Number(data.startPage || 1),
     locale: htmlLocale(html),
     lineReviewPath: sourceFilePath,
-    workflow: { ...workflowOptions(data), ...workflowOverride }
+    workflow: restoreFolderProjectionValidationPath({ ...workflowOptions(data), ...workflowOverride })
   });
   // Protocol upgrades retain PDF display metadata; the Host still verifies the
   // immutable layout independently at every write boundary.

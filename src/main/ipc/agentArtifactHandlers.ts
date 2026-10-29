@@ -1,16 +1,14 @@
 // IPC handlers for agent translation artifacts.
 //
-// Surfaces candidate translation TXTs produced by initial-translation jobs
-// (Codex / Claude / API), runs the deterministic line-aligned validator, and
+// Surfaces candidate translation TXTs from the project Agent, runs the line-aligned validator, and
 // generates repair prompts when validation blocks. Import is deliberately NOT
 // a server-side write to the final translation TXT — the HTML workbench pulls
 // the candidate text via files:readTextFile and injects it into the line-review
-// draft state via html:applyLineReviewState, so only the workbench draft
+// draft state via html:persistState, so only the workbench draft
 // changes and the bound translation file stays untouched until the user
 // explicitly exports.
 //
-// Kept separate from main.ts per RFC Issue 13: agent/artifact/validation logic
-// lives in src/main/agent and src/main/ipc, not in the monolithic main process.
+// Discovery and validation share the project document identities used by folder import.
 
 import { ipcMain } from "electron";
 import { readdir, stat } from "node:fs/promises";
@@ -27,11 +25,14 @@ import {
 import { runArtifactOperation, type ArtifactWorkerRequest, type ArtifactWorkerResult } from "../agent/artifactValidationService.ts";
 import { resolveProjectPath, resolveReadablePath } from "../agent/projectPathGuard.ts";
 import type { CustomPreserveRule } from "../../shared/validation/customPreserveRules.ts";
+import type { PiFolderSourceDocument } from "../../shared/agent/piSessionContract.ts";
 
 export interface DiscoverArtifactsArgs {
   projectDir: string;
-  /** Optional source path(s) to help match candidates to sources by basename. */
+  /** Current readable source paths, retained for existing callers. */
   sourcePaths?: string[];
+  /** Original document IDs paired with their readable UTF-8 projections. */
+  sourceDocuments?: PiFolderSourceDocument[];
 }
 
 export interface ValidateArtifactArgs {
@@ -48,35 +49,46 @@ export interface ValidateArtifactArgs {
 
 export type RepairPromptArgs = ValidateArtifactArgs;
 
-async function readDirEntries(dir: string): Promise<{ directory: string; entries: DirEntry[] } | undefined> {
+async function readDirEntries(dir: string): Promise<Array<{ directory: string; entries: DirEntry[] }>> {
+  let entries;
   try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    const mapped: DirEntry[] = [];
-    for (const entry of entries) {
-      let size = 0;
-      let modifiedAt = "";
-      try {
-        const info = await stat(path.join(dir, entry.name));
-        size = info.size;
-        modifiedAt = info.mtime.toISOString();
-      } catch {
-        // Skip stat errors; entry still listed with zero size.
-      }
-      mapped.push({ name: entry.name, isFile: entry.isFile(), size, modifiedAt });
-    }
-    return { directory: dir, entries: mapped };
-  } catch {
-    return undefined;
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
+  const mapped: DirEntry[] = [];
+  const children: Array<{ directory: string; entries: DirEntry[] }> = [];
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name.toLowerCase() !== "_workspace") children.push(...await readDirEntries(entryPath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const info = await stat(entryPath);
+    mapped.push({ name: entry.name, isFile: true, size: info.size, modifiedAt: info.mtime.toISOString() });
+  }
+  return [{ directory: dir, entries: mapped }, ...children];
 }
 
-function sourceEntriesFromPaths(projectDir: string, sourcePaths: string[] | undefined): SourceEntry[] {
-  if (!sourcePaths) {
-    return [];
-  }
+function sourceEntriesFromPaths(projectDir: string, sourcePaths: string[] | undefined, sourceDocuments: PiFolderSourceDocument[] | undefined): SourceEntry[] {
   const sources: SourceEntry[] = [];
-  for (const item of sourcePaths) {
+  for (const document of sourceDocuments ?? []) {
+    const id = typeof document?.id === "string" ? document.id.trim().replace(/\\/g, "/") : "";
+    if (!id || path.isAbsolute(id) || id.split("/").some((part) => part === ".." || part === "." || part === "")) {
+      throw new Error("Artifact source document requires a unique relative document ID.");
+    }
+    const sourcePath = resolveReadablePath(projectDir, document.path).path;
+    if (sources.some((source) => source.documentId?.toLowerCase() === id.toLowerCase()
+      || source.path.toLowerCase() === sourcePath.toLowerCase())) {
+      throw new Error(`Artifact source document binding is ambiguous: ${id}.`);
+    }
+    sources.push({ path: sourcePath, basename: path.basename(id).replace(/\.[^.]+$/, ""), documentId: id });
+  }
+  for (const item of sourcePaths ?? []) {
     const sourcePath = resolveReadablePath(projectDir, item).path;
+    if (sources.some((source) => source.path.toLowerCase() === sourcePath.toLowerCase())) continue;
     sources.push({ path: sourcePath, basename: path.basename(sourcePath).replace(/\.[^.]+$/, "") });
   }
   return sources;
@@ -90,12 +102,9 @@ export function registerAgentArtifactIpc(): void {
     const dirs = [path.join(args.projectDir, "AI_translation")];
     const listing = [];
     for (const dir of dirs) {
-      const bucket = await readDirEntries(dir);
-      if (bucket) {
-        listing.push(bucket);
-      }
+      listing.push(...await readDirEntries(dir));
     }
-    const sources = sourceEntriesFromPaths(args.projectDir, args.sourcePaths);
+    const sources = sourceEntriesFromPaths(args.projectDir, args.sourcePaths, args.sourceDocuments);
     return discoverCandidateArtifacts(args.projectDir, listing, sources) satisfies DiscoveredArtifact[];
   });
 

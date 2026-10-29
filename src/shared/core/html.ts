@@ -267,8 +267,11 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossarySearchNoMatches: "没有匹配的术语",
     glossaryFormalView: "正式译名表",
     glossaryCandidatesView: "AI 候选",
-    glossaryCandidatesHelp: "可先查看并删除不需要的候选，再导入正式译名表。删除候选不影响已导入的正式条目。",
+    glossaryCandidatesHelp: "可编辑右侧译名，按 Enter 或离开输入框保存，Esc 取消未保存修改；候选编辑不改动现有译文，导入后才进入正式表。",
     glossaryCandidatesEmpty: "暂无 AI 译名候选",
+    glossaryCandidateConflict: "候选译名已在其他窗口更新，请核对后再次保存。",
+    glossaryCandidateTargetRequired: "候选译名不能为空。",
+    glossaryCandidateSaved: "候选译名已保存",
     glossaryDelete: "删除",
     glossaryDeleteConfirm: "从{table}删除「{source} → {target}」？已有译文不变。",
     glossaryDeleted: "译名条目已删除",
@@ -456,8 +459,11 @@ const workflowLabels: Record<UiLocale, Record<string, string>> = {
     glossarySearchNoMatches: "No matching terms",
     glossaryFormalView: "Formal glossary",
     glossaryCandidatesView: "AI candidates",
-    glossaryCandidatesHelp: "Review and delete unwanted candidates before importing. Deleting a candidate leaves any imported formal entry intact.",
+    glossaryCandidatesHelp: "Edit the right-side target and press Enter or leave the field to save; press Escape to discard an unsaved edit. Candidate edits do not change translations and enter the formal glossary only after import.",
     glossaryCandidatesEmpty: "No AI glossary candidates",
+    glossaryCandidateConflict: "This candidate changed in another window. Review it and save again.",
+    glossaryCandidateTargetRequired: "A candidate target cannot be empty.",
+    glossaryCandidateSaved: "Candidate target saved",
     glossaryDelete: "Delete",
     glossaryDeleteConfirm: "Delete \"{source} → {target}\" from {table}? Existing translations stay unchanged.",
     glossaryDeleted: "Glossary entry deleted",
@@ -756,7 +762,7 @@ function animeThemeCss(mode: "line" | "proposal"): string {
     .glossary-entry span,.glossary-entry input { min-width:0; width:100%; overflow-wrap:anywhere; padding:5px 8px; border:1px solid var(--line); border-radius:8px; background:#fff; }
     .glossary-source { color:var(--muted); background:var(--source-bg); }
     .glossary-target { background:var(--target-bg); }
-    .glossary-target:focus { outline:2px solid var(--sky); outline-offset:1px; background:#fff; }
+    .glossary-target:focus,.glossary-candidate-target:focus { outline:2px solid var(--sky); outline-offset:1px; background:#fff; }
     .glossary-entry b { color:var(--muted); }
     .glossary-backdrop { position:fixed; inset:0; z-index:29; background:rgba(31,45,78,.24); opacity:0; pointer-events:none; transition:opacity .16s ease; }
     .glossary-backdrop.open { opacity:1; pointer-events:auto; }
@@ -1134,7 +1140,7 @@ applyFile(0);
 </html>`;
 }
 
-export const LINE_REVIEW_PROTOCOL_VERSION = 60;
+export const LINE_REVIEW_PROTOCOL_VERSION = 61;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
 export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 20;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
@@ -3693,6 +3699,8 @@ let glossaryEntries = workflow.glossaryEntries || [];
 let glossaryCandidateEntries = [];
 let glossaryView = "formal";
 let glossaryCandidateReadVersion = 0;
+const glossaryCandidateEdits = new Map();
+let glossaryCandidateRendering = false;
 let glossaryDeletePending = false;
 let glossaryTargets = {};
 let glossaryAliasesByIndex = {};
@@ -3738,6 +3746,7 @@ async function refreshGlossaryCandidates() {
   const version = ++glossaryCandidateReadVersion;
   const entries = await bridge.readGeneratedGlossaryCandidates({ outputDir });
   if (version !== glossaryCandidateReadVersion) return;
+  if (!Array.isArray(entries)) throw new Error("Candidate read did not return an entry list.");
   glossaryCandidateEntries = entries;
   if (glossaryView === "candidates") renderGlossaryEntries();
 }
@@ -3860,13 +3869,19 @@ function glossaryEntryMatches(entry, index, query) {
   return [entry.source, entry.target, glossaryTarget(index), ...glossaryAliases(index)]
     .some(value => String(value || "").toLocaleLowerCase().includes(query));
 }
+function normalizeGlossaryCandidateText(value) {
+  return String(value ?? "").normalize("NFC").trim();
+}
+function glossaryCandidateKey(source) {
+  return normalizeGlossaryCandidateText(source);
+}
 function matchingGlossaryEntries() {
   const query = glossarySearchQuery();
   return displayedGlossaryEntries()
     .map((entry, index) => ({ entry, index }))
     .filter(item => glossaryView === "formal"
       ? glossaryEntryMatches(item.entry, item.index, query)
-      : [item.entry.source, item.entry.target, ...(item.entry.aliases || []), item.entry.info, item.entry.status]
+      : [item.entry.source, item.entry.target, glossaryCandidateEdits.get(glossaryCandidateKey(item.entry.source))?.draftTarget, ...(item.entry.aliases || []), item.entry.info, item.entry.status]
         .some(value => String(value || "").toLocaleLowerCase().includes(query)));
 }
 function displayedGlossaryEntries() {
@@ -3874,15 +3889,40 @@ function displayedGlossaryEntries() {
 }
 function glossaryEntryHtml(entry, index) {
   const candidate = glossaryView === "candidates";
-  const target = candidate ? entry.target : glossaryTarget(index);
+  const candidateEdit = candidate ? glossaryCandidateEdits.get(glossaryCandidateKey(entry.source)) : undefined;
+  const target = candidate ? (candidateEdit?.draftTarget ?? entry.target) : glossaryTarget(index);
+  const currentTarget = candidate ? normalizeGlossaryCandidateText(candidateEdit?.expectedTarget ?? entry.target) : target;
+  const originalTarget = candidate ? normalizeGlossaryCandidateText(entry.target) : entry.target;
   const details = [entry.aliases?.length ? entry.aliases.join(" / ") : "", entry.status || "", entry.info || ""].filter(Boolean).join(" · ");
-  return '<div class="glossary-entry" data-glossary-index="' + index + '">' +
+  return '<div class="glossary-entry" data-glossary-index="' + index + '" data-glossary-source="' + escapeHtml(entry.source) + '">' +
     '<input class="glossary-source" data-glossary-index="' + index + '" value="' + escapeHtml(entry.source) + '" readonly title="source term">' +
     '<b>→</b>' +
-    '<input class="' + (candidate ? 'glossary-candidate-target' : 'glossary-target') + '" ' + (candidate ? 'readonly ' : '') + 'data-glossary-index="' + index + '" value="' + escapeHtml(target) + '" data-original-target="' + escapeHtml(entry.target) + '" data-current-target="' + escapeHtml(target) + '" title="translation term">' +
+    '<input class="' + (candidate ? 'glossary-candidate-target' : 'glossary-target') + '" data-glossary-index="' + index + '" data-glossary-source="' + escapeHtml(entry.source) + '" value="' + escapeHtml(target) + '" data-original-target="' + escapeHtml(originalTarget) + '" data-current-target="' + escapeHtml(currentTarget) + '" title="translation term"' + (candidateEdit?.saving ? ' aria-busy="true"' : '') + '>' +
     '<button class="glossary-delete" type="button" data-glossary-index="' + index + '">' + escapeHtml(data.labels.glossaryDelete || "Delete") + '</button>' +
     (details ? '<small>' + escapeHtml(details) + '</small>' : '') +
     '</div>';
+}
+function replaceGlossaryList(html) {
+  const activeInput = glossaryListEl?.querySelector(".glossary-candidate-target:focus");
+  const activeSource = activeInput?.dataset?.glossarySource;
+  const selectionStart = activeInput?.selectionStart;
+  const selectionEnd = activeInput?.selectionEnd;
+  glossaryCandidateRendering = true;
+  try {
+    glossaryListEl.innerHTML = html;
+  } finally {
+    glossaryCandidateRendering = false;
+  }
+  if (activeSource) {
+    const restoredInput = [...glossaryListEl.querySelectorAll(".glossary-candidate-target")]
+      .find(input => input.dataset.glossarySource === activeSource);
+    if (restoredInput) {
+      restoredInput.focus();
+      if (Number.isInteger(selectionStart) && Number.isInteger(selectionEnd)) {
+        restoredInput.setSelectionRange(selectionStart, selectionEnd);
+      }
+    }
+  }
 }
 function renderGlossaryEntries() {
   if (!glossaryListEl) return;
@@ -3893,7 +3933,7 @@ function renderGlossaryEntries() {
     if (glossaryHelpEl) glossaryHelpEl.textContent = glossaryView === "candidates"
       ? (data.labels.glossaryCandidatesEmpty || "No AI glossary candidates")
       : (data.labels.glossaryEmpty || "No glossary loaded");
-    glossaryListEl.innerHTML = "";
+    replaceGlossaryList("");
     return;
   }
   const query = glossarySearchQuery();
@@ -3906,10 +3946,10 @@ function renderGlossaryEntries() {
     ? (data.labels.glossaryCandidatesHelp || "Review candidates before importing.")
     : (data.labels.glossaryEditHelp || "Edit the right-side term. Source text is never modified.");
   if (visibleEntries.length === 0) {
-    glossaryListEl.innerHTML = '<p class="ai-status">' + escapeHtml(data.labels.glossarySearchNoMatches || "No matching terms") + '</p>';
+    replaceGlossaryList('<p class="ai-status">' + escapeHtml(data.labels.glossarySearchNoMatches || "No matching terms") + '</p>');
     return;
   }
-  glossaryListEl.innerHTML = visibleEntries.map(({ entry, index }) => glossaryEntryHtml(entry, index)).join("");
+  replaceGlossaryList(visibleEntries.map(({ entry, index }) => glossaryEntryHtml(entry, index)).join(""));
 }
 function loadMoreGlossaryEntries() {
   const matchingEntries = matchingGlossaryEntries();
@@ -4420,6 +4460,133 @@ async function writeCurrentGlossaryFile() {
     setAiStatus((data.labels.glossaryWriteFailed || "Glossary write failed") + ": " + (error?.message || String(error)));
   }
 }
+function findGlossaryCandidate(source) {
+  const key = glossaryCandidateKey(source);
+  return glossaryCandidateEntries.find(entry => glossaryCandidateKey(entry.source) === key);
+}
+function candidateEditForInput(input) {
+  const source = String(input?.dataset?.glossarySource || "");
+  const key = glossaryCandidateKey(source);
+  if (!key) return undefined;
+  let edit = glossaryCandidateEdits.get(key);
+  if (!edit) {
+    const entry = findGlossaryCandidate(source);
+    edit = {
+      source: entry?.source || source,
+      expectedTarget: normalizeGlossaryCandidateText(input.dataset.currentTarget || entry?.target || ""),
+      draftTarget: String(input.value || ""),
+      focused: false,
+      saving: false
+    };
+    glossaryCandidateEdits.set(key, edit);
+  }
+  return edit;
+}
+function updateCandidateDraftFromInput(input) {
+  const edit = candidateEditForInput(input);
+  if (!edit) return;
+  edit.draftTarget = String(input.value || "");
+}
+async function saveGlossaryCandidateTarget(input) {
+  if (glossaryCandidateRendering) return;
+  const edit = candidateEditForInput(input);
+  if (!edit || edit.saving) return;
+  const target = normalizeGlossaryCandidateText(input.value);
+  edit.draftTarget = input.value;
+  if (!target) {
+    edit.draftTarget = edit.expectedTarget;
+    input.value = edit.expectedTarget;
+    setAiStatus(data.labels.glossaryCandidateTargetRequired || "A candidate target cannot be empty.");
+    renderGlossaryEntries();
+    return;
+  }
+  if (target === normalizeGlossaryCandidateText(edit.expectedTarget)) {
+    glossaryCandidateEdits.delete(glossaryCandidateKey(edit.source));
+    renderGlossaryEntries();
+    return;
+  }
+  const outputDir = workflow.paths?.outputDir || "";
+  const bridge = writeBridge();
+  if (!outputDir || !bridge?.updateGeneratedGlossaryCandidate) {
+    setAiStatus(data.labels.glossaryWriteNeedsApp || "Open this HTML in translation-workshop to manage glossary.");
+    return;
+  }
+  const expectedTarget = normalizeGlossaryCandidateText(edit.expectedTarget);
+  edit.draftTarget = target;
+  edit.saving = true;
+  ++glossaryCandidateReadVersion;
+  try {
+    const entries = await bridge.updateGeneratedGlossaryCandidate({
+      outputDir,
+      source: edit.source,
+      expectedTarget,
+      target
+    });
+    if (!Array.isArray(entries)) throw new Error("Candidate update did not return an entry list.");
+    ++glossaryCandidateReadVersion;
+    glossaryCandidateEntries = entries;
+    const savedEntry = entries.find(entry => glossaryCandidateKey(entry.source) === glossaryCandidateKey(edit.source));
+    if (!savedEntry) throw new Error("Updated candidate is missing from the returned list.");
+    const key = glossaryCandidateKey(edit.source);
+    const savedTarget = normalizeGlossaryCandidateText(savedEntry.target);
+    const currentEdit = glossaryCandidateEdits.get(key);
+    if (currentEdit === edit) {
+      const latestDraft = edit.draftTarget;
+      edit.expectedTarget = savedTarget;
+      edit.saving = false;
+      if (normalizeGlossaryCandidateText(latestDraft) === edit.expectedTarget) {
+        glossaryCandidateEdits.delete(key);
+      } else {
+        edit.draftTarget = latestDraft;
+      }
+      renderGlossaryEntries();
+      setAiStatus((data.labels.glossaryCandidateSaved || "Candidate target saved") + ": " + edit.source);
+      if (normalizeGlossaryCandidateText(latestDraft) !== edit.expectedTarget && !edit.focused) {
+        const nextInput = [...(glossaryListEl?.querySelectorAll(".glossary-candidate-target") || [])]
+          .find(candidateInput => glossaryCandidateKey(candidateInput.dataset.glossarySource) === key);
+        if (nextInput) void saveGlossaryCandidateTarget(nextInput);
+      }
+    } else {
+      if (currentEdit && normalizeGlossaryCandidateText(currentEdit.expectedTarget) === expectedTarget) {
+        const currentDraft = normalizeGlossaryCandidateText(currentEdit.draftTarget);
+        if (currentDraft === expectedTarget || currentDraft === savedTarget) {
+          glossaryCandidateEdits.delete(key);
+        } else {
+          currentEdit.expectedTarget = savedTarget;
+        }
+      }
+      edit.saving = false;
+      renderGlossaryEntries();
+      setAiStatus((data.labels.glossaryCandidateSaved || "Candidate target saved") + ": " + edit.source);
+    }
+  } catch (error) {
+    ++glossaryCandidateReadVersion;
+    edit.saving = false;
+    const message = error?.message || String(error);
+    const conflict = /candidate.*(changed|conflict|stale)|conflict|stale|concurrent|expected target/i.test(message);
+    if (conflict) {
+      const draft = edit.draftTarget;
+      try {
+        const version = ++glossaryCandidateReadVersion;
+        const entries = await bridge.readGeneratedGlossaryCandidates({ outputDir });
+        if (!Array.isArray(entries)) throw new Error("Candidate refresh did not return an entry list.");
+        if (version === glossaryCandidateReadVersion) {
+          glossaryCandidateEntries = entries;
+          const current = entries.find(entry => glossaryCandidateKey(entry.source) === glossaryCandidateKey(edit.source));
+          if (current) edit.expectedTarget = normalizeGlossaryCandidateText(current.target);
+          edit.draftTarget = draft;
+          renderGlossaryEntries();
+        }
+      } catch (refreshError) {
+        setAiStatus((data.labels.glossaryCandidateConflict || "This candidate changed in another window. Review it and save again.") + " " + message + " · " + (data.labels.glossaryReadFailed || "Glossary read failed") + ": " + (refreshError?.message || String(refreshError)));
+        return;
+      }
+      setAiStatus((data.labels.glossaryCandidateConflict || "This candidate changed in another window. Review it and save again.") + " " + message);
+      return;
+    }
+    setAiStatus((data.labels.glossaryWriteFailed || "Glossary write failed") + ": " + message);
+  }
+}
 let pendingGlossaryFocusIndex = null;
 async function deleteGlossaryEntry(button) {
   if (glossaryDeletePending) return;
@@ -4465,6 +4632,28 @@ glossaryListEl?.addEventListener("click", (event) => {
   const button = event.target.closest?.(".glossary-delete");
   if (button) void deleteGlossaryEntry(button);
 });
+glossaryListEl?.addEventListener("focusin", (event) => {
+  const input = event.target.closest?.(".glossary-candidate-target");
+  if (!input || glossaryCandidateRendering) return;
+  const edit = candidateEditForInput(input);
+  if (edit) edit.focused = true;
+});
+glossaryListEl?.addEventListener("focusout", (event) => {
+  const input = event.target.closest?.(".glossary-candidate-target");
+  if (!input || glossaryCandidateRendering) return;
+  const edit = candidateEditForInput(input);
+  if (edit) edit.focused = false;
+});
+glossaryListEl?.addEventListener("input", (event) => {
+  const input = event.target.closest?.(".glossary-candidate-target");
+  if (!input || glossaryCandidateRendering) return;
+  updateCandidateDraftFromInput(input);
+});
+glossaryListEl?.addEventListener("change", (event) => {
+  const input = event.target.closest?.(".glossary-candidate-target");
+  if (!input || glossaryCandidateRendering) return;
+  void saveGlossaryCandidateTarget(input);
+});
 function restorePendingGlossaryFocus(index, changedIndex) {
   if (!Number.isInteger(index) || index === changedIndex) return;
   const nextInput = glossaryListEl?.querySelector('.glossary-target[data-glossary-index="' + index + '"]');
@@ -4486,6 +4675,23 @@ glossaryListEl?.addEventListener("change", (event) => {
   }, 0);
 });
 glossaryListEl?.addEventListener("keydown", (event) => {
+  const candidateInput = event.target.closest?.(".glossary-candidate-target");
+  if (candidateInput) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      glossaryCandidateEdits.delete(glossaryCandidateKey(candidateInput.dataset.glossarySource));
+      renderGlossaryEntries();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void saveGlossaryCandidateTarget(candidateInput);
+      candidateInput.blur();
+      return;
+    }
+    return;
+  }
   const input = event.target.closest?.(".glossary-target");
   if (!input || event.key !== "Enter") return;
   event.preventDefault();

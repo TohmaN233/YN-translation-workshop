@@ -505,6 +505,41 @@ export async function readGeneratedGlossaryCandidates(outputDir: string): Promis
   return source === undefined ? [] : parseGeneratedGlossary(source, glossaryPath);
 }
 
+export async function updateGeneratedGlossaryCandidate(args: {
+  outputDir: string;
+  source: string;
+  expectedTarget: string;
+  target: string;
+}): Promise<GlossaryValidationEntry[]> {
+  if (typeof args.source !== "string" || typeof args.expectedTarget !== "string" || typeof args.target !== "string"
+    || !args.source.trim() || !args.expectedTarget.trim() || !args.target.trim()) {
+    throw new Error("Candidate editing requires non-empty source, expected target, and new target.");
+  }
+  return runWorkspaceGlossaryCandidateTransaction(args.outputDir, async (transaction) => {
+    const entries = await readGeneratedGlossaryCandidates(args.outputDir);
+    const matching = entries.filter((item) => normalized(item.source) === normalized(args.source));
+    if (matching.length > 1) throw new Error(`Glossary candidate source is ambiguous: ${args.source}. Resolve duplicate candidates before editing.`);
+    const entry = matching[0];
+    if (!entry) throw new Error(`Glossary candidate no longer exists: ${args.source}. Refresh the candidates.`);
+    if (entry.target.trim() !== args.expectedTarget.trim()) {
+      throw new Error(`Glossary candidate changed: ${args.source}. Refresh before editing.`);
+    }
+    const commit = await transaction.commit([{ source: entry.source, target: args.target.trim(), allowTargetReplacement: true }]);
+    try {
+      const updated = await readGeneratedGlossaryCandidates(args.outputDir);
+      await readWorkspaceAssetsStatus(args.outputDir);
+      return updated;
+    } catch (error) {
+      try {
+        await commit.rollback();
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Candidate editing failed and could not be rolled back.");
+      }
+      throw error;
+    }
+  });
+}
+
 export async function deleteGeneratedGlossaryCandidate(args: {
   outputDir: string;
   source: string;

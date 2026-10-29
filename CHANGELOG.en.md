@@ -4,9 +4,14 @@
 
 Recorded version changes. Public availability and downloads follow [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases).
 
+## What's new in 2.2.6
+
+- Edit AI glossary candidate translations before importing them into the formal glossary.
+- Keep the chosen warning-review action throughout a multi-file translation workflow, avoiding repeated prompts.
+
 ## What's new in 2.2.5
 
-- Fix an empty translation draft line-count mismatch that prevented new EPUB review pages from opening.
+- Fix EPUB review page initialization and multi-file translation startup, including projects that keep source EPUBs and generated files in the same folder.
 
 ## What's new in 2.2.4
 

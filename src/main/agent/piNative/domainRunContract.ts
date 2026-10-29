@@ -861,7 +861,8 @@ export function createYnDomainRunContract({
       if (document.validatedArtifactRevision !== document.artifactRevision) markProgress();
       document.validatedArtifactRevision = document.artifactRevision;
       document.bestTranslationValidationDebt = 0;
-      if (translationWarningReviewDecision !== "skip") translationWarningReviewDecision = undefined;
+      // The choice authorizes the whole workflow. A clean document must not
+      // revoke it while other documents or repaired ranges still need review.
       return;
     }
     document.validatedArtifactRevision = undefined;

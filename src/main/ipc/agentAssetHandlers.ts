@@ -12,7 +12,7 @@ import {
   saveProjectAssets,
   updateProjectGlossaryEntry
 } from "../agent/projectAssets.ts";
-import { activateWorkspaceAssets, deleteGeneratedGlossaryCandidate, importGeneratedGlossaryCandidates, readGeneratedGlossaryCandidates } from "../agent/workspaceAssets.ts";
+import { activateWorkspaceAssets, deleteGeneratedGlossaryCandidate, importGeneratedGlossaryCandidates, readGeneratedGlossaryCandidates, updateGeneratedGlossaryCandidate } from "../agent/workspaceAssets.ts";
 
 function requireOutputDir(value: unknown): string {
   const outputDir = typeof value === "string" ? value.trim() : "";
@@ -83,6 +83,15 @@ export function registerAgentAssetIpc(): void {
 
   ipcMain.handle("agent-assets:readGeneratedGlossary", async (_event, args: { outputDir?: unknown }) => {
     return readGeneratedGlossaryCandidates(requireOutputDir(args?.outputDir));
+  });
+
+  ipcMain.handle("agent-assets:updateGeneratedGlossary", async (_event, args: { outputDir?: unknown; source?: unknown; expectedTarget?: unknown; target?: unknown }) => {
+    if (typeof args?.source !== "string" || typeof args?.expectedTarget !== "string" || typeof args?.target !== "string") {
+      throw new Error("Candidate editing requires a source, expected target, and new target.");
+    }
+    return updateGeneratedGlossaryCandidate({
+      outputDir: requireOutputDir(args.outputDir), source: args.source, expectedTarget: args.expectedTarget, target: args.target
+    });
   });
 
   ipcMain.handle("agent-assets:deleteGeneratedGlossary", async (_event, args: { outputDir?: unknown; source?: unknown; expectedTarget?: unknown }) => {

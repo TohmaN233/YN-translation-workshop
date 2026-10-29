@@ -38,7 +38,7 @@ YN supports all-AI translation and proofreading, fully manual translation and ed
 - **Style guide**: title-level tone, expression, and formatting constraints.
 - **Translation memory**: search across accepted source/translation segments.
 - Glossary input supports JSON, Tab, `=>`, `->`, `=`, and comma-separated records.
-- The line-review page can edit and delete approved terms, preview/search/delete AI candidates before import, and search and replace translation matches.
+- The line-review page can edit and delete approved terms, preview/search/edit/delete AI candidates before import, and search and replace translation matches.
 - Each assignment receives only directly matched full structured records. Missing ambiguity uses exact-term search.
 - Disabling candidate collection blocks new discoveries but keeps existing candidates readable.
 - Approved targets take priority, followed by the first established candidate/character target; later differing observations remain evidence. Only internally conflicting new discoveries without an established target close the claim gate for Parent resolution and precise repair.

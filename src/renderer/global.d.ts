@@ -234,6 +234,7 @@ declare global {
         glossary?: { entries?: unknown[] };
       }>;
       readGeneratedGlossaryCandidates: (args: { outputDir: string }) => Promise<Array<{ source: string; target: string; aliases?: string[]; info?: string; status?: string }>>;
+      updateGeneratedGlossaryCandidate: (args: { outputDir: string; source: string; expectedTarget: string; target: string }) => Promise<Array<{ source: string; target: string; aliases?: string[]; info?: string; status?: string }>>;
       deleteGeneratedGlossaryCandidate: (args: { outputDir: string; source: string; expectedTarget: string }) => Promise<Array<{ source: string; target: string; aliases?: string[]; info?: string; status?: string }>>;
       readWorkspaceAssetsStatus: (args: { outputDir: string }) => Promise<{
         paths: { glossaryCandidates: string; characterBible: string };
@@ -333,6 +334,7 @@ declare global {
         glossary?: { entries?: unknown[] };
       }>;
       readGeneratedGlossaryCandidates: (args: { outputDir: string }) => Promise<Array<{ source: string; target: string; aliases?: string[]; info?: string; status?: string }>>;
+      updateGeneratedGlossaryCandidate: (args: { outputDir: string; source: string; expectedTarget: string; target: string }) => Promise<Array<{ source: string; target: string; aliases?: string[]; info?: string; status?: string }>>;
       deleteGeneratedGlossaryCandidate: (args: { outputDir: string; source: string; expectedTarget: string }) => Promise<Array<{ source: string; target: string; aliases?: string[]; info?: string; status?: string }>>;
       readWorkspaceAssetsStatus: (args: { outputDir: string }) => Promise<{
         paths: { glossaryCandidates: string; characterBible: string };

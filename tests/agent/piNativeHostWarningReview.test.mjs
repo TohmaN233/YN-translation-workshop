@@ -23,9 +23,10 @@ async function fixture(options={}){
   await writeFile(sourcePath,'Synthetic first line.\nSynthetic second line.','utf8');
   const owner=await new PiSessionRepository(outputDir).create(sessionId);
   for(let index=0;index<(options.historyEntries??0);index++)await appendSessionCustomEntry(owner,'synthetic.background',{index,payload:'Synthetic historical observation. '.repeat(256)});
-  const domain=createYnDomainRunContract({workflowIntent:'translation',fullWorkflow:true,subagentEnabled:false});
-  domain.recordInspection({sourceLineCount:2,documents:[{id:'source.txt',sourceLineCount:2}],glossaryCandidateExists:true,characterBibleExists:true});
-  domain.recordTranslationWrite('translation');
+  const domain=createYnDomainRunContract({workflowIntent:'translation',fullWorkflow:true,subagentEnabled:false,folderSource:options.cleanPeer===true});
+  const documents=[...(options.cleanPeer?[{id:'a-clean.txt',sourceLineCount:1}]:[]),{id:'source.txt',sourceLineCount:2}];
+  domain.recordInspection({sourceLineCount:options.cleanPeer?3:2,documents,glossaryCandidateExists:true,characterBibleExists:true});
+  for(const document of documents){domain.selectDocument(document.id);domain.recordTranslationWrite('translation');}
   const alignment=createTranslationAlignmentHostState();
   if(options.live){
     const candidatePath=path.join(outputDir,'AI_translation','source_translated.txt');
@@ -33,11 +34,17 @@ async function fixture(options={}){
     await writeFile(candidatePath,'第一段人工合成内容。\n第二段人工合成内容。');
     const range=createTranslationAlignmentRangeAudit({documentId:'source.txt',sourceText:'Synthetic first line.\nSynthetic second line.',candidateText:'第一段人工合成内容。\n第二段人工合成内容。',candidatePath,languagePair:'en->zh-CN',fromLine:1,toLine:2,sourceLineCount:2});
     range.checks.forEach(check=>{check.verdict='aligned';});alignment.ranges['source.txt']=[range];
+    if(options.cleanPeer){
+      const cleanSource='A calm evening.',cleanCandidate='平静的夜晚。',cleanPath=path.join(outputDir,'AI_translation','a-clean_translated.txt');
+      await writeFile(path.join(outputDir,'a-clean.txt'),cleanSource);await writeFile(cleanPath,cleanCandidate);
+      const cleanRange=createTranslationAlignmentRangeAudit({documentId:'a-clean.txt',sourceText:cleanSource,candidateText:cleanCandidate,candidatePath:cleanPath,languagePair:'en->zh-CN',fromLine:1,toLine:1,sourceLineCount:1});
+      cleanRange.checks.forEach(check=>{check.verdict='aligned';});alignment.ranges['a-clean.txt']=[cleanRange];
+    }
     await mergeProjectGlossaryEntries({outputDir,entries:[{source:'Synthetic',target:'合成专名'}]});
   }else{domain.recordTranslationValidation('translation',2,'source.txt');domain.notePendingTranslationWarningReview();}
   const models=createModels(), provider=fauxProvider({provider:'host-warning-choice',tokensPerSecond:1_000_000,tokenSize:{min:100_000,max:100_000}});
   models.setProvider(provider.provider);
-  const request={sourcePath,sourceDocumentId:'source.txt',languagePair:'en->zh-CN',providerId:provider.provider.id,modelId:provider.getModel().id,subagentEnabled:false};
+  const request={sourcePath:options.cleanPeer?outputDir:sourcePath,...(options.cleanPeer?{sourceSelection:{kind:'folder',path:outputDir}}:{sourceDocumentId:'source.txt'}),languagePair:'en->zh-CN',providerId:provider.provider.id,modelId:provider.getModel().id,subagentEnabled:false};
   await appendYnSessionHostState(owner,{schemaVersion:1,ownerSessionId:sessionId,domainRun:domain.snapshot(),...(options.saved?{translationWorkflowRequest:request}:{}),proofread:createProofreadHostState(),translationAlignment:alignment});
   await owner.close(BACKGROUND_CONTEXT);
   let selections=0, finished=0, context;
@@ -105,6 +112,29 @@ test('real validation emits a typed Host gate and Yes starts warning inspection 
     assert.equal((await f.service.getRunState(f.outputDir,f.sessionId)).error,undefined);
   }finally{await f.clean();}
 });
+test('multi-document validation keeps the accepted warning choice after a clean peer and a cold reopen',async()=>{
+  const f=await fixture({live:true,cleanPeer:true,saved:true});try{
+    f.provider.setResponses([fauxAssistantMessage(fauxToolCall('validateTranslationArtifact',{}, {id:'initial-folder-validation'}),{stopReason:'toolUse'})]);
+    await settled(f.service,()=>f.service.prompt({...f.request,outputDir:f.outputDir,sessionId:f.sessionId,workflowIntent:'translation',prompt:'Workflow: yn-translation-v1.\nValidate the synthetic extracted documents.'}));
+    const gate=(await f.service.getRunState(f.outputDir,f.sessionId)).warningReview;
+    assert(gate?.warningCount>0,JSON.stringify({state:await f.service.getRunState(f.outputDir,f.sessionId),tools:(await f.service.loadMessages(f.outputDir,f.sessionId)).filter(message=>message.role==='toolResult')}));
+    f.provider.setResponses([...Array.from({length:3},(_,index)=>fauxAssistantMessage(fauxToolCall('validateTranslationArtifact',{}, {id:`revalidate-after-yes-${index}`}),{stopReason:'toolUse'})),fauxAssistantMessage(fauxToolCall('finishReview',{}, {id:'finish-without-reasking'}),{stopReason:'toolUse'}),fauxAssistantMessage(fauxText('Complete.'))]);
+    await settled(f.service,()=>f.service.decideTranslationWarningReview({outputDir:f.outputDir,sessionId:f.sessionId,reviewId:gate.id,decision:'review'}));
+    assert.equal((await f.service.getRunState(f.outputDir,f.sessionId)).warningReview,undefined,'a clean document must not clear the workflow review choice and ask again');
+    assert.equal(f.finished,1,'the same native turn must continue after revalidation');
+    assert.equal((await f.state()).domainRun.translationWarningReviewDecision,'review');
+    const validations=(await f.service.loadMessages(f.outputDir,f.sessionId)).filter(message=>message.role==='toolResult'&&message.toolName==='validateTranslationArtifact');
+    assert.equal(validations.length,4);
+    for(const validation of validations.slice(1)){
+      assert.equal(validation.details.warningReviewDecision,undefined,'one Yes must cover every subsequent validation');
+      assert(validation.details.pendingWarningCount>0,'authorization must not silently accept the remaining warnings');
+    }
+    await f.service.disposeWorkspace(f.outputDir);
+    assert.equal((await f.service.getRunState(f.outputDir,f.sessionId)).warningReview,undefined);
+    assert.equal((await f.state()).domainRun.translationWarningReviewDecision,'review');
+  }finally{await f.clean();}
+});
+
 test('ordinary read-only chat parks pending translation and leaves the Host choice usable',async()=>{
   const f=await fixture({saved:true});try{
     const gate=(await f.service.getRunState(f.outputDir,f.sessionId)).warningReview;

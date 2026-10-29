@@ -22,6 +22,8 @@ export interface YnAgentRoute {
   sourcePath?: string;
   sourceKind?: "file" | "folder";
   translationPath?: string;
+  folderSourceDocuments?: PiSessionPromptRequest["folderSourceDocuments"];
+  folderSourceSelection?: PiSessionPromptRequest["folderSourceSelection"];
   initialPrompt?: string;
   initialWorkflowMetadata?: PiWorkflowPromptMetadata;
 }

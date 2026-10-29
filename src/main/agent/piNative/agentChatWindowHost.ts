@@ -1,7 +1,8 @@
 import { BrowserWindow, type NativeImage } from "electron";
 import path from "node:path";
+import type { PiSessionPromptRequest } from "../../../shared/agent/piSessionContract.ts";
 
-export interface AgentChatWindowArgs {
+export interface AgentChatWindowArgs extends Pick<PiSessionPromptRequest, "folderSourceDocuments" | "folderSourceSelection"> {
   lineReviewPath?: string;
   outputDir?: string;
   locale?: "zh-CN" | "en-US";
@@ -25,6 +26,35 @@ export interface AgentChatWindowHostOptions {
 export interface AgentChatWindowResult {
   window: BrowserWindow;
   surface: "renderer-popout";
+}
+
+function serializeFolderSourceDocuments(documents: PiSessionPromptRequest["folderSourceDocuments"]): string {
+  if (!Array.isArray(documents) || documents.length === 0) {
+    throw new Error("Folder source documents must be a non-empty array before opening an Agent window.");
+  }
+  return JSON.stringify(documents.map((document, index) => {
+    if (!document || typeof document !== "object" || typeof document.id !== "string" || !document.id.trim()
+      || typeof document.path !== "string" || !document.path.trim()) {
+      throw new Error(`Folder source document ${index} requires an id and extracted text path before opening an Agent window.`);
+    }
+    const projection = document.projection;
+    if (projection === undefined) return { id: document.id, path: document.path };
+    if (!projection || typeof projection !== "object"
+      || (projection.kind !== "bilingual-pairs" && projection.kind !== "epub-text" && projection.kind !== "pdf-text" && projection.kind !== "text-lines")
+      || !/^[a-f0-9]{64}$/.test(projection.originalHash)
+      || !/^[a-f0-9]{64}$/.test(projection.projectionHash)) {
+      throw new Error(`Folder source projection provenance ${index} is invalid before opening an Agent window.`);
+    }
+    return {
+      id: document.id,
+      path: document.path,
+      projection: {
+        kind: projection.kind,
+        originalHash: projection.originalHash,
+        projectionHash: projection.projectionHash
+      }
+    };
+  }));
 }
 
 function cleanLineReviewPath(value: string | undefined): string | undefined {
@@ -60,6 +90,12 @@ export async function openAgentChatWindow(options: AgentChatWindowHostOptions): 
   if (lineReviewPath) params.set("lineReviewPath", lineReviewPath);
   if (options.args.sourcePath) params.set("sourcePath", options.args.sourcePath);
   if (options.args.sourceKind) params.set("sourceKind", options.args.sourceKind);
+  if (options.args.folderSourceDocuments !== undefined) {
+    params.set("folderSourceDocuments", serializeFolderSourceDocuments(options.args.folderSourceDocuments));
+  }
+  if (options.args.folderSourceSelection !== undefined) {
+    params.set("folderSourceSelection", options.args.folderSourceSelection);
+  }
   if (options.args.translationPath) params.set("translationPath", options.args.translationPath);
   if (options.args.initialPrompt) params.set("initialPrompt", options.args.initialPrompt);
   if (options.args.initialWorkflowIntent) params.set("initialWorkflowIntent", options.args.initialWorkflowIntent);

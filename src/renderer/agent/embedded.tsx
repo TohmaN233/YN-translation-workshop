@@ -9,7 +9,7 @@ import "../styles.css";
 declare global {
   interface Window {
     YnPiWebAgentEmbedded?: {
-      mount: (target: HTMLElement, route: { outputDir?: string; locale?: "zh-CN" | "en-US"; languagePair?: string; sourcePath?: string; sourceKind?: "file" | "folder"; translationPath?: string; lineReviewPath?: string }) => Promise<void>;
+      mount: (target: HTMLElement, route: Partial<YnAgentRoute>) => Promise<void>;
       close?: () => void;
       popout?: () => void;
       insertText?: (text: string, workflowMetadata?: PiWorkflowPromptMetadata) => void;

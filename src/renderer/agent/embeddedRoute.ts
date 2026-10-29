@@ -12,6 +12,10 @@ export function normalizeEmbeddedRoute(
     lineReviewPath: input?.lineReviewPath || undefined,
     sourcePath: input?.sourcePath || undefined,
     sourceKind: input?.sourceKind === "folder" ? "folder" : input?.sourceKind === "file" ? "file" : undefined,
-    translationPath: input?.translationPath || undefined
+    translationPath: input?.translationPath || undefined,
+    ...(input?.sourceKind === "folder" && input.folderSourceDocuments ? {
+      folderSourceDocuments: input.folderSourceDocuments,
+      ...(input.folderSourceSelection ? { folderSourceSelection: input.folderSourceSelection } : {})
+    } : {})
   };
 }

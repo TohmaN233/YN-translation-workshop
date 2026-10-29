@@ -83,6 +83,13 @@ function comparableDocumentId(value: string): string {
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
+function originalDocumentPath(root: string, id: string): string | undefined {
+  const normalized = normalizeDocumentId(id), parts = normalized.split("/");
+  if (!normalized || path.isAbsolute(normalized) || path.win32.isAbsolute(normalized)
+    || parts.some(part => !part || part === "..")) return undefined;
+  return path.resolve(root, ...parts);
+}
+
 /**
  * Resolve a model/user supplied document reference without making spelling a
  * permission boundary. Canonical IDs remain authoritative, while absolute
@@ -96,7 +103,11 @@ export function resolvePiSourceDocument(
   if (!requested) return undefined;
   if (path.isAbsolute(requested)) {
     const comparableRequested = comparablePath(requested);
-    return manifest.documents.find((document) => comparablePath(document.path) === comparableRequested);
+    return manifest.documents.find((document) => {
+      if (comparablePath(document.path) === comparableRequested) return true;
+      const original = manifest.kind === "folder" ? originalDocumentPath(manifest.rootPath, document.id) : undefined;
+      return original !== undefined && comparablePath(original) === comparableRequested;
+    });
   }
 
   const comparableRequestedId = comparableDocumentId(requested);
@@ -134,7 +145,21 @@ export function resolvePiReadablePath(
   inputPath: string | undefined
 ): string | undefined {
   const trimmed = inputPath?.trim();
-  if (!trimmed || trimmed === "." || path.isAbsolute(trimmed)) return inputPath;
+  if (!trimmed || trimmed === ".") return inputPath;
+
+  const extractedDocuments = request.folderSourceDocuments ?? [];
+  if (path.isAbsolute(trimmed)) {
+    const folderSelection = request.sourceSelection?.kind === "folder" ? request.sourceSelection
+      : "sourceRootSelection" in request ? request.sourceRootSelection : undefined;
+    const originalRoot = folderSelection?.kind === "folder" ? folderSelection.path
+      : !request.sourceSelection && !("sourceDocumentId" in request) ? request.sourcePath : undefined;
+    const comparableRequested = comparablePath(trimmed);
+    const projected = originalRoot && extractedDocuments.find(document => {
+      const original = originalDocumentPath(originalRoot, document.id);
+      return original !== undefined && comparablePath(original) === comparableRequested;
+    });
+    return projected ? path.resolve(projected.path) : inputPath;
+  }
 
   const requestedId = normalizeDocumentId(trimmed);
   const boundDocumentId = "sourceDocumentId" in request
@@ -151,7 +176,6 @@ export function resolvePiReadablePath(
     return path.resolve(boundSourcePath);
   }
 
-  const extractedDocuments = request.folderSourceDocuments ?? [];
   const extractedDocument = extractedDocuments.find(
     (entry) => comparableDocumentId(entry.id) === comparableDocumentId(requestedId)
   ) ?? (() => {

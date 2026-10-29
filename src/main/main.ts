@@ -31,7 +31,7 @@ import { splitTextLines } from "../shared/validation/translationValidator.ts";
 import { normalizeCustomPreserveRules } from "../shared/validation/customPreserveRules.ts";
 import { formatFolderTranslationOrder } from "./agent/piNative/folderTranslationPlan.ts";
 import { setPiSessionHtmlViewerTabsRef, subscribePiSessionBroadcast } from "./agent/piNative/broadcast.ts";
-import { openAgentChatWindow } from "./agent/piNative/agentChatWindowHost.ts";
+import { openAgentChatWindow, type AgentChatWindowArgs } from "./agent/piNative/agentChatWindowHost.ts";
 import { piNativeSessionService } from "./agent/piNative/sessionService.ts";
 import { registerDesktopShutdown } from "./desktopShutdown.ts";
 import type { PiSessionPromptRequest } from "../shared/agent/piSessionContract.ts";
@@ -3438,7 +3438,7 @@ function normalizePromptBuildArgs(args: unknown): PromptBuildOptions {
   };
 }
 
-ipcMain.handle("ui:openAgentChatWindow", async (_event, args: { lineReviewPath?: string; outputDir?: string; locale?: "zh-CN" | "en-US"; languagePair?: string; sourcePath?: string; sourceKind?: "file" | "folder"; translationPath?: string; initialPrompt?: string; initialWorkflowIntent?: "translation" | "proofread"; initialLanguagePair?: string }) => {
+ipcMain.handle("ui:openAgentChatWindow", async (_event, args: AgentChatWindowArgs) => {
   const result = await openAgentChatWindow({
     args,
     preloadPath: preloadPath(),

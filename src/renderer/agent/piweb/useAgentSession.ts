@@ -70,6 +70,8 @@ export function buildPiSessionPromptRequest(
   images?: PiSessionImageAttachment[],
   workflowMetadata?: PiWorkflowPromptMetadata
 ): PiSessionPromptRequest {
+  const sourceBindings = workflowMetadata?.folderSourceDocuments !== undefined || workflowMetadata?.folderSourceSelection !== undefined
+    ? workflowMetadata : route.sourceKind === "folder" ? route : undefined;
   return {
     outputDir: route.outputDir,
     sessionId,
@@ -95,8 +97,8 @@ export function buildPiSessionPromptRequest(
     subagentModelId: workflowMetadata?.subagentModelId,
     translationSplitSize: workflowMetadata?.translationSplitSize,
     folderTranslationOrder: workflowMetadata?.folderTranslationOrder,
-    folderSourceDocuments: workflowMetadata?.folderSourceDocuments,
-    folderSourceSelection: workflowMetadata?.folderSourceSelection,
+    folderSourceDocuments: sourceBindings?.folderSourceDocuments,
+    folderSourceSelection: sourceBindings?.folderSourceSelection,
     proofreadMode: workflowMetadata?.proofreadMode,
     proofreadSplitSize: workflowMetadata?.proofreadSplitSize,
     proofreadMontecarloSize: workflowMetadata?.proofreadMontecarloSize,
@@ -908,7 +910,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
       setError(sendError instanceof Error ? sendError.message : String(sendError));
       setState((current) => ({ ...current, storagePreparing: false, storageProgress: null, agentRunning: false, phase: null, phaseText: "error" }));
     }
-  }, [ensureSession, loading, reloadProviderSettings, route.languagePair, route.lineReviewPath, route.outputDir, route.sourceKind, route.sourcePath, route.translationPath]);
+  }, [ensureSession, loading, reloadProviderSettings, route.folderSourceDocuments, route.folderSourceSelection, route.languagePair, route.lineReviewPath, route.outputDir, route.sourceKind, route.sourcePath, route.translationPath]);
 
   const handleWarningReviewDecision = useCallback(async (decision: "review" | "skip") => {
     const current = stateRef.current;
@@ -980,7 +982,7 @@ export function useAgentSession({ route, onAgentEnd }: UseAgentSessionOptions) {
         setWarningReviewOperation(null);
       }
     }
-  }, [loading, route.initialWorkflowMetadata, route.languagePair, route.lineReviewPath, route.outputDir, route.sourceKind, route.sourcePath, route.translationPath]);
+  }, [loading, route.initialWorkflowMetadata, route.folderSourceDocuments, route.folderSourceSelection, route.languagePair, route.lineReviewPath, route.outputDir, route.sourceKind, route.sourcePath, route.translationPath]);
 
   const handleCompact = useCallback(async (customInstructions?: string) => {
     const current = stateRef.current;

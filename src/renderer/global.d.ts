@@ -1,12 +1,25 @@
 import type { CustomPreserveRule } from "../shared/validation/customPreserveRules.ts";
 import type { StartBuiltinTaskRequest } from "../shared/builtinTasks.ts";
-import type { PiWorkflowPromptMetadata } from "../shared/agent/piSessionContract.ts";
+import type { PiSessionPromptRequest, PiWorkflowPromptMetadata } from "../shared/agent/piSessionContract.ts";
+import type { YnAgentRoute } from "./agent/piweb/electronPiSessionClient.ts";
 export {};
 
 type WorkshopPromptKind = "translate" | "proofread";
 type WorkshopWorkflowIntent = "translation" | "proofread";
 type WorkshopWorkflowPromptMetadata = PiWorkflowPromptMetadata;
 type WorkshopProofreadMode = "split" | "montecarlo";
+type WorkshopAgentChatWindowArgs = {
+  outputDir?: string;
+  locale?: "zh-CN" | "en-US";
+  languagePair?: string;
+  lineReviewPath?: string;
+  sourcePath?: string;
+  sourceKind?: "file" | "folder";
+  translationPath?: string;
+  initialPrompt?: string;
+  initialWorkflowIntent?: "translation" | "proofread";
+  initialLanguagePair?: string;
+} & Pick<PiSessionPromptRequest, "folderSourceDocuments" | "folderSourceSelection">;
 
 type WorkshopPromptBuildArgs = {
   kind: WorkshopPromptKind;
@@ -287,7 +300,7 @@ declare global {
       scanTranslations: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedAt: string }>>;
       copyText: (text: string) => Promise<boolean>;
       openPath: (targetPath: string) => Promise<string>;
-      openAgentChatWindow: (args: { outputDir?: string; locale?: "zh-CN" | "en-US"; languagePair?: string; lineReviewPath?: string; sourcePath?: string; sourceKind?: "file" | "folder"; translationPath?: string; initialPrompt?: string; initialWorkflowIntent?: "translation" | "proofread"; initialLanguagePair?: string }) => Promise<{ ok: boolean; message?: string }>;
+      openAgentChatWindow: (args: WorkshopAgentChatWindowArgs) => Promise<{ ok: boolean; message?: string }>;
       agentChatEmbeddedEntryUrl: () => Promise<{ ok: boolean; url?: string; cssUrl?: string; message?: string }>;
     };
     workshopHtml?: WorkshopAgentArtifactApi & WorkshopAgentProviderApi & {
@@ -417,7 +430,7 @@ declare global {
       onLanSyncCommand: (callback: (payload: { token: string; command: { type: "open-agent-os" } }) => void) => () => void;
       findProofreadReport: (outputDir: string) => Promise<Array<{ path: string; size: number; modifiedMs: number; score: number; reasons: string[] }>>;
       openPath: (targetPath: string) => Promise<string>;
-      openAgentChatWindow: (args: { outputDir?: string; locale?: "zh-CN" | "en-US"; languagePair?: string; lineReviewPath?: string; sourcePath?: string; sourceKind?: "file" | "folder"; translationPath?: string; initialPrompt?: string; initialWorkflowIntent?: "translation" | "proofread"; initialLanguagePair?: string }) => Promise<{ ok: boolean; message?: string }>;
+      openAgentChatWindow: (args: WorkshopAgentChatWindowArgs) => Promise<{ ok: boolean; message?: string }>;
       agentChatEmbeddedEntryUrl: () => Promise<{ ok: boolean; url?: string; cssUrl?: string; message?: string }>;
     };
     workshopTabs?: {
@@ -425,7 +438,7 @@ declare global {
       close: (key: string) => Promise<boolean>;
     };
     YnPiWebAgentEmbedded?: {
-      mount: (target: HTMLElement, route: { outputDir?: string; locale?: "zh-CN" | "en-US"; languagePair?: string; sourcePath?: string; sourceKind?: "file" | "folder"; translationPath?: string; lineReviewPath?: string }) => Promise<void>;
+      mount: (target: HTMLElement, route: Partial<YnAgentRoute>) => Promise<void>;
       close?: () => void;
       popout?: () => void;
       insertText?: (text: string, workflowMetadata?: WorkshopWorkflowPromptMetadata) => void;

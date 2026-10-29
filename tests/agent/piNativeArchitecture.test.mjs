@@ -409,7 +409,6 @@ await test("generated workflow metadata reaches native Pi prompt IPC with its ty
   assert.match(hook, /reviewSubagentCount:\s*workflowMetadata\?\.reviewSubagentCount/);
   assert.match(hook, /translationSplitSize:\s*workflowMetadata\?\.translationSplitSize/);
   assert.match(hook, /folderTranslationOrder:\s*workflowMetadata\?\.folderTranslationOrder/);
-  assert.match(hook, /folderSourceDocuments:\s*workflowMetadata\?\.folderSourceDocuments/);
   assert.match(hook, /glossaryPath:\s*workflowMetadata\?\.glossaryPath/);
   assert.match(hook, /glossaryCandidates:\s*workflowMetadata\?\.glossaryCandidates/);
   assert.match(hook, /characterBible:\s*workflowMetadata\?\.characterBible/);

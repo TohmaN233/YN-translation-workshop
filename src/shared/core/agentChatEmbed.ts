@@ -7,7 +7,7 @@
 
 import { agentChatRouteFromReviewData } from "./agentChatRoute.ts";
 
-export const agentChatFlowVersion = "pi-web-react-embedded-v14";
+export const agentChatFlowVersion = "pi-web-react-embedded-v15";
 
 export function agentChatEmbedCss(): string {
   return `

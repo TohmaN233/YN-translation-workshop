@@ -21,6 +21,8 @@ import { lineReviewSidecarStatePath } from "./batchLineReviewTxt.ts";
 import { readEpubText } from "./epubReader.ts";
 import { splitTextLines } from "../shared/validation/translationValidator.ts";
 import { parseBilingualPairs } from "../shared/core/bilingualPairs.ts";
+import { isExtractedWorkshopTranslationPath } from "../shared/core/translationBinding.ts";
+import { projectRelativePath } from "./projectPaths.ts";
 
 async function optionalReviewStamp(file: string): Promise<string | undefined> {
   try { return await readReviewHtmlSourceStamp(file); }
@@ -60,14 +62,18 @@ async function bindCanonicalTranslation(context: ParsedReviewHtml, refreshTransl
   const text = /\.epub$/i.test(target)
     ? await readEpubText(target, path.join(context.root!, '.translation-workshop'), `binding-${Date.now()}`)
     : await readFile(target, 'utf8');
+  if (await optionalReviewStamp(statePath) !== stamp
+    || projectPath && await optionalReviewStamp(projectPath) !== projectStamp) throw new Error('Canonical translation binding changed while preparing its HTML; reopen it.');
+  // An unselected generated empty draft is not an imported translation. Older
+  // drafts also omitted the final empty-line terminator; no text needs migrating.
+  if (plannedOutput && context.root && projectRelativePath(context.root, target) !== undefined
+    && isExtractedWorkshopTranslationPath(target) && !text.trim()) return;
   const samePath = (left: string, right: string) => process.platform === 'win32'
     ? path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase() : path.resolve(left) === path.resolve(right);
   const bilingualSource = data.workflow.inputMode === 'bilingual'
     && typeof paths.sourcePath === 'string' && samePath(target, paths.sourcePath);
   const lines = splitTextLines(bilingualSource ? parseBilingualPairs(text, data.workflow.bilingualPair ?? {sourcePosition:2,translationPosition:1}).translationText : text);
-  if (lines.length !== data.rows.length) throw new Error(`Canonical translation line count differs from its HTML document: ${target}`);
-  if (await optionalReviewStamp(statePath) !== stamp
-    || projectPath && await optionalReviewStamp(projectPath) !== projectStamp) throw new Error('Canonical translation binding changed while preparing its HTML; reopen it.');
+  if (lines.length !== data.rows.length) throw new Error(`Canonical translation line count differs from its HTML document: ${target} (translation: ${lines.length}, HTML: ${data.rows.length})`);
   for (const row of data.rows) {
     row.translation = lines[row.line - 1];
     row.status = row.translation ? 'machine' : 'empty';

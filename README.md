@@ -34,7 +34,7 @@ YN 支持 TXT、EPUB 和文字层 PDF，将 AI 翻译、AI 校对、原译文对
 
 ## 下载与安装
 
-在 [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases) 下载安装版（Setup）或便携版（Portable）。本文介绍 2.2.4。
+在 [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases) 下载安装版（Setup）或便携版（Portable）。本文介绍 2.2.5。
 
 安装版支持应用内更新；便携版通过发布页下载替换。发布页同时提供 `SHA256SUMS.txt`。
 
@@ -68,10 +68,9 @@ YN 检查行对齐、占位符、保留内容、写入范围和恢复证据，�
 
 [质量检查](docs/quality.md) 列出检查项目、测试来源和运行方法。
 
-## 2.2.4 更新摘要
+## 2.2.5 更新摘要
 
-- 翻译进入最终审阅时，直接提供“继续／跳过”提示，不必再用自然语言说明下一步。
-- 单文件模式应用审阅意见时，自动将完整译文导入页面并应用修改，无需手动导入，与多文件模式保持一致。
+- 修复新建 EPUB 项目中空白译文草稿行数不一致导致 HTML 无法打开的问题。
 
 完整版本记录见 [Changelog](CHANGELOG.md)。
 

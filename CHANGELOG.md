@@ -4,6 +4,10 @@
 
 以下保留已记录的版本变化；公开发行与下载以 [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases) 为准。
 
+## 2.2.5 更新
+
+- 修复新建 EPUB 项目中空白译文草稿行数不一致导致 HTML 无法打开的问题。
+
 ## 2.2.4 更新
 
 - 翻译进入最终审阅时，直接提供“继续／跳过”提示，不必再用自然语言说明下一步。

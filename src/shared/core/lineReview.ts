@@ -18,6 +18,11 @@ export interface PageResult<T> {
   rows: T[];
 }
 
+/** Each empty logical line needs its own terminator, including the last one. */
+export function blankAlignedTranslationText(sourceText: string): string {
+  return "\n".repeat(splitTextLines(sourceText).length);
+}
+
 export function buildLinePairs(sourceText: string, translationText?: string): LineReviewRow[] {
   const sourceLines = splitTextLines(sourceText);
   const translationLines = splitTextLines(translationText);

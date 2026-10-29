@@ -87,6 +87,7 @@ import {
 } from "./projectOpenState.ts";
 import { patchProjectState, readProjectState, saveProjectState, subscribeProjectState } from "./projectState.ts";
 import { workflowTranslationPaths } from "../shared/core/translationBinding.ts";
+import { blankAlignedTranslationText } from "../shared/core/lineReview.ts";
 import { extractedWorkshopTextPath } from "./agent/translationBindingResolve.ts";
 import { resolveProposalSourceIdentity } from "./proposalSourceIdentity.ts";
 import {
@@ -2573,10 +2574,6 @@ function splitLines(text: string | undefined): string[] {
     return [];
   }
   return text.replace(/\r\n/g, "\n").replace(/\r$/, "").replace(/\n$/, "").split("\n");
-}
-
-function blankAlignedTranslationText(sourceText: string): string {
-  return splitLines(sourceText).map(() => "").join("\n");
 }
 
 async function writeExtractedPromptText(

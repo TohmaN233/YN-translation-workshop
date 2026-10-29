@@ -34,7 +34,7 @@ See the [feature guide](docs/features.en.md) for settings, translation reuse, pr
 
 ## Download and installation
 
-Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.4.
+Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.5.
 
 Installers support in-app updates; portable builds are replaced using the release page. Releases include `SHA256SUMS.txt`.
 
@@ -68,10 +68,9 @@ YN checks line alignment, placeholders, preserved content, write scope and recov
 
 [Quality checks](docs/quality.en.md) lists the checks, their test sources and reproduction commands.
 
-## 2.2.4 highlights
+## 2.2.5 highlights
 
-- Final translation review now offers a Continue/Skip prompt, so you can choose directly instead of describing the next step in natural language.
-- Applying review suggestions in single-file mode automatically imports the complete translation into the review page and applies the changes, matching multi-file mode.
+- Fix an empty translation draft line-count mismatch that prevented new EPUB review pages from opening.
 
 See the [Changelog](CHANGELOG.en.md) for full history.
 

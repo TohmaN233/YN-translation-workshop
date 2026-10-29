@@ -1,5 +1,5 @@
 import extractZip from "extract-zip";
-import { mkdir, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { extractEpubTextFromArchive } from "../shared/core/epubText.ts";
@@ -23,14 +23,25 @@ async function collectExtractedTextFiles(folderPath: string, rootPath = folderPa
 }
 
 export async function readEpubText(epubPath: string, workspaceDir: string, cacheId: string): Promise<string> {
-  const cacheDir = path.join(workspaceDir, "cache", "epub", cacheId.replace(/[^a-z0-9._-]+/gi, "_"));
-  await mkdir(cacheDir, { recursive: true });
+  const cacheRoot = path.resolve(workspaceDir, "cache", "epub");
+  await mkdir(cacheRoot, { recursive: true });
+  const cacheDir = await mkdtemp(path.join(cacheRoot, `${cacheId.replace(/[^a-z0-9._-]+/gi, "_")}-`));
+  if (path.dirname(cacheDir) !== cacheRoot) throw new Error("EPUB extraction directory is outside its cache root.");
+  let readFailure: Error | undefined;
   try {
     await extractZip(epubPath, { dir: cacheDir });
     const files = await collectExtractedTextFiles(cacheDir);
     return extractEpubTextFromArchive(files);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`EPUB parsing failed for ${path.basename(epubPath)}: ${message}`);
+    readFailure = new Error(`EPUB parsing failed for ${path.basename(epubPath)}: ${message}`, { cause: error });
+    throw readFailure;
+  } finally {
+    try {
+      await rm(cacheDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (readFailure) throw new AggregateError([readFailure, cleanupError], "EPUB parsing and extraction cleanup failed.");
+      throw cleanupError;
+    }
   }
 }

@@ -72,6 +72,7 @@ YN checks line alignment, placeholders, preserved content, write scope and recov
 
 - Edit AI glossary candidate translations before importing them into the formal glossary.
 - Keep the chosen warning-review action throughout a multi-file translation workflow, avoiding repeated prompts.
+- Apply proofreading reports and jump to existing review pages in EPUB folder projects.
 
 See the [Changelog](CHANGELOG.en.md) for full history.
 

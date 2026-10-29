@@ -89,7 +89,7 @@ import { patchProjectState, readProjectState, saveProjectState, subscribeProject
 import { workflowTranslationPaths } from "../shared/core/translationBinding.ts";
 import { blankAlignedTranslationText } from "../shared/core/lineReview.ts";
 import { extractedWorkshopTextPath } from "./agent/translationBindingResolve.ts";
-import { resolveProposalSourceIdentity } from "./proposalSourceIdentity.ts";
+import { canonicalBatchProposalSourcePath, resolveProposalSourceIdentity } from "./proposalSourceIdentity.ts";
 import {
   lanSyncJson,
   lanSyncLabels,
@@ -1672,6 +1672,7 @@ async function proposalLineReviewCandidates(outputDir: string, explicitPath?: st
 
 function normalizedLineReviewRouting(paths: Record<string, unknown>): {
   sourcePaths: string[];
+  documentSourcePaths: string[];
   translationPaths: string[];
 } {
   const absolute = (names: string[]) => [...new Set(names
@@ -1680,14 +1681,17 @@ function normalizedLineReviewRouting(paths: Record<string, unknown>): {
     .map((value) => path.resolve(value)))];
   return {
     sourcePaths: absolute(["sourcePath", "validationSourcePath", "promptSourcePath", "sourcePromptPath"]),
+    documentSourcePaths: absolute(paths.promptSourceKind === "folder"
+      ? ["sourcePath", "validationSourcePath"]
+      : ["sourcePath", "validationSourcePath", "promptSourcePath", "sourcePromptPath"]),
     translationPaths: absolute(["translationPath", "editableTranslationPath", "promptTranslationPath", "translationPromptPath"])
   };
 }
 
-async function lineReviewRouting(lineReviewPath: string): Promise<{ sourcePaths: string[]; translationPaths: string[] }> {
+async function lineReviewRouting(lineReviewPath: string): Promise<{ sourcePaths: string[]; documentSourcePaths: string[]; translationPaths: string[] }> {
   const html = await readReviewHtml(lineReviewPath);
   const match = html.match(/<script id=["']reviewData["'] type=["']application\/json["']>([\s\S]*?)<\/script>/i);
-  if (!match) return { sourcePaths: [], translationPaths: [] };
+  if (!match) return { sourcePaths: [], documentSourcePaths: [], translationPaths: [] };
   const parsed = JSON.parse(match[1]) as { workflow?: { paths?: Record<string, unknown> } };
   const routing = normalizedLineReviewRouting(parsed.workflow?.paths ?? {});
   const statePath = await resolveLineReviewSidecarStatePath(lineReviewPath);
@@ -1697,6 +1701,7 @@ async function lineReviewRouting(lineReviewPath: string): Promise<{ sourcePaths:
     .map((value) => path.resolve(value));
   return {
     sourcePaths: routing.sourcePaths,
+    documentSourcePaths: routing.documentSourcePaths,
     translationPaths: [...new Map((sidecarTranslationPaths.length ? sidecarTranslationPaths : routing.translationPaths).map((value) => [
       process.platform === "win32" ? value.toLowerCase() : value,
       value
@@ -1725,12 +1730,12 @@ async function assertPdfLineReviewState(htmlPath: string, value: unknown, change
 }
 
 function assertLineReviewRoutingBinding(
-  binding: { sourcePaths: string[]; translationPaths: string[] },
+  binding: { sourcePaths: string[]; documentSourcePaths: string[]; translationPaths: string[] },
   routing: { documentId: string; sourcePath: string; translationPath?: string }
 ): void {
-  if (!binding.sourcePaths.some((candidate) => sameFilePath(candidate, routing.sourcePath))) {
+  if (!binding.documentSourcePaths.some((candidate) => sameFilePath(candidate, routing.sourcePath))) {
     throw new Error(
-      `Line-review HTML is not bound to proofread document ${routing.documentId}: expected ${routing.sourcePath}; got ${binding.sourcePaths.join(", ") || "no source binding"}.`
+      `Line-review HTML is not bound to proofread document ${routing.documentId}: expected ${routing.sourcePath}; got ${binding.documentSourcePaths.join(", ") || "no source binding"}.`
     );
   }
   if (routing.translationPath && !binding.translationPaths.some((candidate) => sameFilePath(candidate, routing.translationPath))) {
@@ -2170,8 +2175,17 @@ async function synchronizeBatchProposalLineReviews(args: {
   const legacyArtifacts = await discoverLegacyProposalLineReviews(args.outputDir);
   const plans = await Promise.all(selected.map(async (child) => {
     const override = args.routeOverrides?.get(normalizedProposalDocumentId(child.documentId));
-    if (override && !sameFilePath(override.sourcePath, child.sourcePath)) {
-      throw new Error(`Proofread report source does not match batch child ${child.documentId}.`);
+    const sourcePath = override ? canonicalBatchProposalSourcePath({
+      documentId: child.documentId,
+      sourcePath: child.sourcePath,
+      reportSourcePath: override.sourcePath,
+      boundSourcePaths: sameFilePath(override.sourcePath, child.sourcePath)
+        ? undefined : (await lineReviewRouting(child.childPath)).documentSourcePaths
+    }) : child.sourcePath;
+    if (override && !sameFilePath(override.sourcePath, sourcePath)) {
+      console.info("[proposal-routing] Matched report source projection to batch child", {
+        documentId: child.documentId, sourcePath, reportSourcePath: override.sourcePath
+      });
     }
     if (override && child.translationBinding === "explicit"
       && !sameFilePath(override.translationPath, child.translationPath)) {
@@ -2181,7 +2195,7 @@ async function synchronizeBatchProposalLineReviews(args: {
     return buildSynchronizedBatchChild({
       outputDir: args.outputDir,
       documentId: child.documentId,
-      sourcePath: child.sourcePath,
+      sourcePath,
       translationPath,
       childPath: child.childPath,
       locale: args.locale,
@@ -2244,7 +2258,7 @@ async function existingProposalLineReview(
     }
     if (await isLineReviewHtml(candidate)) {
       const binding = await lineReviewRouting(candidate);
-      if (!binding.sourcePaths.some((source) => sameFilePath(source, routing.sourcePath))) continue;
+      if (!binding.documentSourcePaths.some((source) => sameFilePath(source, routing.sourcePath))) continue;
       // An initially empty body can acquire its translation through the project
       // or sidecar. Reconcile that binding before deciding whether it is usable.
       await prepareReviewHtmlOpen(candidate);

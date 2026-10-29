@@ -125,6 +125,56 @@ async function fixture() {
   return { projectDir, sourceA, sourceB, translationA, childA, childB, indexPath };
 }
 
+async function writeBlankEpubBatchFixture(item, options = {}) {
+  const sourcePath = path.join(item.projectDir, "synthetic-book.epub");
+  const editableTranslationPath = options.editableTranslationPath ?? path.join(
+    item.projectDir,
+    ".translation-workshop",
+    "extracted-text",
+    "synthetic-book",
+    "translation",
+    "synthetic-book_translated.txt"
+  );
+  await writeFile(sourcePath, "synthetic EPUB source", "utf8");
+  await mkdir(path.dirname(editableTranslationPath), { recursive: true });
+  await writeFile(editableTranslationPath, "", "utf8");
+  await writeFile(item.childB, renderLineReviewHtml({
+    title: "Synthetic EPUB draft",
+    sourceText: "Synthetic source line one.\nSynthetic source line two.",
+    translationText: "",
+    lineReviewPath: item.childB,
+    workflow: {
+      sourcePath,
+      sourceKind: "file",
+      editableTranslationPath,
+      ...(options.workflowTranslationPath ? { translationPath: options.workflowTranslationPath } : {}),
+      outputDir: item.projectDir
+    }
+  }), "utf8");
+  const indexTranslationPath = options.indexTranslationPath ?? undefined;
+  await writeFile(item.indexPath, renderBatchLineReviewIndexHtml({
+    title: "Synthetic EPUB batch",
+    files: [{
+      sourceName: "synthetic-book.epub",
+      sourcePath,
+      outputPath: "batch/b.html",
+      sourceLineCount: 2,
+      ...(indexTranslationPath ? { translationPath: indexTranslationPath } : {})
+    }],
+    workflow: {
+      sourcePath: path.dirname(sourcePath),
+      sourceKind: "folder",
+      outputDir: item.projectDir
+    }
+  }), "utf8");
+  const statePath = path.join(item.projectDir, ".translation-workshop", "state", "line-b.html.json");
+  await writeFile(statePath, JSON.stringify({
+    ...(options.sidecarTranslationPath ? { translationPath: options.sidecarTranslationPath } : {}),
+    edits: {}
+  }), "utf8");
+  return { sourcePath, editableTranslationPath, statePath };
+}
+
 await test("batch TXT planning overlays each child sidecar on the latest bound translation", async () => {
   const item = await fixture();
   const plans = await prepareBatchLineReviewTxtWrites(item.indexPath);
@@ -272,6 +322,67 @@ await test("batch TXT planning refuses to create a partial translation from an e
     () => prepareBatchLineReviewTxtWrites(item.indexPath),
     /no current translation artifact.*nested\/b\.txt/i
   );
+});
+
+await test("an extracted EPUB editable snapshot alone stays canonical-default and rejects stale targets", async () => {
+  const item = await fixture();
+  const draft = await writeBlankEpubBatchFixture(item);
+  const binding = (await readBatchLineReviewCurrentBindings(item.indexPath))[0];
+  const canonicalTarget = path.join(item.projectDir, "AI_translation", "synthetic-book_translated.txt");
+  assert.equal(binding.translationBinding, "canonical-default");
+  assert.equal(binding.translationPath, canonicalTarget);
+  assert.notEqual(binding.translationPath, draft.editableTranslationPath);
+
+  await mkdir(path.dirname(canonicalTarget), { recursive: true });
+  await writeFile(canonicalTarget, "Synthetic target one.\nSynthetic target two.\nStale extra line.", "utf8");
+  await assert.rejects(
+    () => prepareBatchLineReviewTxtWrites(item.indexPath),
+    /line count changed.*synthetic-book\.epub.*expected 2, got 3/i
+  );
+});
+
+await test("explicit EPUB sidecar, index, and original-file bindings keep their extracted editable target", async () => {
+  for (const bindingKind of ["sidecar", "index", "selected-epub"]) {
+    const item = await fixture();
+    const editableTranslationPath = path.join(
+      item.projectDir,
+      ".translation-workshop",
+      "extracted-text",
+      "synthetic-book",
+      "translation",
+      "synthetic-book_translated.txt"
+    );
+    const options = bindingKind === "sidecar"
+      ? { sidecarTranslationPath: editableTranslationPath }
+      : bindingKind === "index"
+        ? { indexTranslationPath: editableTranslationPath }
+        : { workflowTranslationPath: path.join(item.projectDir, "selected-translation.epub") };
+    await writeBlankEpubBatchFixture(item, options);
+    await writeFile(editableTranslationPath, "Synthetic target one.\nSynthetic target two.", "utf8");
+
+    const binding = (await readBatchLineReviewCurrentBindings(item.indexPath))[0];
+    assert.equal(binding.translationBinding, "explicit", `${bindingKind} selection remains explicit`);
+    assert.equal(binding.translationPath, editableTranslationPath);
+    const plan = (await prepareBatchLineReviewTxtWrites(item.indexPath))[0];
+    assert.equal(plan.targetPath, editableTranslationPath);
+    assert.equal(plan.text, "Synthetic target one.\nSynthetic target two.");
+
+    await writeFile(editableTranslationPath, "Synthetic target one.\nSynthetic target two.\nStale extra line.", "utf8");
+    await assert.rejects(
+      () => prepareBatchLineReviewTxtWrites(item.indexPath),
+      /line count changed.*synthetic-book\.epub.*expected 2, got 3/i,
+      `${bindingKind} selection must keep stale-target rejection`
+    );
+  }
+});
+
+await test("a standalone editable TXT remains an explicit target without selected bindings", async () => {
+  const item = await fixture();
+  const standaloneTarget = path.join(item.projectDir, "editable-translation.txt");
+  await writeBlankEpubBatchFixture(item, { editableTranslationPath: standaloneTarget });
+  const binding = (await readBatchLineReviewCurrentBindings(item.indexPath))[0];
+  assert.equal(binding.translationBinding, "explicit");
+  assert.equal(binding.translationPath, standaloneTarget);
 });
 
 await test("batch TXT planning rejects a current translation whose line count drifted", async () => {

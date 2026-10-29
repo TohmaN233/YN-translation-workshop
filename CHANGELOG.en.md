@@ -8,6 +8,7 @@ Recorded version changes. Public availability and downloads follow [Releases](ht
 
 - Edit AI glossary candidate translations before importing them into the formal glossary.
 - Keep the chosen warning-review action throughout a multi-file translation workflow, avoiding repeated prompts.
+- Apply proofreading reports and jump to existing review pages in EPUB folder projects.
 
 ## What's new in 2.2.5
 

@@ -7,7 +7,8 @@ import { test } from "node:test";
 import { createZipBuffer } from "../../src/main/zipWriter.ts";
 import { extractedWorkshopTextPath, workshopDirFromOutput } from "../../src/main/agent/translationBindingResolve.ts";
 import { stringifyProjectJson } from "../../src/main/projectJson.ts";
-import { resolveProposalSourceIdentity } from "../../src/main/proposalSourceIdentity.ts";
+import { canonicalBatchProposalSourcePath, resolveProposalSourceIdentity } from "../../src/main/proposalSourceIdentity.ts";
+import { readEpubText } from "../../src/main/epubReader.ts";
 
 function createEpub(lines) {
   return createZipBuffer([
@@ -17,6 +18,28 @@ function createEpub(lines) {
     { path: "EPUB/chapter.xhtml", data: Buffer.from(`<html><body>${lines.map((line) => `<p>${line}</p>`).join("")}</body></html>`) }
   ]);
 }
+
+test("concurrent EPUB reads with the same name and cache label keep independent source text", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "yn-epub-source-isolation-"));
+  const workspace = path.join(root, ".translation-workshop");
+  const books = ["alpha", "beta"].map((label) => {
+    const lines = [`Synthetic ${label} first paragraph.`, `Synthetic ${label} second paragraph.`];
+    return { sourcePath: path.join(root, label, "source.epub"), lines, sourceBytes: createEpub(lines) };
+  });
+  try {
+    for (const book of books) {
+      await mkdir(path.dirname(book.sourcePath), { recursive: true });
+      await writeFile(book.sourcePath, book.sourceBytes);
+    }
+    const text = await Promise.all(books.map((book) => readEpubText(book.sourcePath, workspace, "same-label-source.epub")));
+    for (const [index, book] of books.entries()) {
+      assert.equal(text[index].trim(), book.lines.join("\n"));
+      assert.deepEqual(await readFile(book.sourcePath), book.sourceBytes, "reading must keep the original EPUB unchanged");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 async function makeProject({ lines, projectionLines, project: projectFields = {} }, run) {
   const root = await mkdtemp(path.join(os.tmpdir(), "yn-proposal-source-"));
@@ -114,4 +137,62 @@ test("a missing matching projection is surfaced as an input error", async () => 
     await rm(projectionPath);
     await assert.rejects(resolveProposalSourceIdentity(outputDir, projectionPath), { code: "ENOENT" });
   });
+});
+
+test("batch proposal source identity accepts only exact or same-child explicit source bindings", async () => {
+  const root = path.join(os.tmpdir(), "synthetic-portable-project");
+  const physicalEpubPath = path.join(root, "source.epub");
+  const projectionPath = path.join(root, "_workspace", "extracted", "source.txt");
+  const otherBookProjectionPath = path.join(root, "other-book", "source.txt");
+  const relocatedRoot = path.join(root, "portable-copy");
+  const relocatedPhysicalEpubPath = path.join(relocatedRoot, "source.epub");
+  const relocatedProjectionPath = path.join(relocatedRoot, "_workspace", "extracted", "source.txt");
+  const documentId = "book/source.epub";
+
+  assert.equal(canonicalBatchProposalSourcePath({
+    documentId,
+    sourcePath: physicalEpubPath,
+    reportSourcePath: physicalEpubPath
+  }), physicalEpubPath, "an exact physical source route remains valid without aliases");
+  assert.equal(canonicalBatchProposalSourcePath({
+    documentId,
+    sourcePath: physicalEpubPath,
+    reportSourcePath: projectionPath,
+    boundSourcePaths: [physicalEpubPath, projectionPath]
+  }), physicalEpubPath, "an EPUB projection is valid when both routes are explicitly bound by the same child HTML");
+  assert.equal(canonicalBatchProposalSourcePath({
+    documentId,
+    sourcePath: relocatedPhysicalEpubPath,
+    reportSourcePath: relocatedProjectionPath,
+    boundSourcePaths: [relocatedPhysicalEpubPath, relocatedProjectionPath]
+  }), relocatedPhysicalEpubPath, "portable relocated bindings use their decoded absolute paths");
+
+  assert.throws(() => canonicalBatchProposalSourcePath({
+    documentId,
+    sourcePath: physicalEpubPath,
+    reportSourcePath: otherBookProjectionPath,
+    boundSourcePaths: [physicalEpubPath, projectionPath]
+  }), /source|bound|document/i, "same-basename paths from another book must be rejected");
+  assert.throws(() => canonicalBatchProposalSourcePath({
+    documentId,
+    sourcePath: physicalEpubPath,
+    reportSourcePath: projectionPath,
+    boundSourcePaths: [physicalEpubPath]
+  }), /source|bound|document/i, "both routes must be explicit members of the child HTML binding");
+  assert.throws(() => canonicalBatchProposalSourcePath({
+    documentId,
+    sourcePath: physicalEpubPath,
+    reportSourcePath: "_workspace/extracted/source.txt",
+    boundSourcePaths: [physicalEpubPath, projectionPath]
+  }), /absolute|source|bound/i, "relative report paths must be rejected");
+  assert.throws(() => canonicalBatchProposalSourcePath({
+    documentId: "",
+    sourcePath: physicalEpubPath,
+    reportSourcePath: physicalEpubPath
+  }), /document/i, "a source route requires a document identity");
+  assert.throws(() => canonicalBatchProposalSourcePath({
+    documentId: "../other-book/source.epub",
+    sourcePath: physicalEpubPath,
+    reportSourcePath: physicalEpubPath
+  }), /document/i, "a source route must not use a traversal document identity");
 });

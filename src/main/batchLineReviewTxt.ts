@@ -4,6 +4,7 @@ import path from "node:path";
 import { readProjectJsonObject } from "./projectJson.ts";
 
 import { splitTextLines } from "../shared/validation/translationValidator.ts";
+import { isExtractedWorkshopTranslationPath } from "../shared/core/translationBinding.ts";
 import { resolveTranslationCandidatePath } from "./agent/writeTranslationChunk.ts";
 import { resolveBatchReviewChildForUpgrade } from "./batchReviewUpgradePaths.ts";
 
@@ -276,8 +277,20 @@ function explicitTargetPathsFor(
 ): string[] {
   const sourcePath = path.resolve(file.sourcePath);
   const sidecarTarget = absoluteTxtPath(state.translationPath);
+  const hasSelectedTranslationBinding = [
+    state.translationPath,
+    review.workflow?.paths?.translationPath,
+    file.translationPath
+  ].some((value) => typeof value === "string"
+    && value.trim().length > 0
+    && path.isAbsolute(value)
+    && !samePath(path.resolve(value), sourcePath));
+  const editableTarget = absoluteTxtPath(review.workflow?.paths?.editableTranslationPath);
+  const generatedSnapshotIsDefault = !sidecarTarget
+    && !hasSelectedTranslationBinding
+    && Boolean(editableTarget && isExtractedWorkshopTranslationPath(editableTarget));
   const boundTargets = (sidecarTarget ? [sidecarTarget] : [
-    review.workflow?.paths?.editableTranslationPath,
+    ...(generatedSnapshotIsDefault ? [] : [review.workflow?.paths?.editableTranslationPath]),
     review.workflow?.paths?.translationPath,
     file.translationPath
   ])

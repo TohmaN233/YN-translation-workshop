@@ -100,7 +100,7 @@ for (const action of ['review','skip','read_only']) test(`warning-review follow-
       assert.equal(finished,action==='review'?1:0,'The native loop stopped after a partial review instead of enforcing the remaining full-workflow debt');
       if(action==='review'){
         assert.equal(context.domainRun.fullWorkflow,true);
-        assert.equal(context.domainRun.translationWarningReviewDecision,undefined);
+        assert.equal(context.domainRun.translationWarningReviewDecision,'review','one accepted choice remains attached to the complete workflow');
         assert.deepEqual(context.domainRun.incompleteReasons(),[]);
       }else assert.equal(modelCalls,0);
       assert.equal(repaired,action==='review','Only the unfinished authorized review needs a Host continuation');

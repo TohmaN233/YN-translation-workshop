@@ -54,7 +54,7 @@ async function buildVerifier(entryPoint, outputName) {
   return outfile;
 }
 
-async function runVerifier(mainPath, successMarker, timeoutMs, envOverrides = {}) {
+async function runVerifier(mainPath, successMarker, timeoutMs, envOverrides = {}, expectedHandlerErrors = []) {
   const result = await new Promise((resolve, reject) => {
     const child = spawn(electronPath, [
       "--disable-gpu",
@@ -105,10 +105,14 @@ async function runVerifier(mainPath, successMarker, timeoutMs, envOverrides = {}
       resolve({ code: 1, stdout, stderr: `${stderr}\n${error.stack || error.message}`, processId: child.pid });
     });
   });
+  const unexpectedHandlerError = result.stderr.split(/\r?\n/).some((line) => {
+    if (!/Error occurred in handler|No handler registered/.test(line)) return false;
+    return !expectedHandlerErrors.some((pattern) => pattern.test(line));
+  });
   if (
     result.code !== 0
     || !result.stdout.includes(successMarker)
-    || /Error occurred in handler|No handler registered/.test(result.stderr)
+    || unexpectedHandlerError
     || /MaxListenersExceededWarning/.test(result.stderr)
     || /\[shutdown\].*(?:failed|cancelled)/i.test(result.stderr)
     || /Uncaught (?:ReferenceError|TypeError|SyntaxError)/.test(`${result.stdout}\n${result.stderr}`)
@@ -166,6 +170,21 @@ try {
         YN_ELECTRON_VERIFY_OFFSCREEN: "1",
         YN_EPUB_SKIP_MANUAL_IMPORT: skipManualImport
       });
+    }
+  }
+
+  if (!verifyOnly || verifyOnly === "proposal-epub-folder") {
+    const proposalEpubFolderMain = await buildVerifier(
+      "scripts/verify-electron-proposal-epub-folder-main.ts",
+      "proposal-epub-folder-main.mjs"
+    );
+    for (const sameBasenameFixture of ["0", "1"]) {
+      await runVerifier(proposalEpubFolderMain, '"proposalEpubFolder":true', 90_000, {
+        YN_ELECTRON_VERIFY_OFFSCREEN: "1",
+        YN_EPUB_FOLDER_SAME_BASENAME: sameBasenameFixture
+      }, [
+        /^Error occurred in handler for 'html:resolveProposalLineReviewDocument': Error: Line-review HTML is not bound to proofread document .+: expected .+; got .+\.$/
+      ]);
     }
   }
 

@@ -16,6 +16,63 @@ export interface ProposalSourceIdentity {
   epubExport?: EpubReplacementOptions;
 }
 
+interface CanonicalBatchProposalSourcePathArgs {
+  documentId: string;
+  sourcePath: string;
+  reportSourcePath: string;
+  boundSourcePaths?: readonly string[];
+}
+
+function proposalDocumentId(value: string): string {
+  const normalized = value.trim().replace(/\\/g, "/");
+  if (!normalized || path.isAbsolute(normalized) || normalized.split("/").some((part) => part === "..")) {
+    throw new Error("A valid relative proposal document id is required.");
+  }
+  return normalized;
+}
+
+function absoluteProposalSourcePath(value: string, label: string): string {
+  if (typeof value !== "string" || !value.trim() || value.includes("\0") || !path.isAbsolute(value)) {
+    throw new Error(`${label} must be an absolute source path.`);
+  }
+  return path.resolve(value);
+}
+
+function sameProposalSourcePath(left: string, right: string): boolean {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+/**
+ * Resolve an aggregate-report source route to the physical source already
+ * indexed for a child document. A distinct route is accepted only when both
+ * absolute paths are explicitly present in that child's HTML binding.
+ */
+export function canonicalBatchProposalSourcePath({
+  documentId,
+  sourcePath,
+  reportSourcePath,
+  boundSourcePaths
+}: CanonicalBatchProposalSourcePathArgs): string {
+  const identity = proposalDocumentId(documentId);
+  const physicalSource = absoluteProposalSourcePath(sourcePath, `Indexed source for ${identity}`);
+  const reportSource = absoluteProposalSourcePath(reportSourcePath, `Report source for ${identity}`);
+  if (sameProposalSourcePath(physicalSource, reportSource)) return physicalSource;
+
+  if (!Array.isArray(boundSourcePaths)) {
+    throw new Error(`Report source for ${identity} does not match its indexed physical source or child HTML binding.`);
+  }
+  const boundPaths = boundSourcePaths.map((candidate) => absoluteProposalSourcePath(candidate, `Child HTML source binding for ${identity}`));
+  if (!boundPaths.some((candidate) => sameProposalSourcePath(candidate, physicalSource))
+    || !boundPaths.some((candidate) => sameProposalSourcePath(candidate, reportSource))) {
+    throw new Error(`Report source for ${identity} is not explicitly bound by the same child HTML as its indexed source.`);
+  }
+  return physicalSource;
+}
+
 function projectPairPosition(project: Record<string, unknown>, key: "sourcePosition" | "translationPosition", fallback: 1 | 2): 1 | 2 {
   const value = project[key];
   if (value === undefined) return fallback;

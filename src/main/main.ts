@@ -59,7 +59,8 @@ import {
   readBatchLineReviewChildren,
   readBatchLineReviewCurrentBindings,
   resolveLineReviewSidecarStatePath,
-  lineReviewSidecarStatePath
+  lineReviewSidecarStatePath,
+  type BatchLineReviewTxtSkip
 } from "./batchLineReviewTxt.ts";
 import {
   acceptLineReviewMutationSequence,
@@ -4622,7 +4623,8 @@ ipcMain.handle("html:writeBatchLineReviewTxt", async (event) => {
     throw new Error("The batch review is not open in the Electron HTML workbench.");
   }
   await drainHtmlSidecarStateWrites();
-  const writes = await prepareBatchLineReviewTxtWrites(batchIndexPath);
+  const skipped: BatchLineReviewTxtSkip[] = [];
+  const writes = await prepareBatchLineReviewTxtWrites(batchIndexPath, file => skipped.push(file));
   const written = [];
   for (const write of writes) {
     const result = await writeBoundTranslationText({
@@ -4636,7 +4638,8 @@ ipcMain.handle("html:writeBatchLineReviewTxt", async (event) => {
       lineCount: write.lineCount
     });
   }
-  return { ok: true, written };
+  console.info("[batch-txt-write] Finished", { batchIndexPath, written: written.length, skipped });
+  return { ok: true, written, skipped };
 });
 
 ipcMain.handle("lan-sync:start", async (event, args: LanSyncStartArgs) => {

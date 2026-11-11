@@ -78,6 +78,12 @@ export interface BatchLineReviewTxtWrite {
   lineCount: number;
 }
 
+export interface BatchLineReviewTxtSkip {
+  documentId: string;
+  targetPath: string;
+  reason: "untranslated" | "incomplete";
+}
+
 function parseJsonScript<T>(html: string, id: string): T {
   const expression = new RegExp(`<script id=["']${id}["'] type=["']application/json["']>([\\s\\S]*?)<\\/script>`, "i");
   const match = html.match(expression);
@@ -389,7 +395,10 @@ function embeddedTranslationLines(review: LineReviewData): string[] {
   return review.rows.map((row) => row.translation);
 }
 
-export async function prepareBatchLineReviewTxtWrites(batchIndexPath: string): Promise<BatchLineReviewTxtWrite[]> {
+export async function prepareBatchLineReviewTxtWrites(
+  batchIndexPath: string,
+  onSkipped?: (file: BatchLineReviewTxtSkip) => void
+): Promise<BatchLineReviewTxtWrite[]> {
   if (!path.isAbsolute(batchIndexPath) || path.extname(batchIndexPath).toLowerCase() !== ".html") {
     throw new Error("An absolute batch review HTML path is required.");
   }
@@ -414,15 +423,21 @@ export async function prepareBatchLineReviewTxtWrites(batchIndexPath: string): P
       throw new Error(`Batch TXT write resolves more than one child to ${targetPath}.`);
     }
     seenTargets.add(comparableTarget);
-
     const existingLines = await existingTargetLines(targetPath);
     const embeddedLines = embeddedTranslationLines(review);
     const edits = state.edits && typeof state.edits === "object" && !Array.isArray(state.edits)
       ? state.edits
       : {};
     const completeSidecar = review.rows.every((row) => Object.prototype.hasOwnProperty.call(edits, String(row.line)));
-    if (!existingLines && !embeddedLines.some((line) => line.trim() !== "") && !completeSidecar) {
-      throw new Error(`Batch review has no current translation artifact for ${file.sourceName}: ${targetPath}`);
+    const hasTranslationBaseline = existingLines?.some((line) => line.trim() !== "")
+      || embeddedLines.some((line) => line.trim() !== "");
+    if (!hasTranslationBaseline && !completeSidecar) {
+      onSkipped?.({
+        documentId: file.sourceName,
+        targetPath,
+        reason: review.rows.some((row) => Object.prototype.hasOwnProperty.call(edits, String(row.line))) ? "incomplete" : "untranslated"
+      });
+      continue;
     }
     const baseline = existingLines ?? embeddedLines;
     if (baseline.length !== review.rows.length) {
@@ -440,7 +455,8 @@ export async function prepareBatchLineReviewTxtWrites(batchIndexPath: string): P
       sourcePath: path.resolve(file.sourcePath),
       targetPath,
       outputDir,
-      text: lines.join("\n"),
+      // The reader removes one line terminator, so an empty final row needs its own.
+      text: lines.join("\n") + (lines.at(-1) === "" ? "\n" : ""),
       lineCount: lines.length
     });
   }

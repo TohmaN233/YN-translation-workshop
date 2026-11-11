@@ -371,6 +371,7 @@ declare global {
       writeBatchLineReviewTxt: () => Promise<{
         ok: boolean;
         written: Array<{ path: string; backupPath?: string; lineCount: number }>;
+        skipped: Array<{ documentId: string; targetPath: string; reason: "untranslated" | "incomplete" }>;
       }>;
       writeAuditWhitelistFile: (args: { outputDir?: string; documentId?: string; sourcePath?: string; lines?: number[]; lineReviewPath?: string; lineState?: unknown; changedLines?: number[] }) => Promise<{ ok: boolean; path: string; backupPath?: string; lineCount: number; lineReviewPath?: string; state?: Record<string, unknown>; changedLines?: number[] }>;
       writeEpubFile: (args: { templatePath: string; lines: string[]; sourceLines?: string[]; targetLanguage?: string; outputDir?: string; mode?: "all" | "pair-position"; replacePosition?: number; pairSize?: number }) => Promise<{ ok: boolean; path: string; changedDocuments: number }>;

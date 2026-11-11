@@ -322,17 +322,72 @@ await test("a moved legacy sidecar uses project.json ownership while preserving 
   }
 });
 
-await test("batch TXT planning refuses to create a partial translation from an empty child", async () => {
+await test("batch TXT planning skips an incomplete child and retains ready files", async () => {
   const item = await fixture();
   await writeFile(
     path.join(item.projectDir, ".translation-workshop", "state", "line-b.html.json"),
     JSON.stringify({ edits: { 1: "manual B1" } }),
     "utf8"
   );
-  await assert.rejects(
-    () => prepareBatchLineReviewTxtWrites(item.indexPath),
-    /no current translation artifact.*nested\/b\.txt/i
-  );
+  const skipped = [];
+  const plans = await prepareBatchLineReviewTxtWrites(item.indexPath, file => skipped.push(file));
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0].childPath, item.childA);
+  assert.equal(skipped[0].documentId, "nested/b.txt");
+  assert.equal(skipped[0].reason, "incomplete");
+  await writeFile(path.join(item.projectDir, ".translation-workshop/state/line-b.html.json"), JSON.stringify({ edits: { 1: "" } }));
+  const cleared = [];
+  await prepareBatchLineReviewTxtWrites(item.indexPath, file => cleared.push(file));
+  assert.equal(cleared[0].reason, "incomplete");
+});
+
+await test("batch TXT planning skips untranslated files including blank placeholder targets", async () => {
+  const item = await fixture();
+  await writeFile(path.join(item.projectDir, ".translation-workshop/state/line-b.html.json"), "{}");
+  const blankTarget = path.join(item.projectDir, "AI_translation/nested/b_translated.txt");
+  await mkdir(path.dirname(blankTarget), { recursive: true });
+  await writeFile(blankTarget, "\n\n");
+  const skipped = [];
+  const plans = await prepareBatchLineReviewTxtWrites(item.indexPath, file => skipped.push(file));
+  assert.equal(plans.length, 1);
+  assert.equal(skipped[0].reason, "untranslated");
+  assert.equal(await readFile(blankTarget, "utf8"), "\n\n");
+});
+
+await test("complete manual edits preserve intentionally empty translations", async () => {
+  const item = await fixture();
+  await writeFile(path.join(item.projectDir, ".translation-workshop/state/line-b.html.json"), JSON.stringify({ edits: { 1: "", 2: "" } }));
+  const plans = await prepareBatchLineReviewTxtWrites(item.indexPath);
+  const blankPlan = plans.find(plan => plan.childPath === item.childB);
+  assert.equal(blankPlan.text, "\n\n");
+  await mkdir(path.dirname(blankPlan.targetPath), { recursive: true });
+  await writeFile(blankPlan.targetPath, blankPlan.text);
+  const repeated = await prepareBatchLineReviewTxtWrites(item.indexPath);
+  assert.equal(repeated.find(plan => plan.childPath === item.childB)?.text, blankPlan.text);
+});
+
+await test("batch TXT writing retains an intentional empty final row across repeated writes", async () => {
+  const item = await fixture();
+  await writeFile(path.join(item.projectDir, ".translation-workshop/state/line-a.html.json"), JSON.stringify({ edits: { 2: "" } }));
+  const plan = (await prepareBatchLineReviewTxtWrites(item.indexPath)).find(plan => plan.childPath === item.childA);
+  assert.equal(plan.text, "disk A1\n\n");
+  await writeFile(plan.targetPath, plan.text);
+  const repeated = await prepareBatchLineReviewTxtWrites(item.indexPath);
+  assert.equal(repeated.find(plan => plan.childPath === item.childA)?.text, plan.text);
+});
+
+await test("an entirely untranslated batch produces no writes", async () => {
+  const item = await fixture();
+  await rm(item.translationA);
+  const html = await readFile(item.childA, "utf8");
+  await writeFile(item.childA, html.replaceAll("embedded A1", "").replaceAll("embedded A2", ""));
+  await Promise.all(["a", "b"].map(name => writeFile(
+    path.join(item.projectDir, `.translation-workshop/state/line-${name}.html.json`), "{}"
+  )));
+  const skipped = [];
+  assert.deepEqual(await prepareBatchLineReviewTxtWrites(item.indexPath, file => skipped.push(file)), []);
+  assert.deepEqual(skipped.map(file => file.reason), ["untranslated", "untranslated"]);
+  await assert.rejects(readFile(item.translationA), { code: "ENOENT" });
 });
 
 await test("an extracted EPUB editable snapshot alone stays canonical-default and rejects stale targets", async () => {

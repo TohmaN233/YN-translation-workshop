@@ -954,8 +954,8 @@ const batchLabels: Record<UiLocale, Record<string, string>> = {
     mismatch: "\u884c\u6570\u4e0d\u4e00\u81f4",
     open: "\u5728\u65b0\u6807\u7b7e\u9875\u6253\u5f00",
     writeAllTxt: "\u6279\u91cf\u5199\u5165 TXT",
-    batchWriteRunning: "\u6b63\u5728\u5199\u5165\u5168\u90e8 TXT...",
-    batchWriteDone: "\u5df2\u5199\u5165 {count} \u4e2a TXT",
+    batchWriteRunning: "\u6b63\u5728\u6279\u91cf\u5199\u5165 TXT...",
+    batchWriteDone: "\u5df2\u5199\u5165 {count} \u4e2a TXT\uff0c\u8df3\u8fc7 {skipped} \u4e2a",
     batchWriteFailed: "\u6279\u91cf\u5199\u5165\u5931\u8d25",
     promptTitle: "\u6587\u4ef6\u5939\u6279\u91cf\u7ffb\u8bd1\u63d0\u793a\u8bcd",
     promptHint: "\u8fd9\u662f\u9488\u5bf9\u5f53\u524d\u6587\u4ef6\u5939\u7684\u6279\u91cf\u7ffb\u8bd1\u63d0\u793a\u8bcd\uff0c\u4f1a\u6309\u6587\u4ef6\u5206\u522b\u5904\u7406\u3002",
@@ -977,8 +977,8 @@ const batchLabels: Record<UiLocale, Record<string, string>> = {
     mismatch: "Line count mismatch",
     open: "Open in new tab",
     writeAllTxt: "Write all TXT",
-    batchWriteRunning: "Writing all TXT files...",
-    batchWriteDone: "Wrote {count} TXT files",
+    batchWriteRunning: "Writing TXT files...",
+    batchWriteDone: "Wrote {count} TXT files, skipped {skipped}",
     batchWriteFailed: "Batch TXT write failed",
     promptTitle: "Folder batch translation prompt",
     promptHint: "This prompt targets the selected folder and processes its files as separate translation artifacts.",
@@ -994,7 +994,7 @@ const batchLabels: Record<UiLocale, Record<string, string>> = {
 // v3 removed the obsolete outer batch prompt sidebar. v4 added the compact,
 // Host-backed batch TXT action. v5 flushes the active child before Host preflight.
 // v6 keeps match state internal instead of presenting stale same-name-file status.
-export const BATCH_LINE_REVIEW_PROTOCOL_VERSION = 11;
+export const BATCH_LINE_REVIEW_PROTOCOL_VERSION = 12;
 export const BATCH_LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-batch-review-v${BATCH_LINE_REVIEW_PROTOCOL_VERSION}`;
 
 export function renderBatchLineReviewIndexHtml(options: BatchLineReviewIndexOptions): string {
@@ -1124,7 +1124,9 @@ document.getElementById("writeAllTxt").addEventListener("click", async () => {
     const flushChild = frame.contentWindow?.flushTranslationWorkshopLineReviewState;
     if (typeof flushChild === "function") await flushChild.call(frame.contentWindow);
     const result = await api.writeBatchLineReviewTxt();
-    status.textContent = data.labels.batchWriteDone.replace("{count}", String(result?.written?.length || 0));
+    status.textContent = data.labels.batchWriteDone
+      .replace("{count}", String(result?.written?.length || 0))
+      .replace("{skipped}", String(result?.skipped?.length || 0));
   } catch (error) {
     console.error(error);
     status.className = "batchWriteStatus error";

@@ -709,7 +709,7 @@ async function run(): Promise<void> {
       lineReviewPath: document.lineReviewPath,
       changedStateKeys: []
     };
-    await Promise.all([
+    const results = await Promise.all([
       htmlBridge().applyProposalLineReviewStates({ documents: [{
         ...base,
         lineState: { edits: { 1: "并发更新一" } },
@@ -723,6 +723,7 @@ async function run(): Promise<void> {
         expectedLineRevisions: { 2: Number(document.state?.revisions?.[2] || 0) }
       }] })
     ]);
+    if (results.some(result => !result?.ok)) throw new Error("Concurrent proposal apply failed: " + JSON.stringify(results));
     return document.lineReviewPath;
   })()`);
   const concurrentStatePath = path.join(workspaceDir, "state", `line-${path.basename(concurrentProposalState)}.json`);
@@ -889,6 +890,23 @@ async function run(): Promise<void> {
     assert(states[0].edits["1"] === "新译甲一" && states[1].edits["2"] === "新译乙二" && states[2].edits["1"] === "新译丙一", "Scoped proposal apply did not commit the requested edits");
     assert(states[1].edits["1"] === "人工保留乙一", "Scoped proposal apply lost the pending manual edit");
     assert(!(await readdir(path.dirname(folderTranslationD))).includes(path.basename(folderTranslationD)), "Proposal apply recreated a deliberately deleted sibling target");
+    await liveFolderView.webContents.executeJavaScript('applyFile(3)');
+    await waitFor(
+      () => liveFolderView.webContents.executeJavaScript('document.querySelector("#fileFrame")?.contentWindow?.translationWorkshopLineReviewReady?.then(() => document.querySelector("#fileFrame").getAttribute("src"))').catch(() => ""),
+      (value) => typeof value === "string" && value.includes(path.basename(folderLineD)),
+      "the untranslated child before batch TXT write"
+    );
+    await liveFolderView.webContents.executeJavaScript('document.querySelector("#writeAllTxt").click()');
+    const batchWriteStatus = await waitFor(
+      () => liveFolderView.webContents.executeJavaScript('document.querySelector("#writeAllTxt").disabled ? "" : document.querySelector("#batchWriteStatus").textContent').catch(() => ""),
+      (value) => typeof value === "string" && value.length > 0,
+      "batch TXT write with an untranslated active child"
+    );
+    const expectedBatchStatus = await liveFolderView.webContents.executeJavaScript('data.labels.batchWriteDone.replace("{count}", "3").replace("{skipped}", "1")');
+    assert(batchWriteStatus === expectedBatchStatus, `Batch TXT write did not skip the untranslated child: ${batchWriteStatus}`);
+    const batchTexts = await Promise.all([folderTranslationA, folderTranslationB, folderTranslationC].map(file => readFile(file, "utf8")));
+    assert(batchTexts[0] === "新译甲一\n旧译甲二" && batchTexts[1] === "人工保留乙一\n新译乙二" && batchTexts[2] === "新译丙一\n旧译丙二", "Batch TXT write lost reviewed or manual edits");
+    assert(!(await readdir(path.dirname(folderTranslationD))).includes(path.basename(folderTranslationD)), "Batch TXT write created an untranslated target");
     await rm(folderTranslationC);
     await aggregateView.webContents.executeJavaScript(`(async () => {
       for (const item of data.proposals) if (item.documentId === "untouched/chapter-c.txt") state.decisions[item.id] = { status: "rejected", manualText: "" };
@@ -912,7 +930,7 @@ async function run(): Promise<void> {
     assert(requiredMissing.includes(path.basename(folderTranslationA)), "A missing requested translation must fail with its path");
     viewerWindow.close();
     await waitFor(() => viewerWindow.isDestroyed(), Boolean, "scoped proposal review close after pending saves");
-    console.log(JSON.stringify({ok:true,folderProofreadAggregate:true,deletedUnreferencedSiblingIgnored:true,rejectedMissingDocumentIgnored:true,allRejectedWithoutReads:true,requestedMissingTranslationRejected:true,requestedEditsCommitted:true,manualEditsPreserved:true}));
+    console.log(JSON.stringify({ok:true,folderProofreadAggregate:true,deletedUnreferencedSiblingIgnored:true,batchTxtUntranslatedSkipped:true,batchTxtWritten:3,batchTxtSkipped:1,rejectedMissingDocumentIgnored:true,allRejectedWithoutReads:true,requestedMissingTranslationRejected:true,requestedEditsCommitted:true,manualEditsPreserved:true}));
     return;
   }
   assert(visibleView(viewerWindow)?.webContents.id === aggregateView.webContents.id, "Cross-file apply opened every child instead of staying in the aggregate report");

@@ -6,7 +6,7 @@ Recorded version changes. Public availability and downloads follow [Releases](ht
 
 ## What's new in 2.2.9
 
-- Apply folder proofreading suggestions using only the selected documents, allowing unrelated translation files to be removed and rejected document groups to be skipped.
+- Improve folder proofreading and batch writing. Apply suggestions using only the selected documents. Batch TXT writing skips untranslated files and reports written and skipped counts.
 
 ## What's new in 2.2.8
 

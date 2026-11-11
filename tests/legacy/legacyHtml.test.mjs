@@ -126,6 +126,25 @@ await test("v2 folder indexes with the obsolete sidebar upgrade to the current c
   assert.match(upgraded, /Source folder: G:\/project\/source/);
 });
 
+await test("v11 folder indexes upgrade batch TXT written and skipped counts", () => {
+  const current = renderBatchLineReviewIndexHtml({
+    title: "batch TXT",
+    files: [{
+      sourceName: "scene.txt",
+      sourcePath: "G:/project/source/scene.txt",
+      outputPath: "batch/scene.html",
+      status: "missing-translation",
+      sourceLineCount: 2
+    }]
+  });
+  const legacy = current.replace(BATCH_LINE_REVIEW_PROTOCOL_MARKER, "translation-workshop-batch-review-v11");
+  assert.equal(needsLegacyBatchLineReviewUpgrade(legacy), true);
+  const upgraded = upgradeLegacyBatchLineReviewHtmlContent(legacy, "batch.html");
+  assert.match(upgraded, new RegExp(BATCH_LINE_REVIEW_PROTOCOL_MARKER));
+  assert.match(upgraded, /result\?\.skipped\?\.length/);
+  assert.match(upgraded, /\{skipped\}/);
+});
+
 await test("future folder-review protocols are never downgraded to the current renderer", () => {
   const current = renderBatchLineReviewIndexHtml({
     title: "future folder review",

@@ -70,7 +70,7 @@ YN checks line alignment, placeholders, preserved content, write scope and recov
 
 ## 2.2.9 highlights
 
-- Apply folder proofreading suggestions after removing unrelated translation files, preparing only the documents whose suggestions are being applied.
+- Apply folder proofreading suggestions after removing unrelated translation files, preparing only the documents whose suggestions are being applied. Batch TXT writing skips untranslated files and reports written and skipped counts.
 
 See the [Changelog](CHANGELOG.en.md) for full history.
 

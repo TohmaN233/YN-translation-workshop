@@ -9,6 +9,7 @@ import { renderBatchLineReviewIndexHtml, renderLineReviewHtml } from "../src/sha
 import { resolveReviewHtmlPaths } from "../src/main/reviewHtmlPortability.ts";
 
 const root = process.cwd();
+const deletedSiblingFixture = process.env.YN_PROPOSAL_DELETED_SIBLING === "1";
 const outputDir = await mkdtemp(path.join(os.tmpdir(), "yn-electron-proposal-review-"));
 const workspaceDir = path.join(outputDir, ".translation-workshop");
 const htmlDir = path.join(workspaceDir, "html");
@@ -872,14 +873,48 @@ async function run(): Promise<void> {
     editor.textContent = "人工保留乙一";
     editor.dispatchEvent(new child.InputEvent("input", { bubbles: true, inputType: "insertText" }));
   })()`);
+  if (deletedSiblingFixture) await rm(folderTranslationD);
   await aggregateView.webContents.executeJavaScript(`(() => {
     document.querySelector("#applyProposalChanges").click();
   })()`);
   await waitFor(
     () => aggregateView.webContents.executeJavaScript('document.querySelector("#proposalStatus")?.textContent || ""').catch(() => ""),
-    (value) => typeof value === "string" && /:\s*3\s*\//.test(value),
+    (value) => typeof value === "string" && (/Failed to apply|应用建议失败/.test(value) || /:\s*3\s*\//.test(value)),
     "one-click application of every unreviewed folder suggestion"
   );
+  const scopedApplyStatus = await aggregateView.webContents.executeJavaScript('document.querySelector("#proposalStatus")?.textContent || ""');
+  assert(!/Failed to apply|应用建议失败/.test(scopedApplyStatus), `Unreferenced deleted sibling blocked proposal apply: ${scopedApplyStatus}`);
+  if (deletedSiblingFixture) {
+    const states = await Promise.all([folderLineA, folderLineB, folderLineC].map(file => readFile(path.join(workspaceDir, "state", `line-${path.basename(file)}.json`), "utf8").then(JSON.parse)));
+    assert(states[0].edits["1"] === "新译甲一" && states[1].edits["2"] === "新译乙二" && states[2].edits["1"] === "新译丙一", "Scoped proposal apply did not commit the requested edits");
+    assert(states[1].edits["1"] === "人工保留乙一", "Scoped proposal apply lost the pending manual edit");
+    assert(!(await readdir(path.dirname(folderTranslationD))).includes(path.basename(folderTranslationD)), "Proposal apply recreated a deliberately deleted sibling target");
+    await rm(folderTranslationC);
+    await aggregateView.webContents.executeJavaScript(`(async () => {
+      for (const item of data.proposals) if (item.documentId === "untouched/chapter-c.txt") state.decisions[item.id] = { status: "rejected", manualText: "" };
+      await applyProposalChanges();
+    })()`);
+    assert(await aggregateView.webContents.executeJavaScript('document.querySelector("#proposalStatus").textContent.includes(": 2 /")'), "A rejected document with a deleted target blocked the remaining proposals");
+    await rm(folderTranslationA); await rm(folderTranslationB);
+    const decisionFreeze = await aggregateView.webContents.executeJavaScript(`(async () => {
+      for (const item of data.proposals) state.decisions[item.id] = { status: "rejected", manualText: "" };
+      const pending = applyProposalChanges();
+      const duringApply = document.getElementById("cards").inert;
+      await pending;
+      return { duringApply, afterApply: document.getElementById("cards").inert };
+    })()`);
+    assert(decisionFreeze.duringApply && !decisionFreeze.afterApply, "Proposal decisions must stay fixed until the application finishes");
+    const requiredMissing = await aggregateView.webContents.executeJavaScript(`(async () => {
+      const item = data.proposals.find(proposal => proposal.documentId === "chapter-a.txt");
+      state.decisions[item.id] = { status: "accepted", manualText: "" };
+      try { await applyProposalChanges(); return ""; } catch (error) { return String(error.message); }
+    })()`);
+    assert(requiredMissing.includes(path.basename(folderTranslationA)), "A missing requested translation must fail with its path");
+    viewerWindow.close();
+    await waitFor(() => viewerWindow.isDestroyed(), Boolean, "scoped proposal review close after pending saves");
+    console.log(JSON.stringify({ok:true,folderProofreadAggregate:true,deletedUnreferencedSiblingIgnored:true,rejectedMissingDocumentIgnored:true,allRejectedWithoutReads:true,requestedMissingTranslationRejected:true,requestedEditsCommitted:true,manualEditsPreserved:true}));
+    return;
+  }
   assert(visibleView(viewerWindow)?.webContents.id === aggregateView.webContents.id, "Cross-file apply opened every child instead of staying in the aggregate report");
   assert(await liveFolderView.webContents.executeJavaScript('document.querySelector("#fileSelect").value') === "1",
     "Synchronizing proofreading must retain the selected document in the open folder homepage");
@@ -1000,7 +1035,7 @@ async function run(): Promise<void> {
     };
   }));
   assert(
-    synchronizedChildren.every((child) => child.translationPath && child.translations.every(Boolean)),
+    synchronizedChildren.filter(child => child.childPath !== folderLineD).every((child) => child.translationPath && child.translations.every(Boolean)),
     `Batch children were not synchronized with their current translation artifacts: ${JSON.stringify(synchronizedChildren)}`
   );
   const legacyProposalChildren = await readdir(path.join(htmlDir, "proposal-line-review")).catch((error: NodeJS.ErrnoException) => {

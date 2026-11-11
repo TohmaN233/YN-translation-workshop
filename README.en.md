@@ -34,7 +34,7 @@ See the [feature guide](docs/features.en.md) for settings, translation reuse, pr
 
 ## Download and installation
 
-Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.8.
+Download the installer (Setup) or portable build (Portable) from [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases). These docs describe 2.2.9.
 
 Installers support in-app updates; portable builds are replaced using the release page. Releases include `SHA256SUMS.txt`.
 
@@ -68,9 +68,9 @@ YN checks line alignment, placeholders, preserved content, write scope and recov
 
 [Quality checks](docs/quality.en.md) lists the checks, their test sources and reproduction commands.
 
-## 2.2.8 highlights
+## 2.2.9 highlights
 
-- Improve EPUB extraction and export with accurate paragraph writeback, target-language layout, preserved navigation links and separate copies for repeated exports.
+- Apply folder proofreading suggestions after removing unrelated translation files, preparing only the documents whose suggestions are being applied.
 
 See the [Changelog](CHANGELOG.en.md) for full history.
 

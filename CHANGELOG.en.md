@@ -4,6 +4,10 @@
 
 Recorded version changes. Public availability and downloads follow [Releases](https://github.com/TohmaN233/YN-translation-workshop/releases).
 
+## What's new in 2.2.9
+
+- Apply folder proofreading suggestions using only the selected documents, allowing unrelated translation files to be removed and rejected document groups to be skipped.
+
 ## What's new in 2.2.8
 
 - Improve EPUB extraction and export with shared paragraph mapping, ruby and vertical/Kobo markup cleanup, consistent language and reading direction, preserved navigation links, and separate copies for repeated exports.

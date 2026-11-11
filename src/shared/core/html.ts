@@ -1142,7 +1142,7 @@ applyFile(0);
 
 export const LINE_REVIEW_PROTOCOL_VERSION = 63;
 export const LINE_REVIEW_PROTOCOL_MARKER = `translation-workshop-line-review-v${LINE_REVIEW_PROTOCOL_VERSION}`;
-export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 20;
+export const PROPOSAL_REVIEW_PROTOCOL_VERSION = 21;
 export const PROPOSAL_REVIEW_PROTOCOL_MARKER = `translation-workshop-proposal-review-v${PROPOSAL_REVIEW_PROTOCOL_VERSION}`;
 export const PROMPT_SETTINGS_VERSION = 46;
 
@@ -5856,7 +5856,10 @@ function proposalReplacementText(item, decision) {
 }
 function applyProposalChanges() {
   if (proposalApplyInFlight) return proposalApplyInFlight;
+  const previousCardsInert = cards.inert;
+  cards.inert = true;
   proposalApplyInFlight = applyProposalChangesOnce().finally(() => {
+    cards.inert = previousCardsInert;
     proposalApplyInFlight = undefined;
   });
   return proposalApplyInFlight;
@@ -5868,15 +5871,27 @@ async function applyProposalChangesOnce() {
   let conflictSkipped = 0;
   const commits = [];
   const decisionChanges = new Map();
+  const proposalGroups = groupProposalsByDocument().map(group => {
+    const candidates = group.items.filter(item => {
+      const line = Number(item.line);
+      const decision = decisionForProposalApply(item);
+      return Number.isInteger(line) && line > 0
+        && (decision.status === "accepted" || decision.status === "manual")
+        && Boolean(proposalReplacementText(item, decision));
+    });
+    return { ...group, candidates };
+  });
+  const actionableGroups = proposalGroups.filter(group => group.candidates.length > 0);
+  skipped = proposalGroups.filter(group => !actionableGroups.includes(group)).reduce((count, group) => count + group.items.length, 0);
   try {
     const bridge = htmlBridge();
-    if (bridge?.prepareProposalLineReviewBatch) {
+    if (actionableGroups.length > 0 && bridge?.prepareProposalLineReviewBatch) {
       const prepared = await bridge.prepareProposalLineReviewBatch({
         outputDir: data.outputDir || "",
         reportPath: data.reportPath || "",
         lineReviewPath: data.lineReviewPath || "",
         locale: data.locale === "en-US" ? "en-US" : "zh-CN",
-        documents: groupProposalsByDocument().map(group => ({
+        documents: actionableGroups.map(group => ({
           documentId: group.items[0]?.documentId || "",
           sourcePath: group.items[0]?.sourcePath || "",
           translationPath: group.items[0]?.translationPath || ""
@@ -5896,17 +5911,9 @@ async function applyProposalChangesOnce() {
       proposals: data.proposals.length,
       documents: groupProposalsByDocument().length
     });
-    for (const group of groupProposalsByDocument()) {
-      const candidates = group.items.filter(item => {
-        const line = Number(item.line);
-        const decision = decisionForProposalApply(item);
-        return Number.isInteger(line) && line > 0
-          && !isMechanicalScan(item)
-          && (decision.status === "accepted" || decision.status === "manual")
-          && Boolean(String(decision.manualText || "").trim() || proposalSuggestionText(item));
-      });
+    for (const group of actionableGroups) {
+      const candidates = group.candidates;
       skipped += group.items.length - candidates.length;
-      if (candidates.length === 0) continue;
       const linkedDocument = await readLinkedLineReviewDocument(candidates[0]);
       const baseTarget = readLineReviewState(linkedDocument?.state, linkedDocument?.lineReviewPath || data.lineReviewPath);
       if (!baseTarget) {

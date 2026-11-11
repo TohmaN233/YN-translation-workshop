@@ -102,6 +102,21 @@ function normalizeBatchData(value: BatchIndexData): BatchIndexData {
   return value;
 }
 
+function selectedBatchFiles(batch: BatchIndexData, documentIds?: readonly string[]): BatchIndexFile[] {
+  if (documentIds === undefined) return batch.files;
+  const normalize = (value: string) => value.trim().replace(/\\/g, "/").toLowerCase();
+  const requested = new Set(documentIds.map(normalize));
+  const matchesById = new Map<string, number>();
+  for (const file of batch.files) {
+    const id = normalize(file.sourceName);
+    matchesById.set(id, (matchesById.get(id) || 0) + 1);
+  }
+  for (const documentId of requested) {
+    if (matchesById.get(documentId) !== 1) throw new Error(`Batch line-review index does not own exactly one document ${documentId}.`);
+  }
+  return batch.files.filter(file => requested.has(normalize(file.sourceName)));
+}
+
 function normalizeLineReviewData(value: LineReviewData, childPath: string): LineReviewData {
   if (!value || !Array.isArray(value.rows) || value.rows.length === 0) {
     throw new Error(`Line-review child has no rows: ${childPath}`);
@@ -167,7 +182,7 @@ export async function batchLineReviewOwnsChild(batchIndexPath: string, childPath
     .some((item) => samePath(item.childPath, childPath));
 }
 
-export async function readBatchLineReviewChildren(batchIndexPath: string): Promise<BatchLineReviewChild[]> {
+export async function readBatchLineReviewChildren(batchIndexPath: string, documentIds?: readonly string[]): Promise<BatchLineReviewChild[]> {
   if (!path.isAbsolute(batchIndexPath) || path.extname(batchIndexPath).toLowerCase() !== ".html") {
     throw new Error("An absolute batch review HTML path is required.");
   }
@@ -178,7 +193,7 @@ export async function readBatchLineReviewChildren(batchIndexPath: string): Promi
     && path.isAbsolute(batch.folderAgentRoute.outputDir)
     ? path.resolve(batch.folderAgentRoute.outputDir)
     : undefined;
-  return Promise.all(batch.files.map(async (file) => ({
+  return Promise.all(selectedBatchFiles(batch, documentIds).map(async (file) => ({
     documentId: file.sourceName,
     sourcePath: path.resolve(file.sourcePath),
     ...(typeof file.translationPath === "string" && file.translationPath.trim()
@@ -326,7 +341,8 @@ function targetPathFor(
 }
 
 export async function readBatchLineReviewCurrentBindings(
-  batchIndexPath: string
+  batchIndexPath: string,
+  documentIds?: readonly string[]
 ): Promise<BatchLineReviewCurrentBinding[]> {
   if (!path.isAbsolute(batchIndexPath) || path.extname(batchIndexPath).toLowerCase() !== ".html") {
     throw new Error("An absolute batch review HTML path is required.");
@@ -334,7 +350,7 @@ export async function readBatchLineReviewCurrentBindings(
   const batch = normalizeBatchData(
     parseJsonScript<BatchIndexData>(await readReviewHtml(batchIndexPath), "batchData")
   );
-  return Promise.all(batch.files.map(async (file) => {
+  return Promise.all(selectedBatchFiles(batch, documentIds).map(async (file) => {
     const childPath = await resolveBatchReviewChildForUpgrade(batchIndexPath, file.outputPath);
     const review = normalizeLineReviewData(
       parseJsonScript<LineReviewData>(await readReviewHtml(childPath), "reviewData"),

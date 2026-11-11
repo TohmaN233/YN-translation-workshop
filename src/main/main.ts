@@ -2153,6 +2153,7 @@ async function synchronizeBatchProposalLineReviews(args: {
   batchIndexPath: string;
   locale: UiLocale;
   onlyDocumentId?: string;
+  documentIds?: readonly string[];
   routeOverrides?: Map<string, { sourcePath: string; translationPath: string }>;
 }): Promise<{ synchronized: number; migrated: number }> {
   const workspaceDir = normalizeProjectFolder(args.outputDir).workspaceDir;
@@ -2167,7 +2168,8 @@ async function synchronizeBatchProposalLineReviews(args: {
       'data.files[Number(document.getElementById("fileSelect")?.value || 0)]?.outputPath'
     );
   }
-  const children = await readBatchLineReviewCurrentBindings(args.batchIndexPath);
+  const requestedDocumentIds = args.onlyDocumentId ? [args.onlyDocumentId] : args.documentIds;
+  const children = await readBatchLineReviewCurrentBindings(args.batchIndexPath, requestedDocumentIds);
   const requestedKey = normalizedProposalDocumentId(args.onlyDocumentId);
   const selected = requestedKey
     ? children.filter((child) => normalizedProposalDocumentId(child.documentId) === requestedKey)
@@ -2205,6 +2207,10 @@ async function synchronizeBatchProposalLineReviews(args: {
       legacyArtifacts
     });
   }));
+  console.info("[proposal-routing] Prepared batch proposal documents", {
+    batchIndexPath: args.batchIndexPath,
+    documentIds: plans.map(plan => plan.documentId)
+  });
   const indexHtml = await readReviewHtml(args.batchIndexPath);
   const boundIndexHtml = bindBatchLineReviewTranslations(indexHtml, plans.map((plan) => ({
     documentId: plan.documentId,
@@ -4299,17 +4305,18 @@ ipcMain.handle("html:prepareProposalLineReviewBatch", async (_event, args: Prepa
     if (!batchIndexPath || await isLineReviewHtml(batchIndexPath)) {
       return { ok: true, batch: false, synchronized: 0, migrated: 0 };
     }
+    const requestedDocuments = Array.isArray(args.documents) ? args.documents : [];
+    if (requestedDocuments.length === 0) {
+      throw new Error("Batch proposal preparation requires its embedded document routes.");
+    }
+    const requestedDocumentIds = requestedDocuments.map(document => document.documentId || "");
     try {
-      await readBatchLineReviewChildren(batchIndexPath);
+      await readBatchLineReviewChildren(batchIndexPath, requestedDocumentIds);
     } catch (error) {
       throw new Error(`The linked batch line-review index is invalid: ${batchIndexPath}`, { cause: error });
     }
     if (!isSameOrInside(workspaceDir, batchIndexPath)) {
       throw new Error("The batch line-review index is outside the current project workspace.");
-    }
-    const requestedDocuments = Array.isArray(args.documents) ? args.documents : [];
-    if (requestedDocuments.length === 0) {
-      throw new Error("Batch proposal preparation requires its embedded document routes.");
     }
     const reportText = await readFile(args.reportPath, "utf8");
     const proposals = parseProofreadReport(reportText, args.reportPath);
@@ -4360,6 +4367,7 @@ ipcMain.handle("html:prepareProposalLineReviewBatch", async (_event, args: Prepa
       outputDir,
       batchIndexPath,
       locale: args.locale === "en-US" ? "en-US" : "zh-CN",
+      documentIds: requestedDocumentIds,
       routeOverrides
     });
     return { ok: true, batch: true, ...result };

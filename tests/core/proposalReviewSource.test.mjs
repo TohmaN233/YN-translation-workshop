@@ -156,7 +156,7 @@ await test("cross-file one-click apply includes unreviewed suggestions and publi
   assert.match(applySource, /const candidates = group\.items\.filter/);
   assert.match(applySource, /decisionForProposalApply\(item\)/);
   assert.match(applySource, /decision\.status === "accepted" \|\| decision\.status === "manual"/);
-  assert.match(applySource, /if \(candidates\.length === 0\) continue;/);
+  assert.match(applySource, /filter\(group => group\.candidates\.length > 0\)/);
   assert.match(applySource, /readLinkedLineReviewDocument\(candidates\[0\]\)/);
   assert.match(applySource, /rollbackProposalDecisionChanges/);
   assert.doesNotMatch(applySource, /state\.decisions = decisionsBefore/);

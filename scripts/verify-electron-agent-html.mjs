@@ -150,13 +150,14 @@ try {
     });
   }
 
-  if (!verifyOnly || verifyOnly === "proposal") {
+  if (!verifyOnly || verifyOnly === "proposal" || verifyOnly === "proposal-deleted-sibling") {
     const proposalReviewMain = await buildVerifier(
       "scripts/verify-electron-proposal-review-main.ts",
       "proposal-review-main.mjs"
     );
     await runVerifier(proposalReviewMain, '"folderProofreadAggregate":true', 60_000, {
-      YN_ELECTRON_VERIFY_OFFSCREEN: "1"
+      YN_ELECTRON_VERIFY_OFFSCREEN: "1",
+      ...(verifyOnly === "proposal-deleted-sibling" ? { YN_PROPOSAL_DELETED_SIBLING: "1" } : {})
     });
   }
 

@@ -668,7 +668,7 @@ async function run(): Promise<void> {
     await jumpedView.webContents.executeJavaScript('document.querySelector("#exportEpub").click()');
     const exportPath = await waitFor(
       () => jumpedView.webContents.executeJavaScript('state.savedEpubFile || ""').catch(() => ""),
-      (value) => typeof value === "string" && value.toLowerCase().endsWith(".translated.epub"),
+      (value) => typeof value === "string" && /\.translated(?:\.\d+)?\.epub$/i.test(value),
       "the EPUB export from " + routed.documentId
     );
     const exportedLines = splitTextLines(await readEpubText(String(exportPath), workspaceDir, "synthetic-folder-export-" + routed.documentId.replace(/[^a-z0-9]+/gi, "-")));

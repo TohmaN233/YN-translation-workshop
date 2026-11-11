@@ -234,6 +234,17 @@ await test("proposal synchronization and batch TXT share an imported child trans
   assert.equal(plans.find((plan) => plan.childPath === item.childB)?.targetPath, importedB);
 });
 
+await test("selected batch bindings do not require an unrelated deleted child", async () => {
+  const item = await fixture();
+  await rm(item.childB);
+  const bindings = await readBatchLineReviewCurrentBindings(item.indexPath, ["a.txt"]);
+  assert.deepEqual(bindings.map(binding => binding.documentId), ["a.txt"]);
+  const children = await readBatchLineReviewChildren(item.indexPath, ["a.txt"]);
+  assert.deepEqual(children.map(child => child.documentId), ["a.txt"]);
+  await assert.rejects(readBatchLineReviewCurrentBindings(item.indexPath, ["nested/b.txt"]), /b\.html/);
+  await assert.rejects(readBatchLineReviewCurrentBindings(item.indexPath, ["unknown.txt"]), /does not own|not found/i);
+});
+
 await test("batch index binding updates make every canonical child point at its current translation", async () => {
   const item = await fixture();
   const translationB = path.join(item.projectDir, "AI_translation", "nested", "b_translated.txt");
